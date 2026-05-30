@@ -115,6 +115,20 @@ export function MCQ({
     });
   }, [options, correct, groupId]);
 
+  // Fail the build on a mis-authored question rather than rendering a card the
+  // learner can never answer correctly. Runs during SSR/prerender → red build.
+  if (normalized.length < 2) {
+    throw new Error(
+      `MCQ "${question}": needs at least two options. Got ${normalized.length}.`,
+    );
+  }
+  if (!normalized.some((o) => o.correct)) {
+    throw new Error(
+      `MCQ "${question}": no correct answer marked. Use \`correct={index}\` for ` +
+        'string options, or `{ text, correct: true }` for object options.',
+    );
+  }
+
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [checked, setChecked] = useState(false);
 

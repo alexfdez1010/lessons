@@ -100,6 +100,54 @@ export function Quiz({
     Children.toArray(children)
       .filter(isValidElement)
       .map((child) => (child as { props: MCQProps }).props);
+
+  // Fail loudly at build time on a mis-authored quiz instead of silently
+  // shipping an empty card. The classic trap: authoring `<Quiz>` with `<MCQ>`
+  // *children* in MDX. Across a `client:visible` island boundary Astro turns
+  // those children into an opaque HTML slot, so `child.props` carries no
+  // `question`/`options` and every card renders blank. Authoring MUST use the
+  // `questions={[...]}` prop. These checks throw during SSR/prerender, so the
+  // build goes red rather than green-but-broken.
+  if (questions.length === 0) {
+    throw new Error(
+      'Quiz: no questions. Pass `questions={[{ question, options, ... }]}`. ' +
+        'Authoring `<Quiz>` with `<MCQ>` children does not work across a ' +
+        'client:visible island boundary — the children become an HTML slot.',
+    );
+  }
+  questions.forEach((q, i) => {
+    const structureOk =
+      q &&
+      typeof q.question === 'string' &&
+      q.question.trim().length > 0 &&
+      Array.isArray(q.options) &&
+      q.options.length >= 2;
+    if (!structureOk) {
+      throw new Error(
+        `Quiz: question ${i + 1} is missing a \`question\` string or a 2+ entry ` +
+          '`options` array. If you wrote `<Quiz>` with `<MCQ>` children, switch ' +
+          'to `questions={[{ question, options, correct, explanation }]}` — ' +
+          'children do not cross the client:visible island boundary.',
+      );
+    }
+    // Every question must have at least one correct answer — flagged either via
+    // `correct={index|indices}` (string options) or `{ correct: true }` (object
+    // options). Otherwise the question is unanswerable.
+    const idx = q.correct;
+    const flaggedIndices = new Set(
+      idx === undefined ? [] : Array.isArray(idx) ? idx : [idx],
+    );
+    const hasCorrect = q.options.some(
+      (o, oi) => (typeof o === 'string' ? false : o.correct === true) || flaggedIndices.has(oi),
+    );
+    if (!hasCorrect) {
+      throw new Error(
+        `Quiz: question ${i + 1} ("${q.question}") has no correct answer marked. ` +
+          'Set `correct={index}` or mark an option `{ text, correct: true }`.',
+      );
+    }
+  });
+
   const total = questions.length;
   const [current, setCurrent] = useState(0);
   // results[i] === undefined => unanswered; otherwise the correctness boolean.
@@ -134,10 +182,6 @@ export function Quiz({
     setCurrent(0);
     setFinished(false);
   };
-
-  if (total === 0) {
-    return null;
-  }
 
   const progressPct = finished ? 100 : Math.round(((current + (answeredCurrent ? 1 : 0)) / total) * 100);
 

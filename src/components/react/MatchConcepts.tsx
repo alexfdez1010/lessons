@@ -46,6 +46,21 @@ export function MatchConcepts({
   onResult,
   className,
 }: MatchConceptsProps) {
+  // Fail the build on a mis-authored matcher rather than shipping an empty or
+  // trivial one. Runs during SSR/prerender → red build.
+  if (!Array.isArray(pairs) || pairs.length < 2) {
+    throw new Error(
+      `MatchConcepts "${question ?? ''}": needs at least two term/definition pairs.`,
+    );
+  }
+  const bad = pairs.find((p) => !p?.term?.trim() || !p?.definition?.trim());
+  if (bad) {
+    throw new Error(
+      `MatchConcepts "${question ?? ''}": every pair needs a non-empty \`term\` ` +
+        'and `definition`.',
+    );
+  }
+
   const reactId = useId();
   // Shuffled definition order (indices into `pairs`).
   const defOrder = useMemo(() => shuffle(pairs.map((_, i) => i)), [pairs]);

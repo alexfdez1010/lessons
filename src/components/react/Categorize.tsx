@@ -54,6 +54,22 @@ export function Categorize({
   onResult,
   className,
 }: CategorizeProps) {
+  // Fail the build on a mis-authored exercise instead of shipping an
+  // ungradable one. Runs during SSR/prerender → red build.
+  if (!Array.isArray(buckets) || buckets.length < 2) {
+    throw new Error(`Categorize "${question ?? ''}": needs at least two buckets.`);
+  }
+  if (!Array.isArray(items) || items.length === 0) {
+    throw new Error(`Categorize "${question ?? ''}": needs at least one item.`);
+  }
+  const orphan = items.find((it) => !buckets.includes(it.bucket));
+  if (orphan) {
+    throw new Error(
+      `Categorize "${question ?? ''}": item "${orphan.text}" has bucket ` +
+        `"${orphan.bucket}", which is not one of [${buckets.join(', ')}].`,
+    );
+  }
+
   const groupId = useId();
   // assignment[itemIndex] = chosen bucket label (or null).
   const [assignment, setAssignment] = useState<(string | null)[]>(() => items.map(() => null));

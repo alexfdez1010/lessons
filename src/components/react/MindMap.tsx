@@ -82,6 +82,18 @@ export function MindMap({
   outlineLabel = 'Text outline',
   className,
 }: MindMapProps) {
+  // Fail the build on a mis-authored map rather than rendering an empty figure.
+  // Runs during SSR/prerender → red build.
+  if (!root || !root.label?.trim()) {
+    throw new Error('MindMap: `root` must be an object with a non-empty `label`.');
+  }
+  if (!root.children?.length) {
+    throw new Error(
+      `MindMap "${root.label}": \`root.children\` is empty — a map with no ` +
+        'branches has nothing to show.',
+    );
+  }
+
   const reactId = useId();
   const safeId = `mindmap-${reactId.replace(/[^a-zA-Z0-9]/g, '')}`;
   const [svg, setSvg] = useState<string | null>(null);
