@@ -96,7 +96,36 @@ export function MindMap({
         mermaid.initialize({
           startOnLoad: false,
           securityLevel: 'strict',
-          theme: 'neutral',
+          // 'base' is the only built-in theme that honours themeVariables, so we
+          // can paint the mindmap in the site's blue-forward palette instead of
+          // mermaid's default greys. Tokens mirror src/styles/global.css @theme.
+          theme: 'base',
+          themeVariables: {
+            fontFamily:
+              "'Lexend Variable','Inter Variable',ui-sans-serif,system-ui,sans-serif",
+            primaryColor: '#dbeafe', // brand-100 — node fill
+            primaryBorderColor: '#2563eb', // brand-600 — node border
+            primaryTextColor: '#0f172a', // ink-900 — node text
+            lineColor: '#60a5fa', // brand-400 — connectors
+            // Keep the per-branch section colours on a single blue ramp so the
+            // diagram reads as one family rather than mermaid's rainbow.
+            cScale0: '#eff6ff', // brand-50
+            cScale1: '#dbeafe', // brand-100
+            cScale2: '#bfdbfe', // brand-200
+            cScale3: '#93c5fd', // brand-300
+            cScale4: '#60a5fa', // brand-400
+            cScale5: '#3b82f6', // brand-500
+            cScale6: '#2563eb', // brand-600
+            cScale7: '#1d4ed8', // brand-700
+            cScaleLabel0: '#0f172a',
+            cScaleLabel1: '#0f172a',
+            cScaleLabel2: '#0f172a',
+            cScaleLabel3: '#0f172a',
+            cScaleLabel4: '#ffffff',
+            cScaleLabel5: '#ffffff',
+            cScaleLabel6: '#ffffff',
+            cScaleLabel7: '#ffffff',
+          },
           mindmap: { padding: 12 },
         });
         const { svg: out } = await mermaid.render(safeId, toMermaid(root));
