@@ -5,9 +5,13 @@ description: Design and build animations that make a Lessons topic genuinely eas
 
 # Animations that teach
 
-Every lesson should include **at least one animation that explains the topic
-better than text or a static image could**. Animation is a teaching tool here,
-not decoration — if it doesn't increase understanding, don't add it.
+Every lesson should include animations that explain the topic **better than text
+or a static image could**. Animation is a teaching tool here, not decoration — if
+it doesn't increase understanding, don't add it.
+
+**More, not one**: aim for an animation at *each* major
+transformation/process/relationship in the lesson, placed next to the
+explanation it illustrates — not a single hero animation per lesson.
 
 ## When an animation earns its place
 

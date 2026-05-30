@@ -24,6 +24,26 @@ As you write, apply the companion skills:
   `MCQ`, `Quiz`, or a `concept → definition` matcher), reusing/extending the
   component library rather than inlining one-off JSX.
 
+## Interaction density (REQUIRED — not just at the end)
+
+Lessons must be **interactive throughout**, not a text wall with one quiz at the
+bottom. Retention comes from testing right after learning.
+
+- **Interleave**: after **each** explanation / `##` section, add an exercise or
+  animation that checks or shows what was just taught. Don't pool questions at
+  the end (an end-of-lesson `Quiz` recap is fine *in addition*).
+- **Rotate types** — don't repeat one format: single `MCQ`, **multi-answer
+  `MCQ`** (`allowMultiple`), concept→definition `MatchConcepts`, scored `Quiz`,
+  `Reveal`/`StepThrough` self-checks.
+- **Spaced recall**: write some questions that reference *earlier* sections so
+  the user recalls prior material; the end quiz mixes the whole lesson.
+- **Animations per concept**: an animation at *each* major
+  transformation/process/relationship, beside its explanation — not one hero
+  animation per lesson. See `lesson-animations`.
+
+Apply the same density to the Spanish twin (parity includes exercises and
+animations, with Spanish label props).
+
 ## 1. Decide: new topic or new lesson in an existing topic?
 
 - List existing topics: look under `src/content/topics/en/`.

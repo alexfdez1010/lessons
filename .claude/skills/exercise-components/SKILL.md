@@ -9,6 +9,15 @@ Exercises live in `src/components/react/` as React 19 islands and are dropped
 into MDX with a `client:*` directive. Always prefer **reusing/extending** an
 existing component over inlining one-off JSX in a lesson.
 
+## Placement & density (REQUIRED)
+
+- Put exercises **after each explanation**, interleaved through the lesson — not
+  pooled at the end.
+- **Rotate types**: single `MCQ`, **multi-answer `MCQ`**, `MatchConcepts`
+  (concept→definition), scored `Quiz`. Don't reuse one format the whole lesson.
+- **Spaced recall**: some questions reference *earlier* sections so the user
+  recalls prior material, not only the latest paragraph.
+
 ## Existing components (reuse these first)
 
 Import from the barrel: `import { MCQ, Quiz } from '@/components/react';`
