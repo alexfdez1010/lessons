@@ -5,14 +5,16 @@
  *   1. Boot `astro preview` on a fixed port as a child process and wait until
  *      the port answers (the npm script runs `astro build` first).
  *   2. Walk the built `dist/` tree to enumerate the real page routes.
- *   3. For each route, map pathname -> OG card route + PNG slug, then drive
- *      Playwright/chromium to screenshot the 1200×630 #og-card element into
+ *   3. For each route, drive Playwright/chromium to open the *actual page* in a
+ *      1200×630 viewport, let animations settle, and screenshot it into
  *      public/og/<slug>.png.
  *   4. Tear down preview and report a summary.
  *
- * The slug/route mapping below MUST stay identical to src/lib/og.ts — it's
- * replicated here (rather than imported) because this script lives outside
- * src/ and the `@` alias / astro:content imports are unavailable to plain bun.
+ * The OG image is a screenshot of the corresponding page itself (matching the
+ * `me` repo's approach) — not a separate branded card route. The slug mapping
+ * below MUST stay identical to src/lib/og.ts — it's replicated here (rather
+ * than imported) because this script lives outside src/ and the `@` alias /
+ * astro:content imports are unavailable to plain bun.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { chromium } from 'playwright';
@@ -29,6 +31,9 @@ const BASE = `http://${HOST}:${PORT}`;
 const WIDTH = 1200;
 const HEIGHT = 630;
 
+/** Wait time (ms) after load to let island animations settle before capture. */
+const SETTLE_DELAY = 2000;
+
 /* ---- og.ts mirror — KEEP IN SYNC WITH src/lib/og.ts --------------------- */
 
 /** '/'->'default', '/catalog'->'catalog', '/es/a/b'->'es-a-b'. */
@@ -36,12 +41,6 @@ function ogSlug(pathname: string): string {
   const clean = pathname.replace(/^\/+|\/+$/g, '');
   if (clean === '') return 'default';
   return clean.replace(/\//g, '-').toLowerCase();
-}
-
-/** Internal route that renders the screenshot-able card. */
-function ogCardRoute(pathname: string): string {
-  const clean = pathname.replace(/^\/+|\/+$/g, '');
-  return clean === '' ? '/og/default' : `/og/${clean}`;
 }
 
 /* ---- helpers ------------------------------------------------------------ */
@@ -92,7 +91,7 @@ async function main() {
 
   mkdirSync(OUT_DIR, { recursive: true });
 
-  // Enumerate real page routes, dropping the og card routes and 404.
+  // Enumerate real page routes, dropping any leftover og routes and 404.
   const allRoutes = collectRoutes(DIST);
   const pageRoutes = allRoutes.filter(
     (r) => !r.startsWith('/og') && r !== '/404' && !r.endsWith('/404'),
@@ -129,27 +128,25 @@ async function main() {
 
     for (const pathname of pageRoutes) {
       const slug = ogSlug(pathname);
-      const cardRoute = ogCardRoute(pathname);
       const outFile = join(OUT_DIR, `${slug}.png`);
       const page = await context.newPage();
       try {
-        const res = await page.goto(`${BASE}${cardRoute}`, {
+        const res = await page.goto(`${BASE}${pathname}`, {
           waitUntil: 'networkidle',
           timeout: 20_000,
         });
         if (!res || !res.ok()) {
-          throw new Error(`card route ${cardRoute} returned ${res?.status() ?? 'no response'}`);
+          throw new Error(`route ${pathname} returned ${res?.status() ?? 'no response'}`);
         }
-        // Ensure web fonts are laid out before capturing.
+        // Ensure web fonts are laid out, then let animations settle.
         await page.evaluate(() => (document as any).fonts?.ready);
+        await page.waitForTimeout(SETTLE_DELAY);
 
-        const card = page.locator('#og-card');
-        if (await card.count()) {
-          await card.screenshot({ path: outFile });
-        } else {
-          // Fallback: capture the 1200×630 viewport.
-          await page.screenshot({ path: outFile, clip: { x: 0, y: 0, width: WIDTH, height: HEIGHT } });
-        }
+        // Screenshot the visible 1200×630 viewport (top of the page).
+        await page.screenshot({
+          path: outFile,
+          clip: { x: 0, y: 0, width: WIDTH, height: HEIGHT },
+        });
         ok.push(slug);
         console.log(`  ✓ ${pathname}  →  public/og/${slug}.png`);
       } catch (err) {

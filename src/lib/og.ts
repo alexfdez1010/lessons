@@ -10,7 +10,8 @@
  *   '/es/transformers/attention' -> 'es-transformers-attention'
  *
  * Files live in /public/og/<slug>.png and are committed (generated in the
- * pre-commit step), so production references resolve to real static assets.
+ * pre-commit step by screenshotting each real page), so production references
+ * resolve to real static assets.
  */
 export function ogSlug(pathname: string): string {
   const clean = pathname.replace(/^\/+|\/+$/g, '');
@@ -21,10 +22,4 @@ export function ogSlug(pathname: string): string {
 /** Public URL path of the OG image for a given route pathname. */
 export function ogImagePath(pathname: string): string {
   return `/og/${ogSlug(pathname)}.png`;
-}
-
-/** The matching internal route that renders the screenshot-able OG card. */
-export function ogCardRoute(pathname: string): string {
-  const clean = pathname.replace(/^\/+|\/+$/g, '');
-  return clean === '' ? '/og/default' : `/og/${clean}`;
 }
