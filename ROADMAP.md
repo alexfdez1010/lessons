@@ -12,7 +12,7 @@ the next harder topics to keep the ramp going.
 - One lesson (or one topic's lesson) per run, en + es twin, per CLAUDE.md.
 - After building: mark it `[x]`, note the date.
 - When fewer than **3** unchecked items remain, append the next harder topics
-  (each one notch up) so the pipeline never empties.
+  (each one notch up) so the pipeline never empties. Also, follow an horizontal approach
 - Difficulty legend: ⬤ beginner · ⬤⬤ intermediate · ⬤⬤⬤ advanced · ⬤⬤⬤⬤ expert.
 
 ---
