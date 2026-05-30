@@ -57,6 +57,36 @@ close). Err on the side of *more* exercises.
 Apply the same density to the Spanish twin (parity includes exercises and
 animations, with Spanish label props).
 
+## Final exam (REQUIRED — every course ends with one)
+
+**Every course (topic) MUST conclude with a final exam as its LAST lesson.**
+This is mandatory, not optional — Claude: whenever you finish a topic, or add
+the last teaching lesson to one, that topic is not "done" until a final-exam
+lesson sits at the end of it. When building a brand-new topic, plan the exam as
+the final lesson from the start.
+
+- **Slug & position**: `final-exam` in both locales
+  (`src/content/lessons/<lang>/<topic>/final-exam.mdx`), with `order` set to
+  **one higher than every other lesson** so it sorts last. Title it as an exam
+  (e.g. *"Final Exam: …"* / *"Examen final: …"*).
+- **It must be genuinely hard.** The point is to verify the learner truly
+  understood everything — not a victory-lap recap. Use **scenario-based,
+  multi-step reasoning** with plausible distractors and subtle traps drawn from
+  the misconceptions each lesson warned about. Reuse the existing exercise
+  components; build a new one only if a question type genuinely needs it and it
+  is technically feasible (a proper reusable island — see `exercise-components`).
+- **Cover ALL prior material and use EVERY question type** at least once:
+  single-answer `MCQ`, multi-answer `MCQ` (`allowMultiple`), `MatchConcepts`,
+  `Categorize`, `FillBlank`, and a long scored `Quiz` (8–11 mixed questions) as
+  the centerpiece. **No `pretest`** here — an exam tests, it doesn't pre-teach.
+- **Structure**: group questions into themed `##` sections (one per area of the
+  course), each with ≥1 exercise; close with a `MindMap` of the whole mental
+  model and a `Callout variant="success"` "you passed if…" rubric.
+- **Same rules as any lesson**: keep numbers/LaTeX in MDX prose and tables, never
+  baked into island option/question text (put numeric scenarios in a table right
+  above the island and phrase the question conceptually); ship a full es-ES twin
+  with Spanish label props.
+
 ## 1. Decide: new topic or new lesson in an existing topic?
 
 - List existing topics: look under `src/content/topics/en/`.
