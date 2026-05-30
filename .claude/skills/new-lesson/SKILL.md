@@ -40,10 +40,11 @@ close). Err on the side of *more* exercises.
 - **Rotate types every time** — never the same format twice running: single
   `MCQ`, **multi-answer `MCQ`** (`allowMultiple`), `MCQ pretest`,
   concept→definition `MatchConcepts`, `Categorize` (sort into buckets),
-  `FillBlank` (type the answer — active recall), scored `Quiz`,
-  `Reveal`/`StepThrough` self-checks.
-- **Prefer recall over recognition** for must-remember terms — `FillBlank`
-  (learner produces the answer) beats another `MCQ` (learner just picks it).
+  `FillBlank` (pick-one-of-three cloze), scored `Quiz`, `Reveal` self-checks.
+- **For must-remember terms** reach for `FillBlank` — each blank is the right
+  term flanked by two plausible distractors, so the learner discriminates rather
+  than just recognises. Keep options equal-length; the answer must never be the
+  longest. (No `StepThrough` — it was removed; use a numbered Markdown list.)
 - **Spaced recall**: write some questions that reference *earlier* sections so
   the user recalls prior material; the end quiz mixes the whole lesson.
 - **Animations per concept**: an animation at *each* major
@@ -102,7 +103,7 @@ updated: 2026-05-30                # ISO date
 At the top of the MDX body:
 
 ```mdx
-import { Callout, MCQ, Quiz, StepThrough, Reveal, CopyButton,
+import { Callout, MCQ, Quiz, Reveal,
          MatchConcepts, Categorize, FillBlank, MindMap } from '@/components/react';
 ```
 
@@ -128,18 +129,18 @@ Interactive islands need `client:visible`; `Callout` is presentational (no direc
 
 <Quiz client:visible questions={[ /* array of MCQ prop objects */ ]} />
 
-<StepThrough client:visible steps={[{ title: 'Step 1', body: '...' }]} />
+<FillBlank
+  client:visible
+  text="Without a {{non-linear|recursive|stateless}} activation, stacked layers collapse into one {{linear|convex|discrete}} map."
+/>
 
 <Reveal client:visible><Callout>Animates in on scroll.</Callout></Reveal>
-
-<CopyButton client:visible value="bun add @astrojs/react" />
 ```
 
 **Spanish lessons must pass Spanish label props** so the UI is fully localized, e.g.
 `<MCQ ... checkLabel="Comprobar" retryLabel="Reintentar" />`,
 `<Quiz ... questionLabel="Pregunta" ofLabel="de" scoreLabel="Tu puntuación" restartLabel="Reiniciar" nextLabel="Siguiente" backLabel="Atrás" />`,
-`<CopyButton ... label="Copiar" copiedLabel="¡Copiado!" />`,
-`<StepThrough ... nextLabel="Siguiente" prevLabel="Atrás" />`.
+`<FillBlank ... checkLabel="Comprobar" retryLabel="Reintentar" instructions="Elige la opción correcta para cada hueco y comprueba." />`.
 See `DESIGN.md` for the full prop reference of every component.
 
 ## 5. Always create BOTH locales

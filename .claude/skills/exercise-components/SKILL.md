@@ -21,16 +21,34 @@ existing component over inlining one-off JSX in a lesson.
   at the end.
 - **Rotate types every time** — never the same format twice in a row. Available:
   single `MCQ`, **multi-answer `MCQ`**, `MCQ pretest`, `MatchConcepts`
-  (concept→definition), `Categorize` (sort into buckets), `FillBlank` (type the
-  answer — active recall), scored `Quiz`.
-- **Prefer recall over recognition** where a term is worth remembering verbatim:
-  reach for `FillBlank` (the learner *produces* the answer) instead of another
-  `MCQ` (the learner just *recognises* it). The generation effect makes it stick.
+  (concept→definition), `Categorize` (sort into buckets), `FillBlank`
+  (pick-one-of-three cloze), scored `Quiz`.
+- **For a term worth pinning down**, reach for `FillBlank`: each blank is a
+  pick-one-of-three choice (the right term flanked by two convincing
+  distractors), so the learner must still discriminate it from look-alikes
+  without being punished for a typo.
 - **Spaced recall**: some questions reference *earlier* sections so the user
   recalls prior material, not only the latest paragraph.
 - **Close the lesson with a chunking recap** — a learner-built `MindMap` plus a
   mixed `Quiz`, not a passive bullet summary. See the `lesson-animations` /
   `new-lesson` skills for the MindMap close.
+
+## Write options that don't give themselves away (REQUIRED)
+
+The fastest way to wreck a question is to make the correct option the long,
+detailed, careful one and the distractors short throwaways — learners pick the
+longest answer without reading. So:
+
+- **Length parity.** All options for a question are roughly the same length. The
+  correct one is **never** noticeably longer than the rest. If the right answer
+  needs a qualifier, give the distractors comparable qualifiers.
+- **Plausible distractors.** Every wrong option is a believable mistake — a real
+  misconception, an adjacent term, a true-but-irrelevant fact — not an obvious
+  joke. (Keep at most one light "nonsense" option per *lesson*, not per question.)
+- **Harder than obvious.** Aim for distractors that a learner who *half* gets it
+  would fall for. Test discrimination between close ideas, not recall of a single
+  keyword sitting alone among nonsense.
+- This applies to `MCQ`, `Quiz`, and `FillBlank` choices alike.
 
 ## Pretest mode (prequestion)
 
@@ -57,13 +75,26 @@ Spanish twins pass `pretestLabel="Antes de leer — adivina"`.
 
 ## Every island must teach or test *in place*
 
-Don't use `StepThrough` (or any component) as a **fake-interactive list** or to
-**point the learner at an exercise to do elsewhere** ("now try sketching this",
-"go work through an example on paper"). An off-page instruction adds nothing —
-the learner won't leave the page to do it. If a step is worth doing, make it a
-real, graded island here (`FillBlank`, `Categorize`, `MCQ`, `MatchConcepts`).
-Reserve `StepThrough` for genuinely sequential *content* the learner advances
-through (a process with stages), never as a prompt to act outside the page.
+Don't use a component as a **fake-interactive list** or to **point the learner
+at an exercise to do elsewhere** ("now try sketching this", "go work through an
+example on paper"). An off-page instruction adds nothing — the learner won't
+leave the page to do it. If a step is worth doing, make it a real, graded island
+here (`FillBlank`, `Categorize`, `MCQ`, `MatchConcepts`).
+
+**No `StepThrough`.** It was removed — a click-to-advance wrapper around a
+static list adds nothing a plain numbered list doesn't, and its children-API
+silently rendered *nothing* under Astro islands. For genuinely sequential
+*content*, just author a numbered Markdown list (`1.` `2.` `3.`). For a sequence
+worth *testing*, use `Categorize` or `FillBlank`.
+
+## Misconfigured components must fail the build, not ship blank
+
+A component handed bad/empty input must **`throw`** during render so `astro
+build` fails loudly — never silently return `null` or render nothing. That is
+how StepThrough's broken children-API slipped through for so long. `FillBlank`
+now throws if a blank has fewer than two choices or `text` has no blanks; hold
+any new component to the same bar (validate inputs, throw with a message that
+names the offending prop).
 
 ## Existing components (reuse these first)
 
@@ -146,22 +177,29 @@ them and reveals the right bucket on a miss.
 />
 ```
 
-## `FillBlank` — type the answer (active recall)
+## `FillBlank` — pick-one-of-three cloze
 
-The strongest rotation: the learner *produces* the word from memory instead of
-recognising it. Mark blanks with `{{answer}}`; accept synonyms with a pipe
-`{{answer|alt}}`. Matching trims and is case-insensitive by default.
+Each blank is a small inline choice group, not a text input. Author the blank as
+`{{correct|distractor|distractor}}`: pipe-separated options where the **first**
+is correct and the rest are distractors. The component shuffles them with a
+stable, content-seeded order (so the answer isn't always in the same slot and
+SSR/CSR markup match). **Three options per blank** is the target; fewer than two
+throws at build time.
+
+Make distractors *plausible* — same category as the answer (other privacy
+properties, sibling crypto terms), never throwaway nonsense. That's what keeps it
+a real discrimination test rather than a freebie.
 
 ```mdx
 <FillBlank
   client:visible
-  question="Complete the definition from memory."
-  text="A {{zero-knowledge}} proof convinces a verifier a statement is true while revealing {{nothing}} beyond its validity."
+  question="Fill in the right term for each blank."
+  text="A {{zero-knowledge|trusted-setup|hash-based}} proof convinces a verifier a statement is true while revealing {{nothing|the witness|the amount}} beyond its validity."
   explanation="Zero-knowledge = prove validity, reveal nothing else."
 />
 ```
 
-Both expose `onResult(correct)`, so they compose inside `Quiz` like `MCQ`. Pass
+Exposes `onResult(correct)`, so it composes inside `Quiz` like `MCQ`. Pass
 Spanish label props (`checkLabel`, `retryLabel`, `explanationLabel`, plus
 `instructions`) in the `es` twin.
 

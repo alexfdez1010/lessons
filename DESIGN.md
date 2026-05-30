@@ -205,22 +205,23 @@ import { Reveal } from '@/components/react';
 </Reveal>
 ```
 
-### StepThrough
+### FillBlank
 
-Interactive stepper for explaining a concept in stages. `steps: { title, body }[]`,
-optional `nextLabel`/`prevLabel`. Dots indicator; crossfade disabled under
-reduced motion.
+Pick-one-of-three cloze exercise. Mark blanks in `text` with
+`{{correct|distractor|distractor}}` — pipe-separated choices where the first is
+correct; options are shuffled with a stable, content-seeded order. Throws at
+build time if a blank has fewer than two choices or `text` has no blanks. Grades
+per blank on **Check**. i18n props: `checkLabel`, `retryLabel`,
+`explanationLabel`, `instructions`.
 
 ```mdx
-import { StepThrough } from '@/components/react';
+import { FillBlank } from '@/components/react';
 
-<StepThrough
+<FillBlank
   client:visible
-  steps={[
-    { title: 'Inputs', body: 'Each feature gets a weight.' },
-    { title: 'Sum', body: 'Multiply, add the bias.' },
-    { title: 'Activation', body: 'Squash through a non-linearity.' },
-  ]}
+  question="Pick the right term for each blank."
+  text="A {{perceptron|gradient|tensor}} fires when the weighted sum clears its {{threshold|gradient|bias}}."
+  explanation="Weighted sum vs. threshold — that's the whole neuron."
 />
 ```
 
@@ -242,7 +243,7 @@ import { CopyButton } from '@/components/react';
 
 - **Reduced motion is global.** `@media (prefers-reduced-motion: reduce)`
   in the base layer near-zeros all animation/transition durations and disables
-  smooth scrolling. Interactive islands (`Reveal`, `StepThrough`) also check
+  smooth scrolling. Interactive islands (e.g. `Reveal`) also check
   `matchMedia` and render final state immediately.
 - **Focus is always visible.** `:focus-visible` shows a 2px `brand-500`
   outline with offset; never remove it.

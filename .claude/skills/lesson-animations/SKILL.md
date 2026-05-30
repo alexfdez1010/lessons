@@ -64,8 +64,8 @@ Building blocks already in the project:
   (Tailwind: `animate-fade-up`, `animate-float`). Add new `@keyframes` + an
   `--animate-*` token there if you need more — never inline hard-coded hex or
   one-off CSS in a component.
-- **`StepThrough`** — for a discrete, click-advanced sequence of stages.
-- **`Reveal`** — to animate an element in on scroll.
+- **`Reveal`** — to animate an element in on scroll. (For a discrete sequence of
+  stages, author a numbered Markdown list — there is no `StepThrough`.)
 - Plain React state + CSS transitions / SVG for custom interactive visuals
   (sliders driving a value, an animated SVG graph, a canvas).
 
@@ -85,7 +85,7 @@ Building blocks already in the project:
 ## Wire it into the lesson
 
 ```mdx
-import { Reveal, StepThrough } from '@/components/react';
+import { Reveal } from '@/components/react';
 // or your custom island, e.g.:
 import { NeuronPlayground } from '@/components/react';
 

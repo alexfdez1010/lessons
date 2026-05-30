@@ -17,9 +17,6 @@ export type { QuizProps } from '@/components/react/Quiz';
 export { Reveal, default as RevealDefault } from '@/components/react/Reveal';
 export type { RevealProps } from '@/components/react/Reveal';
 
-export { StepThrough, default as StepThroughDefault } from '@/components/react/StepThrough';
-export type { StepThroughProps, Step } from '@/components/react/StepThrough';
-
 export { Callout, default as CalloutDefault } from '@/components/react/Callout';
 export type { CalloutProps, CalloutVariant } from '@/components/react/Callout';
 

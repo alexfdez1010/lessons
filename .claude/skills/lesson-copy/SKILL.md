@@ -33,6 +33,24 @@ fact.
   for "here's the trap everyone falls into."
 - Make quiz **explanations** entertaining — that's where understanding sticks.
 
+## Writing questions that are actually hard
+
+A question only teaches if getting it right takes thought. The classic tells that
+make a question trivial — kill all of them:
+
+- **Equal-length options.** Never let the correct answer be the long, detailed,
+  hedged one while the distractors are short. Length is a giveaway; learners pick
+  the longest option without reading. Trim the right answer or pad the others so
+  all options sit at roughly the same length.
+- **Distractors are real mistakes.** Each wrong option should be a misconception
+  a half-learner would genuinely fall for — an adjacent term, a plausible-but-
+  wrong mechanism — not an obvious joke. At most one nonsense option per *lesson*.
+- **Make them discriminate, not recall.** The best questions force a choice
+  between two close, both-plausible ideas. If the answer is obvious from the
+  question stem alone, make it harder.
+
+(Mechanics of `MCQ`/`FillBlank` options live in the `exercise-components` skill.)
+
 ## Guardrails (don't be annoying)
 
 - **Substance first.** Every joke must sit next to a real, correct point. If a
