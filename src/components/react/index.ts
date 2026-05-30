@@ -28,3 +28,9 @@ export type { CalloutProps, CalloutVariant } from '@/components/react/Callout';
 
 export { LedgerReveal, default as LedgerRevealDefault } from '@/components/react/LedgerReveal';
 export type { LedgerRevealProps, LedgerField } from '@/components/react/LedgerReveal';
+
+export { MatchConcepts, default as MatchConceptsDefault } from '@/components/react/MatchConcepts';
+export type { MatchConceptsProps, MatchPair } from '@/components/react/MatchConcepts';
+
+export { PrivacyDial, default as PrivacyDialDefault } from '@/components/react/PrivacyDial';
+export type { PrivacyDialProps } from '@/components/react/PrivacyDial';
