@@ -1,0 +1,45 @@
+# Lessons Roadmap — quant finance · crypto · DeFi
+
+Ordered, difficulty-ramped curriculum. The **daily autonomous agent**
+(`scripts/daily-lesson.sh`, 06:00 Europe/Madrid) builds the **next unchecked
+item top-to-bottom**, then ticks it `[x]` and, when the queue runs low, appends
+the next harder topics to keep the ramp going.
+
+**Rules for the agent**
+- Build strictly within: quantitative finance, crypto, DeFi.
+- Go in order. Never skip ahead to a harder topic while easier ones are unbuilt,
+  and never build something easier than the last completed item.
+- One lesson (or one topic's lesson) per run, en + es twin, per CLAUDE.md.
+- After building: mark it `[x]`, note the date.
+- When fewer than **3** unchecked items remain, append the next harder topics
+  (each one notch up) so the pipeline never empties.
+- Difficulty legend: ⬤ beginner · ⬤⬤ intermediate · ⬤⬤⬤ advanced · ⬤⬤⬤⬤ expert.
+
+---
+
+## Stage 0 — Foundations (⬤ beginner) — DONE
+- [x] **investment-metrics** topic — ROI & CAGR, volatility & drawdown, Sharpe &
+  Sortino, alpha & beta, reading a fund factsheet _(pre-existing)_
+- [x] **zcash** topic — what private money means, why Bitcoin isn't private,
+  three roads to privacy, ZK proofs, inside Zcash, anonymous tx in practice,
+  what is Zcash _(pre-existing)_
+
+## Stage 1 — Core building blocks (⬤ beginner)
+- [ ] **money-time-value** — present value, future value, discounting, compounding
+- [ ] **crypto-basics** — what a blockchain is, keys & wallets, tx & fees, UTXO vs account
+- [ ] **interest-and-yield** — simple vs compound interest, APR vs APY, nominal vs real
+
+## Stage 2 — Markets & instruments (⬤⬤ intermediate)
+- [ ] **bonds-and-rates** — yield curve, duration, convexity intuition
+- [ ] **stablecoins** — fiat-backed vs crypto-backed vs algorithmic, peg mechanics, depeg risk
+- [ ] **defi-amms** — constant-product AMMs, liquidity pools, slippage, impermanent loss
+
+## Stage 3 — Risk & derivatives (⬤⬤⬤ advanced)
+- [ ] **portfolio-theory** — diversification, efficient frontier, correlation, CAPM
+- [ ] **options-basics** — calls/puts, payoff diagrams, intrinsic vs time value
+- [ ] **defi-lending** — over-collateralization, health factor, liquidations, interest-rate models
+
+## Stage 4 — Quant & advanced DeFi (⬤⬤⬤⬤ expert)
+- [ ] **options-pricing** — Black–Scholes intuition, the Greeks, implied volatility
+- [ ] **value-at-risk** — VaR & CVaR, historical vs parametric vs Monte Carlo
+- [ ] **mev-and-ordering** — mempool, front/back-running, sandwich attacks, PBS
