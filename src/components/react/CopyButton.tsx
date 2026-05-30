@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { cx } from './cx';
+import { cx } from '@/components/react/cx';
 
 /** Props for the {@link CopyButton} component. */
 export interface CopyButtonProps {
@@ -7,6 +7,8 @@ export interface CopyButtonProps {
   value: string;
   /** Accessible/visible label. Defaults to `'Copy'`. */
   label?: string;
+  /** Visible label shown briefly after a successful copy. Defaults to `'Copied!'`. */
+  copiedLabel?: string;
   /** Extra classes merged onto the button. */
   className?: string;
 }
@@ -19,7 +21,12 @@ export interface CopyButtonProps {
  * legacy `execCommand('copy')` path when the async Clipboard API is unavailable
  * (e.g. non-secure contexts), and shows an error state if both fail.
  */
-export function CopyButton({ value, label = 'Copy', className }: CopyButtonProps) {
+export function CopyButton({
+  value,
+  label = 'Copy',
+  copiedLabel = 'Copied!',
+  className,
+}: CopyButtonProps) {
   const [state, setState] = useState<'idle' | 'copied' | 'error'>('idle');
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -103,7 +110,7 @@ export function CopyButton({ value, label = 'Copy', className }: CopyButtonProps
           />
         )}
       </svg>
-      <span>{copied ? 'Copied!' : errored ? 'Failed' : label}</span>
+      <span>{copied ? copiedLabel : errored ? 'Failed' : label}</span>
       <span aria-live="polite" className="sr-only">
         {copied ? 'Copied to clipboard' : errored ? 'Copy failed' : ''}
       </span>

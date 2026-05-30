@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { cx } from './cx';
+import { cx } from '@/components/react/cx';
 
 /** A single stage in a {@link StepThrough}. */
 export interface Step {
@@ -13,6 +13,10 @@ export interface Step {
 export interface StepThroughProps {
   /** Ordered list of steps to walk through. */
   steps: Step[];
+  /** Label for the advance button. Defaults to `'Next'`. */
+  nextLabel?: string;
+  /** Label for the go-back button. Defaults to `'Back'`. */
+  prevLabel?: string;
   /** Extra classes merged onto the root element. */
   className?: string;
 }
@@ -29,7 +33,12 @@ const prefersReducedMotion = (): boolean =>
  * indicator. Transitions between steps use a CSS-based crossfade/slide that is
  * disabled when the user prefers reduced motion (checked via `matchMedia`).
  */
-export function StepThrough({ steps, className }: StepThroughProps) {
+export function StepThrough({
+  steps,
+  nextLabel = 'Next',
+  prevLabel = 'Back',
+  className,
+}: StepThroughProps) {
   const total = steps.length;
   const [index, setIndex] = useState(0);
   const [reduced, setReduced] = useState(false);
@@ -114,7 +123,7 @@ export function StepThrough({ steps, className }: StepThroughProps) {
             'disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-ink-200 disabled:hover:bg-surface',
           )}
         >
-          <span aria-hidden>←</span> Prev
+          <span aria-hidden>←</span> {prevLabel}
         </button>
         <button
           type="button"
@@ -126,7 +135,7 @@ export function StepThrough({ steps, className }: StepThroughProps) {
             'disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-brand-600',
           )}
         >
-          Next <span aria-hidden>→</span>
+          {nextLabel} <span aria-hidden>→</span>
         </button>
       </div>
     </div>

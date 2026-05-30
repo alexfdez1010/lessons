@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { cx } from './cx';
+import { cx } from '@/components/react/cx';
 
 /** Visual style of a {@link Callout}. */
 export type CalloutVariant = 'info' | 'success' | 'warning' | 'tip';

@@ -1,6 +1,6 @@
 import { createElement, useEffect, useRef, useState, type ReactNode } from 'react';
 import type * as React from 'react';
-import { cx } from './cx';
+import { cx } from '@/components/react/cx';
 
 /** Props for the {@link Reveal} component. */
 export interface RevealProps {

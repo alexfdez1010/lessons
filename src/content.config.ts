@@ -30,7 +30,7 @@ const seo = z
     /** Exclude from sitemap + add noindex when true. */
     noindex: z.boolean().default(false),
   })
-  .default({});
+  .default({ keywords: [], noindex: false });
 
 const topics = defineCollection({
   loader: glob({ pattern: '**/*.{md,mdx}', base: './src/content/topics' }),

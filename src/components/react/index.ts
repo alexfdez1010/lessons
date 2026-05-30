@@ -6,22 +6,22 @@
  *   import { MCQ, Quiz, type MCQProps, type QuizProps } from '@/components/react';
  */
 
-export { cx } from './cx';
+export { cx } from '@/components/react/cx';
 
-export { MCQ, default as MCQDefault } from './MCQ';
-export type { MCQProps, MCQOption } from './MCQ';
+export { MCQ, default as MCQDefault } from '@/components/react/MCQ';
+export type { MCQProps, MCQOption } from '@/components/react/MCQ';
 
-export { Quiz, default as QuizDefault } from './Quiz';
-export type { QuizProps } from './Quiz';
+export { Quiz, default as QuizDefault } from '@/components/react/Quiz';
+export type { QuizProps } from '@/components/react/Quiz';
 
-export { Reveal, default as RevealDefault } from './Reveal';
-export type { RevealProps } from './Reveal';
+export { Reveal, default as RevealDefault } from '@/components/react/Reveal';
+export type { RevealProps } from '@/components/react/Reveal';
 
-export { CopyButton, default as CopyButtonDefault } from './CopyButton';
-export type { CopyButtonProps } from './CopyButton';
+export { CopyButton, default as CopyButtonDefault } from '@/components/react/CopyButton';
+export type { CopyButtonProps } from '@/components/react/CopyButton';
 
-export { StepThrough, default as StepThroughDefault } from './StepThrough';
-export type { StepThroughProps, Step } from './StepThrough';
+export { StepThrough, default as StepThroughDefault } from '@/components/react/StepThrough';
+export type { StepThroughProps, Step } from '@/components/react/StepThrough';
 
-export { Callout, default as CalloutDefault } from './Callout';
-export type { CalloutProps, CalloutVariant } from './Callout';
+export { Callout, default as CalloutDefault } from '@/components/react/Callout';
+export type { CalloutProps, CalloutVariant } from '@/components/react/Callout';

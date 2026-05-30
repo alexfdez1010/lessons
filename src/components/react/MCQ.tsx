@@ -1,5 +1,5 @@
 import { useId, useMemo, useState } from 'react';
-import { cx } from './cx';
+import { cx } from '@/components/react/cx';
 
 /** A single answer option for an {@link MCQ}. */
 export interface MCQOption {
@@ -27,6 +27,10 @@ export interface MCQProps {
    * a "Try again" + re-check).
    */
   onResult?: (correct: boolean) => void;
+  /** Label for the button that checks the answer. Defaults to `'Check'`. */
+  checkLabel?: string;
+  /** Label for the button that resets the question. Defaults to `'Try again'`. */
+  retryLabel?: string;
   /** Extra classes merged onto the root element. */
   className?: string;
 }
@@ -56,6 +60,8 @@ export function MCQ({
   explanation,
   allowMultiple = false,
   onResult,
+  checkLabel = 'Check',
+  retryLabel = 'Try again',
   className,
 }: MCQProps) {
   const groupId = useId();
@@ -200,7 +206,7 @@ export function MCQ({
               'disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-brand-600',
             )}
           >
-            Check answer
+            {checkLabel}
           </button>
         ) : (
           <button
@@ -208,7 +214,7 @@ export function MCQ({
             onClick={handleReset}
             className="inline-flex items-center rounded-pill border border-ink-200 bg-surface px-5 py-2 text-sm font-semibold text-ink-700 transition-colors duration-200 hover:border-brand-300 hover:bg-brand-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2"
           >
-            Try again
+            {retryLabel}
           </button>
         )}
 
