@@ -116,7 +116,7 @@ Routes appear automatically (no route file edits needed) because pages use
 bun run og:build   # build, then Playwright screenshots new /og cards into public/og/
 ```
 
-(The pre-push git hook also does this, but running it now lets you preview the cards.)
+(`bun run pre-commit` also does this; run it before committing, then `git add public/og`.)
 
 ## Conventions recap
 

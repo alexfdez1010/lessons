@@ -101,12 +101,19 @@ block and documented in **DESIGN.md**. Use Tailwind utilities; do not hardcode h
 | `bun run preview` | Preview the build |
 | `bun run check` | `astro check` + `tsc --noEmit` |
 | `bun run og:generate` / `og:build` | Generate OG images |
-| `bun run pre-commit` | Build + regenerate OG (run by the pre-push git hook) |
+| `bun run audit` / `audit:fix` | Vuln report / `bun update` + report |
+| `bun run pre-commit` | `audit:fix` + `check` + build + regenerate OG (run manually) |
 
-## Git automation
+## Pre-commit (manual — no git hooks)
 
-A **husky `pre-push` hook** (`.husky/pre-push`) runs `bun run pre-commit` then
-`git add public/og`, so OG images are regenerated and committed before every push.
+Husky was removed; there are **no git hooks**. Before committing content or
+dependency changes, run `bun run pre-commit` yourself, then `git add public/og`.
+It patches vulnerabilities (`audit:fix`), type-checks, builds, and regenerates
+the OG cards so committed images never drift from the content.
+
+When `bun audit` flags a transitive advisory that `bun update` can't clear, pin
+a safe version in the `overrides` block of `package.json` (see the existing
+`yaml` / `path-to-regexp` pins), then re-run `bun install && bun audit`.
 
 ## Conventions
 
