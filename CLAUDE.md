@@ -128,16 +128,21 @@ block and documented in **DESIGN.md**. Use Tailwind utilities; do not hardcode h
 | `bun run audit` / `audit:fix` | Vuln report / `bun update` + report |
 | `bun run pre-commit` | `audit:fix` + `check` + build + regenerate OG (run manually) |
 
-## Workflow order — implement → pre-commit → commit → push
+## Workflow order — implement → pre-commit → commit → push (AUTOMATIC)
 
-Every change follows this order, no exceptions:
+Every change follows this order, **automatically and without being asked**. After
+you finish implementing a change, run the full sequence yourself — do **not** stop
+to ask "want me to commit?" or hand the commands back to the user. No exceptions.
 
 1. **Implement** the change in full.
 2. Run **`bun run pre-commit`** (then `git add public/og`).
 3. **Commit**.
 4. **Push**.
 
-Never commit or push before the change is finished and `bun run pre-commit` is green.
+Treat "the change is done" as the trigger to run steps 2–4 on your own. The only
+time you pause is if `bun run pre-commit` fails (fix it, re-run) or the user
+explicitly said not to commit. Never commit or push before the change is finished
+and `bun run pre-commit` is green.
 
 ## Pre-commit (manual — no git hooks)
 
