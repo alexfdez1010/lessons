@@ -49,8 +49,9 @@ fact.
 ## Translation (es twin)
 
 Spanish copy should be **equally fun, not literally translated**. Adapt jokes,
-analogies, and idioms so they land naturally in Spanish — same spirit, native
-humor. Keep technical terms correct. See the `translate-lesson` skill.
+analogies, and idioms so they land naturally in **peninsular Spanish (Spain,
+es-ES — `vosotros`, Castilian vocabulary)** — same spirit, native Spain humor.
+Keep technical terms correct. See the `translate-lesson` skill.
 
 ## Quick self-check before shipping prose
 

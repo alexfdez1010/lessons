@@ -1,6 +1,6 @@
 ---
 name: translate-lesson
-description: Translate or sync an English lesson/topic into its Spanish twin (or vice-versa) for the Lessons site, keeping frontmatter, slugs, order, headings and interactive-component label props in parity. Use when the user asks to "translate this lesson", "add the Spanish version", "sync the es twin", "traducir", or when an en/es pair has drifted.
+description: Translate or sync an English lesson/topic into its Spanish twin (or vice-versa) for the Lessons site, keeping frontmatter, slugs, order, headings and interactive-component label props in parity. Spanish is ALWAYS peninsular Spanish from Spain (es-ES, Castilian — vosotros, ordenador/móvil), never Latin-American. Use when the user asks to "translate this lesson", "add the Spanish version", "sync the es twin", "traducir", or when an en/es pair has drifted.
 ---
 
 # Translate / sync a bilingual twin
@@ -8,6 +8,21 @@ description: Translate or sync an English lesson/topic into its Spanish twin (or
 Every lesson and topic exists in **both** `en/` and `es/` at mirrored paths.
 This skill keeps the pair in sync. The source is usually English; reverse the
 directions if translating es → en.
+
+## ⚠️ The `es` locale is Spanish from Spain (es-ES, Castilian)
+
+All Spanish content is **peninsular Spanish (Spain)**, not Latin-American.
+The site declares `es-ES` (see `astro.config.mjs` sitemap locales). Write
+accordingly:
+
+- **`vosotros`** for informal plural "you"; **`tú`** informal singular. Avoid
+  `ustedes`/`vos` register choices that read as Latin-American.
+- Castilian vocabulary: `ordenador` (not `computadora`), `móvil` (not `celular`),
+  `vale` (not `okay`), `coche`, `zumo`, etc.
+- Spain spelling/usage and natural peninsular idioms. `seseo`-neutral spelling
+  is fine, but lexical choices must be Spain's.
+- Humor and analogies (see `lesson-copy`) should land for a **Spain** audience —
+  adapt references, don't translate them literally.
 
 ## 1. Locate the pair
 

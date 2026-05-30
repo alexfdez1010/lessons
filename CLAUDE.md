@@ -5,6 +5,22 @@ across multiple slug-based pages, with reusable interactive exercises (quizzes, 
 reveals) and a strong SEO + Open Graph pipeline. Built to deploy on Vercel at
 **https://lessons.alejandrofernandezcamello.me**.
 
+## ⚡ Work in parallel — prioritize multiple agents
+
+This codebase has lots of independent, parallelizable work (a lesson + its `es`
+twin, multiple lessons in a topic, research + components + copy). **Prefer
+fanning the work out across several subagents** instead of doing it all
+sequentially — it's much faster.
+
+- Spawn parallel `Agent`s (or a `Workflow` when the user opts in) for independent
+  units: e.g. one agent per lesson, en/es twins in parallel, research vs.
+  component-building vs. copywriting concurrently.
+- Send independent agent calls in a **single message** so they run at once.
+- Reserve sequential work for genuinely dependent steps (research → write →
+  translate). Translation depends on the finished English source; everything
+  upstream of it can parallelize.
+- Each Spanish twin is **es-ES (Spain / Castilian)** — see `translate-lesson`.
+
 ## Stack
 
 - **Astro 6** (static output, `@astrojs/vercel` adapter) — fast, SEO-friendly rendering.
