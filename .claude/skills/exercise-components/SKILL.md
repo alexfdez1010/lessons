@@ -11,12 +11,59 @@ existing component over inlining one-off JSX in a lesson.
 
 ## Placement & density (REQUIRED)
 
-- Put exercises **after each explanation**, interleaved through the lesson — not
-  pooled at the end.
-- **Rotate types**: single `MCQ`, **multi-answer `MCQ`**, `MatchConcepts`
-  (concept→definition), scored `Quiz`. Don't reuse one format the whole lesson.
+- **Every `##` section gets at least one exercise** — ideally two: a *prequestion*
+  to open it and a *check* to close it. Lessons should be exercise-dense, not a
+  text wall with a quiz at the bottom. When in doubt, add another exercise.
+- **Open sections with a pretest** (`MCQ pretest`): asking the learner to *guess
+  before reading* boosts encoding even when the guess is wrong (the
+  pretesting effect). See "Pretest mode" below.
+- Put the *check* exercises **after each explanation**, interleaved — not pooled
+  at the end.
+- **Rotate types every time** — never the same format twice in a row. Available:
+  single `MCQ`, **multi-answer `MCQ`**, `MCQ pretest`, `MatchConcepts`
+  (concept→definition), `Categorize` (sort into buckets), `FillBlank` (type the
+  answer — active recall), scored `Quiz`.
+- **Prefer recall over recognition** where a term is worth remembering verbatim:
+  reach for `FillBlank` (the learner *produces* the answer) instead of another
+  `MCQ` (the learner just *recognises* it). The generation effect makes it stick.
 - **Spaced recall**: some questions reference *earlier* sections so the user
   recalls prior material, not only the latest paragraph.
+- **Close the lesson with a chunking recap** — a learner-built `MindMap` plus a
+  mixed `Quiz`, not a passive bullet summary. See the `lesson-animations` /
+  `new-lesson` skills for the MindMap close.
+
+## Pretest mode (prequestion)
+
+`MCQ` takes a `pretest` boolean. In pretest mode it shows a low-stakes "Before
+you read — take a guess" eyebrow and **never** reports to a `Quiz` score, so a
+wrong guess costs nothing. Use one to **open** a section, before you've taught
+the answer:
+
+```mdx
+<MCQ
+  client:visible
+  pretest
+  question="Guess: what does a z-address hide that a t-address doesn't?"
+  options={[
+    { text: 'Sender, receiver, and amount', correct: true },
+    { text: 'Only the amount' },
+    { text: 'Nothing — both are public' },
+  ]}
+  explanation="A z-address shields all three. Keep this in mind as you read on."
+/>
+```
+
+Spanish twins pass `pretestLabel="Antes de leer — adivina"`.
+
+## Every island must teach or test *in place*
+
+Don't use `StepThrough` (or any component) as a **fake-interactive list** or to
+**point the learner at an exercise to do elsewhere** ("now try sketching this",
+"go work through an example on paper"). An off-page instruction adds nothing —
+the learner won't leave the page to do it. If a step is worth doing, make it a
+real, graded island here (`FillBlank`, `Categorize`, `MCQ`, `MatchConcepts`).
+Reserve `StepThrough` for genuinely sequential *content* the learner advances
+through (a process with stages), never as a prompt to act outside the page.
 
 ## Existing components (reuse these first)
 
@@ -79,6 +126,45 @@ For a lighter "term ⇒ meaning" glossary link (definition on hover/expand, not 
 graded exercise), prefer `Reveal`/`Callout` or a small `Defn` inline component
 over a full matcher.
 
+## `Categorize` — sort items into buckets
+
+For "which group does this belong to?" ideas (transparent vs shielded, on-chain
+vs off-chain). Each item exposes one button per bucket; **Check** grades all of
+them and reveals the right bucket on a miss.
+
+```mdx
+<Categorize
+  client:visible
+  question="Sort each detail by whether a shielded (z→z) payment hides it."
+  buckets={['Hidden', 'Public']}
+  items={[
+    { text: 'Sender address', bucket: 'Hidden' },
+    { text: 'Amount sent', bucket: 'Hidden' },
+    { text: 'That a valid tx happened', bucket: 'Public' },
+  ]}
+  explanation="A shielded transfer hides sender, receiver, and amount — but the network still confirms a valid transaction occurred."
+/>
+```
+
+## `FillBlank` — type the answer (active recall)
+
+The strongest rotation: the learner *produces* the word from memory instead of
+recognising it. Mark blanks with `{{answer}}`; accept synonyms with a pipe
+`{{answer|alt}}`. Matching trims and is case-insensitive by default.
+
+```mdx
+<FillBlank
+  client:visible
+  question="Complete the definition from memory."
+  text="A {{zero-knowledge}} proof convinces a verifier a statement is true while revealing {{nothing}} beyond its validity."
+  explanation="Zero-knowledge = prove validity, reveal nothing else."
+/>
+```
+
+Both expose `onResult(correct)`, so they compose inside `Quiz` like `MCQ`. Pass
+Spanish label props (`checkLabel`, `retryLabel`, `explanationLabel`, plus
+`instructions`) in the `es` twin.
+
 ## Rules for ANY new reusable component
 
 1. **File + barrel.** Create `src/components/react/<Name>.tsx`; export the
@@ -101,7 +187,7 @@ over a full matcher.
 ## Wire it into a lesson
 
 ```mdx
-import { MCQ, Quiz, MatchConcepts } from '@/components/react';
+import { MCQ, Quiz, MatchConcepts, Categorize, FillBlank, MindMap } from '@/components/react';
 
 <MatchConcepts
   client:visible

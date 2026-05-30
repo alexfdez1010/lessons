@@ -31,6 +31,16 @@ export interface MCQProps {
   /** Allow selecting multiple options (checkboxes instead of radios). */
   allowMultiple?: boolean;
   /**
+   * Prequestion / pretest mode. Renders a low-stakes "guess before you read"
+   * framing: an eyebrow label above the prompt, and the guess is **never**
+   * reported via {@link onResult} (so a pretest never feeds a {@link Quiz}
+   * score). Asking learners to guess *before* the explanation boosts encoding
+   * even when the guess is wrong — open each section with one.
+   */
+  pretest?: boolean;
+  /** Eyebrow shown in {@link pretest} mode. Defaults to `'Before you read — take a guess'`. */
+  pretestLabel?: string;
+  /**
    * Called when the user checks their answer, reporting overall correctness.
    * Used by {@link Quiz} to track score. Fires once per check (re-fires after
    * a "Try again" + re-check).
@@ -78,6 +88,8 @@ export function MCQ({
   correct,
   explanation,
   allowMultiple = false,
+  pretest = false,
+  pretestLabel = 'Before you read — take a guess',
   onResult,
   checkLabel = 'Check',
   retryLabel = 'Try again',
@@ -136,7 +148,8 @@ export function MCQ({
   const handleCheck = () => {
     if (selected.size === 0) return;
     setChecked(true);
-    onResult?.(isAllCorrect);
+    // A pretest is a low-stakes guess — never report it to a parent Quiz score.
+    if (!pretest) onResult?.(isAllCorrect);
   };
 
   const handleReset = () => {
@@ -160,6 +173,12 @@ export function MCQ({
         className,
       )}
     >
+      {pretest && (
+        <p className="mb-2 inline-flex items-center gap-1.5 rounded-pill bg-accent-500/10 px-3 py-1 font-display text-xs font-semibold uppercase tracking-wide text-accent-600">
+          <span aria-hidden>🤔</span>
+          {pretestLabel}
+        </p>
+      )}
       <p
         id={`${groupId}-question`}
         className="mb-4 font-display text-base font-semibold text-balance text-ink-900 sm:text-lg"

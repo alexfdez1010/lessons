@@ -27,19 +27,31 @@ As you write, apply the companion skills:
 ## Interaction density (REQUIRED — not just at the end)
 
 Lessons must be **interactive throughout**, not a text wall with one quiz at the
-bottom. Retention comes from testing right after learning.
+bottom. Retention comes from testing right after learning. Aim for **at least
+one exercise per `##` section, ideally two** (a prequestion to open, a check to
+close). Err on the side of *more* exercises.
 
-- **Interleave**: after **each** explanation / `##` section, add an exercise or
+- **Open each `##` with a prequestion** (`MCQ pretest`): make the learner *guess
+  before reading*. Pretesting boosts encoding even when the guess is wrong, and
+  pretests never count toward a `Quiz` score. See `exercise-components`.
+- **Interleave checks**: after **each** explanation, add an exercise or
   animation that checks or shows what was just taught. Don't pool questions at
-  the end (an end-of-lesson `Quiz` recap is fine *in addition*).
-- **Rotate types** — don't repeat one format: single `MCQ`, **multi-answer
-  `MCQ`** (`allowMultiple`), concept→definition `MatchConcepts`, scored `Quiz`,
+  the end.
+- **Rotate types every time** — never the same format twice running: single
+  `MCQ`, **multi-answer `MCQ`** (`allowMultiple`), `MCQ pretest`,
+  concept→definition `MatchConcepts`, `Categorize` (sort into buckets),
+  `FillBlank` (type the answer — active recall), scored `Quiz`,
   `Reveal`/`StepThrough` self-checks.
+- **Prefer recall over recognition** for must-remember terms — `FillBlank`
+  (learner produces the answer) beats another `MCQ` (learner just picks it).
 - **Spaced recall**: write some questions that reference *earlier* sections so
   the user recalls prior material; the end quiz mixes the whole lesson.
 - **Animations per concept**: an animation at *each* major
   transformation/process/relationship, beside its explanation — not one hero
   animation per lesson. See `lesson-animations`.
+- **Close with a chunking recap**: end every lesson with a learner-built
+  `MindMap` (Mermaid "big picture" linking the section concepts) **plus** a mixed
+  `Quiz` — not a passive bullet-list summary. See `lesson-animations`.
 
 Apply the same density to the Spanish twin (parity includes exercises and
 animations, with Spanish label props).
@@ -90,8 +102,13 @@ updated: 2026-05-30                # ISO date
 At the top of the MDX body:
 
 ```mdx
-import { Callout, MCQ, Quiz, StepThrough, Reveal, CopyButton } from '@/components/react';
+import { Callout, MCQ, Quiz, StepThrough, Reveal, CopyButton,
+         MatchConcepts, Categorize, FillBlank, MindMap } from '@/components/react';
 ```
+
+Exercise islands: `MCQ` (add `pretest` for prequestions, `allowMultiple` for
+multi-answer), `Quiz`, `MatchConcepts`, `Categorize`, `FillBlank`. Recap visual:
+`MindMap`. See `exercise-components` and `lesson-animations` for each.
 
 Interactive islands need `client:visible`; `Callout` is presentational (no directive).
 

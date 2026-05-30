@@ -63,6 +63,14 @@ the es file:
   `restartLabel="Reiniciar"`, `nextLabel="Siguiente"`, `backLabel="Atrás"`
 - `CopyButton`: `label="Copiar"`, `copiedLabel="¡Copiado!"`
 - `StepThrough`: `nextLabel="Siguiente"`, `prevLabel="Atrás"`
+- `MCQ pretest`: `pretestLabel="Antes de leer — adivina"` (+ the usual MCQ labels)
+- `MatchConcepts` / `Categorize` / `FillBlank`: `checkLabel="Comprobar"`,
+  `retryLabel="Reintentar"`, `explanationLabel="Explicación"`, and translate
+  `instructions` (e.g. `"Coloca cada elemento en su grupo."` /
+  `"Escribe la palabra que falta y comprueba."`)
+- `MindMap`: translate `title`, `caption`, `eyebrow="Visión de conjunto"`,
+  `outlineLabel="Esquema"`, **and every node `label`** in the `root` tree
+  (`FillBlank` `text` blanks must hold the Spanish answers too)
 
 Confirm exact prop names against `src/components/react/*` (or `DESIGN.md`)
 before writing — props evolve.

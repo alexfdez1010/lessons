@@ -35,6 +35,31 @@ passive loop — interaction cements understanding.
 
 Building blocks already in the project:
 
+- **`MindMap`** — the **chunking close**. End each lesson with a learner-facing
+  "big picture" mind map (Mermaid `mindmap`) that links the section concepts into
+  one structure, so the learner *chunks* the lesson instead of reading a passive
+  summary. Author it as structured data — the component renders both the diagram
+  and an accessible text outline from the same tree:
+
+  ```mdx
+  import { MindMap } from '@/components/react';
+
+  <MindMap
+    client:visible
+    title="Zcash in one picture"
+    root={{
+      label: 'Zcash',
+      children: [
+        { label: 'Transparent (t-addr)', children: [{ label: 'Public like Bitcoin' }] },
+        { label: 'Shielded (z-addr)', children: [{ label: 'Hides sender/receiver/amount' }] },
+        { label: 'Zero-knowledge proof', children: [{ label: 'Prove valid, reveal nothing' }] },
+      ],
+    }}
+  />
+  ```
+
+  Spanish twins translate `title`/`caption`/`eyebrow`/`outlineLabel` and every
+  node `label`. Keep node labels short — Mermaid mindmap strips `()[]{}:` etc.
 - **Motion tokens** in `src/styles/global.css`: `animate-fade-up`, `animate-float`
   (Tailwind: `animate-fade-up`, `animate-float`). Add new `@keyframes` + an
   `--animate-*` token there if you need more — never inline hard-coded hex or

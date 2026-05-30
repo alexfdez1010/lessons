@@ -34,3 +34,12 @@ export type { MatchConceptsProps, MatchPair } from '@/components/react/MatchConc
 
 export { PrivacyDial, default as PrivacyDialDefault } from '@/components/react/PrivacyDial';
 export type { PrivacyDialProps } from '@/components/react/PrivacyDial';
+
+export { MindMap, default as MindMapDefault } from '@/components/react/MindMap';
+export type { MindMapProps, MindNode } from '@/components/react/MindMap';
+
+export { Categorize, default as CategorizeDefault } from '@/components/react/Categorize';
+export type { CategorizeProps, CategorizeItem } from '@/components/react/Categorize';
+
+export { FillBlank, default as FillBlankDefault } from '@/components/react/FillBlank';
+export type { FillBlankProps } from '@/components/react/FillBlank';
