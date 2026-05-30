@@ -32,6 +32,9 @@ export type { PrivacyDialProps } from '@/components/react/PrivacyDial';
 export { MindMap, default as MindMapDefault } from '@/components/react/MindMap';
 export type { MindMapProps, MindNode } from '@/components/react/MindMap';
 
+export { RiskReturnRace, default as RiskReturnRaceDefault } from '@/components/react/RiskReturnRace';
+export type { RiskReturnRaceProps } from '@/components/react/RiskReturnRace';
+
 export { Categorize, default as CategorizeDefault } from '@/components/react/Categorize';
 export type { CategorizeProps, CategorizeItem } from '@/components/react/Categorize';
 
