@@ -1,5 +1,6 @@
-import { useId, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
 import { cx } from '@/components/react/cx';
+import { hash, seededShuffle } from '@/components/react/shuffle';
 
 /** An item to be sorted into one of the {@link CategorizeProps.buckets}. */
 export interface CategorizeItem {
@@ -71,6 +72,20 @@ export function Categorize({
   }
 
   const groupId = useId();
+  // Display orders are **seeded** from content so SSR and client hydration
+  // agree (no reorder flash / hydration mismatch), but each is seeded from a
+  // different slice so item order and bucket order scramble independently —
+  // the answer can't be inferred from "first N items → first bucket". Grading
+  // keys off the original item index and the bucket label, so scrambling the
+  // display order never affects correctness.
+  const itemOrder = useMemo(
+    () => seededShuffle(items.map((_, i) => i), hash(items.map((it) => it.text).join('|'))),
+    [items],
+  );
+  const bucketOrder = useMemo(
+    () => seededShuffle(buckets, hash(buckets.join('|') + '#b')),
+    [buckets],
+  );
   // assignment[itemIndex] = chosen bucket label (or null).
   const [assignment, setAssignment] = useState<(string | null)[]>(() => items.map(() => null));
   const [checked, setChecked] = useState(false);
@@ -113,7 +128,8 @@ export function Categorize({
       {!checked ? <p className="mt-1 text-sm text-ink-500">{instructions}</p> : null}
 
       <ul className="mt-4 space-y-2.5">
-        {items.map((item, i) => {
+        {itemOrder.map((i) => {
+          const item = items[i];
           const chosen = assignment[i];
           const isRight = checked && chosen === item.bucket;
           const isWrong = checked && chosen !== item.bucket;
@@ -140,7 +156,7 @@ export function Categorize({
                 aria-label={item.text}
                 className="flex flex-wrap gap-1.5"
               >
-                {buckets.map((b) => {
+                {bucketOrder.map((b) => {
                   const selected = chosen === b;
                   return (
                     <button

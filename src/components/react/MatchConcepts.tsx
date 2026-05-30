@@ -1,5 +1,6 @@
 import { useId, useMemo, useState } from 'react';
 import { cx } from '@/components/react/cx';
+import { hash, seededShuffle } from '@/components/react/shuffle';
 
 export interface MatchPair {
   /** The concept/term shown on the left. */
@@ -24,16 +25,6 @@ export interface MatchConceptsProps {
   /** Called with the overall result so a parent (e.g. Quiz) can aggregate. */
   onResult?: (correct: boolean) => void;
   className?: string;
-}
-
-/** Deterministic-ish shuffle seeded by length so SSR/CSR agree without Math.random churn. */
-function shuffle<T>(items: T[]): T[] {
-  const out = items.slice();
-  for (let i = out.length - 1; i > 0; i--) {
-    const j = (i * 7 + 3) % (i + 1);
-    [out[i], out[j]] = [out[j], out[i]];
-  }
-  return out;
 }
 
 export function MatchConcepts({
@@ -62,8 +53,18 @@ export function MatchConcepts({
   }
 
   const reactId = useId();
-  // Shuffled definition order (indices into `pairs`).
-  const defOrder = useMemo(() => shuffle(pairs.map((_, i) => i)), [pairs]);
+  // Term and definition display orders are **seeded** from content (proper
+  // mulberry32 PRNG) so SSR and client agree, and scrambled independently so
+  // the correct pairing is never the visible diagonal. Both are indices into
+  // `pairs`; grading compares original indices, so display order is cosmetic.
+  const termOrder = useMemo(
+    () => seededShuffle(pairs.map((_, i) => i), hash(pairs.map((p) => p.term).join('|'))),
+    [pairs],
+  );
+  const defOrder = useMemo(
+    () => seededShuffle(pairs.map((_, i) => i), hash(pairs.map((p) => p.definition).join('|') + '#d')),
+    [pairs],
+  );
   // assignment[termIndex] = pairs-index of the chosen definition (or null).
   const [assignment, setAssignment] = useState<(number | null)[]>(
     () => pairs.map(() => null),
@@ -115,7 +116,8 @@ export function MatchConcepts({
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
         {/* Terms */}
         <ul className="space-y-2" role="group" aria-label="Terms">
-          {pairs.map((pair, t) => {
+          {termOrder.map((t) => {
+            const pair = pairs[t];
             const assigned = assignment[t];
             const isActive = activeTerm === t;
             const showCorrect = checked && assigned === t;
