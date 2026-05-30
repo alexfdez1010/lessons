@@ -17,6 +17,14 @@ export interface StepThroughProps {
   nextLabel?: string;
   /** Label for the go-back button. Defaults to `'Back'`. */
   prevLabel?: string;
+  /** Prefix for the progress counter, e.g. "Step 1 of 4". Defaults to `'Step'`. */
+  stepLabel?: string;
+  /** Connector for the progress counter, e.g. "Step 1 of 4". Defaults to `'of'`. */
+  ofLabel?: string;
+  /** Accessible name for the dots indicator. Defaults to `'Steps'`. */
+  stepsLabel?: string;
+  /** Accessible label prefix for each dot, e.g. "Go to step 2: …". Defaults to `'Go to step'`. */
+  goToStepLabel?: string;
   /** Extra classes merged onto the root element. */
   className?: string;
 }
@@ -37,6 +45,10 @@ export function StepThrough({
   steps,
   nextLabel = 'Next',
   prevLabel = 'Back',
+  stepLabel = 'Step',
+  ofLabel = 'of',
+  stepsLabel = 'Steps',
+  goToStepLabel = 'Go to step',
   className,
 }: StepThroughProps) {
   const total = steps.length;
@@ -71,17 +83,17 @@ export function StepThrough({
     >
       <div className="mb-3 flex items-center justify-between">
         <span className="font-display text-xs font-semibold uppercase tracking-wide text-brand-600">
-          Step {index + 1} of {total}
+          {stepLabel} {index + 1} {ofLabel} {total}
         </span>
         {/* Dots indicator */}
-        <div className="flex items-center gap-2" role="tablist" aria-label="Steps">
+        <div className="flex items-center gap-2" role="tablist" aria-label={stepsLabel}>
           {steps.map((s, i) => (
             <button
               key={i}
               type="button"
               role="tab"
               aria-selected={i === index}
-              aria-label={`Go to step ${i + 1}: ${s.title}`}
+              aria-label={`${goToStepLabel} ${i + 1}: ${s.title}`}
               onClick={() => goTo(i)}
               className={cx(
                 'h-2.5 rounded-pill transition-all duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-1 motion-reduce:transition-none',

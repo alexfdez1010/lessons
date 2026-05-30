@@ -31,6 +31,14 @@ export interface MCQProps {
   checkLabel?: string;
   /** Label for the button that resets the question. Defaults to `'Try again'`. */
   retryLabel?: string;
+  /** Verdict shown when the answer is fully correct. Defaults to `'Correct!'`. */
+  correctLabel?: string;
+  /** Verdict shown when the answer is wrong. Defaults to `'Not quite.'`. */
+  incorrectLabel?: string;
+  /** Badge on a missed-correct option. Defaults to `'Correct answer'`. */
+  correctAnswerLabel?: string;
+  /** Heading above the revealed explanation. Defaults to `'Explanation'`. */
+  explanationLabel?: string;
   /** Extra classes merged onto the root element. */
   className?: string;
 }
@@ -52,7 +60,8 @@ interface NormalizedOption extends MCQOption {
  *
  * Fully keyboard accessible: the option group is a `radiogroup`/`group`, and
  * each option is a real `<input>` so Space/Enter/Tab and arrow keys work
- * natively.
+ * natively. All user-facing strings are props so the island stays
+ * locale-agnostic.
  */
 export function MCQ({
   question,
@@ -62,6 +71,10 @@ export function MCQ({
   onResult,
   checkLabel = 'Check',
   retryLabel = 'Try again',
+  correctLabel = 'Correct!',
+  incorrectLabel = 'Not quite.',
+  correctAnswerLabel = 'Correct answer',
+  explanationLabel = 'Explanation',
   className,
 }: MCQProps) {
   const groupId = useId();
@@ -134,7 +147,7 @@ export function MCQ({
     >
       <p
         id={`${groupId}-question`}
-        className="mb-4 font-display text-base font-semibold text-ink-900 sm:text-lg"
+        className="mb-4 font-display text-base font-semibold text-balance text-ink-900 sm:text-lg"
       >
         {question}
       </p>
@@ -151,12 +164,13 @@ export function MCQ({
             <label
               key={o.id}
               className={cx(
-                'group flex cursor-pointer items-center gap-3 rounded-card border px-4 py-3 text-sm transition-colors duration-200',
+                'group flex cursor-pointer items-center gap-3 rounded-card border px-4 py-3 text-sm transition-all duration-200 motion-reduce:transition-none',
                 'focus-within:ring-2 focus-within:ring-brand-500 focus-within:ring-offset-1',
+                !checked && 'hover:-translate-y-px',
                 checked && 'cursor-default',
                 st === 'neutral' &&
                   isSelected &&
-                  'border-brand-400 bg-brand-50 text-ink-900',
+                  'border-brand-400 bg-brand-50 text-ink-900 shadow-soft',
                 st === 'neutral' &&
                   !isSelected &&
                   'border-ink-200 bg-surface text-ink-700 hover:border-brand-300 hover:bg-brand-50/60',
@@ -186,7 +200,7 @@ export function MCQ({
               )}
               {st === 'missed' && (
                 <span className="text-xs font-medium text-[color:var(--color-success)]">
-                  Correct answer
+                  {correctAnswerLabel}
                 </span>
               )}
             </label>
@@ -227,19 +241,19 @@ export function MCQ({
                 : 'text-[color:var(--color-danger)]',
             )}
           >
-            {isAllCorrect ? 'Correct!' : 'Not quite.'}
+            {isAllCorrect ? correctLabel : incorrectLabel}
           </span>
         )}
       </div>
 
       <div aria-live="polite" className="sr-only">
-        {checked ? (isAllCorrect ? 'Correct answer.' : 'Incorrect answer.') : ''}
+        {checked ? (isAllCorrect ? correctLabel : incorrectLabel) : ''}
       </div>
 
       {checked && explanation && (
         <div className="mt-4 rounded-card border border-brand-200 bg-brand-50/70 p-4 text-sm leading-relaxed text-ink-700 animate-fade-up">
           <p className="mb-1 font-display text-xs font-semibold uppercase tracking-wide text-brand-700">
-            Explanation
+            {explanationLabel}
           </p>
           {explanation}
         </div>

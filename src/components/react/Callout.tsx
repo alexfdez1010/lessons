@@ -10,6 +10,11 @@ export interface CalloutProps {
   variant?: CalloutVariant;
   /** Optional bold heading shown above the body. */
   title?: string;
+  /**
+   * Localized screen-reader prefix announcing the variant (e.g. "Tip: …").
+   * Falls back to the English variant name when omitted.
+   */
+  label?: string;
   /** Body content. */
   children: ReactNode;
   /** Extra classes merged onto the root element. */
@@ -85,7 +90,7 @@ const STYLES: Record<CalloutVariant, VariantStyle> = {
  * Purely presentational: no state, so it can be used without a client
  * directive. Color-mapped to brand (info), success, warning and accent (tip).
  */
-export function Callout({ variant = 'info', title, children, className }: CalloutProps) {
+export function Callout({ variant = 'info', title, label, children, className }: CalloutProps) {
   const s = STYLES[variant];
   return (
     <div
@@ -115,7 +120,7 @@ export function Callout({ variant = 'info', title, children, className }: Callou
         </svg>
       </span>
       <div className="min-w-0 flex-1 text-sm leading-relaxed text-ink-700">
-        <span className="sr-only">{s.label}: </span>
+        <span className="sr-only">{label ?? s.label}: </span>
         {title ? (
           <p className={cx('mb-1 font-display text-sm font-semibold', s.title)}>{title}</p>
         ) : null}

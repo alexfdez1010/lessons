@@ -17,9 +17,6 @@ export type { QuizProps } from '@/components/react/Quiz';
 export { Reveal, default as RevealDefault } from '@/components/react/Reveal';
 export type { RevealProps } from '@/components/react/Reveal';
 
-export { CopyButton, default as CopyButtonDefault } from '@/components/react/CopyButton';
-export type { CopyButtonProps } from '@/components/react/CopyButton';
-
 export { StepThrough, default as StepThroughDefault } from '@/components/react/StepThrough';
 export type { StepThroughProps, Step } from '@/components/react/StepThrough';
 
