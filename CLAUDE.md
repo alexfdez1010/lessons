@@ -75,6 +75,14 @@ and set frontmatter (see schema in `src/content.config.ts`):
   props (e.g. `checkLabel`, `scoreLabel`, `copiedLabel`).
 
 The **`/new-lesson` skill** scaffolds a topic or lesson end-to-end — prefer it.
+It chains the project skill suite:
+
+- **`research-topic`** — research + sourced outline **before** writing (run first).
+- **`lesson-copy`** — fun, witty, analogy-driven voice without losing accuracy.
+- **`lesson-animations`** — at least one animation that *teaches* the core idea.
+- **`exercise-components`** — build/reuse interactive exercises (multi-answer
+  `MCQ`, `Quiz`, `concept → definition` matcher) as proper components.
+- **`translate-lesson`** — keep the en/es twins in parity.
 
 ## Design system
 

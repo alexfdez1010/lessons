@@ -8,10 +8,21 @@ description: Scaffold a new bilingual (en/es) lesson or topic for the Lessons si
 This project teaches a **topic** across multiple slug-based **lesson** pages, in **English
 and Spanish**. Follow these steps to add content consistently.
 
-## 0. Research first
+## 0. Research first — then write with voice, animation, exercises
 
-If the user gives a subject, do brief preliminary research so the lesson is accurate and
-well-structured. Plan the lesson outline (2–6 `##` sections) before writing.
+Before scaffolding, use the **`research-topic` skill** to build an accurate,
+sourced brief and outline (concepts, definitions, misconceptions, analogies,
+animation opportunities). Never write non-trivial lesson prose from memory.
+
+As you write, apply the companion skills:
+
+- **`lesson-copy`** — voice/tone: witty, lightly sarcastic, analogy-driven copy
+  that is genuinely fun to study, without sacrificing accuracy.
+- **`lesson-animations`** — include **at least one animation that teaches** the
+  core idea (a process/relationship shown moving, not decoration).
+- **`exercise-components`** — include **at least one exercise** (multi-answer
+  `MCQ`, `Quiz`, or a `concept → definition` matcher), reusing/extending the
+  component library rather than inlining one-off JSX.
 
 ## 1. Decide: new topic or new lesson in an existing topic?
 
