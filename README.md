@@ -129,7 +129,8 @@ assistant:
 - 🟣 `CLAUDE.md` — project guide for Claude Code (also exposed as `Agents.md`, a symlink).
 - 🧠 `.claude/skills/` — Claude Code skills (`research-topic`, `lesson-copy`,
   `lesson-animations`, `exercise-components`, `translate-lesson`, `new-lesson`).
-- 💎 `assets/gems/` — the same skill set mirrored for other agents/gems.
+- 💎 `.agents/skills/` — the same skills exposed for agent-agnostic tooling
+  (a symlink to `.claude/skills`, so the two never drift).
 
 The skills chain end-to-end: **research → copy → animations → exercises → translate**,
 orchestrated by `new-lesson`.
