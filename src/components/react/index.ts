@@ -22,3 +22,6 @@ export type { StepThroughProps, Step } from '@/components/react/StepThrough';
 
 export { Callout, default as CalloutDefault } from '@/components/react/Callout';
 export type { CalloutProps, CalloutVariant } from '@/components/react/Callout';
+
+export { LedgerReveal, default as LedgerRevealDefault } from '@/components/react/LedgerReveal';
+export type { LedgerRevealProps, LedgerField } from '@/components/react/LedgerReveal';

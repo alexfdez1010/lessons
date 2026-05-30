@@ -130,10 +130,21 @@ block and documented in **DESIGN.md**. Use Tailwind utilities; do not hardcode h
 
 ## Pre-commit (manual — no git hooks)
 
-Husky was removed; there are **no git hooks**. Before committing content or
-dependency changes, run `bun run pre-commit` yourself, then `git add public/og`.
+Husky was removed; there are **no git hooks**. **ALWAYS run `bun run pre-commit`
+before every `git commit` and `git push`** — no exceptions, even for small or
+non-content changes. After it finishes, `git add public/og` so regenerated OG
+cards are included in the commit.
+
+```bash
+bun run pre-commit && git add public/og
+git commit -m "…"
+git push
+```
+
 It patches vulnerabilities (`audit:fix`), type-checks, builds, and regenerates
-the OG cards so committed images never drift from the content.
+the OG cards so committed images never drift from the content. If `bun run
+pre-commit` fails, fix the failure and re-run it — never commit or push on a red
+pre-commit.
 
 When `bun audit` flags a transitive advisory that `bun update` can't clear, pin
 a safe version in the `overrides` block of `package.json` (see the existing

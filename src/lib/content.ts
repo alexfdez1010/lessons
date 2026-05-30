@@ -21,7 +21,7 @@ const includeDrafts = import.meta.env.DEV;
 export interface TopicView {
   entry: TopicEntry;
   lang: Lang;
-  /** Bare topic slug, no locale prefix (e.g. "neural-networks"). */
+  /** Bare topic slug, no locale prefix (e.g. "transformers"). */
   slug: string;
 }
 
@@ -121,7 +121,7 @@ export async function getLessonNeighbors(
 }
 
 /**
- * hreflang alternates for a bare topic path (e.g. "/neural-networks").
+ * hreflang alternates for a bare topic path (e.g. "/transformers").
  * Includes only locales where the topic entry EXISTS; missing locales fall
  * back to that locale's home. The current locale is always represented.
  */
@@ -142,7 +142,7 @@ export async function getTopicAlternates(
 }
 
 /**
- * hreflang alternates for a bare lesson path (e.g. "/neural-networks/perceptron").
+ * hreflang alternates for a bare lesson path (e.g. "/transformers/attention").
  * Includes only locales where the lesson entry EXISTS; missing locales fall
  * back to that locale's home. The current locale is always represented.
  */

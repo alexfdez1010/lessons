@@ -1,0 +1,325 @@
+---
+title: Inside Zcash — Addresses, Notes, and Nullifiers
+description: How Zcash works under the hood — transparent vs shielded addresses, notes, commitments, nullifiers, and the Sapling/Orchard shielded pools.
+topic: "en/zcash"
+order: 5
+minutes: 13
+updated: 2026-05-30
+seo:
+  keywords:
+    - zcash shielded pool
+    - nullifier
+    - note commitment
+    - sapling orchard
+    - halo 2 trusted setup
+---
+
+import { Callout, MCQ, Quiz, StepThrough, Reveal, CopyButton } from '@/components/react';
+
+So far you've heard that Zcash can hide who paid whom, how much, and why. Lovely
+marketing. But "magic privacy crypto" is not an explanation — it's a shrug with
+extra steps. This lesson opens the hood and shows you the *actual machinery*: the
+addresses, the cryptographic objects, and the clever trick that stops you from
+spending the same coin twice **without anyone learning which coin you spent**.
+
+It's the dense one. Grab coffee. We'll use a lot of banknote analogies, because
+they happen to be eerily accurate.
+
+## Addresses: who can see what
+
+Zcash has two worlds living in the same chain.
+
+**Transparent addresses** (t-addrs) are Bitcoin cosplaying as Zcash. Everything
+is public — sender, receiver, amount, all on display.
+
+- `t1…` — a P2PKH address (pay-to-public-key-hash, single-signature).
+- `t3…` — a P2SH address (pay-to-script-hash, e.g. multisig).
+
+**Shielded addresses** (z-addrs) are where the privacy lives:
+
+- `zc…` — the legacy **Sprout** shielded address (the original 2016 design).
+- `zs…` — the modern **Sapling** shielded address.
+
+And then there's the grown-up version everyone should use today:
+
+- `u1…` — a **Unified Address** (UA), introduced in ZIP 316. One string that
+  *bundles multiple receivers* (transparent + Sapling + Orchard) so the sender's
+  wallet automatically picks the best one both wallets support. Think of it as a
+  single phone number that quietly knows whether to ring your landline, mobile,
+  or encrypted line.
+
+<Callout type="info" title="Prefix cheat sheet">
+`t1` = transparent single-sig · `t3` = transparent multisig · `zc` = Sprout ·
+`zs` = Sapling · `u1` = Unified Address. If you only memorize one: `u1` is the
+modern default.
+</Callout>
+
+### The four transfer types
+
+Because money can hop between the transparent and shielded worlds, every Zcash
+transaction is one of **four flavors**, depending on which side the coins start
+and end on:
+
+| Transfer | Name | What's public | What's hidden |
+|---|---|---|---|
+| **t → t** | Transparent | Everything (Bitcoin-like) | Nothing |
+| **t → z** | **Shielding** | Source address + amount | Destination |
+| **z → t** | **Deshielding** | Destination + amount (revealed on exit) | Source |
+| **z → z** | **Fully shielded** | Nothing | Sender, receiver, amount, **and** memo |
+
+The dream scenario is `z → z`: sender, receiver, amount, and even the encrypted
+memo are all hidden. The dangerous ones are the boundary crossings — shielding
+and deshielding leak an amount, and amounts are surprisingly easy to fingerprint.
+(More on how people accidentally doxx themselves in the next lesson.)
+
+## The cryptographic objects
+
+Bitcoin tracks money as public **UTXOs** — unspent coins anyone can see. Zcash's
+shielded side can't do that; the whole point is that the coins are invisible. So
+it replaces every public concept with a private one.
+
+### Notes — the shielded coin
+
+A **note** is the shielded analog of a UTXO: an (encrypted) record saying *"this
+much value belongs to this shielded address."* It's your coin, sealed in an
+envelope only you can open.
+
+> **Analogy:** a note is a **sealed banknote** whose denomination only the owner
+> can read.
+
+### Note commitment — the public fingerprint
+
+You can't publish the note (that would reveal the value), but the chain needs
+*something* to point at. So Zcash publishes a **note commitment**: a
+cryptographic fingerprint of the note. It has two magic properties:
+
+- **Hiding** — you cannot learn the note's value from the commitment.
+- **Binding** — the sender can't later change the value and claim the same
+  commitment. It's locked in.
+
+> **Analogy:** the commitment is a **tamper-evident serial sticker** the whole
+> world can see but can't read through. Everyone knows a banknote exists; nobody
+> can read its face value.
+
+### The note-commitment Merkle tree
+
+Every commitment ever created is appended as a leaf to one giant **append-only
+Merkle tree**. When you spend, your zero-knowledge proof demonstrates
+**Merkle membership** — *"a note matching this commitment exists in the tree"* —
+**without revealing which leaf it is**. You prove you're holding a real ticket
+without showing the ticket's seat number.
+
+### Nullifier — the "spent" stub
+
+Here's the elegant bit, and the heart of the whole system. When you spend a note,
+you reveal its **nullifier**: a unique serial number derived from the note.
+
+- There is **exactly one** valid nullifier per note.
+- Full nodes keep a **nullifier set**. Spend a note, its nullifier joins the set.
+- If a nullifier shows up **twice**, that's a double-spend → the transaction is
+  **rejected**.
+- **Crucially:** the nullifier does **not** reveal *which note* it came from. So
+  the spend can't be linked back to the commitment that created the note.
+
+That's the trick: double-spend prevention **without revealing the note**.
+
+> **Analogy:** the nullifier is a unique **"spent" stub you tear off** when you
+> cash a banknote, so the same note can never be cashed twice — yet the stub
+> doesn't say which banknote it came from. The cashier knows *a* note was spent;
+> not *yours*.
+
+<Callout type="tip" title="Why this is the whole ballgame">
+Public-ledger coins (Bitcoin) prevent double-spends by making every coin's
+history visible. Zcash prevents them with nullifiers — a one-way "used" marker —
+so it gets the same safety with **none** of the visibility. Privacy and integrity
+at the same time.
+</Callout>
+
+### Spend authority
+
+Inside the zero-knowledge proof, the prover privately supplies the note values,
+the **commitment openings** (the secret data that produced each commitment), and
+the **secret keys** authorizing the spend. The proof says "I know all of this and
+it's consistent" — and reveals none of it.
+
+### Value commitments and homomorphic balance
+
+How does the network confirm that inputs equal outputs (no coins conjured from
+thin air) when all the amounts are hidden? With **Pedersen value commitments**,
+which are **homomorphic** — you can do math on the sealed values without opening
+them. The input and output value commitments are required to **sum to zero**.
+
+If they balance, inputs = outputs. Full stop.
+
+<Callout type="warning" title="Precision check (important)">
+The proof does **not** "reveal that the amounts are equal." It reveals nothing
+about the amounts at all. The homomorphic commitments **summing to zero** is what
+proves balance — the numbers themselves stay sealed. Say it the wrong way and a
+cryptographer will sigh audibly.
+</Callout>
+
+### Encrypted memo field
+
+Every shielded output carries an **encrypted memo** (512 bytes), readable only by
+the recipient — or by anyone the recipient hands a **viewing key**. It's a sealed
+note tucked inside the sealed banknote: payment references, invoice IDs, "thanks
+for lunch," whatever. Encrypted to everyone else.
+
+## A z → z spend, step by step
+
+Let's watch a fully shielded spend happen. Notice how much gets *proved* versus
+how little gets *published*.
+
+<StepThrough client:visible>
+  <div data-step data-step-title="1 · A note already lives in the tree">
+    At some earlier point, someone paid you. That created a **note** for you and
+    appended its **commitment** as a leaf in the global note-commitment Merkle
+    tree. Public observers see one more anonymous leaf appear — nothing more.
+  </div>
+  <div data-step data-step-title="2 · You build the proof's private inputs">
+    To spend, your wallet privately gathers the secret stuff: the note's value,
+    its commitment opening, and the **spending key**. None of this leaves your
+    machine in the clear.
+  </div>
+  <div data-step data-step-title="3 · Prove membership in zero-knowledge">
+    The proof shows a note matching a real commitment **exists in the tree** —
+    without revealing **which** leaf. Membership: proven. Identity of the leaf:
+    hidden.
+  </div>
+  <div data-step data-step-title="4 · Prove spend authority + derive the nullifier">
+    The proof also shows you hold the key that authorizes spending this note, and
+    it derives the note's one-and-only **nullifier**.
+  </div>
+  <div data-step data-step-title="5 · Prove balance with value commitments">
+    Using homomorphic **value commitments** that **sum to zero**, the proof shows
+    inputs equal outputs — no inflation — while keeping every amount sealed.
+  </div>
+  <div data-step data-step-title="6 · Publish the nullifier + the new commitment">
+    On-chain, the world sees only two new opaque things: the **nullifier** (so
+    this note can never be spent again) and a fresh **note commitment** for the
+    recipient. Sender, receiver, amount, memo — invisible.
+  </div>
+</StepThrough>
+
+That's it. A coin moved. The chain stayed integrity-preserving and double-spend-
+proof. And an observer learned approximately nothing.
+
+## The shielded pools, and how the crypto evolved
+
+Zcash didn't get here in one shot. The shielded machinery has had three
+generations, each with a different proving system. (A "proving system" is the
+zero-knowledge engine that produces and checks those proofs.)
+
+| Pool | Activated | Proving system | Curve(s) | Trusted setup? |
+|---|---|---|---|---|
+| **Sprout** | 2016 launch | BCTV14, later Groth16 | BN-254 family | **Yes** — 6-participant ceremony |
+| **Sapling** | Oct 2018 | Groth16 | BLS12-381 (+ Jubjub in-circuit) | **Yes** — Powers of Tau + Sapling MPC, ~90 participants |
+| **Orchard** | NU5, May 2022 | Halo 2 | Pallas + Vesta ("Pasta") | **No** trusted setup |
+
+A few accuracy notes worth internalizing:
+
+- **Sprout launched on BCTV14** and was *later* upgraded to **Groth16**. It was
+  not Groth16 from day one.
+- **Sapling** uses **Groth16 over BLS12-381**. **Jubjub** is the *in-circuit*
+  curve (defined over BLS12-381's scalar field) used for in-circuit operations —
+  it is **not** the proof curve. Keep those two straight; they're a classic mixup.
+- Sapling was a monster efficiency leap: roughly **97% less memory** (down to
+  ~40 MB) and about **81% faster proving**. That's what made **shielded mobile
+  wallets** actually feasible instead of a laptop-melting fantasy.
+- **NU5 (May 2022)** shipped *three* things at once: **Halo 2**, the **Orchard**
+  pool, and **Unified Addresses**. Three birthday presents, one upgrade.
+
+## Trusted setup, toxic waste, and how Halo 2 nuked it
+
+Here's the uncomfortable part of older SNARKs like Groth16: they need a **Common
+Reference String** (CRS) generated from secret randomness. That secret is called
+**toxic waste**, and it earns the name — if *anyone* keeps a copy, they can
+**forge proofs and mint coins undetectably**. Counterfeit money, no alarm bells.
+
+So how do you generate a secret that *nobody* keeps? You hold a ceremony.
+
+- **Powers of Tau** is the first, **circuit-independent** phase of the
+  multi-party computation (MPC) ceremony. It produces reusable parameters that
+  later circuits build on.
+- The **security model is "1-of-N honest":** many participants each inject their
+  own randomness, and the setup is safe **as long as at least one** participant
+  genuinely **destroyed** their secret. Everyone else can be compromised.
+- **Sprout** used **6 participants**, who physically destroyed the hardware
+  afterward. **Sapling's** ceremony had **~90 participants** — more people, more
+  margin, since you only need one honest shredder.
+
+> **Analogy:** trusted setup is a **group ritual where everyone shreds a piece of
+> a master key**. As long as *one* person truly shredded theirs, no one can
+> reassemble it to counterfeit. The nightmare is everyone secretly keeping a copy.
+
+Then **Halo 2** showed up and asked: what if we just... didn't do the ritual?
+
+**Halo 2 removes trusted setup entirely.** It uses an **inner-product-argument**
+polynomial commitment (in the spirit of Bulletproofs), so there is **no toxic
+waste to begin with**, plus **recursive proof composition**. **Orchard** is built
+on Halo 2 → **no ceremony, no toxic-waste risk, nothing to trust**.
+
+> **Analogy:** Halo 2 is **no ritual at all**. There's no master key to shred,
+> because one was never made.
+
+<Callout type="success" title="The one-line summary">
+Notes replace UTXOs · commitments are public fingerprints · the Merkle tree
+proves a note exists without saying which · nullifiers prevent double-spends
+without revealing the note · homomorphic value commitments prove balance without
+revealing amounts · and Orchard (Halo 2) needs no trusted setup.
+</Callout>
+
+## Check yourself
+
+<MCQ
+  client:visible
+  question="What does a nullifier accomplish when a shielded note is spent?"
+  options={[
+    "It publicly reveals the note's value so nodes can verify the amount",
+    "It uniquely marks the note as spent (preventing double-spends) without revealing which note it was",
+    "It encrypts the memo field so only the recipient can read it",
+    "It generates the trusted-setup parameters for the transaction",
+  ]}
+  correct={1}
+  explanation="A nullifier is a unique per-note serial number revealed at spend time. Nodes keep a nullifier set; a repeated nullifier means a double-spend and is rejected. Critically, it does NOT reveal which note (commitment) it corresponds to — so the spend stays unlinkable to the note."
+/>
+
+<Quiz client:visible>
+  <MCQ
+    question="Which Zcash shielded pool requires NO trusted setup?"
+    options={["Sprout", "Sapling", "Orchard", "All of them need one"]}
+    correct={2}
+    explanation="Orchard is built on Halo 2, which uses an inner-product-argument polynomial commitment and recursive composition — so there is no toxic waste and no ceremony. Sprout and Sapling both relied on trusted-setup MPC ceremonies."
+  />
+  <MCQ
+    question="Why does a nullifier protect privacy while still stopping double-spends?"
+    options={[
+      "It hides the amount but reveals the sender",
+      "There is exactly one nullifier per note, and a repeat is rejected — yet it does not reveal which note it came from",
+      "It re-encrypts the note after each spend",
+      "It is only checked on transparent (t-addr) transactions",
+    ]}
+    correct={1}
+    explanation="Exactly one valid nullifier exists per note. Nodes reject a repeated nullifier (double-spend), but the nullifier can't be linked back to the note's commitment — integrity without visibility."
+  />
+  <MCQ
+    question="How do homomorphic value commitments prove a shielded transaction balances?"
+    options={[
+      "The proof reveals that the input and output amounts are equal",
+      "Input and output value commitments must sum to zero, proving inputs = outputs without revealing amounts",
+      "A trusted third party compares the amounts off-chain",
+      "The Merkle tree stores each amount as a leaf for auditing",
+    ]}
+    correct={1}
+    explanation="Pedersen value commitments are homomorphic, so the input and output commitments are required to sum to zero. That proves inputs equal outputs while the actual amounts stay sealed — the proof never reveals the numbers."
+  />
+</Quiz>
+
+## Next: actually using it (and the mistakes that betray people)
+
+You now know the parts: notes, commitments, the Merkle tree, nullifiers, value
+commitments, the pools, and why Halo 2 made trusted setup obsolete. In the
+**final lesson** we put it to work — **making a genuinely anonymous transaction**
+end to end — and, more importantly, cataloguing the **rookie mistakes that quietly
+unmask people** (amount fingerprinting, careless deshielding, address reuse, and
+timing tells). The cryptography is bulletproof; humans, less so.

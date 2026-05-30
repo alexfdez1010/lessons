@@ -67,11 +67,11 @@ Content is two `astro:content` collections, validated in
 ```text
 src/content/
 ├── topics/
-│   ├── en/neural-networks.mdx          # /neural-networks
-│   └── es/neural-networks.mdx          # /es/neural-networks
+│   ├── en/transformers.mdx          # /transformers
+│   └── es/transformers.mdx          # /es/transformers
 └── lessons/
-    ├── en/neural-networks/perceptron.mdx   # /neural-networks/perceptron
-    └── es/neural-networks/perceptron.mdx   # /es/neural-networks/perceptron
+    ├── en/transformers/attention.mdx   # /transformers/attention
+    └── es/transformers/attention.mdx   # /es/transformers/attention
 ```
 
 **Topic frontmatter**: `title`, `description` (required); optional `tagline`,

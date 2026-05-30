@@ -17,7 +17,6 @@ export type Lang = keyof typeof languages;
 export const ui = {
   en: {
     'nav.catalog': 'Catalog',
-    'nav.roadmap': 'Roadmap',
     'nav.github': 'GitHub',
     'nav.skip': 'Skip to content',
     'nav.home': 'Home',
@@ -48,7 +47,6 @@ export const ui = {
   },
   es: {
     'nav.catalog': 'Catálogo',
-    'nav.roadmap': 'Ruta',
     'nav.github': 'GitHub',
     'nav.skip': 'Saltar al contenido',
     'nav.home': 'Inicio',
