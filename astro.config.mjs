@@ -5,6 +5,8 @@ import mdx from '@astrojs/mdx';
 import sitemap from '@astrojs/sitemap';
 import vercel from '@astrojs/vercel';
 import tailwindcss from '@tailwindcss/vite';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
 
 // Canonical production origin. Override per-environment with PUBLIC_SITE_URL
 // (Vercel deploys, previews). Drives sitemap, canonical tags and OG URLs.
@@ -24,6 +26,13 @@ export default defineConfig({
       prefixDefaultLocale: false,
       redirectToDefaultLocale: false,
     },
+  },
+  // LaTeX math in MDX: `$inline$` and `$$block$$` are parsed by remark-math and
+  // rendered to HTML by rehype-katex. MDX inherits these via extendMarkdownConfig.
+  // KaTeX stylesheet is imported globally in src/styles/global.css.
+  markdown: {
+    remarkPlugins: [remarkMath],
+    rehypePlugins: [rehypeKatex],
   },
   adapter: vercel({
     webAnalytics: { enabled: true },

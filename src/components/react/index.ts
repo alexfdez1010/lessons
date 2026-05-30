@@ -35,6 +35,18 @@ export type { MindMapProps, MindNode } from '@/components/react/MindMap';
 export { RiskReturnRace, default as RiskReturnRaceDefault } from '@/components/react/RiskReturnRace';
 export type { RiskReturnRaceProps } from '@/components/react/RiskReturnRace';
 
+export { CompoundingCurve, default as CompoundingCurveDefault } from '@/components/react/CompoundingCurve';
+export type { CompoundingCurveProps } from '@/components/react/CompoundingCurve';
+
+export { DrawdownChart, default as DrawdownChartDefault } from '@/components/react/DrawdownChart';
+export type { DrawdownChartProps } from '@/components/react/DrawdownChart';
+
+export { ReturnDistribution, default as ReturnDistributionDefault } from '@/components/react/ReturnDistribution';
+export type { ReturnDistributionProps } from '@/components/react/ReturnDistribution';
+
+export { BetaScatter, default as BetaScatterDefault } from '@/components/react/BetaScatter';
+export type { BetaScatterProps } from '@/components/react/BetaScatter';
+
 export { Categorize, default as CategorizeDefault } from '@/components/react/Categorize';
 export type { CategorizeProps, CategorizeItem } from '@/components/react/Categorize';
 

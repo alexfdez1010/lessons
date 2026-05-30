@@ -21,6 +21,46 @@ sequentially — it's much faster.
   upstream of it can parallelize.
 - Each Spanish twin is **es-ES (Spain / Castilian)** — see `translate-lesson`.
 
+## 📚 Go exhaustive — depth is the default for lessons
+
+When asked to build, expand, or "go more exhaustive/extensive/in depth" on a
+lesson, **bias hard toward thoroughness, not brevity**. A lesson is a teaching
+artifact, not a summary — err on the side of *too much* over *too little*.
+
+- **Cover every sub-idea.** Each metric/concept gets its **own `##` section**
+  with: an intuitive analogy, the precise definition/formula, **at least one
+  fully worked numeric example** (show the arithmetic), a common
+  misconception/pitfall, and a `### When to use it` or trade-off note.
+- **Graphs and visuals everywhere.** Every quantitative relationship,
+  process, or transformation gets a **chart/animation island** beside its
+  explanation — distributions, equity curves, scatter/regression, growth
+  curves, before/after. Don't ship a metrics or math lesson with only one
+  visual; build new reusable SVG/Canvas islands when none fit (design tokens,
+  `prefers-reduced-motion`, locale-agnostic string props — see existing
+  islands like `RiskReturnRace`, `LedgerReveal`).
+- **Worked examples + tables.** Use Markdown tables to compare options
+  side-by-side and step through real numbers. Multiple examples per concept.
+- **Interaction density still applies** (pretest → explain → check, rotate
+  types, spaced recall, MindMap + Quiz recap) — exhaustiveness *adds* to it,
+  never replaces it.
+- **Parallelize the depth** (see below): fan one agent per chart component,
+  per section draft, and per locale so going deep doesn't mean going slow.
+
+## ⚡ Work in parallel — prioritize multiple agents (use them aggressively)
+
+Going exhaustive multiplies the independent work — so **fan it out across
+many subagents by default**, in a single message, rather than doing it
+sequentially. Treat parallel agents as the normal mode, not the exception.
+
+- One agent per **new chart/animation component**, run concurrently — but each
+  agent only **creates its own file**; never let parallel agents edit the
+  shared barrel `src/components/react/index.ts` (race). Wire the barrel
+  centrally afterward.
+- One agent per **section draft**, per **lesson**, per **locale twin**.
+- Send all independent agent calls in **one message** so they run at once.
+- Reserve sequential work for genuinely dependent steps (research → write →
+  translate; build components → then author the MDX that imports them).
+
 ## Stack
 
 - **Astro 6** (static output, `@astrojs/vercel` adapter) — fast, SEO-friendly rendering.
