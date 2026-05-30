@@ -15,8 +15,17 @@ export interface MCQOption {
 export interface MCQProps {
   /** The question prompt. */
   question: string;
-  /** The selectable answer options. */
-  options: MCQOption[];
+  /**
+   * The selectable answer options. Each entry may be a full {@link MCQOption}
+   * or a plain string label; with string labels, mark the right answer(s) via
+   * {@link correct}.
+   */
+  options: Array<MCQOption | string>;
+  /**
+   * Index (or indices) of the correct option(s), used when {@link options} are
+   * plain strings. Ignored for options that already carry a `correct` flag.
+   */
+  correct?: number | number[];
   /** Optional explanation revealed after the user checks their answer. */
   explanation?: string;
   /** Allow selecting multiple options (checkboxes instead of radios). */
@@ -66,6 +75,7 @@ interface NormalizedOption extends MCQOption {
 export function MCQ({
   question,
   options,
+  correct,
   explanation,
   allowMultiple = false,
   onResult,
@@ -78,15 +88,20 @@ export function MCQ({
   className,
 }: MCQProps) {
   const groupId = useId();
-  const normalized = useMemo<NormalizedOption[]>(
-    () =>
-      options.map((o, index) => ({
-        ...o,
+  const normalized = useMemo<NormalizedOption[]>(() => {
+    const correctIndices = new Set(
+      correct === undefined ? [] : Array.isArray(correct) ? correct : [correct],
+    );
+    return (options ?? []).map((o, index) => {
+      const option: MCQOption = typeof o === 'string' ? { text: o } : o;
+      return {
+        ...option,
+        correct: option.correct ?? correctIndices.has(index),
         index,
-        id: o.id ?? `${groupId}-opt-${index}`,
-      })),
-    [options, groupId],
-  );
+        id: option.id ?? `${groupId}-opt-${index}`,
+      };
+    });
+  }, [options, correct, groupId]);
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [checked, setChecked] = useState(false);

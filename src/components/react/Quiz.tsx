@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { Children, isValidElement, useMemo, useState, type ReactNode } from 'react';
 import { MCQ, type MCQProps } from '@/components/react/MCQ';
 import { cx } from '@/components/react/cx';
 
@@ -9,8 +9,11 @@ export interface QuizProps {
   /**
    * The questions to render, sequentially. Each entry is a full set of
    * {@link MCQProps} (minus `onResult`, which the Quiz supplies internally).
+   * Optional when questions are supplied as `<MCQ>` children instead.
    */
-  questions: MCQProps[];
+  questions?: MCQProps[];
+  /** Questions authored as `<MCQ>` child elements (alternative to {@link questions}). */
+  children?: ReactNode;
   /** Label prefix for the progress indicator, e.g. "Question 1 of 5". Defaults to `'Question'`. */
   questionLabel?: string;
   /** Connector word in the progress indicator, e.g. "Question 1 of 5". Defaults to `'of'`. */
@@ -68,7 +71,8 @@ export interface QuizProps {
  */
 export function Quiz({
   title,
-  questions,
+  questions: questionsProp,
+  children,
   questionLabel = 'Question',
   ofLabel = 'of',
   correctCountLabel = 'correct',
@@ -91,6 +95,11 @@ export function Quiz({
   explanationLabel = 'Explanation',
   className,
 }: QuizProps) {
+  const questions: MCQProps[] =
+    questionsProp ??
+    Children.toArray(children)
+      .filter(isValidElement)
+      .map((child) => (child as { props: MCQProps }).props);
   const total = questions.length;
   const [current, setCurrent] = useState(0);
   // results[i] === undefined => unanswered; otherwise the correctness boolean.

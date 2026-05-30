@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { Children, isValidElement, useEffect, useRef, useState, type ReactNode } from 'react';
 import { cx } from '@/components/react/cx';
 
 /** A single stage in a {@link StepThrough}. */
@@ -9,10 +9,22 @@ export interface Step {
   body: string;
 }
 
+/** Normalized step used internally, supporting both the array and children APIs. */
+interface NormalizedStep {
+  title?: ReactNode;
+  content: ReactNode;
+}
+
 /** Props for the {@link StepThrough} component. */
 export interface StepThroughProps {
-  /** Ordered list of steps to walk through. */
-  steps: Step[];
+  /**
+   * Ordered list of steps to walk through. Optional when steps are supplied as
+   * children instead — each child element becomes one step, and an optional
+   * `data-step-title` attribute on the child supplies that step's heading.
+   */
+  steps?: Step[];
+  /** Step content authored as child elements (alternative to {@link steps}). */
+  children?: ReactNode;
   /** Label for the advance button. Defaults to `'Next'`. */
   nextLabel?: string;
   /** Label for the go-back button. Defaults to `'Back'`. */
@@ -43,6 +55,7 @@ const prefersReducedMotion = (): boolean =>
  */
 export function StepThrough({
   steps,
+  children,
   nextLabel = 'Next',
   prevLabel = 'Back',
   stepLabel = 'Step',
@@ -51,7 +64,16 @@ export function StepThrough({
   goToStepLabel = 'Go to step',
   className,
 }: StepThroughProps) {
-  const total = steps.length;
+  const items: NormalizedStep[] = steps
+    ? steps.map((s) => ({ title: s.title, content: s.body }))
+    : Children.toArray(children)
+        .filter(isValidElement)
+        .map((child) => {
+          const props = (child as { props?: Record<string, unknown> }).props ?? {};
+          const title = props['data-step-title'] as ReactNode | undefined;
+          return { title, content: props.children as ReactNode };
+        });
+  const total = items.length;
   const [index, setIndex] = useState(0);
   const [reduced, setReduced] = useState(false);
   const [animKey, setAnimKey] = useState(0);
@@ -70,7 +92,7 @@ export function StepThrough({
 
   if (total === 0) return null;
 
-  const step = steps[index];
+  const step = items[index];
   const atStart = index === 0;
   const atEnd = index === total - 1;
 
@@ -87,13 +109,13 @@ export function StepThrough({
         </span>
         {/* Dots indicator */}
         <div className="flex items-center gap-2" role="tablist" aria-label={stepsLabel}>
-          {steps.map((s, i) => (
+          {items.map((s, i) => (
             <button
               key={i}
               type="button"
               role="tab"
               aria-selected={i === index}
-              aria-label={`${goToStepLabel} ${i + 1}: ${s.title}`}
+              aria-label={`${goToStepLabel} ${i + 1}${s.title ? `: ${s.title}` : ''}`}
               onClick={() => goTo(i)}
               className={cx(
                 'h-2.5 rounded-pill transition-all duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-1 motion-reduce:transition-none',
@@ -115,12 +137,14 @@ export function StepThrough({
             !reduced && 'animate-fade-up',
           )}
         >
-          <h4 className="mb-1.5 font-display text-base font-semibold text-ink-900">
-            {step.title}
-          </h4>
-          <p className="whitespace-pre-line text-sm leading-relaxed text-ink-700">
-            {step.body}
-          </p>
+          {step.title && (
+            <h4 className="mb-1.5 font-display text-base font-semibold text-ink-900">
+              {step.title}
+            </h4>
+          )}
+          <div className="text-sm leading-relaxed text-ink-700">
+            {step.content}
+          </div>
         </div>
       </div>
 
