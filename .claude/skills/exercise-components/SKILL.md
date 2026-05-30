@@ -87,14 +87,49 @@ silently rendered *nothing* under Astro islands. For genuinely sequential
 *content*, just author a numbered Markdown list (`1.` `2.` `3.`). For a sequence
 worth *testing*, use `Categorize` or `FillBlank`.
 
-## Misconfigured components must fail the build, not ship blank
+## Misconfigured components MUST fail the build, not ship blank (REQUIRED)
 
-A component handed bad/empty input must **`throw`** during render so `astro
-build` fails loudly — never silently return `null` or render nothing. That is
-how StepThrough's broken children-API slipped through for so long. `FillBlank`
-now throws if a blank has fewer than two choices or `text` has no blanks; hold
-any new component to the same bar (validate inputs, throw with a message that
-names the offending prop).
+This is non-negotiable. A component handed bad/empty/mis-shaped input must
+**`throw` during render** (top of the function body, before any hooks-free early
+return) so `astro build` fails loudly — **never** silently return `null`, render
+an empty card, or render nothing. A green build must mean every exercise on the
+page is answerable and correct. Silent-empty exercises are a release blocker.
+
+Every exercise component now enforces this: `MCQ` (≥2 options, ≥1 correct),
+`Quiz` (every question has a prompt, ≥2 options, a marked correct answer),
+`Categorize` (≥2 buckets, every item's `bucket` matches one), `MatchConcepts`
+(≥2 pairs, non-empty term+definition), `MindMap` (non-empty `root.label` and
+children), `FillBlank` (each blank ≥2 choices, `text` has ≥1 blank). Hold any new
+component to the same bar.
+
+### The island-boundary trap (this is what bit us)
+
+**Never author a `client:*` island that takes its content as React *children*.**
+Across a `client:visible` boundary Astro renders children to an opaque HTML
+**slot** — the client component receives a slot wrapper whose `props` carry
+**none** of your data. So `Quiz` built from `<MCQ>` children, and the old
+`StepThrough`, both rendered **blank** after hydration while the build stayed
+green. Authoring API for composed exercises is always a **prop**, not children:
+
+```mdx
+{/* ✅ works — data crosses the boundary as a prop */}
+<Quiz client:visible questions={[{ question, options, correct, explanation }, …]} />
+
+{/* ❌ renders an empty card — children become an HTML slot, props are lost */}
+<Quiz client:visible><MCQ question="…" options={[…]} correct={0} /></Quiz>
+```
+
+If a component *must* accept children, it has to detect the slot case and
+`throw` (as `Quiz` now does when a derived question lacks a `question`/`options`).
+
+### Prove the guard fires (REQUIRED before you commit)
+
+A guard you didn't watch fail is a guard you don't have. After adding one,
+temporarily author the broken input in a throwaway lesson
+(`src/content/lessons/en/<topic>/_guardtest.mdx`), run `bun run build`, confirm
+it exits **red** with your named error, then delete the file and confirm a clean
+build. Don't skip this — it's the only proof the build actually catches the
+mistake.
 
 ## Existing components (reuse these first)
 
@@ -220,7 +255,13 @@ Spanish label props (`checkLabel`, `retryLabel`, `explanationLabel`, plus
    Spanish lessons can pass translated labels. No hard-coded copy inside.
 6. **Composability.** Graded exercises expose `onResult(correct)` so `Quiz` can
    aggregate them.
-7. **Type + verify.** Document props with JSDoc, then `bun run check` (0 errors).
+7. **Build-time guards (REQUIRED).** Validate inputs at the top of the render and
+   `throw` on anything mis-shaped — empty/too-few options, no correct answer,
+   orphan references, empty data — with a message naming the offending prop. The
+   content authoring API is a **prop, never children** (see the island-boundary
+   trap above). Then *prove it*: temp-author the broken input, confirm `bun run
+   build` goes red, delete it. A misconfigured exercise must never ship blank.
+8. **Type + verify.** Document props with JSDoc, then `bun run check` (0 errors).
 
 ## Wire it into a lesson
 
