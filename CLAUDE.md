@@ -5,6 +5,25 @@ across multiple slug-based pages, with reusable interactive exercises (quizzes, 
 reveals) and a strong SEO + Open Graph pipeline. Built to deploy on Vercel at
 **https://lessons.alejandrofernandezcamello.me**.
 
+## 🎯 Mission — finance, zero to expert
+
+**This is a finance learning platform.** Its single goal: take a learner with
+**no prior finance knowledge** and make them a **complete expert**. Every course,
+lesson, analogy, and exercise must serve that arc.
+
+- **Assume zero background.** A beginner-tier lesson must not lean on any finance
+  term it hasn't defined. Define jargon on first use; never assume the reader has
+  seen a balance sheet, a ticker, or a Sharpe ratio before.
+- **Build a ladder, not islands.** Order courses and lessons so each one only
+  needs what came before it. Use the topic `dependencies` array to encode the
+  path, and the new `difficulty` field (`beginner` → `intermediate` → `advanced`
+  → `expert`) to label how far up the ladder a course sits.
+- **End at genuine expertise.** `expert`-tier content goes all the way — the
+  quantitative, edge-case, real-practitioner depth. Don't stop at "intro".
+- **New courses are finance courses.** When scaffolding a topic, place it on the
+  zero-to-expert ladder: pick its `difficulty`, wire its `dependencies`, and make
+  sure its prerequisites are themselves taught on the platform.
+
 ## ⚡ Work in parallel — prioritize multiple agents
 
 This codebase has lots of independent, parallelizable work (a lesson + its `es`
@@ -122,7 +141,12 @@ English is the default locale served at the root (`/catalog`); Spanish is prefix
 A topic = a subject with many lessons. To add content, create MDX under the locale folder
 and set frontmatter (see schema in `src/content.config.ts`):
 
-- Topic: `src/content/topics/en/<topic>.mdx` → `title, description, tagline?, icon, order, accent('brand'|'accent')`.
+- Topic: `src/content/topics/en/<topic>.mdx` → `title, description, tagline?, icon, order, accent('brand'|'accent'), difficulty, dependencies[]`.
+  - `difficulty` is **required by the mission**: `beginner` (assumes **no prior finance
+    knowledge**) | `intermediate` | `advanced` | `expert` (deepest, most quantitative).
+    It renders as a badge + legend on the catalog graph. Set the **same value in the en
+    and es twins**. Pick it honestly relative to the zero-to-expert ladder, and make sure
+    everything a non-`beginner` course assumes is taught by one of its `dependencies`.
 - Lesson: `src/content/lessons/en/<topic>/<lesson>.mdx` → `title, description, topic: "en/<topic>", order, minutes?, updated?`.
 - Add the Spanish twins under `.../es/...` with `topic: "es/<topic>"`.
 - Use `##`/`###` headings (they feed the lesson Table of Contents).

@@ -57,4 +57,4 @@ export { PresentValueDecay, default as PresentValueDecayDefault } from '@/compon
 export type { PresentValueDecayProps } from '@/components/react/PresentValueDecay';
 
 export { CourseGraph, default as CourseGraphDefault } from '@/components/react/CourseGraph';
-export type { CourseGraphProps, CourseNode } from '@/components/react/CourseGraph';
+export type { CourseGraphProps, CourseNode, Difficulty } from '@/components/react/CourseGraph';

@@ -5,8 +5,23 @@ description: Scaffold a new bilingual (en/es) lesson or topic for the Lessons si
 
 # Authoring a Lesson or Topic
 
-This project teaches a **topic** across multiple slug-based **lesson** pages, in **English
-and Spanish**. Follow these steps to add content consistently.
+This project teaches **finance** across multiple slug-based **lesson** pages, in **English
+and Spanish**. Its mission: take a learner with **no prior finance knowledge** to **complete
+expert**. Follow these steps to add content consistently.
+
+## Mission fit (REQUIRED before scaffolding)
+
+Every topic sits on the **zero-to-expert finance ladder**:
+
+- **Assume no finance background** at the `beginner` tier — define every finance
+  term on first use; never lean on jargon the lesson hasn't taught.
+- **Set the `difficulty` frontmatter field** (`beginner` | `intermediate` |
+  `advanced` | `expert`) — required, same value in the en/es twins. It renders as
+  a badge on the catalog graph.
+- **Wire `dependencies`** so every concept a non-`beginner` course assumes is
+  taught by one of its prerequisites already on the platform.
+- **`expert` means expert** — go all the way to quantitative, real-practitioner
+  depth; don't stop at "intro".
 
 ## 0. Research first — then write with voice, animation, exercises
 

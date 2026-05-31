@@ -9,6 +9,12 @@ A lesson is only as good as the understanding behind it. Do this **first**, then
 hand the outline to the `new-lesson` skill. Never write lesson prose from memory
 alone for anything non-trivial.
 
+**This is a finance platform** — research the subject as a step on the **zero-to-expert
+finance ladder**. Identify the lowest level of prior finance knowledge a reader could have
+(beginner tiers assume **none**), and flag every finance term, prerequisite, and
+assumed-but-untaught concept so `new-lesson` can set the right `difficulty` and
+`dependencies`. Push the brief to genuine expert depth, not just an intro.
+
 ## 1. Gather sources
 
 - Use `WebSearch` / `WebFetch` for current, authoritative sources. Prefer

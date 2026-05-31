@@ -1,6 +1,17 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { cx } from '@/components/react/cx';
 
+/** The four demand tiers on the zero-to-expert finance path. */
+export type Difficulty = 'beginner' | 'intermediate' | 'advanced' | 'expert';
+
+/** Maps a difficulty to its semantic badge class (defined in global.css). */
+const DIFFICULTY_CLASS: Record<Difficulty, string> = {
+  beginner: 'difficulty-beginner',
+  intermediate: 'difficulty-intermediate',
+  advanced: 'difficulty-advanced',
+  expert: 'difficulty-expert',
+};
+
 /**
  * One course (topic) node in the {@link CourseGraph}. Locale-agnostic: all
  * user-facing strings (`title`, `description`) and the `href` are resolved by
@@ -22,6 +33,11 @@ export interface CourseNode {
   /** Accent token suffix used for the node tint. */
   accent?: 'brand' | 'accent';
   /**
+   * Demand level shown as a badge. `beginner` assumes **no prior finance
+   * knowledge**; `expert` is the deepest tier on the zero-to-expert path.
+   */
+  difficulty?: Difficulty;
+  /**
    * Bare slugs of prerequisite courses (drawn as incoming edges). Unknown
    * slugs are ignored so a half-built dependency list never breaks the graph.
    */
@@ -34,6 +50,11 @@ export interface CourseGraphProps {
   nodes: CourseNode[];
   /** Label after the lesson count, e.g. `'lessons'`. */
   lessonsLabel?: string;
+  /**
+   * Localized name for each difficulty tier, shown on the card badge and in
+   * the legend. Omit to fall back to the English tier names.
+   */
+  difficultyLabels?: Record<Difficulty, string>;
   /** Caption shown beneath the graph (e.g. how to read the arrows). */
   caption?: string;
   /** Shown when `nodes` is empty. */
@@ -94,9 +115,17 @@ function computeLayers(nodes: CourseNode[]): Map<string, number> {
  * To add a course: drop a new topic MDX with a `dependencies` array — no
  * code changes here.
  */
+const DEFAULT_DIFFICULTY_LABELS: Record<Difficulty, string> = {
+  beginner: 'Beginner',
+  intermediate: 'Intermediate',
+  advanced: 'Advanced',
+  expert: 'Expert',
+};
+
 export function CourseGraph({
   nodes,
   lessonsLabel = 'lessons',
+  difficultyLabels = DEFAULT_DIFFICULTY_LABELS,
   caption,
   emptyLabel = 'No courses yet — check back soon.',
   className,
@@ -229,14 +258,21 @@ export function CourseGraph({
                         href={n.href}
                         className="group flex h-full w-72 max-w-[85vw] flex-col rounded-card border border-ink-200 bg-surface p-6 shadow-soft transition-all hover:-translate-y-1 hover:border-brand-300 hover:shadow-lift motion-reduce:transition-none motion-reduce:hover:translate-y-0"
                       >
-                        <span
-                          className={cx(
-                            'mb-4 grid h-12 w-12 place-items-center rounded-card text-2xl',
-                            tint,
-                          )}
-                        >
-                          {n.icon}
-                        </span>
+                        <div className="mb-4 flex items-start justify-between gap-2">
+                          <span
+                            className={cx(
+                              'grid h-12 w-12 place-items-center rounded-card text-2xl',
+                              tint,
+                            )}
+                          >
+                            {n.icon}
+                          </span>
+                          {n.difficulty ? (
+                            <span className={cx('difficulty-badge', DIFFICULTY_CLASS[n.difficulty])}>
+                              {difficultyLabels[n.difficulty]}
+                            </span>
+                          ) : null}
+                        </div>
                         <h3 className={cx('font-display text-lg font-semibold text-ink-900', tintText)}>
                           {n.title}
                         </h3>
@@ -255,6 +291,15 @@ export function CourseGraph({
           ))}
         </ol>
       </div>
+
+      {/* Difficulty legend — the zero-to-expert path at a glance. */}
+      <ul className="mt-8 flex list-none flex-wrap items-center justify-center gap-3 p-0">
+        {(['beginner', 'intermediate', 'advanced', 'expert'] as Difficulty[]).map((d) => (
+          <li key={d} className="m-0 p-0">
+            <span className={cx('difficulty-badge', DIFFICULTY_CLASS[d])}>{difficultyLabels[d]}</span>
+          </li>
+        ))}
+      </ul>
 
       {caption ? (
         <figcaption className="mt-6 text-center text-sm text-ink-500">{caption}</figcaption>

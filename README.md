@@ -1,8 +1,8 @@
 # 📚 Lessons
 
-> Interactive, animated, **bilingual (English 🇬🇧 / Spanish 🇪🇸)** lessons that teach
-> any topic from scratch — read it, *see* it move, then test yourself with built-in
-> exercises.
+> Interactive, animated, **bilingual (English 🇬🇧 / Spanish 🇪🇸)** **finance** lessons that
+> take you from **zero finance knowledge to complete expert** — read it, *see* it move,
+> then test yourself with built-in exercises.
 
 🌐 **Live:** [lessons.alejandrofernandezcamello.me](https://lessons.alejandrofernandezcamello.me)
 🎨 **Design:** blue-forward, light-first — see **[DESIGN.md](DESIGN.md)**
@@ -12,13 +12,18 @@
 
 ## ✨ Overview
 
-**Lessons** is an open educational platform where every *topic* is taught across
-multiple slug-based pages. Each lesson mixes plain-language prose, animations that
-*teach* the core idea (not decoration), and reusable interactive exercises
-(multiple-choice, quizzes, reveals, steppers, concept matchers).
+**Lessons** is an open **finance** education platform with one mission: take a learner
+with **no prior finance knowledge** and turn them into a **complete expert**. Every
+*topic* is taught across multiple slug-based pages, ordered into a zero-to-expert path.
+Each lesson mixes plain-language prose, animations that *teach* the core idea (not
+decoration), and reusable interactive exercises (multiple-choice, quizzes, reveals,
+steppers, concept matchers).
 
 What you get out of the box:
 
+- 🎯 **Zero-to-expert path** — courses carry a `difficulty` tier (`beginner` → `expert`)
+  and `dependencies`, plotted on the catalog as a roadmap.sh-style graph so the learning
+  order is obvious. Beginner tiers assume **no finance background at all**.
 - 🧠 **Teach-first content** — clear copy, worked examples, and animations that explain.
 - 🌍 **Fully bilingual** — every lesson ships an English source and a peninsular-Spanish (es-ES) twin in parity.
 - 🧩 **Reusable islands** — interactive React components you drop into MDX with one directive.

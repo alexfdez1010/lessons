@@ -47,6 +47,13 @@ const topics = defineCollection({
     /** Accent color token suffix, e.g. "brand" | "accent". */
     accent: z.enum(['brand', 'accent']).default('brand'),
     /**
+     * How demanding the course is, shown as a badge on the catalog and used to
+     * signal the zero-to-expert finance path. `beginner` assumes **no prior
+     * finance knowledge**; `expert` is the deepest, most quantitative tier.
+     * Locale-agnostic: set the same value in the en and es twins.
+     */
+    difficulty: z.enum(['beginner', 'intermediate', 'advanced', 'expert']).default('beginner'),
+    /**
      * Bare slugs of prerequisite topics, used to draw the catalog dependency
      * graph (roadmap.sh-style). Locale-agnostic: list the same slugs in the en
      * and es twins. Unknown slugs are ignored, so adding a course is just a new
