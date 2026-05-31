@@ -25,7 +25,7 @@ the next harder topics to keep the ramp going.
   what is Zcash _(pre-existing)_
 
 ## Stage 1 — Core building blocks (⬤ beginner)
-- [ ] **money-time-value** — present value, future value, discounting, compounding
+- [x] **money-time-value** — present value, future value, discounting, compounding _(2026-05-31)_
 - [ ] **crypto-basics** — what a blockchain is, keys & wallets, tx & fees, UTXO vs account
 - [ ] **interest-and-yield** — simple vs compound interest, APR vs APY, nominal vs real
 

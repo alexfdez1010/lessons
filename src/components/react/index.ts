@@ -52,3 +52,6 @@ export type { CategorizeProps, CategorizeItem } from '@/components/react/Categor
 
 export { FillBlank, default as FillBlankDefault } from '@/components/react/FillBlank';
 export type { FillBlankProps } from '@/components/react/FillBlank';
+
+export { PresentValueDecay, default as PresentValueDecayDefault } from '@/components/react/PresentValueDecay';
+export type { PresentValueDecayProps } from '@/components/react/PresentValueDecay';
