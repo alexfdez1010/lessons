@@ -26,7 +26,7 @@ the next harder topics to keep the ramp going.
 
 ## Stage 1 — Core building blocks (⬤ beginner)
 - [x] **money-time-value** — present value, future value, discounting, compounding _(2026-05-31)_
-- [ ] **crypto-basics** — what a blockchain is, keys & wallets, tx & fees, UTXO vs account
+- [x] **crypto-basics** — what a blockchain is, keys & wallets, tx & fees, UTXO vs account _(2026-05-31)_
 - [ ] **interest-and-yield** — simple vs compound interest, APR vs APY, nominal vs real
 
 ## Stage 2 — Markets & instruments (⬤⬤ intermediate)

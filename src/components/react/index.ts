@@ -58,3 +58,15 @@ export type { PresentValueDecayProps } from '@/components/react/PresentValueDeca
 
 export { CourseGraph, default as CourseGraphDefault } from '@/components/react/CourseGraph';
 export type { CourseGraphProps, CourseNode, Difficulty } from '@/components/react/CourseGraph';
+
+export { BlockchainChain, default as BlockchainChainDefault } from '@/components/react/BlockchainChain';
+export type { BlockchainChainProps } from '@/components/react/BlockchainChain';
+
+export { KeyPairSign, default as KeyPairSignDefault } from '@/components/react/KeyPairSign';
+export type { KeyPairSignProps } from '@/components/react/KeyPairSign';
+
+export { MempoolFeeMarket, default as MempoolFeeMarketDefault } from '@/components/react/MempoolFeeMarket';
+export type { MempoolFeeMarketProps } from '@/components/react/MempoolFeeMarket';
+
+export { UtxoVsAccount, default as UtxoVsAccountDefault } from '@/components/react/UtxoVsAccount';
+export type { UtxoVsAccountProps } from '@/components/react/UtxoVsAccount';
