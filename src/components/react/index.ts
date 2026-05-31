@@ -55,3 +55,6 @@ export type { FillBlankProps } from '@/components/react/FillBlank';
 
 export { PresentValueDecay, default as PresentValueDecayDefault } from '@/components/react/PresentValueDecay';
 export type { PresentValueDecayProps } from '@/components/react/PresentValueDecay';
+
+export { CourseGraph, default as CourseGraphDefault } from '@/components/react/CourseGraph';
+export type { CourseGraphProps, CourseNode } from '@/components/react/CourseGraph';

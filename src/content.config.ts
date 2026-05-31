@@ -46,6 +46,13 @@ const topics = defineCollection({
     order: z.number().default(999),
     /** Accent color token suffix, e.g. "brand" | "accent". */
     accent: z.enum(['brand', 'accent']).default('brand'),
+    /**
+     * Bare slugs of prerequisite topics, used to draw the catalog dependency
+     * graph (roadmap.sh-style). Locale-agnostic: list the same slugs in the en
+     * and es twins. Unknown slugs are ignored, so adding a course is just a new
+     * MDX file with its `dependencies` array — no code changes.
+     */
+    dependencies: z.array(z.string()).default([]),
     draft: z.boolean().default(false),
     seo,
   }),
