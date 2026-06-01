@@ -203,4 +203,4 @@ and absolute OG URLs (see `.env.example`). It defaults to the production domain.
 
 ## 📄 License
 
-See the repository for license details. © Alejandro Fernández Camello.
+Released under the [MIT License](LICENSE). © 2026 Alejandro Fernández Camello.

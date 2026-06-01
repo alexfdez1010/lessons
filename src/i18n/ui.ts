@@ -56,6 +56,7 @@ export const ui = {
     'copy.copied': 'Copied!',
     'footer.tagline': 'Finance, from zero to expert — visually.',
     'footer.built': 'Built with Astro.',
+    'footer.license': 'MIT License.',
     'lang.switch': 'Language',
   },
   es: {
@@ -99,6 +100,7 @@ export const ui = {
     'copy.copied': '¡Copiado!',
     'footer.tagline': 'Finanzas, de cero a experto — de forma visual.',
     'footer.built': 'Hecho con Astro.',
+    'footer.license': 'Licencia MIT.',
     'lang.switch': 'Idioma',
   },
 } as const;
