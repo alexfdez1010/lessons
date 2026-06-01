@@ -16,6 +16,8 @@ export interface CashFlowLoopProps {
   savingsLabel?: string;
   /** Caption beside the IOU (deficit case). */
   borrowLabel?: string;
+  /** Short text inside the IOU note in the deficit diagram. Defaults to `'IOU'`. */
+  iouLabel?: string;
   /** One-line takeaway shown under the loop. */
   caption?: string;
   /** Currency symbol prefixed to money values. Defaults to `'$'`. */
@@ -59,6 +61,7 @@ export function CashFlowLoop({
   deficitLabel = 'Deficit',
   savingsLabel = 'Into savings',
   borrowLabel = 'Borrowed (IOU)',
+  iouLabel = 'IOU',
   caption = 'Income minus expenses is the whole game. A positive gap is a surplus you can save; a negative gap is a deficit you must borrow to cover. Same subtraction, opposite outcome.',
   currencyPrefix = '$',
   income = 3000,
@@ -309,7 +312,7 @@ export function CashFlowLoop({
                   fill="var(--color-accent-700)"
                   fontFamily="var(--font-mono)"
                 >
-                  IOU
+                  {iouLabel}
                 </text>
               )}
             </svg>

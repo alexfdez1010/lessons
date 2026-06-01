@@ -22,6 +22,18 @@ export interface MatchConceptsProps {
   retryLabel?: string;
   /** Hint shown while pairing, e.g. "Pick a term, then its definition". */
   instructions?: string;
+  /** Verdict shown when every pair is matched right. Defaults to `'✓ All matched'`. */
+  allCorrectLabel?: string;
+  /** Word after the score in the partial verdict (`✗ 2 / 3 <word>`). Defaults to `'correct'`. */
+  partialResultWord?: string;
+  /** Sub-label on the active term prompting a definition pick. Defaults to `'→ now pick a definition'`. */
+  pickDefinitionHint?: string;
+  /** Sub-label on an unlinked term. Defaults to `'not linked yet'`. */
+  notLinkedHint?: string;
+  /** Accessible label for the terms column. Defaults to `'Terms'`. */
+  termsLabel?: string;
+  /** Accessible label for the definitions column. Defaults to `'Definitions'`. */
+  definitionsLabel?: string;
   /** Called with the overall result so a parent (e.g. Quiz) can aggregate. */
   onResult?: (correct: boolean) => void;
   className?: string;
@@ -34,6 +46,12 @@ export function MatchConcepts({
   checkLabel = 'Check',
   retryLabel = 'Try again',
   instructions = 'Pick a term, then click its definition.',
+  allCorrectLabel = '✓ All matched',
+  partialResultWord = 'correct',
+  pickDefinitionHint = '→ now pick a definition',
+  notLinkedHint = 'not linked yet',
+  termsLabel = 'Terms',
+  definitionsLabel = 'Definitions',
   onResult,
   className,
 }: MatchConceptsProps) {
@@ -115,7 +133,7 @@ export function MatchConcepts({
 
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
         {/* Terms */}
-        <ul className="space-y-2" role="group" aria-label="Terms">
+        <ul className="space-y-2" role="group" aria-label={termsLabel}>
           {termOrder.map((t) => {
             const pair = pairs[t];
             const assigned = assignment[t];
@@ -144,8 +162,8 @@ export function MatchConcepts({
                     {assigned !== null
                       ? pairs[assigned].definition
                       : isActive
-                        ? '→ now pick a definition'
-                        : 'not linked yet'}
+                        ? pickDefinitionHint
+                        : notLinkedHint}
                   </span>
                 </button>
               </li>
@@ -154,7 +172,7 @@ export function MatchConcepts({
         </ul>
 
         {/* Definitions (shuffled) */}
-        <ul className="space-y-2" role="group" aria-label="Definitions">
+        <ul className="space-y-2" role="group" aria-label={definitionsLabel}>
           {defOrder.map((defIndex) => {
             const usedBy = assignment.indexOf(defIndex);
             const isUsed = usedBy !== -1;
@@ -202,8 +220,8 @@ export function MatchConcepts({
             )}
           >
             {allCorrect
-              ? '✓ All matched'
-              : `✗ ${correctCount} / ${pairs.length} correct`}
+              ? allCorrectLabel
+              : `✗ ${correctCount} / ${pairs.length} ${partialResultWord}`}
           </p>
           {explanation ? <p className="mt-1 text-sm text-ink-600">{explanation}</p> : null}
           <button

@@ -28,6 +28,10 @@ export interface CategorizeProps {
   retryLabel?: string;
   /** Heading above the revealed explanation. Defaults to `'Explanation'`. */
   explanationLabel?: string;
+  /** Verdict shown when every item is sorted right. Defaults to `'✓ All sorted'`. */
+  allCorrectLabel?: string;
+  /** Word after the score in the partial verdict (`✗ 2 / 3 <word>`). Defaults to `'correct'`. */
+  partialResultWord?: string;
   /** Called with overall correctness so a parent (e.g. Quiz) can aggregate. */
   onResult?: (correct: boolean) => void;
   className?: string;
@@ -52,6 +56,8 @@ export function Categorize({
   checkLabel = 'Check',
   retryLabel = 'Try again',
   explanationLabel = 'Explanation',
+  allCorrectLabel = '✓ All sorted',
+  partialResultWord = 'correct',
   onResult,
   className,
 }: CategorizeProps) {
@@ -218,7 +224,9 @@ export function Categorize({
             )}
             aria-live="polite"
           >
-            {allCorrect ? '✓ All sorted' : `✗ ${correctCount} / ${items.length} correct`}
+            {allCorrect
+              ? allCorrectLabel
+              : `✗ ${correctCount} / ${items.length} ${partialResultWord}`}
           </span>
         )}
       </div>

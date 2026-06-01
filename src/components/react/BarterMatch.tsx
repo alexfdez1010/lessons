@@ -27,6 +27,12 @@ export interface BarterMatchProps {
   wantsLabel?: string;
   /** Accessible label for the mode toggle group. */
   groupLabel?: string;
+  /** Status line when no direct barter swap exists. Defaults to the deadlock message. */
+  deadlockStatus?: string;
+  /** Word(s) after the swap count when swaps exist (`N <word>`). Defaults to `'direct swap(s) possible.'`. */
+  swapsPossibleLabel?: string;
+  /** Status line in money mode. Defaults to the money message. */
+  moneyStatus?: string;
   /**
    * Ring of traders, each with a good they HAVE and a good they WANT. Defaults
    * to a 5-trader ring engineered so that NO two traders directly want each
@@ -86,6 +92,9 @@ export function BarterMatch({
   hasLabel = 'has',
   wantsLabel = 'wants',
   groupLabel = 'Trade mode',
+  deadlockStatus = 'No direct swap is possible — the ring is deadlocked.',
+  swapsPossibleLabel = 'direct swap(s) possible.',
+  moneyStatus = 'Money in the middle makes every want satisfiable.',
   traders = DEFAULT_TRADERS,
   moneyIcon = '🪙',
   className,
@@ -167,9 +176,9 @@ export function BarterMatch({
   const statusText =
     mode === 'barter'
       ? directSwaps.length === 0
-        ? 'No direct swap is possible — the ring is deadlocked.'
-        : `${directSwaps.length} direct swap(s) possible.`
-      : 'Money in the middle makes every want satisfiable.';
+        ? deadlockStatus
+        : `${directSwaps.length} ${swapsPossibleLabel}`
+      : moneyStatus;
 
   return (
     <figure

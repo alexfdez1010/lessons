@@ -8,6 +8,10 @@ export interface RiskReturnRaceProps {
   seriesLabels?: [string, string];
   /** Row labels for the three metrics. */
   metricLabels?: [string, string, string];
+  /** Volatility descriptor for the calm portfolio. Defaults to `'low'`. */
+  lowLabel?: string;
+  /** Volatility descriptor for the wild portfolio. Defaults to `'high'`. */
+  highLabel?: string;
   /** Button label to start the race. */
   playLabel?: string;
   /** Button label once the race has finished. */
@@ -35,6 +39,8 @@ export function RiskReturnRace({
   title = 'Same return, different risk',
   seriesLabels = ['Steady Eddie', 'Rollercoaster'],
   metricLabels = ['Total return', 'Volatility (risk)', 'Sharpe ratio'],
+  lowLabel = 'low',
+  highLabel = 'high',
   playLabel = 'Play the race',
   replayLabel = 'Replay',
   caption = 'Both portfolios end at +60%. The calm one earns a far higher Sharpe ratio because it took less risk to get there.',
@@ -116,7 +122,7 @@ export function RiskReturnRace({
   // Metrics revealed once the race finishes.
   const metrics = [
     { label: metricLabels[0], smooth: '+60%', jagged: '+60%', tie: true },
-    { label: metricLabels[1], smooth: 'low', jagged: 'high', tie: false },
+    { label: metricLabels[1], smooth: lowLabel, jagged: highLabel, tie: false },
     { label: metricLabels[2], smooth: '1.9', jagged: '0.4', tie: false },
   ];
 
