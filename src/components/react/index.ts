@@ -97,3 +97,12 @@ export type { CashFlowLoopProps } from '@/components/react/CashFlowLoop';
 
 export { DoubleEntryLedger, default as DoubleEntryLedgerDefault } from '@/components/react/DoubleEntryLedger';
 export type { DoubleEntryLedgerProps } from '@/components/react/DoubleEntryLedger';
+
+export { RiskLadder, default as RiskLadderDefault } from '@/components/react/RiskLadder';
+export type { RiskLadderProps, RiskLadderRung } from '@/components/react/RiskLadder';
+
+export { TotalReturnStack, default as TotalReturnStackDefault } from '@/components/react/TotalReturnStack';
+export type { TotalReturnStackProps } from '@/components/react/TotalReturnStack';
+
+export { DiversifyBasket, default as DiversifyBasketDefault } from '@/components/react/DiversifyBasket';
+export type { DiversifyBasketProps } from '@/components/react/DiversifyBasket';

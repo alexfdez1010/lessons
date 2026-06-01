@@ -25,10 +25,10 @@ assumes. `money-and-value` is the root of the whole catalog._
   currency; what a payment/transaction is; income vs expense; saving vs
   borrowing; what a bank account & ledger is. _(root; prereq for
   `money-time-value` and `crypto-basics`)_ _(2026-06-01)_
-- [ ] **investing-basics** — what an asset is; saving vs investing; risk vs
+- [x] **investing-basics** — what an asset is; saving vs investing; risk vs
   return intuition; stocks, bonds & funds at a glance; what "a return" means.
   _(deps: `money-and-value`; bridges `interest-and-yield` → `investment-metrics`
-  so the beginner→advanced jump isn't a cliff)_
+  so the beginner→advanced jump isn't a cliff)_ _(2026-06-02)_
 
 ## Stage 0 — Foundations (⬤ beginner) — DONE
 - [x] **investment-metrics** topic — ROI & CAGR, volatility & drawdown, Sharpe &
