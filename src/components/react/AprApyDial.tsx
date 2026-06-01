@@ -14,6 +14,8 @@ export interface AprApyDialProps {
   periodsLabel?: string;
   /** Label for the quoted-APR slider. */
   rateLabel?: string;
+  /** Names for the 6 compounding-frequency stops (Annual…Daily). For i18n. */
+  periodNames?: string[];
   /** Initial quoted APR as a fraction (0–0.30). Defaults to `0.12`. */
   apr?: number;
   /** Initial compounding periods per year. Snaps to a discrete stop. Defaults to `12`. */
@@ -64,6 +66,7 @@ export function AprApyDial({
   apyLabel = 'APY — what you actually get',
   periodsLabel = 'Compounding periods per year',
   rateLabel = 'Quoted APR',
+  periodNames = PERIOD_NAMES,
   apr = 0.12,
   periods = 12,
   gapLabel = 'Compounding bonus',
@@ -110,7 +113,7 @@ export function AprApyDial({
   }, [aprState, stop]);
 
   const aprPctLabel = Math.round(aprState * 100);
-  const periodName = PERIOD_NAMES[stop];
+  const periodName = periodNames[stop] ?? PERIOD_NAMES[stop];
 
   const W = 360;
   const H = 220;
