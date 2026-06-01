@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { cx } from '@/components/react/cx';
+import { getFinishedCourses, onProgressChange } from '@/lib/progress';
 
 /** The four demand tiers on the zero-to-expert finance path. */
 export type Difficulty = 'beginner' | 'intermediate' | 'advanced' | 'expert';
@@ -63,6 +64,8 @@ export interface CourseGraphProps {
    * the legend. Omit to fall back to the English tier names.
    */
   difficultyLabels?: Record<Difficulty, string>;
+  /** Badge text shown on a course the learner has marked finished. */
+  finishedLabel?: string;
   /** Caption shown beneath the graph (e.g. how to read the arrows). */
   caption?: string;
   /** Shown when `nodes` is empty. */
@@ -134,6 +137,7 @@ export function CourseGraph({
   nodes,
   lessonsLabel = 'lessons',
   difficultyLabels = DEFAULT_DIFFICULTY_LABELS,
+  finishedLabel = 'Finished',
   caption,
   emptyLabel = 'No courses yet — check back soon.',
   className,
@@ -143,6 +147,15 @@ export function CourseGraph({
   const cardRefs = useRef(new Map<string, HTMLAnchorElement>());
   const [edges, setEdges] = useState<EdgePath[]>([]);
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
+  // Courses the learner marked finished (localStorage); empty during SSR so
+  // the first paint matches the server, then hydrated + kept in sync on mount.
+  const [finished, setFinished] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    const sync = () => setFinished(getFinishedCourses());
+    sync();
+    return onProgressChange(sync);
+  }, []);
 
   const layers = computeLayers(nodes);
   const maxLayer = nodes.reduce((m, n) => Math.max(m, layers.get(n.slug) ?? 0), 0);
@@ -260,6 +273,7 @@ export function CourseGraph({
                   const edge = n.difficulty
                     ? DIFFICULTY_EDGE_CLASS[n.difficulty]
                     : 'border-l-4 border-l-ink-200 bg-surface';
+                  const isDone = finished.has(n.slug);
                   return (
                     <li key={n.slug} className="m-0 p-0">
                       <a
@@ -268,12 +282,24 @@ export function CourseGraph({
                           else cardRefs.current.delete(n.slug);
                         }}
                         href={n.href}
-                        title={`${n.title} · ${n.lessons} ${lessonsLabel}`}
+                        title={`${n.title} · ${n.lessons} ${lessonsLabel}${isDone ? ` · ${finishedLabel}` : ''}`}
                         className={cx(
-                          'group flex h-full w-56 max-w-[80vw] flex-col rounded-card border border-ink-200 p-4 shadow-soft transition-all hover:-translate-y-1 hover:border-brand-300 hover:shadow-lift motion-reduce:transition-none motion-reduce:hover:translate-y-0',
+                          'group relative flex h-full w-56 max-w-[80vw] flex-col rounded-card border border-ink-200 p-4 shadow-soft transition-all hover:-translate-y-1 hover:border-brand-300 hover:shadow-lift motion-reduce:transition-none motion-reduce:hover:translate-y-0',
                           edge,
+                          isDone && 'ring-2 ring-brand-400 ring-offset-1',
                         )}
                       >
+                        {isDone ? (
+                          <span
+                            className="absolute -right-1.5 -top-1.5 grid h-6 w-6 place-items-center rounded-pill bg-brand-600 text-white shadow-soft ring-2 ring-surface"
+                            title={finishedLabel}
+                          >
+                            <svg viewBox="0 0 20 20" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                              <path d="M5 10.5l3.2 3.2L15 7" />
+                            </svg>
+                            <span className="sr-only">{finishedLabel}</span>
+                          </span>
+                        ) : null}
                         <div className="mb-2 flex items-center justify-between gap-2">
                           <span
                             className={cx(

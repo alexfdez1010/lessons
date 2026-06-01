@@ -59,6 +59,9 @@ export type { PresentValueDecayProps } from '@/components/react/PresentValueDeca
 export { CourseGraph, default as CourseGraphDefault } from '@/components/react/CourseGraph';
 export type { CourseGraphProps, CourseNode, Difficulty } from '@/components/react/CourseGraph';
 
+export { CourseComplete, default as CourseCompleteDefault } from '@/components/react/CourseComplete';
+export type { CourseCompleteProps } from '@/components/react/CourseComplete';
+
 export { BlockchainChain, default as BlockchainChainDefault } from '@/components/react/BlockchainChain';
 export type { BlockchainChainProps } from '@/components/react/BlockchainChain';
 
