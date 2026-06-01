@@ -47,18 +47,33 @@ export function setCourseFinished(slug: string, finished: boolean): void {
 
 /**
  * Subscribe to any change in completion state (this tab or another). Returns an
- * unsubscribe function. The callback fires on both the same-tab custom event
- * and the cross-tab native `storage` event.
+ * unsubscribe function. The callback fires on:
+ *  - the same-tab custom event (a button on this page toggled state),
+ *  - the cross-tab native `storage` event (another tab toggled state),
+ *  - `pageshow` with `persisted` (the page was restored from the back/forward
+ *    bfcache — its islands never re-mounted, so we re-read storage by hand),
+ *  - `visibilitychange` back to visible (cheap catch-all when returning to a
+ *    backgrounded tab).
  */
 export function onProgressChange(cb: () => void): () => void {
   if (typeof window === 'undefined') return () => {};
   const onStorage = (e: StorageEvent) => {
     if (e.key === null || e.key === STORAGE_KEY) cb();
   };
+  const onPageShow = (e: PageTransitionEvent) => {
+    if (e.persisted) cb();
+  };
+  const onVisible = () => {
+    if (document.visibilityState === 'visible') cb();
+  };
   window.addEventListener(EVENT, cb);
   window.addEventListener('storage', onStorage);
+  window.addEventListener('pageshow', onPageShow);
+  document.addEventListener('visibilitychange', onVisible);
   return () => {
     window.removeEventListener(EVENT, cb);
     window.removeEventListener('storage', onStorage);
+    window.removeEventListener('pageshow', onPageShow);
+    document.removeEventListener('visibilitychange', onVisible);
   };
 }

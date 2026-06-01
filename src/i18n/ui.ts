@@ -16,7 +16,8 @@ export type Lang = keyof typeof languages;
 
 export const ui = {
   en: {
-    'brand.title': 'Lessons',
+    'brand.title': 'Finance Lessons',
+    'home.seoTitle': 'Finance, from zero to expert',
     'nav.catalog': 'Catalog',
     'nav.github': 'GitHub',
     'nav.skip': 'Skip to content',
@@ -53,12 +54,13 @@ export const ui = {
     'quiz.restart': 'Restart',
     'copy.copy': 'Copy',
     'copy.copied': 'Copied!',
-    'footer.tagline': 'Learn anything, visually.',
+    'footer.tagline': 'Finance, from zero to expert — visually.',
     'footer.built': 'Built with Astro.',
     'lang.switch': 'Language',
   },
   es: {
-    'brand.title': 'Lecciones',
+    'brand.title': 'Lecciones de Finanzas',
+    'home.seoTitle': 'Finanzas, de cero a experto',
     'nav.catalog': 'Catálogo',
     'nav.github': 'GitHub',
     'nav.skip': 'Saltar al contenido',
@@ -95,7 +97,7 @@ export const ui = {
     'quiz.restart': 'Reiniciar',
     'copy.copy': 'Copiar',
     'copy.copied': '¡Copiado!',
-    'footer.tagline': 'Aprende cualquier cosa, de forma visual.',
+    'footer.tagline': 'Finanzas, de cero a experto — de forma visual.',
     'footer.built': 'Hecho con Astro.',
     'lang.switch': 'Idioma',
   },

@@ -3,18 +3,19 @@
  * and social handles. Imported by the SEO component, layouts and OG tooling.
  */
 export const SITE = {
-  name: 'Lessons',
-  /** Used in <title> templates: "Page Title — Lessons". */
-  titleTemplate: (page?: string) => (page ? `${page} — Lessons` : 'Lessons — Learn anything, visually'),
+  name: 'Finance Lessons',
+  /** Used in <title> templates: "Page Title — Finance Lessons". */
+  titleTemplate: (page?: string) =>
+    page ? `${page} — Finance Lessons` : 'Finance Lessons — From zero to expert, visually',
   description:
-    'Interactive, animated lessons that teach any topic from scratch — read, visualize, and test yourself with built-in exercises.',
+    'Free, interactive, animated finance lessons that take you from zero knowledge to complete expert — read, visualize, and test yourself with built-in exercises. In English and Spanish.',
   /** Fallback locale for og:locale / html lang. */
   locale: 'en_US',
   lang: 'en',
   /** Default share image when a page has none. Generated into /public/og. */
   defaultOgImage: '/og/default.png',
-  twitter: '@lessons',
-  author: 'Lessons',
+  twitter: '@financelessons',
+  author: 'Finance Lessons',
   themeColor: '#2563eb',
 } as const;
 
