@@ -17,6 +17,19 @@ the next harder topics to keep the ramp going.
 
 ---
 
+## Stage −1 — Absolute basics (⬤ beginner) — THE GROUND FLOOR
+_Build these **first** (exception to the "never easier than last completed"
+rule): they are the prerequisites every current beginner course silently
+assumes. `money-and-value` is the root of the whole catalog._
+- [ ] **money-and-value** — what money is and why it has value; cash &
+  currency; what a payment/transaction is; income vs expense; saving vs
+  borrowing; what a bank account & ledger is. _(root; prereq for
+  `money-time-value` and `crypto-basics`)_
+- [ ] **investing-basics** — what an asset is; saving vs investing; risk vs
+  return intuition; stocks, bonds & funds at a glance; what "a return" means.
+  _(deps: `money-and-value`; bridges `interest-and-yield` → `investment-metrics`
+  so the beginner→advanced jump isn't a cliff)_
+
 ## Stage 0 — Foundations (⬤ beginner) — DONE
 - [x] **investment-metrics** topic — ROI & CAGR, volatility & drawdown, Sharpe &
   Sortino, alpha & beta, reading a fund factsheet _(pre-existing)_
