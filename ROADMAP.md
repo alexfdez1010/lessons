@@ -1,7 +1,7 @@
 # Lessons Roadmap — quant finance · crypto · DeFi
 
 Ordered, difficulty-ramped curriculum. The **daily autonomous agent**
-(`scripts/daily-lesson.sh`, 06:00 Europe/Madrid) builds the **next unchecked
+(`scripts/daily-lesson.sh`, runs 00:00 / 06:00 / 20:00 Europe/Madrid) builds the **next unchecked
 item top-to-bottom**, then ticks it `[x]` and, when the queue runs low, appends
 the next harder topics to keep the ramp going.
 

@@ -45,6 +45,31 @@ const keep = (data: { draft?: boolean }): boolean => includeDrafts || !data.draf
 const byOrder = (a: { data: { order: number } }, b: { data: { order: number } }): number =>
   a.data.order - b.data.order;
 
+/** Zero-to-expert ladder rank — drives the catalog's primary sort. */
+const DIFFICULTY_RANK: Record<string, number> = {
+  beginner: 0,
+  intermediate: 1,
+  advanced: 2,
+  expert: 3,
+};
+
+/**
+ * Catalog sort: difficulty tier first (beginner → expert, the zero-to-expert
+ * ladder), then the manual `order`, then title as a stable tiebreaker. This is
+ * the order courses appear in the catalog graph (within each dependency layer)
+ * so the path always reads easy → hard. Topics with no difficulty sort last.
+ */
+const byDifficultyThenOrder = (
+  a: { data: { difficulty?: string; order: number; title: string } },
+  b: { data: { difficulty?: string; order: number; title: string } },
+): number => {
+  const ra = DIFFICULTY_RANK[a.data.difficulty ?? ''] ?? Number.MAX_SAFE_INTEGER;
+  const rb = DIFFICULTY_RANK[b.data.difficulty ?? ''] ?? Number.MAX_SAFE_INTEGER;
+  if (ra !== rb) return ra - rb;
+  if (a.data.order !== b.data.order) return a.data.order - b.data.order;
+  return a.data.title.localeCompare(b.data.title);
+};
+
 /** Map a topic entry to its bare slug (drops the locale prefix). */
 export function topicSlugOf(entry: TopicEntry): string {
   return parseId(entry.id).topic;
@@ -63,7 +88,7 @@ export async function getTopics(lang: Lang): Promise<TopicView[]> {
   const all = await getCollection('topics', ({ id, data }) => {
     return parseId(id).lang === lang && keep(data);
   });
-  return all.sort(byOrder).map((entry) => ({
+  return all.sort(byDifficultyThenOrder).map((entry) => ({
     entry,
     lang,
     slug: topicSlugOf(entry),

@@ -12,6 +12,14 @@ const DIFFICULTY_CLASS: Record<Difficulty, string> = {
   expert: 'difficulty-expert',
 };
 
+/** Maps a difficulty to its whole-card edge/tint class (defined in global.css). */
+const DIFFICULTY_EDGE_CLASS: Record<Difficulty, string> = {
+  beginner: 'difficulty-edge-beginner',
+  intermediate: 'difficulty-edge-intermediate',
+  advanced: 'difficulty-edge-advanced',
+  expert: 'difficulty-edge-expert',
+};
+
 /**
  * One course (topic) node in the {@link CourseGraph}. Locale-agnostic: all
  * user-facing strings (`title`, `description`) and the `href` are resolved by
@@ -240,14 +248,18 @@ export function CourseGraph({
         </svg>
 
         {/* Card layers — plain responsive flow; arrows snap to these. */}
-        <ol className="relative flex list-none flex-col gap-y-12 p-0">
+        <ol className="relative flex list-none flex-col gap-y-10 p-0">
           {rows.map((row, layer) => (
             <li key={layer} className="m-0 p-0">
-              <ul className="flex list-none flex-wrap justify-center gap-6 p-0">
+              <ul className="flex list-none flex-wrap justify-center gap-4 p-0">
                 {row.map((n) => {
                   const tint = n.accent === 'accent' ? 'bg-accent-50' : 'bg-brand-50';
                   const tintText =
                     n.accent === 'accent' ? 'group-hover:text-accent-700' : 'group-hover:text-brand-700';
+                  // Difficulty drives the card's colored left edge + tier tint.
+                  const edge = n.difficulty
+                    ? DIFFICULTY_EDGE_CLASS[n.difficulty]
+                    : 'border-l-4 border-l-ink-200 bg-surface';
                   return (
                     <li key={n.slug} className="m-0 p-0">
                       <a
@@ -256,12 +268,16 @@ export function CourseGraph({
                           else cardRefs.current.delete(n.slug);
                         }}
                         href={n.href}
-                        className="group flex h-full w-72 max-w-[85vw] flex-col rounded-card border border-ink-200 bg-surface p-6 shadow-soft transition-all hover:-translate-y-1 hover:border-brand-300 hover:shadow-lift motion-reduce:transition-none motion-reduce:hover:translate-y-0"
+                        title={`${n.title} · ${n.lessons} ${lessonsLabel}`}
+                        className={cx(
+                          'group flex h-full w-56 max-w-[80vw] flex-col rounded-card border border-ink-200 p-4 shadow-soft transition-all hover:-translate-y-1 hover:border-brand-300 hover:shadow-lift motion-reduce:transition-none motion-reduce:hover:translate-y-0',
+                          edge,
+                        )}
                       >
-                        <div className="mb-4 flex items-start justify-between gap-2">
+                        <div className="mb-2 flex items-center justify-between gap-2">
                           <span
                             className={cx(
-                              'grid h-12 w-12 place-items-center rounded-card text-2xl',
+                              'grid h-9 w-9 shrink-0 place-items-center rounded-card text-xl',
                               tint,
                             )}
                           >
@@ -273,15 +289,17 @@ export function CourseGraph({
                             </span>
                           ) : null}
                         </div>
-                        <h3 className={cx('font-display text-lg font-semibold text-ink-900', tintText)}>
+                        <h3
+                          className={cx(
+                            'font-display text-sm font-semibold leading-snug text-ink-900',
+                            tintText,
+                          )}
+                        >
                           {n.title}
                         </h3>
-                        <p className="mt-2 flex-1 text-sm leading-relaxed text-ink-600">
+                        <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-ink-600">
                           {n.description}
                         </p>
-                        <span className="mt-4 text-xs font-medium uppercase tracking-wide text-brand-600">
-                          {n.lessons} {lessonsLabel}
-                        </span>
                       </a>
                     </li>
                   );
