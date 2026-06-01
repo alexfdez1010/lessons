@@ -82,3 +82,18 @@ export type { AprApyDialProps } from '@/components/react/AprApyDial';
 
 export { RealRateBars, default as RealRateBarsDefault } from '@/components/react/RealRateBars';
 export type { RealRateBarsProps } from '@/components/react/RealRateBars';
+
+export { BarterMatch, default as BarterMatchDefault } from '@/components/react/BarterMatch';
+export type { BarterMatchProps } from '@/components/react/BarterMatch';
+
+export { MoneyFunctions, default as MoneyFunctionsDefault } from '@/components/react/MoneyFunctions';
+export type { MoneyFunctionsProps } from '@/components/react/MoneyFunctions';
+
+export { PaymentFlow, default as PaymentFlowDefault } from '@/components/react/PaymentFlow';
+export type { PaymentFlowProps } from '@/components/react/PaymentFlow';
+
+export { CashFlowLoop, default as CashFlowLoopDefault } from '@/components/react/CashFlowLoop';
+export type { CashFlowLoopProps } from '@/components/react/CashFlowLoop';
+
+export { DoubleEntryLedger, default as DoubleEntryLedgerDefault } from '@/components/react/DoubleEntryLedger';
+export type { DoubleEntryLedgerProps } from '@/components/react/DoubleEntryLedger';

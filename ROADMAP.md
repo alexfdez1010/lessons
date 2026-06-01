@@ -21,10 +21,10 @@ the next harder topics to keep the ramp going.
 _Build these **first** (exception to the "never easier than last completed"
 rule): they are the prerequisites every current beginner course silently
 assumes. `money-and-value` is the root of the whole catalog._
-- [ ] **money-and-value** — what money is and why it has value; cash &
+- [x] **money-and-value** — what money is and why it has value; cash &
   currency; what a payment/transaction is; income vs expense; saving vs
   borrowing; what a bank account & ledger is. _(root; prereq for
-  `money-time-value` and `crypto-basics`)_
+  `money-time-value` and `crypto-basics`)_ _(2026-06-01)_
 - [ ] **investing-basics** — what an asset is; saving vs investing; risk vs
   return intuition; stocks, bonds & funds at a glance; what "a return" means.
   _(deps: `money-and-value`; bridges `interest-and-yield` → `investment-metrics`
