@@ -70,3 +70,12 @@ export type { MempoolFeeMarketProps } from '@/components/react/MempoolFeeMarket'
 
 export { UtxoVsAccount, default as UtxoVsAccountDefault } from '@/components/react/UtxoVsAccount';
 export type { UtxoVsAccountProps } from '@/components/react/UtxoVsAccount';
+
+export { FrequencyLadder, default as FrequencyLadderDefault } from '@/components/react/FrequencyLadder';
+export type { FrequencyLadderProps } from '@/components/react/FrequencyLadder';
+
+export { AprApyDial, default as AprApyDialDefault } from '@/components/react/AprApyDial';
+export type { AprApyDialProps } from '@/components/react/AprApyDial';
+
+export { RealRateBars, default as RealRateBarsDefault } from '@/components/react/RealRateBars';
+export type { RealRateBarsProps } from '@/components/react/RealRateBars';
