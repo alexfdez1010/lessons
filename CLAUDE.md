@@ -187,7 +187,8 @@ block and documented in **DESIGN.md**. Use Tailwind utilities; do not hardcode h
 | `bun run dev` | Dev server |
 | `bun run build` | Static build → `dist/` (+ `.vercel/output`) |
 | `bun run preview` | Preview the build |
-| `bun run check` | `astro check` + `tsc --noEmit` |
+| `bun run check` | `check:latex` + `astro check` + `tsc --noEmit` |
+| `bun run check:latex` | Render every `$…$`/`$$…$$` through KaTeX; fail on parse errors (catches `\$` inside math) |
 | `bun run og:generate` / `og:build` | Generate OG images |
 | `bun run audit` / `audit:fix` | Vuln report / `bun update` + report |
 | `bun run pre-commit` | `audit:fix` + `check` + build + regenerate OG (run manually) |

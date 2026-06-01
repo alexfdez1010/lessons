@@ -197,9 +197,18 @@ unavailable, the alternates helper falls back to the locale home — but prefer 
 ## 6. Verify
 
 ```bash
-bun run check     # astro check + tsc — must be 0 errors
-bun run build     # routes for the new pages should appear
+bun run check       # check:latex + astro check + tsc — must be 0 errors
+bun run check:latex # standalone: renders every $...$/$$...$$ through KaTeX, fails on parse errors
+bun run build       # routes for the new pages should appear
 ```
+
+**LaTeX gotcha — `\$` inside a `$...$` span breaks rendering.** `rehype-katex`
+renders bad math as silent red error text (build stays green), so it's easy to
+miss. The classic trap: writing a currency amount *inside* inline math, e.g.
+`$0.08 \times 1000 = \$80$`. The math-delimiter scanner closes the span at that
+`$`, leaving a stray `\` → KaTeX parse error. **Fix: keep currency OUT of the
+math span** — `$0.08 \times 1000$, i.e. \$80`. `bun run check:latex` (also run
+inside `bun run check` and `pre-commit`) catches this class of bug across en+es.
 
 Routes appear automatically (no route file edits needed) because pages use
 `getStaticPaths` over the content collections.
