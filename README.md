@@ -5,7 +5,9 @@
 > then test yourself with built-in exercises.
 
 🌐 **Live:** [lessons.alejandrofernandezcamello.me](https://lessons.alejandrofernandezcamello.me)
+
 🎨 **Design:** blue-forward, light-first — see **[DESIGN.md](DESIGN.md)**
+
 🤝 **Status:** ✅ **Ready for contributions** — issues and pull requests welcome!
 
 ---
