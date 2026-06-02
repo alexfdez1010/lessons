@@ -62,6 +62,17 @@ artifact, not a summary — err on the side of *too much* over *too little*.
 - **Interaction density still applies** (pretest → explain → check, rotate
   types, spaced recall, MindMap + Quiz recap) — exhaustiveness *adds* to it,
   never replaces it.
+- **Vary the questions, not just the components.** Repetition is the #1 quiz
+  problem: across a question set, mix the *type of ask* (numeric, scenario,
+  which-is-true, spot-the-trap, definition, comparison, cause→effect), the
+  *stem wording* (no repeated sentence frames), and the difficulty. If two
+  questions feel interchangeable, rewrite one. See `exercise-components`.
+- **Final exams use the `FinalExam` island, presented directly.** A course's
+  `final-exam` lesson is a graded, **irreversible** run on a 20–30 MCQ pool:
+  one question at a time, submitting locks the answer for good (no Back, no
+  retry, no Restart — a wrong answer just fails that question), and the
+  pass/fail score shows only at the end. Don't rebuild the old themed
+  recap-with-pretests flow. See `new-lesson` / `exercise-components`.
 - **Parallelize the depth** (see below): fan one agent per chart component,
   per section draft, and per locale so going deep doesn't mean going slow.
 

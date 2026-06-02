@@ -14,6 +14,9 @@ export type { MCQProps, MCQOption } from '@/components/react/MCQ';
 export { Quiz, default as QuizDefault } from '@/components/react/Quiz';
 export type { QuizProps } from '@/components/react/Quiz';
 
+export { FinalExam, default as FinalExamDefault } from '@/components/react/FinalExam';
+export type { FinalExamProps, FinalExamQuestion } from '@/components/react/FinalExam';
+
 export { Reveal, default as RevealDefault } from '@/components/react/Reveal';
 export type { RevealProps } from '@/components/react/Reveal';
 

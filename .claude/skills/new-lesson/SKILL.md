@@ -87,16 +87,31 @@ the final lesson from the start.
 - **It must be genuinely hard.** The point is to verify the learner truly
   understood everything — not a victory-lap recap. Use **scenario-based,
   multi-step reasoning** with plausible distractors and subtle traps drawn from
-  the misconceptions each lesson warned about. Reuse the existing exercise
-  components; build a new one only if a question type genuinely needs it and it
-  is technically feasible (a proper reusable island — see `exercise-components`).
-- **Cover ALL prior material and use EVERY question type** at least once:
-  single-answer `MCQ`, multi-answer `MCQ` (`allowMultiple`), `MatchConcepts`,
-  `Categorize`, `FillBlank`, and a long scored `Quiz` (8–11 mixed questions) as
-  the centerpiece. **No `pretest`** here — an exam tests, it doesn't pre-teach.
-- **Structure**: group questions into themed `##` sections (one per area of the
-  course), each with ≥1 exercise; close with a `MindMap` of the whole mental
-  model and a `Callout variant="success"` "you passed if…" rubric.
+  the misconceptions each lesson warned about.
+- **Use the `FinalExam` island — NOT `Quiz` and NOT themed recap sections.**
+  The final exam is a graded, **irreversible** run: one MCQ at a time, the
+  learner submits, the answer **locks for good** (no Back, no Try again, no
+  Restart), the result reveals instantly, and the pass/fail score appears only
+  after the last question. Don't rebuild the old elaborate flow (pretest →
+  `Callout` → `Categorize`/`FillBlank`/`MatchConcepts` per theme → a separate
+  scored `Quiz`); that is exactly the over-complex structure `FinalExam`
+  replaces. Present the questions **directly**.
+- **Keep the page flat and short:** a one-paragraph intro → a
+  `Callout variant="warning"` "How this exam works" box (states: answers are
+  final, no retries, score shown at the end, pass mark `70%`) → the
+  `<FinalExam client:visible passPercent={70} questions={[…]} />` island →
+  `## Course Recap` `MindMap` → `## Key Takeaways` `Callout variant="success"`.
+- **Question pool: 20–30 fresh MCQs**, covering ALL prior lessons roughly
+  proportionally. Mostly single-answer; include **2–4 multi-answer** questions
+  (`allowMultiple: true`, multiple options marked `correct: true`). No `pretest`
+  here — an exam tests, it doesn't pre-teach.
+- **VARIETY IS MANDATORY — repetition is the #1 failure mode.** Vary every axis:
+  question *type* (numeric/calculation with the arithmetic shown in the
+  explanation, scenario/application, "which statement is TRUE", spot-the-trap,
+  definition, side-by-side comparison, cause→effect, ranking-as-single-answer),
+  *stem wording* (never reuse the same sentence frame twice in a row; don't open
+  five questions with "Which of the following…"), and *difficulty*. Every
+  question carries a concise `explanation` teaching the why.
 - **Same rules as any lesson**: keep numbers/LaTeX in MDX prose and tables, never
   baked into island option/question text (put numeric scenarios in a table right
   above the island and phrase the question conceptually); ship a full es-ES twin
@@ -148,13 +163,15 @@ updated: 2026-05-30                # ISO date
 At the top of the MDX body:
 
 ```mdx
-import { Callout, MCQ, Quiz, Reveal,
+import { Callout, MCQ, Quiz, FinalExam, Reveal,
          MatchConcepts, Categorize, FillBlank, MindMap } from '@/components/react';
 ```
 
 Exercise islands: `MCQ` (add `pretest` for prequestions, `allowMultiple` for
-multi-answer), `Quiz`, `MatchConcepts`, `Categorize`, `FillBlank`. Recap visual:
-`MindMap`. See `exercise-components` and `lesson-animations` for each.
+multi-answer), `Quiz`, `MatchConcepts`, `Categorize`, `FillBlank`. `FinalExam` is
+the graded, lock-on-submit island reserved for a course's final-exam lesson (see
+above). Recap visual: `MindMap`. See `exercise-components` and `lesson-animations`
+for each.
 
 Interactive islands need `client:visible`; `Callout` is presentational (no directive).
 
@@ -186,6 +203,8 @@ Interactive islands need `client:visible`; `Callout` is presentational (no direc
 `<MCQ ... checkLabel="Comprobar" retryLabel="Reintentar" />`,
 `<Quiz ... questionLabel="Pregunta" ofLabel="de" scoreLabel="Tu puntuación" restartLabel="Reiniciar" nextLabel="Siguiente" backLabel="Atrás" />`,
 `<FillBlank ... checkLabel="Comprobar" retryLabel="Reintentar" instructions="Elige la opción correcta para cada hueco y comprueba." />`.
+The `FinalExam` island needs its own Spanish props:
+`<FinalExam ... questionLabel="Pregunta" ofLabel="de" submitLabel="Enviar respuesta" lockWarningLabel="Atención: una vez que envíes, esta respuesta es definitiva. No podrás cambiarla." selectHintLabel="Selecciona una respuesta para continuar." nextLabel="Siguiente pregunta" seeResultsLabel="Ver resultados" correctLabel="Correcto" incorrectLabel="Incorrecto" correctAnswerLabel="Respuesta correcta" explanationLabel="Explicación" completeTitleLabel="Examen completado" scoreLabel="Has acertado" passLabel="Aprobado" passMessage="Has superado el listón: buen trabajo." failLabel="No superado" failMessage="Esta vez por debajo del aprobado: repasa las lecciones y vuelve a intentarlo." reviewLabel="Tus respuestas" />`.
 See `DESIGN.md` for the full prop reference of every component.
 
 ## 5. Always create BOTH locales

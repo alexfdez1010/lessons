@@ -22,7 +22,19 @@ existing component over inlining one-off JSX in a lesson.
 - **Rotate types every time** — never the same format twice in a row. Available:
   single `MCQ`, **multi-answer `MCQ`**, `MCQ pretest`, `MatchConcepts`
   (concept→definition), `Categorize` (sort into buckets), `FillBlank`
-  (pick-one-of-three cloze), scored `Quiz`.
+  (pick-one-of-three cloze), scored `Quiz`, and `FinalExam` (graded,
+  lock-on-submit — final-exam lessons only; see below).
+- **Vary the questions themselves — repetition is the #1 quality problem.**
+  Rotating the *component* is not enough; the questions inside a `Quiz`/`FinalExam`
+  must vary too. Across a question set, deliberately mix:
+  - **Type of ask**: numeric/calculation (show the arithmetic in the
+    explanation), scenario/application, "which statement is TRUE", spot-the-trap,
+    plain definition, side-by-side comparison, cause→effect, ranking-as-single-answer.
+  - **Stem wording**: never reuse the same sentence frame twice in a row, and
+    don't open five questions with "Which of the following…". Rephrase.
+  - **Difficulty**: interleave easy recall with multi-step reasoning.
+  If two questions feel interchangeable, rewrite one. A pool that drills the same
+  idea with the same phrasing teaches pattern-matching, not understanding.
 - **For a term worth pinning down**, reach for `FillBlank`: each blank is a
   pick-one-of-three choice (the right term flanked by two convincing
   distractors), so the learner must still discriminate it from look-alikes
@@ -153,10 +165,36 @@ Import from the barrel: `import { MCQ, Quiz } from '@/components/react';`
   />
   ```
 
-- **`Quiz`** — sequences several `MCQ` prop objects and tracks a score.
+- **`Quiz`** — sequences several `MCQ` prop objects and tracks a score. Practice
+  exercise: the learner can go Back, retry a question, and Restart at the end. Use
+  it inside *teaching* lessons.
+- **`FinalExam`** — the graded, **irreversible** exam island, reserved for a
+  course's `final-exam` lesson. Takes a 20–30 question pool via
+  `questions={[{ question, options, correct?, explanation?, allowMultiple? }]}`
+  (same per-question shape as `MCQ`). One question at a time; the learner selects
+  and clicks **Submit**, which **locks the answer for good** — there is no Back,
+  no Try again, and no Restart, so a wrong answer simply fails that question. The
+  result reveals instantly on submit, but the running score stays hidden until the
+  final screen, which shows a pass/fail verdict (`passPercent`, default `70`) and a
+  per-question review. Because nothing resets, the exam can't be retaken in-session.
+  Author it directly — do **not** wrap it in themed recap sections.
 
-Both accept i18n label props (`checkLabel`, `retryLabel`, `scoreLabel`, …) —
-pass the Spanish strings in `es` lessons (see the `translate-lesson` skill).
+  ```mdx
+  <FinalExam
+    client:visible
+    passPercent={70}
+    questions={[
+      { question: "…", options: [{ text: "…", correct: true }, { text: "…" }, { text: "…" }], explanation: "…" },
+      { question: "Select every true statement.", allowMultiple: true, options: [{ text: "…", correct: true }, { text: "…", correct: true }, { text: "…" }], explanation: "…" },
+      /* … 20–30 total, varied (see "Vary the questions themselves") … */
+    ]}
+  />
+  ```
+
+All three accept i18n label props (`checkLabel`, `retryLabel`, `scoreLabel`,
+`submitLabel`, `lockWarningLabel`, `passLabel`, …) — pass the Spanish strings in
+`es` lessons (see the `translate-lesson` and `new-lesson` skills for the full
+`FinalExam` Spanish prop set).
 
 ## Concept → definition matching (new component pattern)
 
