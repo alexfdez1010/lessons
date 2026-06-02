@@ -124,3 +124,12 @@ export type { DurationBalanceProps } from '@/components/react/DurationBalance';
 
 export { ConvexityCurve, default as ConvexityCurveDefault } from '@/components/react/ConvexityCurve';
 export type { ConvexityCurveProps } from '@/components/react/ConvexityCurve';
+
+export { ProofOfWork, default as ProofOfWorkDefault } from '@/components/react/ProofOfWork';
+export type { ProofOfWorkProps } from '@/components/react/ProofOfWork';
+
+export { HalvingSupply, default as HalvingSupplyDefault } from '@/components/react/HalvingSupply';
+export type { HalvingSupplyProps } from '@/components/react/HalvingSupply';
+
+export { LightningChannel, default as LightningChannelDefault } from '@/components/react/LightningChannel';
+export type { LightningChannelProps } from '@/components/react/LightningChannel';

@@ -36,10 +36,10 @@ assumes. `money-and-value` is the root of the whole catalog._
 - [x] **zcash** topic — what private money means, why Bitcoin isn't private,
   three roads to privacy, ZK proofs, inside Zcash, anonymous tx in practice,
   what is Zcash _(pre-existing)_
-- [ ] **bitcoin** topic — what Bitcoin is & why it exists, the ledger & mining,
+- [x] **bitcoin** topic — what Bitcoin is & why it exists, the ledger & mining,
   proof-of-work, 21M supply & halvings, keys/addresses/wallets, sending a tx &
   fees, nodes & full verification, Lightning at a glance. _(same level as
-  `zcash`; deps: `crypto-basics`)_
+  `zcash`; deps: `crypto-basics`)_ _(2026-06-02)_
 - [ ] **ethereum** topic — what Ethereum is & how it differs from Bitcoin, the
   world computer & EVM, accounts vs UTXO, gas & fees, smart contracts & tokens
   (ERC-20/721), proof-of-stake & staking, L2 rollups at a glance. _(same level
