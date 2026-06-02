@@ -1,5 +1,17 @@
 /**
- * check-island-latex.ts — fail the build on LaTeX math inside island props.
+ * check-island-latex.ts — fail the build on bad math/escaping inside island props.
+ *
+ * Two bugs, both of which leave `bun run check:latex` and `astro build` green:
+ *
+ *  1. Escaped `\$` in a STRING prop. In MDX PROSE a bare `$` opens a KaTeX span,
+ *     so authors write `\$50` to mean a literal dollar — a correct habit there.
+ *     But a JSX attribute value (`question="…"`, `text="…"`) is NOT prose and
+ *     NOT a JS string: backslash escapes are not processed, so `\$50` renders
+ *     the backslash literally ("\$50" on the page). Inside a `{…}` expression
+ *     prop the value IS JS, where `"\$"` harmlessly collapses to `$`, so the bug
+ *     is string-attrs only.
+ *
+ *  2. LaTeX math in any prop. (original purpose, below)
  *
  * KaTeX only renders `$…$`/`$$…$$` that remark-math finds in PROSE. Math that
  * lands inside a React-island JSX attribute — `question="… $r^n$ …"`, a Quiz
@@ -37,7 +49,10 @@ const CONTENT = resolve(ROOT, 'src/content');
 // exactly what we scan.
 const processor = unified().use(remarkParse).use(remarkMdx).use(remarkMath);
 
+type Kind = 'math' | 'escaped-dollar';
+
 interface Problem {
+  kind: Kind;
   file: string;
   line: number | undefined;
   component: string;
@@ -111,42 +126,62 @@ for (const abs of walkMdx(CONTENT)) {
     const component = node.name ?? '(fragment)';
     for (const attr of node.attributes ?? []) {
       if (attr.type !== 'mdxJsxAttribute') continue; // skip {...spread}
-      // String value: question="…". Expression value: options={[…]} → raw .value.
-      const text =
-        typeof attr.value === 'string'
-          ? attr.value
-          : (attr.value?.value ?? '');
+      // A plain string value (question="…") is JSX text: backslash escapes are
+      // NOT processed, so `\$50` renders the backslash literally. An expression
+      // value (options={[…]}) is JS source where `\$` in a string literal is a
+      // harmless escape for `$` — so the `\$` bug only exists in string attrs.
+      const isString = typeof attr.value === 'string';
+      const text = isString ? attr.value : (attr.value?.value ?? '');
       if (!text) continue;
-      for (const hit of findLatex(text)) {
+      const line = (attr.position ?? node.position)?.start?.line;
+      const push = (kind: Kind, snippet: string) =>
         problems.push({
+          kind,
           file: relative(ROOT, abs),
-          line: (attr.position ?? node.position)?.start?.line,
+          line,
           component,
           attr: attr.name ?? '?',
-          snippet: clip(hit),
+          snippet,
         });
+
+      // Bug 1 — `\$` in a string prop: renders a literal backslash on the page.
+      if (isString && /\\\$/.test(text)) {
+        for (const m of text.match(/\S*\\\$\S*/g) ?? []) push('escaped-dollar', clip(m));
       }
+      // Bug 2 — LaTeX math in any prop: KaTeX never renders it, ships as `$…$`.
+      for (const hit of findLatex(text)) push('math', clip(hit));
     }
   });
 }
 
 if (problems.length === 0) {
   console.log(
-    `✓ Island LaTeX OK — no math delimiters in island props across ${jsxNodes} JSX elements in ${filesScanned} MDX files.`,
+    `✓ Island props OK — no escaped \`\\$\` or LaTeX math in island props across ${jsxNodes} JSX elements in ${filesScanned} MDX files.`,
   );
   process.exit(0);
 }
 
-console.error(
-  `✗ LaTeX inside island props — ${problems.length} occurrence(s):\n`,
-);
+const dollar = problems.filter((p) => p.kind === 'escaped-dollar');
+const math = problems.filter((p) => p.kind === 'math');
+console.error(`✗ Bad LaTeX/escaping in island props — ${problems.length} occurrence(s):\n`);
 for (const p of problems) {
-  console.error(`  ${p.file}:${p.line ?? '?'}  <${p.component} ${p.attr}=…>`);
+  const tag = p.kind === 'escaped-dollar' ? 'escaped \\$' : 'LaTeX math';
+  console.error(`  ${p.file}:${p.line ?? '?'}  <${p.component} ${p.attr}=…>  [${tag}]`);
   console.error(`    found: ${p.snippet}\n`);
 }
-console.error(
-  'KaTeX never renders `$…$` inside a JSX attribute — the literal text ships.\n' +
-    'Move the math into MDX prose (a `$…$`/`$$…$$` block between paragraphs) and\n' +
-    'keep prop strings plain. Currency like `$80` is fine; `$r^n$` / `\\frac…` is not.',
-);
+if (dollar.length) {
+  console.error(
+    'Escaped `\\$` in a STRING prop renders the backslash literally (`\\$50` on the\n' +
+      'page). In a JSX attribute `$` is already a plain char — never escape it.\n' +
+      'Fix: drop the backslash — write `$50`, not `\\$50`. (The `\\$` habit is only\n' +
+      'correct in MDX PROSE, where a bare `$` would start a KaTeX span.)',
+  );
+}
+if (math.length) {
+  console.error(
+    '\nKaTeX never renders `$…$` inside a JSX attribute — the literal text ships.\n' +
+      'Move the math into MDX prose (a `$…$`/`$$…$$` block between paragraphs) and\n' +
+      'keep prop strings plain. Currency like `$80` is fine; `$r^n$` / `\\frac…` is not.',
+  );
+}
 process.exit(1);
