@@ -120,3 +120,14 @@ quantitative relationship. Build after the learner has `investment-metrics`,
 - [ ] **extreme-value-and-tails** — modeling the tail: fat tails vs Gaussian,
   power laws, Extreme Value Theory, expected shortfall beyond VaR, copulas &
   tail dependence, stress testing. _(deps: `value-at-risk`, `monte-carlo-finance`)_
+- [ ] **polymarket-prediction-markets** — betting on real-world outcomes:
+  what a prediction market is, how Polymarket works end-to-end (USDC on Polygon,
+  outcome share tokens that pay $1 if right / $0 if wrong), price = implied
+  probability, the order book / CLOB & how shares are minted/merged from a
+  $1 pair, buying YES vs shorting via NO, market resolution & the UMA optimistic
+  oracle (proposal, dispute, settlement), fees & gas, liquidity/spread/slippage,
+  arbitrage (YES+NO < $1), calibration & the favorite–longshot bias, edge vs
+  the crowd, Kelly-sized bets on a binary, and the real risks (oracle disputes,
+  illiquidity, regulatory/geofencing, ambiguous resolution). _(deps:
+  `bayesian-finance`, `kelly-and-cagr`; payoff + price=probability + order-book
+  islands)_
