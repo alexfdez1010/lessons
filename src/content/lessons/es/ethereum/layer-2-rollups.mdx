@@ -1,0 +1,337 @@
+---
+title: "Los rollups de capa 2 de un vistazo"
+description: "Cómo escala Ethereum sin renunciar a su seguridad: los rollups ejecutan transacciones fuera de la cadena y publican datos comprimidos de vuelta en L1, repartiendo un único coste de L1 entre muchos usuarios. Rollups optimistas frente a ZK, pruebas de fraude frente a pruebas de validez, y sus compromisos."
+topic: "es/ethereum"
+order: 7
+minutes: 9
+updated: 2026-06-03
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, Categorize, MatchConcepts, MindMap, RollupBatch } from '@/components/react';
+
+Ya sabéis cómo funciona Ethereum por dentro: una única EVM compartida, cada nodo reejecutando cada transacción, todo ello asegurado por prueba de participación. Esa redundancia es la fuente de la seguridad de Ethereum, y también su cuello de botella. Como *todos* rehacen *todo*, la capa 1 (L1) de Ethereum solo puede procesar en torno a **15 transacciones por segundo**. Cuando la red se satura, el espacio de bloque escasea, estalla una subasta de comisiones y un simple intercambio de tokens puede costar más de lo que vale el propio intercambio.
+
+El arreglo predominante no es «hacer Ethereum más grande». Son los **rollups de capa 2**: cadenas separadas y más rápidas que hacen el trabajo pesado en otro sitio y luego comprueban sus deberes de vuelta en Ethereum. Esta lección trata de cómo funciona ese truco, y de por qué resulta más barato sin ser menos seguro.
+
+## El problema de la escalabilidad
+
+<MCQ
+  client:visible
+  pretestLabel="Antes de leer — adivina"
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="¡Correcto!"
+  incorrectLabel="Incorrecto"
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  question="De la lección sobre la EVM: ¿por qué no puede la L1 de Ethereum procesar miles de transacciones por segundo como hace un servidor web normal?"
+  options={[
+    { text: "Porque cada nodo reejecuta de forma independiente cada transacción, así que el nodo más lento que sea asequible fija el techo para todos.", correct: true, explanation: "Correcto. El rendimiento está limitado por la exigencia de que toda la red reejecute todo el trabajo: esa redundancia es la seguridad, y también el cuello de botella." },
+    { text: "Porque Ethereum funciona sobre un único servidor poco potente que necesita una mejora.", explanation: "No hay servidor central. La EVM está replicada en miles de nodos; el límite es la reejecución redundante, no una sola máquina." },
+    { text: "Porque a los validadores de prueba de participación se les prohíbe procesar más de 15 transacciones.", explanation: "No existe un recuento fijado a fuego así. El límite viene de cuánto trabajo puede rehacer cada nodo por bloque sin dejar de ser descentralizado." },
+    { text: "Porque las transacciones de ETH están cifradas y descifrarlas es lento.", explanation: "Las transacciones de Ethereum no están cifradas, y ese no es el cuello de botella. Lo es la reejecución universal." },
+  ]}
+/>
+
+Pongámosle nombre a la cosa. El **rendimiento** (throughput) es cuántas transacciones puede liquidar una cadena por unidad de tiempo, medido normalmente en **transacciones por segundo (TPS)**. La L1 de Ethereum ronda los 15 TPS. Visa, en comparación, gestiona miles. La brecha no se debe a que los ingenieros de Ethereum olvidaran teclear rápido: es una consecuencia *deliberada* del diseño que ya aprendisteis: miles de nodos reejecutan cada transacción para que no haya que confiar en nadie. Por tanto el espacio de bloque es escaso, y las cosas escasas se subastan, que es por lo que las comisiones de gas se disparan justo cuando más queréis transaccionar.
+
+Esta tensión tiene un nombre: el **trilema de la escalabilidad**. Una cadena de bloques quiere tres cosas a la vez —**seguridad** (difícil de atacar), **descentralización** (cualquiera puede correr un nodo con hardware modesto) y **escalabilidad** (rendimiento alto)—, pero es brutalmente difícil maximizar las tres juntas. Disparad la escalabilidad exigiendo nodos potentes y caros, y sacrificáis en silencio la descentralización. La L1 de Ethereum elige deliberadamente seguridad y descentralización, y acepta un rendimiento base bajo. Los rollups son la forma ingeniosa de recomprar escalabilidad *sin* pagar con las otras dos.
+
+<FillBlank
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  explanationLabel="Explicación"
+  correctResultLabel="✓ Correcto"
+  question="Rellena los huecos sobre el problema de la escalabilidad."
+  text="El rendimiento de la L1 de Ethereum, medido en {{transacciones por segundo|bloques por nodo|hashes por vatio}}, es bajo porque cada nodo debe {{reejecutar cada transacción|almacenar un bloque|firmar un mensaje}}. El {{trilema de la escalabilidad|problema de la parada|subasta de gas}} dice que es difícil tener seguridad, descentralización y escalabilidad todas a la vez."
+  explanation="Rendimiento = TPS. El tope existe porque cada nodo reejecuta todo. El trilema de la escalabilidad describe la tensión a tres bandas que una cadena no puede resolver del todo en la L1."
+/>
+
+## Qué hace un rollup
+
+Es hora de las dos capas. La **capa 1 (L1)** es la cadena base —Ethereum en sí, con toda su seguridad y descentralización—. Una **capa 2 (L2)** es un sistema *separado* construido **encima de** la L1 que gestiona transacciones por ella y luego se apoya en la L1 para las garantías que no puede dar por sí mismo.
+
+Un **rollup** (literalmente, «enrollado») es el tipo de L2 dominante. La receta tiene dos mitades:
+
+1. **Ejecución fuera de la cadena.** El rollup corre las transacciones en su propia cadena más rápida, una cadena que *no* necesita miles de nodos independientes reejecutando todo, así que puede ser barata y veloz.
+2. **Datos y liquidación en la cadena.** Periódicamente **publica los datos comprimidos de las transacciones (y/o una prueba) de vuelta en la L1 de Ethereum**. Un **lote** (batch) es ese paquete: muchas transacciones de L2 enrolladas en un único envío a L1 (de ahí el nombre «rollup»). Como los datos aterrizan en la L1, cualquiera puede reconstruir el estado de la L2 solo a partir de Ethereum —esa propiedad se llama **disponibilidad de los datos** (data availability)— y la L1 sigue siendo el tribunal final de la **liquidación** (settlement) y la seguridad.
+
+La analogía: imaginad un restaurante a reventar. Si cada comensal entrara en la cocina y recitara su pedido individualmente, la cocina colapsaría: eso es la L1 intentando hacerlo todo. En su lugar, el camarero de cada mesa toma los pedidos en la sala (rápido, a un lado) y luego lleva **un único comando consolidado** a la cocina. La cocina (L1) sigue cocinando la comida canónica y es la única fuente de verdad sobre lo que se pidió, pero solo tuvo que leer *un comando* en vez de cien pedidos a gritos. El servicio ocurre fuera de la cadena; el registro autoritativo aterriza en la cadena.
+
+La genialidad está en que conserváis el modelo de confianza de Ethereum. No tenéis que fiaros de la palabra del operador del rollup sobre vuestro saldo, porque los datos subyacentes se publican en la L1, donde se pueden comprobar.
+
+<MCQ
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="¡Correcto!"
+  incorrectLabel="Incorrecto"
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  question="En un rollup, ¿dónde ocurre la ejecución de las transacciones y dónde viven la liquidación final y la disponibilidad de los datos?"
+  options={[
+    { text: "La ejecución corre fuera de la cadena, en la L2; los datos comprimidos y la liquidación aterrizan en la L1.", correct: true, explanation: "Justo el reparto del rollup: la ejecución pesada en la L2 veloz y luego publicar los datos de vuelta en Ethereum para que la L1 garantice disponibilidad de datos y liquidación." },
+    { text: "Tanto la ejecución como la liquidación ocurren enteramente en la L1; la L2 es solo una caché.", explanation: "Si todo se quedara en la L1 no ganarías nada. Todo el sentido es mover la ejecución fuera de la cadena manteniendo datos/liquidación en la L1." },
+    { text: "Ambas ocurren enteramente en la L2; Ethereum nunca interviene.", explanation: "Entonces no heredaría la seguridad de Ethereum: eso es una sidechain, no un rollup. Los rollups publican datos de vuelta en la L1." },
+    { text: "La ejecución está en la L1; la L2 solo guarda copias de seguridad.", explanation: "Al revés. La ejecución se mueve a la L2; la L1 guarda los datos canónicos y liquida." },
+  ]}
+/>
+
+## Por qué es más barato: repartir el coste de la L1
+
+Aquí está la pregunta del millón, literalmente. Publicar un lote en Ethereum cuesta gas, un **coste fijo** que existe sin importar cuántas transacciones haya dentro del lote. El truco es que ese único coste se **reparte entre todos los del lote**. Meted más transacciones en un solo lote y el **coste por usuario** cae, porque la misma factura de L1 se divide entre más. Este reparto de un coste fijo se llama **amortizarlo**.
+
+Subid el tamaño del lote abajo y observad cómo el coste por usuario se desploma mientras el coste total de L1 apenas se mueve. Cambiad el interruptor optimista/ZK para ver cómo cambia la lectura de finalidad: explicaremos esa diferencia en la siguiente sección.
+
+<RollupBatch
+  client:visible
+  caption="Un único lote de L1 transporta muchas transacciones de L2. El coste fijo de publicarlo se reparte entre todos los que van dentro, así que el coste por usuario cae en picado a medida que crece el lote: eso es amortización. Cambia entre optimista y ZK para ver cómo liquida cada uno."
+  countLabel="Transacciones en el lote"
+  batchLabel="Publicar el lote en L1"
+  resetLabel="Reiniciar"
+  l2Label="Capa 2 (rollup)"
+  l1Label="Capa 1 (Ethereum)"
+  l1CostLabel="Coste en L1 de todo el lote"
+  perTxLabel="Coste por usuario"
+  savingsLabel="frente a ir directo a L1"
+  modeLabel="Tipo de prueba"
+  optimisticLabel="Optimista (prueba de fraude)"
+  zkLabel="ZK (prueba de validez)"
+  finalityLabel="Finalidad de retirada"
+  optimisticFinalityValue="~7 días de ventana de impugnación"
+  zkFinalityValue="Minutos — prueba verificada en L1"
+  ethLabel="ETH"
+/>
+
+Un ejemplo resuelto en números llanos. Supongamos que publicar un lote en la L1 cuesta unos `0,02 ETH` en gas, y que **200** transacciones viajan en ese lote. La parte de cada usuario del coste de L1 es `0,02 / 200 = 0,0001 ETH`, una centésima de uno por ciento de un ETH. Comparadlo con enviar una transacción de L1 independiente completa, que paga la tasa base entera ella sola. Cuantos más pasajeros compartan la factura fija del lote, más barato cada asiento. Duplicad el lote a 400 transacciones y la parte por usuario se reduce a la mitad de nuevo, a `0,00005 ETH`. (Son cifras redondas ilustrativas, no una cotización en vivo.)
+
+Una palanca más lo abarató drásticamente: **EIP-4844**, la actualización de los «blobs». Un **blob** es un trozo de espacio de datos barato y *temporal* en la L1, hecho a medida para los rollups: es mucho más barato que el almacenamiento de transacciones permanente y normal (**calldata**) y se borra automáticamente al cabo de unas semanas, lo cual está bien porque los rollups solo necesitan que los datos estén disponibles el tiempo suficiente para que cualquiera verifique el lote. Los blobs recortaron la factura de publicar datos, que es el coste dominante de un rollup, así que las comisiones por usuario cayeron en un orden de magnitud.
+
+<MatchConcepts
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  explanationLabel="Explicación"
+  allCorrectLabel="✓ Todo emparejado"
+  question="Empareja cada bloque de construcción de un rollup con lo que realmente es."
+  pairs={[
+    { term: "Rollup", definition: "Ejecución fuera de la cadena más datos y liquidación en la cadena" },
+    { term: "Lote (batch)", definition: "Muchas transacciones de L2 publicadas juntas en la L1 como un único envío" },
+    { term: "Secuenciador (sequencer)", definition: "El componente que ordena y empaqueta las transacciones de L2" },
+    { term: "Blob", definition: "Espacio de datos en L1 barato y temporal hecho para los rollups" },
+    { term: "L1", definition: "La cadena base que aporta liquidación y seguridad" },
+  ]}
+  explanation="Un rollup ejecuta fuera de la cadena y publica datos en la cadena. Un lote agrupa muchas transacciones juntas; el secuenciador las ordena; los blobs guardan los datos de forma barata; y la L1 es la capa de liquidación/seguridad bajo todo ello."
+/>
+
+Una definición rápida que acabáis de conocer: el **secuenciador** (sequencer) es el componente que recibe las transacciones entrantes de L2, decide su orden y las empaqueta en lotes. Hoy suele ser un único operador —cómodo y rápido, pero un punto de centralización que revisaremos en la sección de riesgos—.
+
+## Dos sabores: optimista frente a ZK
+
+Todos los rollups publican datos en la L1. Difieren en **cómo la L1 se convence de que el lote es realmente correcto**, y esa única elección lo determina todo lo demás.
+
+### Rollups optimistas
+
+Un **rollup optimista** (optimistic rollup) hace lo que dice el nombre: **da por buenos todos los lotes** y los publica sin prueba. La verificación es «inocente hasta que se demuestre lo contrario». Después de publicar un lote, hay una **ventana de impugnación** (challenge window) —típicamente de unos **7 días**— durante la cual cualquiera que esté vigilando puede presentar una **prueba de fraude** (fraud proof): una demostración compacta, en la cadena, de que un lote concreto contenía una transición de estado inválida. Si aterriza una prueba de fraude válida, el lote malo se revierte y el tramposo pierde su fianza. Si nadie impugna con éxito dentro de la ventana, el lote queda firme.
+
+- **A favor:** baratísimo de operar — sin criptografía cara por lote, solo publicar y esperar.
+- **En contra:** **finalidad de retirada lenta.** Mover fondos de vuelta a la L1 implica aguardar toda la ventana de impugnación (los ~7 días), porque hasta entonces una prueba de fraude aún podría revocarlo todo.
+
+### Rollups ZK
+
+Un **rollup ZK** (zero-knowledge rollup, de conocimiento cero) invierte la suposición a «culpable hasta que se demuestre la inocencia». A cada lote le adjunta una **prueba de validez** (validity proof, una prueba ZK): una pieza sucinta de criptografía que demuestra matemáticamente que la transición de estado del lote se computó correctamente, *sin* reejecutar todas las transacciones. La L1 verifica esa pequeña prueba al instante. Si cuadra, el lote es correcto: no hay nada que disputar ni ventana de espera.
+
+- **A favor:** **finalidad rápida.** Una vez verificada la prueba de validez en la L1, el lote queda liquidado de inmediato, así que las retiradas no necesitan una espera de varios días.
+- **En contra:** **más pesado de producir.** Generar esas pruebas criptográficas es caro en cómputo y, históricamente, más difícil de diseñar para una EVM totalmente general.
+
+Cambiad el interruptor en la isla de arriba para ver cómo la lectura de finalidad alterna entre la espera de la ventana de impugnación optimista y la liquidación casi instantánea de ZK.
+
+| Rasgo | Rollup optimista | Rollup ZK |
+|---|---|---|
+| Cómo se asegura la corrección | Se da por válido; cualquiera puede presentar una **prueba de fraude** para disputarlo | Una **prueba de validez** demuestra la corrección por adelantado |
+| Finalidad de retirada | Lenta — aguardar la ventana de impugnación de ~7 días | Rápida — liquida en cuanto la prueba se verifica en la L1 |
+| Coste de cómputo | Barato de operar (sin prueba por lote) | Pesado — generar pruebas de validez es caro |
+| Redes de ejemplo | Optimism, Arbitrum | zkSync, Starknet |
+
+<Categorize
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  explanationLabel="Explicación"
+  allCorrectLabel="✓ Todo ordenado"
+  question="Clasifica cada rasgo en la familia de rollup que describe."
+  buckets={["Rollup optimista", "Rollup ZK"]}
+  items={[
+    { text: "Da por válidos los lotes salvo que se impugnen", bucket: "Rollup optimista" },
+    { text: "Adjunta una prueba de validez verificada en la L1 de inmediato", bucket: "Rollup ZK" },
+    { text: "Tiene una ventana de impugnación de varios días antes de que finalicen las retiradas", bucket: "Rollup optimista" },
+    { text: "Se apoya en pruebas de fraude para pillar los lotes malos", bucket: "Rollup optimista" },
+    { text: "Ofrece finalidad rápida a costa de un cómputo más pesado", bucket: "Rollup ZK" },
+    { text: "Barato de operar porque se salta la criptografía por lote", bucket: "Rollup optimista" },
+  ]}
+  explanation="Optimista = dar por válido + pruebas de fraude + retiradas lentas con ventana de impugnación + operación barata. ZK = prueba de validez verificada de inmediato + finalidad rápida + generación de pruebas más pesada."
+/>
+
+<Reveal client:visible summary="Si una prueba ZK demuestra que el lote es válido, ¿por qué sigue alguien usando rollups optimistas?">
+Porque «demostrarlo criptográficamente» solía ser la parte difícil. Generar pruebas de validez para una EVM totalmente general es pesado en cómputo y fue, durante años, difícil de diseñar bien, así que los rollups optimistas salieron primero, maduraron primero y construyeron los ecosistemas y el utillaje más profundos. También son más simples y baratos de operar, ya que se saltan por completo la generación de pruebas por lote. El trato que aceptáis es la ventana de retirada lenta. La tecnología ZK avanza deprisa y puede que acabe ganando por méritos propios, pero la madurez del ecosistema, la simplicidad y la inercia mantienen hoy a los rollups optimistas muy en el juego.
+</Reveal>
+
+## Compromisos y riesgos
+
+Los rollups son una victoria genuina, pero «hereda la seguridad de la L1» merece un asterisco. Un rollup hereda las garantías de Ethereum para la **disponibilidad de los datos y la liquidación** —los datos están en la L1, y la L1 es el tribunal final—. Pero los rollups añaden su *propia* superficie de riesgo encima:
+
+- **Secuenciadores centralizados.** La mayoría de los rollups hoy corren un único secuenciador. No puede robaros los fondos (los datos y las pruebas lo mantienen honesto), pero *sí* puede censurar o retrasar vuestras transacciones, o caerse. Descentralizar los secuenciadores es un trabajo activo y sin terminar.
+- **Claves de actualización.** Muchos rollups están gobernados por claves de administración/multifirma que pueden actualizar los contratos. Una clave maliciosa o comprometida es un riesgo real, mitigado por timelocks y multifirmas pero no nulo.
+- **Retraso en las retiradas (optimista).** Esa ventana de impugnación de ~7 días significa que vuestros fondos no son instantáneamente portables de vuelta a la L1 —molesto, y un motivo por el que existen los «puentes rápidos» (que os adelantan el dinero por una comisión)—.
+- **Riesgo de puente (bridge).** Mover activos entre L1 y L2 pasa por contratos de puente, que históricamente han sido jugosos objetivos de hackeo. El puente es tan seguro como su código.
+
+Y un primo importante que conviene distinguir: una **sidechain** (cadena lateral) *no* es un rollup. Una sidechain corre su propio consenso independiente y aporta su **propia** seguridad: **no** publica sus datos en Ethereum, así que **no** hereda las garantías de la L1. Si los validadores de una sidechain conspiran, Ethereum no puede salvaros. La seguridad de un rollup está anclada a la L1; la de una sidechain está anclada solo a sí misma.
+
+<MCQ
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="¡Correcto!"
+  incorrectLabel="Incorrecto"
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  question="¿Qué afirmación captura con más precisión lo que un rollup hereda —y no hereda— de la L1 de Ethereum?"
+  options={[
+    { text: "Hereda la disponibilidad de los datos y la liquidación de la L1, pero añade sus propios riesgos, como un secuenciador centralizado y claves de actualización.", correct: true, explanation: "Correcto. El anclaje a la L1 asegura los datos y la liquidación, pero el rollup superpone riesgos operativos que no cubre el consenso de Ethereum." },
+    { text: "Hereda absolutamente todo de la L1, así que un rollup conlleva cero riesgo adicional.", explanation: "Demasiado optimista. La centralización del secuenciador, las claves de actualización, los retrasos en las retiradas y los puentes son riesgos reales específicos del rollup." },
+    { text: "No hereda nada de la L1 y está asegurado enteramente por sus propios validadores, como una sidechain.", explanation: "Eso describe una sidechain. Un rollup publica datos en la L1 y hereda sus garantías de disponibilidad de datos y liquidación." },
+    { text: "Hereda la velocidad de la L1, que es por lo que los rollups son lentos.", explanation: "Los rollups son más rápidos que la L1, no más lentos, y la «velocidad» no es lo que se hereda: lo son la disponibilidad de datos y la liquidación." },
+  ]}
+/>
+
+## La imagen global
+
+<MindMap
+  client:visible
+  title="Los rollups de capa 2 de un vistazo"
+  root={{
+    label: "Rollups de capa 2",
+    children: [
+      { label: "Problema de escalabilidad", children: [
+        { label: "Cada nodo reejecuta todo" },
+        { label: "TPS bajo, espacio de bloque escaso" },
+        { label: "Trilema de la escalabilidad" },
+      ]},
+      { label: "Qué hace un rollup", children: [
+        { label: "Ejecución fuera de la cadena en la L2" },
+        { label: "Publica datos + pruebas en la L1" },
+        { label: "La L1 conserva disponibilidad de datos y liquidación" },
+      ]},
+      { label: "Más barato al amortizar", children: [
+        { label: "Coste fijo del lote de L1 compartido por todos" },
+        { label: "El coste por usuario cae al crecer el lote" },
+        { label: "Los blobs abaratan los datos" },
+      ]},
+      { label: "Optimista frente a ZK", children: [
+        { label: "Optimista: dar por válido, pruebas de fraude" },
+        { label: "ZK: prueba de validez, finalidad rápida" },
+      ]},
+      { label: "Compromisos", children: [
+        { label: "Secuenciador centralizado" },
+        { label: "Retraso en las retiradas (optimista)" },
+        { label: "Riesgo de puente y de clave de actualización" },
+      ]},
+    ],
+  }}
+  caption="Cinco ideas: por qué la L1 es lenta, qué hace un rollup, por qué es barato, los dos sabores y de qué hay que cuidarse."
+/>
+
+<Quiz
+  client:visible
+  questionLabel="Pregunta"
+  ofLabel="de"
+  correctCountLabel="correctas"
+  completeLabel="Completado"
+  scoreLabel="Tu puntuación"
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="¡Correcto!"
+  incorrectLabel="Incorrecto"
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  nextLabel="Siguiente"
+  seeResultsLabel="Ver resultados"
+  backLabel="Atrás"
+  restartLabel="Reiniciar"
+  gateLabel="Comprueba tu respuesta para continuar."
+  questions={[
+    {
+      question: "Un lote cuesta 0,05 ETH publicarlo en la L1 y transporta 500 transacciones. ¿Cuál es la parte amortizada del coste de L1 de cada usuario?",
+      options: [
+        { text: "0,0001 ETH cada uno", correct: true },
+        { text: "0,05 ETH cada uno" },
+        { text: "0,5 ETH cada uno" },
+        { text: "25 ETH cada uno" },
+      ],
+      explanation: "0,05 / 500 = 0,0001 ETH. El coste fijo del lote se reparte entre todos los que viajan en él: 0,05 ETH es todo el lote pagado una sola vez, y el coste por usuario cae (no sube) a medida que crece el lote, así que divides en vez de multiplicar.",
+    },
+    {
+      question: "¿Cuál es la diferencia clave entre cómo convencen a la L1 los rollups optimistas y los ZK de que un lote es válido?",
+      options: [
+        { text: "Los rollups optimistas dan por válido y se apoyan en pruebas de fraude durante una ventana de impugnación; los rollups ZK adjuntan una prueba de validez verificada de inmediato.", correct: true },
+        { text: "Los rollups optimistas usan pruebas criptográficas mientras que los rollups ZK usan una ventana de impugnación." },
+        { text: "Los rollups optimistas corren en la L1 y los rollups ZK corren en la L2." },
+        { text: "No hay diferencia real; los nombres son marketing." },
+      ],
+      explanation: "El reparto definitorio es dar-por-válido-e-impugnar (optimista, pruebas de fraude) frente a demostrar-por-adelantado (ZK, prueba de validez), que es por lo que ZK tiene finalidad rápida y el optimista tiene retraso en las retiradas. Ambos son L2 que publican en la L1: la diferencia es el mecanismo de validez, no la capa.",
+    },
+    {
+      question: "Detecta la trampa. Alguien te dice: «Un rollup de capa 2 es solo una cadena separada de confianza: tienes que fiarte de su operador igual que te fiarías de un banco». ¿Qué falla en eso?",
+      options: [
+        { text: "Un rollup publica los datos de sus transacciones y/o pruebas en la L1, así que su corrección se puede verificar en Ethereum: no tienes que fiarte de la palabra del operador.", correct: true },
+        { text: "No falla nada; los rollups de verdad son cadenas de plena confianza como los bancos." },
+        { text: "Falla porque los rollups no tienen operador en absoluto." },
+        { text: "Falla porque los rollups en realidad son más lentos y caros que la L1." },
+      ],
+      explanation: "La disponibilidad de los datos en la L1 más las pruebas de fraude o de validez hacen que el operador no pueda falsear tu saldo: esa minimización de la confianza separa a un rollup de una mera cadena de confianza o una sidechain. Los rollups sí tienen operadores (secuenciadores) hoy; publicar en la L1 es lo que los mantiene honestos. El fallo de la afirmación va de confianza, no de velocidad.",
+    },
+    {
+      question: "¿Por qué publicar muchas transacciones en un solo lote reduce la comisión que paga cada usuario?",
+      options: [
+        { text: "El coste fijo de publicar el lote en la L1 se amortiza: se divide entre todas las transacciones que hay en él.", correct: true },
+        { text: "Ethereum da descuentos por volumen a las transacciones grandes." },
+        { text: "Los lotes más grandes están exentos por completo de comisiones de gas." },
+        { text: "Cada transacción extra reduce la tasa base de L1 para todos." },
+      ],
+      explanation: "Una factura de L1, muchos pasajeros: cuantas más transacciones compartan un lote, menor es la porción del coste fijo de cada una. No hay tramo de descuento por volumen ni exención: los lotes siguen pagando gas de L1, y añadir transacciones no rebaja la tasa base de la L1; solo reparte el coste propio del lote.",
+    },
+    {
+      question: "¿En qué se diferencia un rollup de una sidechain?",
+      options: [
+        { text: "Un rollup publica datos en la L1 y hereda la seguridad de Ethereum; una sidechain corre su propio consenso y solo aporta su propia seguridad.", correct: true },
+        { text: "Un rollup es más lento que una sidechain porque usa Ethereum." },
+        { text: "Una sidechain publica pruebas en la L1 mientras que un rollup nunca toca la L1." },
+        { text: "No hay diferencia; los términos son intercambiables." },
+      ],
+      explanation: "El rollup está anclado a la L1, así que su seguridad viene de Ethereum; la sidechain está por su cuenta, así que fiarse de ella es fiarse de sus propios validadores. Ambas buscan rendimiento alto: la distinción real es de dónde viene su seguridad, y es el rollup (no la sidechain) el que publica datos/pruebas en la L1.",
+    },
+    {
+      question: "Un usuario quiere retirar fondos de un rollup optimista de vuelta a la L1 y le sorprende que tarde una semana. ¿Por qué?",
+      options: [
+        { text: "La ventana de impugnación debe transcurrir para que cualquiera aún pudiera presentar una prueba de fraude contra el lote antes de que quede firme.", correct: true },
+        { text: "La L1 de Ethereum siempre tarda una semana en liquidar cualquier transacción." },
+        { text: "La prueba de validez tarda una semana en generarse." },
+        { text: "Los puentes de sidechain imponen un lote semanal obligatorio." },
+      ],
+      explanation: "Los rollups optimistas dan por válido, así que dejan una ventana de ~7 días para pruebas de fraude, y las retiradas la aguardan por seguridad. La L1 en sí liquida en minutos; las pruebas de validez pertenecen a los rollups ZK (y no tardan una semana); y esto es la ventana de impugnación de un rollup, no un calendario de sidechain.",
+    },
+  ]}
+/>
+
+## Ideas clave
+
+<Callout variant="success" title="Qué recordar">
+- **El problema:** la L1 de Ethereum reejecuta todo en cada nodo, topando el rendimiento en unos 15 TPS y haciendo el espacio de bloque escaso y caro — el **trilema de la escalabilidad** en acción.
+- **El arreglo:** un **rollup de capa 2** ejecuta las transacciones **fuera de la cadena** en una L2 veloz y luego publica el **lote comprimido** de datos (y/o pruebas) de vuelta en la **L1**, que conserva la **disponibilidad de los datos** y la **liquidación**. Heredáis la seguridad de Ethereum sin fiaros del operador.
+- **Por qué es barato:** el coste fijo de publicar un lote se **amortiza** entre todos los que van en él, así que el **coste por usuario** cae a medida que crece el lote — y los **blobs** (EIP-4844) abarataron drásticamente esos datos.
+- **Dos sabores:** los rollups **optimistas** dan por válido y se apoyan en **pruebas de fraude** dentro de una ventana de impugnación de ~7 días (baratos, retiradas lentas); los rollups **ZK** adjuntan una **prueba de validez** verificada en la L1 de inmediato (finalidad rápida, más pesados de producir).
+- **Cuidado con:** los **secuenciadores** centralizados, las **claves de actualización**, el **retraso de retirada** optimista y el riesgo de **puente**. Y una **sidechain** no es un rollup — se asegura a sí misma, no vía la L1.
+</Callout>
+
+Ese es el arco completo. Habéis ido desde «¿qué es Ethereum?» pasando por la EVM, las cuentas, el gas, los contratos y la prueba de participación, y ahora subiendo la escalera de la escalabilidad hasta los rollups de capa 2 — el diseño sobre el que el ecosistema está construyendo de verdad. Entendéis Ethereum de principio a fin. Queda una cosa: demostrarlo. Id al **examen final** de este tema y juntadlo todo.

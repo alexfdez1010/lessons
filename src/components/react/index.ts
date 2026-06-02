@@ -133,3 +133,18 @@ export type { HalvingSupplyProps } from '@/components/react/HalvingSupply';
 
 export { LightningChannel, default as LightningChannelDefault } from '@/components/react/LightningChannel';
 export type { LightningChannelProps } from '@/components/react/LightningChannel';
+
+export { EvmStateMachine, default as EvmStateMachineDefault } from '@/components/react/EvmStateMachine';
+export type { EvmStateMachineProps } from '@/components/react/EvmStateMachine';
+
+export { GasFeeBreakdown, default as GasFeeBreakdownDefault } from '@/components/react/GasFeeBreakdown';
+export type { GasFeeBreakdownProps } from '@/components/react/GasFeeBreakdown';
+
+export { TokenLedger, default as TokenLedgerDefault } from '@/components/react/TokenLedger';
+export type { TokenLedgerProps } from '@/components/react/TokenLedger';
+
+export { StakeWheel, default as StakeWheelDefault } from '@/components/react/StakeWheel';
+export type { StakeWheelProps } from '@/components/react/StakeWheel';
+
+export { RollupBatch, default as RollupBatchDefault } from '@/components/react/RollupBatch';
+export type { RollupBatchProps } from '@/components/react/RollupBatch';

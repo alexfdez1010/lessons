@@ -40,10 +40,10 @@ assumes. `money-and-value` is the root of the whole catalog._
   proof-of-work, 21M supply & halvings, keys/addresses/wallets, sending a tx &
   fees, nodes & full verification, Lightning at a glance. _(same level as
   `zcash`; deps: `crypto-basics`)_ _(2026-06-02)_
-- [ ] **ethereum** topic — what Ethereum is & how it differs from Bitcoin, the
+- [x] **ethereum** topic — what Ethereum is & how it differs from Bitcoin, the
   world computer & EVM, accounts vs UTXO, gas & fees, smart contracts & tokens
   (ERC-20/721), proof-of-stake & staking, L2 rollups at a glance. _(same level
-  as `zcash`; deps: `crypto-basics`)_
+  as `zcash`; deps: `crypto-basics`)_ _(2026-06-03)_
 
 ## Stage 1 — Core building blocks (⬤ beginner)
 - [x] **money-time-value** — present value, future value, discounting, compounding _(2026-05-31)_
