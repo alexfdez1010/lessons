@@ -106,3 +106,18 @@ export type { TotalReturnStackProps } from '@/components/react/TotalReturnStack'
 
 export { DiversifyBasket, default as DiversifyBasketDefault } from '@/components/react/DiversifyBasket';
 export type { DiversifyBasketProps } from '@/components/react/DiversifyBasket';
+
+export { BondCashflows, default as BondCashflowsDefault } from '@/components/react/BondCashflows';
+export type { BondCashflowsProps } from '@/components/react/BondCashflows';
+
+export { PriceYieldSeesaw, default as PriceYieldSeesawDefault } from '@/components/react/PriceYieldSeesaw';
+export type { PriceYieldSeesawProps } from '@/components/react/PriceYieldSeesaw';
+
+export { YieldCurveShapes, default as YieldCurveShapesDefault } from '@/components/react/YieldCurveShapes';
+export type { YieldCurveShapesProps } from '@/components/react/YieldCurveShapes';
+
+export { DurationBalance, default as DurationBalanceDefault } from '@/components/react/DurationBalance';
+export type { DurationBalanceProps } from '@/components/react/DurationBalance';
+
+export { ConvexityCurve, default as ConvexityCurveDefault } from '@/components/react/ConvexityCurve';
+export type { ConvexityCurveProps } from '@/components/react/ConvexityCurve';

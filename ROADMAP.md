@@ -43,7 +43,7 @@ assumes. `money-and-value` is the root of the whole catalog._
 - [x] **interest-and-yield** — simple vs compound interest, APR vs APY, nominal vs real _(2026-06-01)_
 
 ## Stage 2 — Markets & instruments (⬤⬤ intermediate)
-- [ ] **bonds-and-rates** — yield curve, duration, convexity intuition
+- [x] **bonds-and-rates** — yield curve, duration, convexity intuition _(2026-06-02)_
 - [ ] **stablecoins** — fiat-backed vs crypto-backed vs algorithmic, peg mechanics, depeg risk
 - [ ] **defi-amms** — constant-product AMMs, liquidity pools, slippage, impermanent loss
 
