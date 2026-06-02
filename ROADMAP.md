@@ -71,3 +71,52 @@ assumes. `money-and-value` is the root of the whole catalog._
 - [ ] **options-pricing** — Black–Scholes intuition, the Greeks, implied volatility
 - [ ] **value-at-risk** — VaR & CVaR, historical vs parametric vs Monte Carlo
 - [ ] **mev-and-ordering** — mempool, front/back-running, sandwich attacks, PBS
+
+## Stage 5 — Quant deep dives (⬤⬤⬤⬤ expert) — specific, math-heavy
+_Each is a standalone expert lesson going to real-practitioner depth: full
+derivations, multiple worked numeric examples, and a chart/simulation island per
+quantitative relationship. Build after the learner has `investment-metrics`,
+`portfolio-theory` and `value-at-risk`._
+
+- [ ] **monte-carlo-finance** — Monte Carlo simulation for finance: the law of
+  large numbers, sampling from return distributions, geometric Brownian motion
+  paths, simulating portfolio/retirement outcomes, pricing path-dependent
+  options, convergence & standard error, variance-reduction (antithetic
+  variates, control variates), pitfalls (garbage-in distributions, correlation,
+  fat tails). _(deps: `value-at-risk`; sim-path + convergence islands)_
+- [ ] **kelly-and-cagr** — bet sizing & geometric growth: arithmetic vs geometric
+  mean, why CAGR (not average return) is what compounds, volatility drag /
+  variance penalty, the Kelly criterion (f\* = edge/odds), full vs fractional
+  Kelly, Kelly for continuous returns (f\* = μ/σ²), drawdown vs growth trade-off,
+  multi-asset Kelly, ruin & over-betting. _(deps: `investment-metrics`,
+  `portfolio-theory`; growth-curve + bet-sizing islands)_
+- [ ] **bayesian-finance** — Bayesian statistics & probability for finance: prior
+  → likelihood → posterior, Bayes' rule worked on market events, conjugate
+  priors, Bayesian updating of return/volatility estimates, shrinkage &
+  Black–Litterman intuition, credible intervals vs confidence intervals, base
+  rates & the prosecutor's fallacy in trading signals, MCMC at a glance. _(deps:
+  `investment-metrics`; prior/posterior animation island)_
+- [ ] **stochastic-processes** — random processes for asset prices: random walks,
+  martingales, Markov chains, Brownian motion & Itô's lemma intuition,
+  mean-reversion (Ornstein–Uhlenbeck), jump-diffusion, what a stochastic
+  differential equation says. _(deps: `monte-carlo-finance`)_
+- [ ] **time-series-finance** — modeling returns over time: stationarity,
+  autocorrelation, AR/MA/ARIMA, volatility clustering, GARCH, EWMA, backtesting
+  pitfalls (look-ahead, overfitting, multiple testing). _(deps: `bayesian-finance`)_
+- [ ] **factor-models** — multi-factor investing: CAPM → Fama–French 3/5-factor,
+  momentum, cross-sectional regression, factor risk decomposition, alpha vs
+  factor exposure, smart beta. _(deps: `portfolio-theory`)_
+- [ ] **risk-of-ruin** — survival & position sizing: risk of ruin formula,
+  drawdown distributions, expectancy, sequencing risk, Monte Carlo ruin curves,
+  stop-loss math. _(deps: `kelly-and-cagr`, `monte-carlo-finance`)_
+- [ ] **portfolio-optimization** — from theory to weights: mean-variance
+  optimization mechanics, the covariance matrix, estimation error & instability,
+  shrinkage estimators, risk parity, the maximum-Sharpe & minimum-variance
+  portfolios, constraints & transaction costs. _(deps: `portfolio-theory`,
+  `factor-models`)_
+- [ ] **greeks-and-hedging** — managing an options book: delta/gamma/vega/theta/rho
+  in depth, delta-neutral hedging, gamma scalping, the volatility surface, vega
+  risk, P&L attribution. _(deps: `options-pricing`)_
+- [ ] **extreme-value-and-tails** — modeling the tail: fat tails vs Gaussian,
+  power laws, Extreme Value Theory, expected shortfall beyond VaR, copulas &
+  tail dependence, stress testing. _(deps: `value-at-risk`, `monte-carlo-finance`)_
