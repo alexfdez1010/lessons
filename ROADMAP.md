@@ -36,6 +36,14 @@ assumes. `money-and-value` is the root of the whole catalog._
 - [x] **zcash** topic — what private money means, why Bitcoin isn't private,
   three roads to privacy, ZK proofs, inside Zcash, anonymous tx in practice,
   what is Zcash _(pre-existing)_
+- [ ] **bitcoin** topic — what Bitcoin is & why it exists, the ledger & mining,
+  proof-of-work, 21M supply & halvings, keys/addresses/wallets, sending a tx &
+  fees, nodes & full verification, Lightning at a glance. _(same level as
+  `zcash`; deps: `crypto-basics`)_
+- [ ] **ethereum** topic — what Ethereum is & how it differs from Bitcoin, the
+  world computer & EVM, accounts vs UTXO, gas & fees, smart contracts & tokens
+  (ERC-20/721), proof-of-stake & staking, L2 rollups at a glance. _(same level
+  as `zcash`; deps: `crypto-basics`)_
 
 ## Stage 1 — Core building blocks (⬤ beginner)
 - [x] **money-time-value** — present value, future value, discounting, compounding _(2026-05-31)_
@@ -44,6 +52,13 @@ assumes. `money-and-value` is the root of the whole catalog._
 
 ## Stage 2 — Markets & instruments (⬤⬤ intermediate)
 - [x] **bonds-and-rates** — yield curve, duration, convexity intuition _(2026-06-02)_
+- [ ] **loans-and-mortgages** ⭐ HIGH PRIORITY — borrowing from the customer's
+  side: how a loan/mortgage works, principal & interest, amortization schedules,
+  fixed vs variable rate, APR vs APY in practice, term & monthly payment
+  trade-offs, total cost of credit, down payment / LTV, fees & closing costs,
+  early repayment, refinancing, default & foreclosure basics. _(deps:
+  `interest-and-yield`; everyday personal-finance application of compounding —
+  build before `stablecoins`)_
 - [ ] **stablecoins** — fiat-backed vs crypto-backed vs algorithmic, peg mechanics, depeg risk
 - [ ] **defi-amms** — constant-product AMMs, liquidity pools, slippage, impermanent loss
 
