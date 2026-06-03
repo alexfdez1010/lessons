@@ -162,6 +162,12 @@ export function CourseGraph({
   // Group nodes into rows by layer, preserving array order within each row.
   const rows: CourseNode[][] = Array.from({ length: maxLayer + 1 }, () => []);
   for (const n of nodes) rows[layers.get(n.slug) ?? 0].push(n);
+  // Within each level, cluster courses by type (accent) so same-kind tracks
+  // sit together. Stable sort keeps the source order inside each cluster.
+  const ACCENT_RANK: Record<string, number> = { brand: 0, accent: 1 };
+  for (const row of rows) {
+    row.sort((a, b) => (ACCENT_RANK[a.accent ?? 'brand'] - ACCENT_RANK[b.accent ?? 'brand']));
+  }
 
   const measure = useCallback(() => {
     const container = containerRef.current;
@@ -284,7 +290,7 @@ export function CourseGraph({
                         href={n.href}
                         title={`${n.title} · ${n.lessons} ${lessonsLabel}${isDone ? ` · ${finishedLabel}` : ''}`}
                         className={cx(
-                          'group relative flex h-full w-36 max-w-[44vw] flex-col rounded-card border border-ink-200 p-3 shadow-soft transition-all hover:-translate-y-1 hover:border-brand-300 hover:shadow-lift motion-reduce:transition-none motion-reduce:hover:translate-y-0 sm:w-56 sm:max-w-[80vw] sm:p-4',
+                          'group relative flex h-full w-28 max-w-[40vw] flex-col rounded-card border border-ink-200 p-2.5 shadow-soft transition-all hover:-translate-y-1 hover:border-brand-300 hover:shadow-lift motion-reduce:transition-none motion-reduce:hover:translate-y-0 sm:w-44 sm:max-w-[80vw] sm:p-3',
                           edge,
                           isDone && 'ring-2 ring-brand-400 ring-offset-1',
                         )}
