@@ -270,7 +270,7 @@ export function CourseGraph({
         <ol className="relative flex list-none flex-col gap-y-6 p-0 sm:gap-y-10">
           {rows.map((row, layer) => (
             <li key={layer} className="m-0 p-0">
-              <ul className="flex list-none flex-wrap justify-center gap-2.5 p-0 sm:gap-4">
+              <ul className="flex list-none flex-wrap items-stretch justify-evenly gap-x-6 gap-y-4 p-0 sm:gap-x-12">
                 {row.map((n) => {
                   const tint = n.accent === 'accent' ? 'bg-accent-50' : 'bg-brand-50';
                   const tintText =
@@ -329,8 +329,8 @@ export function CourseGraph({
                         >
                           {n.title}
                         </h3>
-                        <p className="mt-1 hidden line-clamp-2 text-xs leading-relaxed text-ink-600 sm:block">
-                          {n.description}
+                        <p className="mt-1.5 text-xs font-medium text-ink-400">
+                          {n.lessons} {lessonsLabel}
                         </p>
                       </a>
                     </li>
