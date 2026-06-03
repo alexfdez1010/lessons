@@ -68,7 +68,7 @@ assumes. `money-and-value` is the root of the whole catalog._
 
 ## Stage 2 — Markets & instruments (⬤⬤ intermediate)
 - [x] **bonds-and-rates** — yield curve, duration, convexity intuition _(2026-06-02)_
-- [ ] **loans-and-mortgages** ⭐ HIGH PRIORITY — borrowing from the customer's
+- [x] **loans-and-mortgages** ⭐ HIGH PRIORITY _(2026-06-03)_ — borrowing from the customer's
   side: how a loan/mortgage works, principal & interest, amortization schedules,
   fixed vs variable rate, APR vs APY in practice, term & monthly payment
   trade-offs, total cost of credit, down payment / LTV, fees & closing costs,

@@ -172,3 +172,15 @@ export type { PurchasingPowerDecayProps } from '@/components/react/PurchasingPow
 
 export { GoldPegDiagram, default as GoldPegDiagramDefault } from '@/components/react/GoldPegDiagram';
 export type { GoldPegDiagramProps } from '@/components/react/GoldPegDiagram';
+
+export { AmortizationSplit, default as AmortizationSplitDefault } from '@/components/react/AmortizationSplit';
+export type { AmortizationSplitProps } from '@/components/react/AmortizationSplit';
+
+export { TermTradeoff, default as TermTradeoffDefault } from '@/components/react/TermTradeoff';
+export type { TermTradeoffProps } from '@/components/react/TermTradeoff';
+
+export { LtvMeter, default as LtvMeterDefault } from '@/components/react/LtvMeter';
+export type { LtvMeterProps } from '@/components/react/LtvMeter';
+
+export { RatePathChart, default as RatePathChartDefault } from '@/components/react/RatePathChart';
+export type { RatePathChartProps } from '@/components/react/RatePathChart';
