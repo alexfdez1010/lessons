@@ -30,6 +30,22 @@ assumes. `money-and-value` is the root of the whole catalog._
   _(deps: `money-and-value`; bridges `interest-and-yield` → `investment-metrics`
   so the beginner→advanced jump isn't a cliff)_ _(2026-06-02)_
 
+- [ ] **history-of-money** ⭐ HIGH PRIORITY — the story of money from commodity
+  to code, **focused on the 20th-century transformations**: barter & commodity
+  money → coinage → gold standard (classical gold standard, why it disciplined
+  trade); the early-1900s peak and WWI suspension; the interwar collapse &
+  Weimar 1923 hyperinflation; the gold-exchange standard; **Bretton Woods (1944)**
+  — dollar pegged to gold, the world pegged to the dollar, IMF/World Bank;
+  the rise of central banks & managed money; the **Nixon shock (1971)** ending
+  gold convertibility → the pure **fiat** era & floating exchange rates;
+  the eurodollar market & money going electronic (wire transfers, credit cards,
+  ATMs); 1970s–80s inflation & the move to inflation-targeting; late-century
+  digital cash attempts (DigiCash) → the 2008 crisis → **Bitcoin (2009)** and
+  the move toward money-as-code. Emphasis throughout on *why each transformation
+  happened* (trust, war finance, balance-of-payments, inflation) and what was
+  traded off. _(deps: `money-and-value`; timeline + gold-vs-fiat purchasing-power
+  + Bretton-Woods peg-diagram islands; bridges `money-and-value` → `bitcoin`)_
+
 ## Stage 0 — Foundations (⬤ beginner) — DONE
 - [x] **investment-metrics** topic — ROI & CAGR, volatility & drawdown, Sharpe &
   Sortino, alpha & beta, reading a fund factsheet _(pre-existing)_
