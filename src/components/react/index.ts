@@ -184,3 +184,15 @@ export type { LtvMeterProps } from '@/components/react/LtvMeter';
 
 export { RatePathChart, default as RatePathChartDefault } from '@/components/react/RatePathChart';
 export type { RatePathChartProps } from '@/components/react/RatePathChart';
+
+export { PegArbitrage, default as PegArbitrageDefault } from '@/components/react/PegArbitrage';
+export type { PegArbitrageProps } from '@/components/react/PegArbitrage';
+
+export { ReserveComposition, default as ReserveCompositionDefault } from '@/components/react/ReserveComposition';
+export type { ReserveCompositionProps, ReserveProfile, ReserveSlice } from '@/components/react/ReserveComposition';
+
+export { DeathSpiral, default as DeathSpiralDefault } from '@/components/react/DeathSpiral';
+export type { DeathSpiralProps } from '@/components/react/DeathSpiral';
+
+export { DepegTimeline, default as DepegTimelineDefault } from '@/components/react/DepegTimeline';
+export type { DepegTimelineProps, DepegPoint, DepegEvent } from '@/components/react/DepegTimeline';
