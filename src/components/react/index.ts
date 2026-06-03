@@ -163,3 +163,12 @@ export type { HealthFactorMeterProps } from '@/components/react/HealthFactorMete
 
 export { FlashLoanLoop, default as FlashLoanLoopDefault } from '@/components/react/FlashLoanLoop';
 export type { FlashLoanLoopProps } from '@/components/react/FlashLoanLoop';
+
+export { MoneyTimeline, default as MoneyTimelineDefault } from '@/components/react/MoneyTimeline';
+export type { MoneyTimelineProps, MoneyTimelineEvent } from '@/components/react/MoneyTimeline';
+
+export { PurchasingPowerDecay, default as PurchasingPowerDecayDefault } from '@/components/react/PurchasingPowerDecay';
+export type { PurchasingPowerDecayProps } from '@/components/react/PurchasingPowerDecay';
+
+export { GoldPegDiagram, default as GoldPegDiagramDefault } from '@/components/react/GoldPegDiagram';
+export type { GoldPegDiagramProps } from '@/components/react/GoldPegDiagram';

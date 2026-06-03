@@ -30,7 +30,7 @@ assumes. `money-and-value` is the root of the whole catalog._
   _(deps: `money-and-value`; bridges `interest-and-yield` → `investment-metrics`
   so the beginner→advanced jump isn't a cliff)_ _(2026-06-02)_
 
-- [ ] **history-of-money** ⭐ HIGH PRIORITY — the story of money from commodity
+- [x] **history-of-money** ⭐ HIGH PRIORITY _(2026-06-03)_ — the story of money from commodity
   to code, **focused on the 20th-century transformations**: barter & commodity
   money → coinage → gold standard (classical gold standard, why it disciplined
   trade); the early-1900s peak and WWI suspension; the interwar collapse &
