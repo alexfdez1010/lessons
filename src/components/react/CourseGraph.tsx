@@ -267,7 +267,7 @@ export function CourseGraph({
         </svg>
 
         {/* Card layers — plain responsive flow; arrows snap to these. */}
-        <ol className="relative flex list-none flex-col gap-y-6 p-0 sm:gap-y-10">
+        <ol className="relative flex list-none flex-col gap-y-12 p-0 sm:gap-y-20">
           {rows.map((row, layer) => (
             <li key={layer} className="m-0 p-0">
               <ul className="flex list-none flex-wrap items-stretch justify-evenly gap-x-6 gap-y-4 p-0 sm:gap-x-12">
@@ -316,7 +316,7 @@ export function CourseGraph({
                             {n.icon}
                           </span>
                           {n.difficulty ? (
-                            <span className={cx('difficulty-badge', DIFFICULTY_CLASS[n.difficulty])}>
+                            <span className={cx('difficulty-badge hidden sm:inline-flex', DIFFICULTY_CLASS[n.difficulty])}>
                               {difficultyLabels[n.difficulty]}
                             </span>
                           ) : null}
@@ -329,6 +329,11 @@ export function CourseGraph({
                         >
                           {n.title}
                         </h3>
+                        {n.difficulty ? (
+                          <span className={cx('difficulty-badge mt-1.5 self-start sm:hidden', DIFFICULTY_CLASS[n.difficulty])}>
+                            {difficultyLabels[n.difficulty]}
+                          </span>
+                        ) : null}
                         <p className="mt-1.5 text-xs font-medium text-ink-400">
                           {n.lessons} {lessonsLabel}
                         </p>
