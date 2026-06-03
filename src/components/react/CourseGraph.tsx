@@ -261,10 +261,10 @@ export function CourseGraph({
         </svg>
 
         {/* Card layers — plain responsive flow; arrows snap to these. */}
-        <ol className="relative flex list-none flex-col gap-y-10 p-0">
+        <ol className="relative flex list-none flex-col gap-y-6 p-0 sm:gap-y-10">
           {rows.map((row, layer) => (
             <li key={layer} className="m-0 p-0">
-              <ul className="flex list-none flex-wrap justify-center gap-4 p-0">
+              <ul className="flex list-none flex-wrap justify-center gap-2.5 p-0 sm:gap-4">
                 {row.map((n) => {
                   const tint = n.accent === 'accent' ? 'bg-accent-50' : 'bg-brand-50';
                   const tintText =
@@ -284,7 +284,7 @@ export function CourseGraph({
                         href={n.href}
                         title={`${n.title} · ${n.lessons} ${lessonsLabel}${isDone ? ` · ${finishedLabel}` : ''}`}
                         className={cx(
-                          'group relative flex h-full w-56 max-w-[80vw] flex-col rounded-card border border-ink-200 p-4 shadow-soft transition-all hover:-translate-y-1 hover:border-brand-300 hover:shadow-lift motion-reduce:transition-none motion-reduce:hover:translate-y-0',
+                          'group relative flex h-full w-36 max-w-[44vw] flex-col rounded-card border border-ink-200 p-3 shadow-soft transition-all hover:-translate-y-1 hover:border-brand-300 hover:shadow-lift motion-reduce:transition-none motion-reduce:hover:translate-y-0 sm:w-56 sm:max-w-[80vw] sm:p-4',
                           edge,
                           isDone && 'ring-2 ring-brand-400 ring-offset-1',
                         )}
@@ -300,10 +300,10 @@ export function CourseGraph({
                             <span className="sr-only">{finishedLabel}</span>
                           </span>
                         ) : null}
-                        <div className="mb-2 flex items-center justify-between gap-2">
+                        <div className="mb-1.5 flex items-center justify-between gap-2 sm:mb-2">
                           <span
                             className={cx(
-                              'grid h-9 w-9 shrink-0 place-items-center rounded-card text-xl',
+                              'grid h-7 w-7 shrink-0 place-items-center rounded-card text-base sm:h-9 sm:w-9 sm:text-xl',
                               tint,
                             )}
                           >
@@ -323,7 +323,7 @@ export function CourseGraph({
                         >
                           {n.title}
                         </h3>
-                        <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-ink-600">
+                        <p className="mt-1 hidden line-clamp-2 text-xs leading-relaxed text-ink-600 sm:block">
                           {n.description}
                         </p>
                       </a>
