@@ -65,7 +65,7 @@ assumes. `money-and-value` is the root of the whole catalog._
 ## Stage 3 — Risk & derivatives (⬤⬤⬤ advanced)
 - [ ] **portfolio-theory** — diversification, efficient frontier, correlation, CAPM
 - [ ] **options-basics** — calls/puts, payoff diagrams, intrinsic vs time value
-- [ ] **defi-lending** — over-collateralization, health factor, liquidations, interest-rate models
+- [x] **defi-lending** — over-collateralization, health factor, liquidations, interest-rate models _(2026-06-03)_
 
 ## Stage 4 — Quant & advanced DeFi (⬤⬤⬤⬤ expert)
 - [ ] **options-pricing** — Black–Scholes intuition, the Greeks, implied volatility
