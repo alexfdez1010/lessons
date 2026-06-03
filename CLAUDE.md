@@ -204,7 +204,7 @@ block and documented in **DESIGN.md**. Use Tailwind utilities; do not hardcode h
 | `bun run audit` / `audit:fix` | Vuln report / `bun update` + report |
 | `bun run pre-commit` | `audit:fix` + `check` + build + regenerate OG (run manually) |
 
-## Workflow order — implement → pre-commit → commit → push (AUTOMATIC)
+## Workflow order — implement → pre-commit → commit → push → verify deploy (AUTOMATIC)
 
 Every change follows this order, **automatically and without being asked**. After
 you finish implementing a change, run the full sequence yourself — do **not** stop
@@ -214,11 +214,39 @@ to ask "want me to commit?" or hand the commands back to the user. No exceptions
 2. Run **`bun run pre-commit`** (then `git add public/og`).
 3. **Commit**.
 4. **Push**.
+5. **Verify the Vercel deploy** (see below).
 
-Treat "the change is done" as the trigger to run steps 2–4 on your own. The only
+Treat "the change is done" as the trigger to run steps 2–5 on your own. The only
 time you pause is if `bun run pre-commit` fails (fix it, re-run) or the user
 explicitly said not to commit. Never commit or push before the change is finished
 and `bun run pre-commit` is green.
+
+## Verify deploy on Vercel (AUTOMATIC, after every push)
+
+The Vercel CLI is installed and already linked to this project (`alexfdez1010s-projects/lessons`).
+After every push, **confirm the new production deploy reached `● Ready`** — do not
+consider the task done until it is verified. Don't ask the user; run it yourself.
+
+```bash
+vercel ls                       # newest row = the push you just made; watch its Status
+vercel inspect <deployment-url> # detail on a specific deploy
+vercel logs <deployment-url>    # build/runtime logs when a deploy shows ● Error
+```
+
+Then confirm the live domain serves the change:
+
+```bash
+curl -sS -o /dev/null -w "%{http_code}\n" https://lessons.alejandrofernandezcamello.me/
+```
+
+A deploy is verified when its `vercel ls` status is `● Ready` **and** the live URL
+(plus any new route) returns `200`. If the deploy shows `● Error`:
+
+1. Pull the failure with `vercel logs <url>` (or `vercel inspect <url>`).
+2. Reproduce locally — almost always `bun run build` surfaces the same failure.
+3. Fix, re-run `bun run pre-commit`, commit, push, and re-verify. Repeat until `● Ready`.
+
+Never leave a push unverified or a red production deploy standing.
 
 ## Pre-commit (manual — no git hooks)
 

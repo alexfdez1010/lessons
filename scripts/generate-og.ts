@@ -5,7 +5,8 @@
  *   1. Boot `astro preview` on a fixed port as a child process and wait until
  *      the port answers (the npm script runs `astro build` first).
  *   2. Walk the built `dist/` tree to enumerate the real page routes.
- *   3. For each route, drive Playwright/chromium to open the *actual page* in a
+ *   3. Drive a pool of Playwright/chromium pages (OG_CONCURRENCY, default 8) that
+ *      pull routes off a shared queue in parallel, open the *actual page* in a
  *      1200×630 viewport, let animations settle, and screenshot it into
  *      public/og/<slug>.png.
  *   4. Tear down preview and report a summary.
@@ -32,7 +33,10 @@ const WIDTH = 1200;
 const HEIGHT = 630;
 
 /** Wait time (ms) after load to let island animations settle before capture. */
-const SETTLE_DELAY = 2000;
+const SETTLE_DELAY = 1000;
+
+/** Max pages capturing screenshots simultaneously. Override with OG_CONCURRENCY. */
+const CONCURRENCY = Number(process.env.OG_CONCURRENCY ?? 8);
 
 /* ---- og.ts mirror — KEEP IN SYNC WITH src/lib/og.ts --------------------- */
 
@@ -126,10 +130,15 @@ async function main() {
       deviceScaleFactor: 2, // crisp 2x output
     });
 
-    for (const pathname of pageRoutes) {
+    // Shared work queue; a pool of pages pulls from it concurrently so capture
+    // time scales with CONCURRENCY instead of the route count.
+    const queue = [...pageRoutes];
+    const workerCount = Math.min(CONCURRENCY, queue.length);
+    console.log(`▸ Capturing with ${workerCount} parallel page(s) …`);
+
+    const capture = async (pathname: string, page: Awaited<ReturnType<typeof context.newPage>>) => {
       const slug = ogSlug(pathname);
       const outFile = join(OUT_DIR, `${slug}.png`);
-      const page = await context.newPage();
       try {
         const res = await page.goto(`${BASE}${pathname}`, {
           waitUntil: 'networkidle',
@@ -153,10 +162,22 @@ async function main() {
         const msg = err instanceof Error ? err.message : String(err);
         failed.push({ route: pathname, error: msg });
         console.warn(`  ✗ ${pathname}: ${msg}`);
+      }
+    };
+
+    const worker = async () => {
+      const page = await context.newPage();
+      try {
+        let pathname: string | undefined;
+        while ((pathname = queue.shift()) !== undefined) {
+          await capture(pathname, page);
+        }
       } finally {
         await page.close();
       }
-    }
+    };
+
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
   } finally {
     if (browser) await browser.close();
     server.kill('SIGTERM');
