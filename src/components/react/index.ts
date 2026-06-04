@@ -229,3 +229,15 @@ export type { CapitalMarketLineProps } from '@/components/react/CapitalMarketLin
 
 export { SecurityMarketLine, default as SecurityMarketLineDefault } from '@/components/react/SecurityMarketLine';
 export type { SecurityMarketLineProps } from '@/components/react/SecurityMarketLine';
+
+export { OptionPayoff, default as OptionPayoffDefault } from '@/components/react/OptionPayoff';
+export type { OptionPayoffProps, PayoffLeg } from '@/components/react/OptionPayoff';
+
+export { PremiumDecomposition, default as PremiumDecompositionDefault } from '@/components/react/PremiumDecomposition';
+export type { PremiumDecompositionProps } from '@/components/react/PremiumDecomposition';
+
+export { TimeDecayCurve, default as TimeDecayCurveDefault } from '@/components/react/TimeDecayCurve';
+export type { TimeDecayCurveProps } from '@/components/react/TimeDecayCurve';
+
+export { OptionDriversBars, default as OptionDriversBarsDefault } from '@/components/react/OptionDriversBars';
+export type { OptionDriversBarsProps, OptionDriver, DriverEffect } from '@/components/react/OptionDriversBars';
