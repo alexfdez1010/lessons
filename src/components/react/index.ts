@@ -196,3 +196,18 @@ export type { DeathSpiralProps } from '@/components/react/DeathSpiral';
 
 export { DepegTimeline, default as DepegTimelineDefault } from '@/components/react/DepegTimeline';
 export type { DepegTimelineProps, DepegPoint, DepegEvent } from '@/components/react/DepegTimeline';
+
+export { ConstantProductCurve, default as ConstantProductCurveDefault } from '@/components/react/ConstantProductCurve';
+export type { ConstantProductCurveProps } from '@/components/react/ConstantProductCurve';
+
+export { OrderbookVsAmm, default as OrderbookVsAmmDefault } from '@/components/react/OrderbookVsAmm';
+export type { OrderbookVsAmmProps, OrderbookVsAmmRow, OrderbookLevel } from '@/components/react/OrderbookVsAmm';
+
+export { LiquidityPoolShare, default as LiquidityPoolShareDefault } from '@/components/react/LiquidityPoolShare';
+export type { LiquidityPoolShareProps } from '@/components/react/LiquidityPoolShare';
+
+export { SlippageCurve, default as SlippageCurveDefault } from '@/components/react/SlippageCurve';
+export type { SlippageCurveProps } from '@/components/react/SlippageCurve';
+
+export { ImpermanentLossCurve, default as ImpermanentLossCurveDefault } from '@/components/react/ImpermanentLossCurve';
+export type { ImpermanentLossCurveProps } from '@/components/react/ImpermanentLossCurve';

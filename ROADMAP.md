@@ -76,7 +76,7 @@ assumes. `money-and-value` is the root of the whole catalog._
   `interest-and-yield`; everyday personal-finance application of compounding —
   build before `stablecoins`)_
 - [x] **stablecoins** _(2026-06-04)_ — fiat-backed vs crypto-backed vs algorithmic, peg mechanics, depeg risk
-- [ ] **defi-amms** — constant-product AMMs, liquidity pools, slippage, impermanent loss
+- [x] **defi-amms** _(2026-06-04)_ — constant-product AMMs, liquidity pools, slippage, impermanent loss
 
 ## Stage 3 — Risk & derivatives (⬤⬤⬤ advanced)
 - [ ] **portfolio-theory** — diversification, efficient frontier, correlation, CAPM
