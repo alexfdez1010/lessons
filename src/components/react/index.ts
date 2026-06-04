@@ -211,3 +211,21 @@ export type { SlippageCurveProps } from '@/components/react/SlippageCurve';
 
 export { ImpermanentLossCurve, default as ImpermanentLossCurveDefault } from '@/components/react/ImpermanentLossCurve';
 export type { ImpermanentLossCurveProps } from '@/components/react/ImpermanentLossCurve';
+
+export { DiversificationDecay, default as DiversificationDecayDefault } from '@/components/react/DiversificationDecay';
+export type { DiversificationDecayProps } from '@/components/react/DiversificationDecay';
+
+export { CorrelationBlender, default as CorrelationBlenderDefault } from '@/components/react/CorrelationBlender';
+export type { CorrelationBlenderProps } from '@/components/react/CorrelationBlender';
+
+export { TwoAssetFrontier, default as TwoAssetFrontierDefault } from '@/components/react/TwoAssetFrontier';
+export type { TwoAssetFrontierProps } from '@/components/react/TwoAssetFrontier';
+
+export { EfficientFrontier, default as EfficientFrontierDefault } from '@/components/react/EfficientFrontier';
+export type { EfficientFrontierProps } from '@/components/react/EfficientFrontier';
+
+export { CapitalMarketLine, default as CapitalMarketLineDefault } from '@/components/react/CapitalMarketLine';
+export type { CapitalMarketLineProps } from '@/components/react/CapitalMarketLine';
+
+export { SecurityMarketLine, default as SecurityMarketLineDefault } from '@/components/react/SecurityMarketLine';
+export type { SecurityMarketLineProps } from '@/components/react/SecurityMarketLine';

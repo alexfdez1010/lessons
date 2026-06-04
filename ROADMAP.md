@@ -79,7 +79,7 @@ assumes. `money-and-value` is the root of the whole catalog._
 - [x] **defi-amms** _(2026-06-04)_ — constant-product AMMs, liquidity pools, slippage, impermanent loss
 
 ## Stage 3 — Risk & derivatives (⬤⬤⬤ advanced)
-- [ ] **portfolio-theory** — diversification, efficient frontier, correlation, CAPM
+- [x] **portfolio-theory** — diversification, efficient frontier, correlation, CAPM _(2026-06-04)_
 - [ ] **options-basics** — calls/puts, payoff diagrams, intrinsic vs time value
 - [x] **defi-lending** — over-collateralization, health factor, liquidations, interest-rate models _(2026-06-03)_
 
