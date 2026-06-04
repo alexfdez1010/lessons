@@ -241,3 +241,15 @@ export type { TimeDecayCurveProps } from '@/components/react/TimeDecayCurve';
 
 export { OptionDriversBars, default as OptionDriversBarsDefault } from '@/components/react/OptionDriversBars';
 export type { OptionDriversBarsProps, OptionDriver, DriverEffect } from '@/components/react/OptionDriversBars';
+
+export { BinomialTree, default as BinomialTreeDefault } from '@/components/react/BinomialTree';
+export type { BinomialTreeProps } from '@/components/react/BinomialTree';
+
+export { LognormalPrice, default as LognormalPriceDefault } from '@/components/react/LognormalPrice';
+export type { LognormalPriceProps } from '@/components/react/LognormalPrice';
+
+export { GreeksCurve, default as GreeksCurveDefault } from '@/components/react/GreeksCurve';
+export type { GreeksCurveProps } from '@/components/react/GreeksCurve';
+
+export { VolSmile, default as VolSmileDefault } from '@/components/react/VolSmile';
+export type { VolSmileProps } from '@/components/react/VolSmile';

@@ -84,7 +84,7 @@ assumes. `money-and-value` is the root of the whole catalog._
 - [x] **defi-lending** — over-collateralization, health factor, liquidations, interest-rate models _(2026-06-03)_
 
 ## Stage 4 — Quant & advanced DeFi (⬤⬤⬤⬤ expert)
-- [ ] **options-pricing** — Black–Scholes intuition, the Greeks, implied volatility
+- [x] **options-pricing** — Black–Scholes intuition, the Greeks, implied volatility _(2026-06-05)_
 - [ ] **value-at-risk** — VaR & CVaR, historical vs parametric vs Monte Carlo
 - [ ] **mev-and-ordering** — mempool, front/back-running, sandwich attacks, PBS
 
