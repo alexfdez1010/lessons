@@ -100,7 +100,7 @@ quantitative relationship. Build after the learner has `investment-metrics`,
   options, convergence & standard error, variance-reduction (antithetic
   variates, control variates), pitfalls (garbage-in distributions, correlation,
   fat tails). _(deps: `value-at-risk`; sim-path + convergence islands)_
-- [ ] **kelly-and-cagr** — bet sizing & geometric growth: arithmetic vs geometric
+- [x] **kelly-and-cagr** _(2026-06-06)_ — bet sizing & geometric growth: arithmetic vs geometric
   mean, why CAGR (not average return) is what compounds, volatility drag /
   variance penalty, the Kelly criterion (f\* = edge/odds), full vs fractional
   Kelly, Kelly for continuous returns (f\* = μ/σ²), drawdown vs growth trade-off,

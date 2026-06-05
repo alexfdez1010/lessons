@@ -292,3 +292,18 @@ export type { OutcomeFanProps } from '@/components/react/OutcomeFan';
 
 export { VarianceReductionChart, default as VarianceReductionChartDefault } from '@/components/react/VarianceReductionChart';
 export type { VarianceReductionChartProps } from '@/components/react/VarianceReductionChart';
+
+export { GeometricMeanGap, default as GeometricMeanGapDefault } from '@/components/react/GeometricMeanGap';
+export type { GeometricMeanGapProps } from '@/components/react/GeometricMeanGap';
+
+export { VolatilityDragCurve, default as VolatilityDragCurveDefault } from '@/components/react/VolatilityDragCurve';
+export type { VolatilityDragCurveProps } from '@/components/react/VolatilityDragCurve';
+
+export { KellyGrowthCurve, default as KellyGrowthCurveDefault } from '@/components/react/KellyGrowthCurve';
+export type { KellyGrowthCurveProps } from '@/components/react/KellyGrowthCurve';
+
+export { FractionalKellyBars, default as FractionalKellyBarsDefault } from '@/components/react/FractionalKellyBars';
+export type { FractionalKellyBarsProps } from '@/components/react/FractionalKellyBars';
+
+export { BetSizingPaths, default as BetSizingPathsDefault } from '@/components/react/BetSizingPaths';
+export type { BetSizingPathsProps } from '@/components/react/BetSizingPaths';
