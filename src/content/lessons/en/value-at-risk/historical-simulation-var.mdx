@@ -1,0 +1,299 @@
+---
+title: "Historical Simulation VaR"
+description: "Estimate VaR by replaying actual past returns, sorting the realised P&L, and reading off the percentile — no bell curve assumed. Strengths, traps, and worked numbers."
+topic: "en/value-at-risk"
+order: 2
+minutes: 9
+updated: 2026-06-05
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, Categorize, MatchConcepts, MindMap, HistoricalVarLadder } from '@/components/react';
+
+You know what VaR *says*: a horizon, a confidence level, and a dollar figure — *"99% confident we won't lose more than \$X tomorrow."* That's the sentence. This lesson is about the most honest way to actually compute it, and it requires almost no math at all. No bell curve, no algebra, no Greek letters. Just a stack of the portfolio's real past days, sorted worst to best, and a finger pointed at the right one.
+
+It's called **historical simulation**, and its whole philosophy fits on a fortune-cookie slip: *the best guess for how bad tomorrow can be is to look at how bad the recent past actually was.* Where the parametric method (next lesson) assumes the returns follow a tidy distribution and does algebra on it, historical simulation refuses to assume anything. It lets the data speak — fat tails, skew, ugly clusters and all.
+
+Quick instinct check before we open the toolbox.
+
+<MCQ
+  client:visible
+  pretest
+  question="Historical-simulation VaR computes the loss threshold by…"
+  options={[
+    { text: "Sorting the portfolio's actual past daily P&L and reading off the percentile", correct: true },
+    { text: 'Assuming returns are normally distributed and using the mean and standard deviation' },
+    { text: 'Simulating thousands of synthetic future days from a random-number generator' },
+    { text: 'Averaging every loss the portfolio has ever suffered' },
+  ]}
+  explanation="Historical simulation makes no distributional assumption: it takes the empirical record of past P&L, sorts it, and picks the observation that sits at the (1 − confidence) percentile. Assuming a normal distribution is the parametric method; generating synthetic days is Monte Carlo; a plain average is neither VaR."
+/>
+
+## Replay the past
+
+**Analogy.** Imagine you want to know how cold tomorrow morning might get. One approach: assume temperatures follow a neat bell curve, estimate its mean and spread, and calculate. The other approach: pull out your weather diary for the last 250 days, line up every morning's low temperature from coldest to warmest, and say *"the coldest 5% of mornings were below −3°C, so I'll plan for −3°C."* Historical simulation is the weather-diary method, applied to money.
+
+**Definition.** Historical-simulation VaR takes the portfolio's **realised daily profit-and-loss over the last $N$ days**, treats that empirical histogram **as if it were the distribution of tomorrow's return**, and reads the VaR straight off the appropriate percentile of that histogram. There is no fitted curve. The collection of dots *is* the model.
+
+There's one subtlety that separates pros from amateurs, so plant it now: you don't take the P&L your portfolio actually *earned* on each past day. You take **today's portfolio** and ask what it *would have* gained or lost if each past day's market moves happened again. You apply the historical **returns** — the percentage moves in every risk factor — to your **current** positions. This is the difference between *"what did I make last March?"* and *"what would my book make if last March's moves repeated tomorrow?"* The second is what you want, because the second is the risk you're carrying *now*.
+
+So the empirical histogram you sort is a histogram of **hypothetical P&L for today's book under each past day's market move**. Same shape of idea, far sharper in practice.
+
+## The recipe, step by step
+
+Three steps. That's genuinely the whole algorithm.
+
+1. **Gather $N$ historical scenarios.** For each of the last $N$ trading days (a common choice is $N = 250$, roughly one trading year, or $N = 500$ for two), record the percentage move of every risk factor, apply those moves to **today's** positions, and total up the hypothetical P&L. You now have $N$ numbers.
+2. **Sort them ascending.** Worst loss on the left, best gain on the right.
+3. **Read off the percentile.** VaR at confidence $c$ is the loss sitting at the $\lfloor(1-c)\cdot N\rfloor$-th worst observation. With $c = 0.99$ and $N = 250$, that's $\lfloor 0.01 \times 250\rfloor = 2$ — you walk in to the 2nd-worst-ish day and read the loss there.
+
+The island below is that recipe made tactile. Twenty realised daily P&L outcomes, sorted worst (red, on the left) to best (blue, on the right). Slide the confidence level and watch the dashed line march into the loss tail: higher confidence cuts deeper, further into the disasters.
+
+<HistoricalVarLadder
+  client:visible
+  title="Historical VaR: sort the past, read off the line"
+  confidenceLabel="Confidence level"
+  varLabel="VaR (worst loss not exceeded)"
+  worstLabel="Worst losses"
+  gainsLabel="Gains"
+  caption="Twenty realised daily P&L, sorted worst to best. The dashed line sits (1 − confidence) of the way in from the worst end — raise confidence and it cuts deeper into the tail. The loss at the line is your historical VaR."
+/>
+
+### Picking the percentile, by hand
+
+The only thing that ever trips people up is *which* sorted observation to grab. Walk three cases:
+
+- **$N = 20$ observations, 95% confidence.** $(1-0.95)\times 20 = 1$. So VaR is the **1st-worst** observation — the single most brutal day in the sample. Cut off the worst 5% of 20 days, and 5% of 20 is exactly 1 day.
+- **$N = 100$, 99% confidence.** $(1-0.99)\times 100 = 1$. The **1st-worst** day again. The worst 1% of 100 days is the single worst.
+- **$N = 100$, 95% confidence.** $(1-0.95)\times 100 = 5$. The **5th-worst** day: four days were worse, and you're reading the loss at the boundary between "the worst 5%" and the rest.
+
+When $(1-c)\cdot N$ isn't a whole number, you're between two observations — say the 2.5th-worst. Practitioners then **interpolate** between the neighbouring sorted values (linear interpolation is the common convention; some desks just round to the nearest, or conservatively take the worse of the two). The exact rule is a house choice, but interpolation between adjacent order statistics is the standard. Don't lose sleep over it — with $N = 250$ it nudges the number by pennies.
+
+<FillBlank
+  client:visible
+  question="Fill in the percentile-picking arithmetic."
+  text="With {{250|100|50}} daily observations at 99% confidence, you cut off the worst {{1|5|10}}% of days, which is {{2.5|25|250}} observations — so VaR is read at roughly the {{2.5|25|250}}th-worst day, interpolating between neighbours if needed."
+  explanation="(1 − 0.99) = 0.01, and 0.01 × 250 = 2.5. So the 1% tail of 250 days is 2.5 days: VaR sits between the 2nd- and 3rd-worst observations, and you interpolate to land on the 2.5th."
+/>
+
+## Worked example: a \$10M book
+
+Suppose you run a **\$10,000,000** portfolio. You've computed the hypothetical daily P&L of *today's* book under each of the last **10** trading days' market moves (tiny $N$, just to keep the arithmetic in view), and sorted them ascending — worst return on top:
+
+| Rank (worst → best) | Daily return | P&L on \$10M |
+|---|---|---|
+| 1 | −3.8% | −\$380,000 |
+| 2 | −2.5% | −\$250,000 |
+| 3 | −1.7% | −\$170,000 |
+| 4 | −0.9% | −\$90,000 |
+| 5 | −0.3% | −\$30,000 |
+| 6 | +0.4% | +\$40,000 |
+| 7 | +0.8% | +\$80,000 |
+| 8 | +1.5% | +\$150,000 |
+| 9 | +2.2% | +\$220,000 |
+| 10 | +3.1% | +\$310,000 |
+
+Converting each return to dollars is just multiply-by-\$10M: a $-1.7\%$ day means $-0.017 \times 10{,}000{,}000 = -170{,}000$, i.e. −\$170,000. Now pick the percentiles.
+
+**95% VaR.** $(1-0.95)\times 10 = 0.5$. That's between the 0th and 1st observation — effectively the worst day. Reading rank 1: a loss of $3.8\%$, i.e. **\$380,000**. (Some conventions interpolate toward the worst extreme; with the smallest possible tail, the 1st-worst is the natural read.) Plain English: *"We are 95% confident we won't lose more than \$380,000 tomorrow."*
+
+**Now make it concrete with a cleaner cut.** Say instead $N = 20$ at 95%: $(1-0.95)\times 20 = 1$, so VaR is the **1st-worst** of 20 days. With $N = 100$ at 95%, it'd be the **5th-worst** — and if that 5th-worst day was, say, $-1.7\%$, your 95% VaR would be **\$170,000**.
+
+**99% VaR with $N = 100$.** $(1-0.99)\times 100 = 1$ → the **1st-worst** of 100 days. If that single worst day was $-3.8\%$, your 99% VaR is $0.038 \times 10{,}000{,}000 =$ **\$380,000**. Notice the pattern that bites later: at 99% with only 100 days, your *entire* VaR estimate rests on **one** observation — the worst day in the window. Lose or gain that one day and the number lurches.
+
+<MCQ
+  client:visible
+  question="A $25M portfolio's worst-5%-boundary historical return (its 95% VaR cutoff) is −2.4%. What is the 95% 1-day VaR in dollars?"
+  options={[
+    { text: '$600,000', correct: true },
+    { text: '$240,000' },
+    { text: '$2,400,000' },
+    { text: '$960,000' },
+  ]}
+  explanation="VaR = |return| × portfolio value = 0.024 × $25,000,000 = $600,000. The percentage cutoff is already the right order statistic; you just scale it by the book size."
+/>
+
+## Why it's loved
+
+For all its simplicity, historical simulation earns its keep, and risk desks adore it for three concrete reasons.
+
+**No distribution assumption.** The parametric method has to *assume* a shape — almost always the normal bell curve — and real financial returns famously aren't normal. Historical simulation sidesteps the whole question. It never says "returns are normal" or anything else; it just uses the dots you have. If the truth is lumpy, skewed, and mean, the dots are lumpy, skewed, and mean too.
+
+**It captures the *actual* fat tails, skew, and correlations in the window — for free.** This is the quiet superpower. Markets crash harder and more often than a bell curve predicts (fat tails), losses and gains aren't symmetric (skew), and assets move together in a panic (correlation spikes). A parametric model has to be *told* about each of these, painstakingly. Historical simulation gets all of them automatically, because if those features were present in the last $N$ days, they're sitting right there in the sorted P&L. The correlation between your stocks and your bonds on a crash day isn't estimated — it's baked into that day's joint move, which you replayed in one shot.
+
+**It's simple to explain and audit.** You can sit a regulator, a board member, or a junior analyst down and explain it in two sentences: *"these are the last 250 days; we sorted them; here's the bad one we're worried about."* No covariance matrix, no Cholesky decomposition, no Greek letters. When VaR has to survive an audit — and under Basel it does — being explainable is worth a great deal.
+
+<MatchConcepts
+  client:visible
+  question="Match each strength of historical simulation to what it means in practice."
+  pairs={[
+    { term: 'No distribution assumption', definition: 'Never forces returns into a bell curve — uses the empirical dots as-is' },
+    { term: 'Captures real fat tails & skew', definition: 'Crash-sized days and asymmetry already live in the sorted sample' },
+    { term: 'Captures correlations for free', definition: "Each past day's joint move across assets is replayed in one shot" },
+    { term: 'Simple to audit', definition: 'Explainable in two sentences with no covariance matrix' },
+  ]}
+  explanation="The four pillars: it assumes nothing about shape, it inherits the tails/skew/correlations actually present in the window, and it's transparent enough to defend to a regulator."
+/>
+
+## Where it bites
+
+Now the hard truths. Historical simulation's great virtue — *"the future looks like the chosen past"* — is also its single deepest flaw, because sometimes the future emphatically does not.
+
+<Callout variant="warning" title="You are driving by the rear-view mirror">
+Historical VaR assumes tomorrow's risk resembles the window you picked. In a calm year, the window is full of calm days, so your VaR is small — *right up until the calm ends*. The model is structurally **blind to any disaster larger than what's already in the window**, and it's slowest to react exactly when markets regime-shift. The 2008 quants learned this in the most expensive classroom on Earth.
+</Callout>
+
+Four specific failure modes, each worth naming:
+
+**The window-length trade-off.** How many days, $N$, should you use? It's a genuine dilemma with no free answer:
+
+| Window | Upside | Downside |
+|---|---|---|
+| **Short** (e.g. 100 days) | Reacts fast to new volatility regimes | Noisy; few tail observations; jumpy estimates |
+| **Long** (e.g. 1000+ days) | Smooth, statistically stable, more tail data | **Stale** — drags in ancient, irrelevant market conditions |
+
+Short windows are twitchy and statistically thin in the tail (the place you care about most); long windows are stable but slow, mixing in regimes that no longer exist. There is no universally correct $N$ — it's a judgement call about how fast your market's risk regime turns over.
+
+**Equal-weighting old and new days.** Plain historical simulation treats a move from 250 days ago as **exactly as relevant** as yesterday's. But markets have memory — recent volatility predicts near-term volatility (volatility clusters). Giving a sleepy day from ten months back the same vote as a turbulent one from this morning understates risk when trouble is brewing. The standard fix is the **exponentially-weighted (or "BRW" — Boudoukh–Richardson–Whitelaw) variant**: weight recent days more heavily and let old ones decay, so the percentile leans on what's relevant *now*. Same recipe, weighted sort.
+
+**It can never produce a loss bigger than the worst day in the window.** This one is structural and worth saying plainly: historical VaR is **bounded above by the single worst observation in your sample**. If the worst day in your 250-day window was $-4\%$, your historical VaR *cannot* exceed $4\%$ — not at 99%, not at 99.9%, not ever. The method has literally never seen anything worse, so it cannot imagine anything worse. For a portfolio whose true catastrophe is a 10% gap that simply hasn't happened *yet* in your window, historical simulation will quietly tell you everything's fine. (This is exactly why Expected Shortfall and Monte Carlo exist — later lessons.)
+
+**The ghost / echo effect.** Picture one monstrous $-9\%$ day sitting in your 250-day window. For 250 days it props up your VaR — a permanent reminder of pain. Then, on day 251, it rolls out of the window. *Nothing changed in the market*, but your VaR suddenly **drops sharply**, purely because one bad memory aged out of the sample. This artificial jump is the **ghost (or echo) effect**: VaR moving for calendar reasons rather than market reasons. Exponential weighting softens it (the day was already fading), but plain equal-weighted historical simulation has a hard, discontinuous cliff the day a big move exits.
+
+<MCQ
+  client:visible
+  question="Your 250-day historical 99% VaR has been steady at $1.2M for months. Today — with markets totally calm and your positions unchanged — it abruptly drops to $0.7M. What most likely happened? (Spot the trap.)"
+  options={[
+    { text: 'A large loss day rolled out of the 250-day window — the ghost/echo effect', correct: true },
+    { text: 'Your portfolio became genuinely safer overnight' },
+    { text: 'The market just had its calmest day on record' },
+    { text: 'Volatility spiked, pushing the VaR estimate down' },
+  ]}
+  explanation="A discontinuous drop with no market move and no position change is the signature of the ghost effect: a big historical loss aged out of the equal-weighted window, mechanically shrinking the tail. Nothing about your actual risk improved — the sample just forgot something. (And volatility spiking would push VaR up, not down.)"
+/>
+
+<Categorize
+  client:visible
+  question="Sort each statement: is it a STRENGTH of historical simulation, or a WEAKNESS?"
+  buckets={['Strength', 'Weakness']}
+  items={[
+    { text: 'Makes no assumption about the return distribution', bucket: 'Strength' },
+    { text: 'Captures real fat tails and correlations automatically', bucket: 'Strength' },
+    { text: 'Simple to explain and audit', bucket: 'Strength' },
+    { text: 'Cannot produce a loss worse than the worst day seen', bucket: 'Weakness' },
+    { text: 'Equal-weights ancient and recent days', bucket: 'Weakness' },
+    { text: 'VaR jumps when a big day rolls out of the window', bucket: 'Weakness' },
+  ]}
+  explanation="Its assumption-free, tail-honest, auditable nature is the upside; its rear-view-mirror blindness — bounded by the worst seen day, equal-weighting, and the ghost effect — is the downside. Same coin, two faces."
+/>
+
+## When to use it
+
+Reach for historical simulation when your portfolio's risk factors have a **decent, relevant price history** and you want a transparent, assumption-light number you can defend in an audit — it's the default first VaR engine at most banks for exactly that reason. It shines when the recent past genuinely resembles the near future (stable regimes) and when capturing messy real-world correlations matters more than modelling the far tail precisely.
+
+Be wary — and reach instead for parametric or Monte Carlo methods — when you need to stress **beyond** anything in your window (true tail catastrophes), when you hold **new instruments** with no price history, or when you're in a **regime shift** where the recent past is actively misleading. The honest move on a real desk is to run more than one method and worry hard when they disagree.
+
+<MindMap
+  client:visible
+  title="Historical simulation VaR — the whole picture"
+  caption="Replay the past, sort it, read the percentile. Loved for assuming nothing; dangerous for assuming the past repeats."
+  root={{
+    label: 'Historical VaR',
+    children: [
+      {
+        label: 'The recipe',
+        children: [
+          { label: 'Apply N past days of moves to TODAY’s book' },
+          { label: 'Sort the hypothetical P&L ascending' },
+          { label: 'VaR = loss at the (1−c)·N-th worst' },
+          { label: 'Interpolate when not a whole number' },
+        ],
+      },
+      {
+        label: 'Why it’s loved',
+        children: [
+          { label: 'No distribution assumed' },
+          { label: 'Real fat tails & skew for free' },
+          { label: 'Correlations baked into each day' },
+          { label: 'Simple to explain & audit' },
+        ],
+      },
+      {
+        label: 'Where it bites',
+        children: [
+          { label: 'Rear-view mirror: assumes past = future' },
+          { label: 'Window trade-off: short=noisy, long=stale' },
+          { label: 'Equal-weights old & new (fix: EWMA/BRW)' },
+          { label: 'Never exceeds the worst day seen' },
+          { label: 'Ghost effect when a big day rolls out' },
+        ],
+      },
+      {
+        label: 'When to use',
+        children: [
+          { label: 'Good history + stable regime' },
+          { label: 'Audit-friendly default engine' },
+          { label: 'Pair with parametric / Monte Carlo' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Recap: historical simulation VaR"
+  questions={[
+    {
+      question: 'The core idea of historical simulation is to:',
+      options: [
+        { text: "Treat the empirical histogram of past P&L as the distribution and read off a percentile", correct: true },
+        { text: 'Fit a normal distribution to past returns and use its mean and standard deviation' },
+        { text: 'Generate synthetic future scenarios from a random-number generator' },
+        { text: 'Take the average of all historical losses' },
+      ],
+      explanation: 'It assumes no shape — the sorted past P&L IS the distribution. Fitting a normal is parametric; generating synthetic days is Monte Carlo; an average is neither.',
+    },
+    {
+      question: 'With 500 daily observations at 99% confidence, VaR is read at roughly which sorted observation?',
+      options: [
+        { text: 'The 5th-worst day (0.01 × 500 = 5)', correct: true },
+        { text: 'The 1st-worst day' },
+        { text: 'The 50th-worst day' },
+        { text: 'The median (250th) day' },
+      ],
+      explanation: '(1 − 0.99) × 500 = 5, so the 1% tail of 500 days is 5 days — VaR sits at the 5th-worst observation.',
+    },
+    {
+      question: 'Which is a genuine LIMITATION of historical simulation?',
+      options: [
+        { text: 'It can never report a loss larger than the worst day in its window', correct: true },
+        { text: 'It requires assuming returns are normally distributed' },
+        { text: 'It ignores the correlations between assets' },
+        { text: 'It cannot be explained to a regulator' },
+      ],
+      explanation: "The method is bounded by its worst observed day — it can't imagine an unprecedented catastrophe. The other three are precisely its strengths: it assumes no distribution, captures correlations automatically, and is famously easy to explain.",
+    },
+    {
+      question: 'A bank’s equal-weighted historical VaR drops sharply overnight with no change in markets or positions. The cause is:',
+      options: [
+        { text: 'A large loss day aged out of the rolling window (ghost/echo effect)', correct: true },
+        { text: 'The portfolio genuinely became less risky' },
+        { text: 'Implied volatility collapsed' },
+        { text: 'The confidence level was lowered' },
+      ],
+      explanation: 'A discontinuous move driven by the calendar, not the market, is the ghost effect: a big historical loss rolled out of the equal-weighted window, mechanically shrinking the tail.',
+    },
+    {
+      question: 'What does the exponentially-weighted variant of historical simulation fix?',
+      options: [
+        { text: 'The equal-weighting of old and recent days — it leans on recent, more relevant moves', correct: true },
+        { text: 'The lack of a distributional assumption' },
+        { text: 'The need to apply past returns to today’s positions' },
+        { text: 'The fact that VaR is a single number rather than a full curve' },
+      ],
+      explanation: 'Plain historical simulation gives a day from ten months ago the same vote as yesterday. Exponential (EWMA/BRW) weighting decays old days so the percentile reflects the current regime — and softens the ghost effect.',
+    },
+  ]}
+/>
+
+Historical simulation is the honest, assumption-light first answer — but it's hostage to its window, blind beyond the worst day it's seen, and statistically thin in the tail. The next lesson, **Parametric (Variance–Covariance) VaR**, swaps that empirical record for a confident assumption — *returns are normal* — and buys back speed, smoothness, and the ability to extrapolate past anything you've witnessed. Whether that assumption is a gift or a lie is exactly the question we'll interrogate.

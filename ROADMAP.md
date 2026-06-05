@@ -85,7 +85,7 @@ assumes. `money-and-value` is the root of the whole catalog._
 
 ## Stage 4 — Quant & advanced DeFi (⬤⬤⬤⬤ expert)
 - [x] **options-pricing** — Black–Scholes intuition, the Greeks, implied volatility _(2026-06-05)_
-- [ ] **value-at-risk** — VaR & CVaR, historical vs parametric vs Monte Carlo
+- [x] **value-at-risk** — VaR & CVaR, historical vs parametric vs Monte Carlo _(2026-06-05)_
 - [ ] **mev-and-ordering** — mempool, front/back-running, sandwich attacks, PBS
 
 ## Stage 5 — Quant deep dives (⬤⬤⬤⬤ expert) — specific, math-heavy
