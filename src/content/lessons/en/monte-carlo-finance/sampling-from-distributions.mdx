@@ -1,0 +1,330 @@
+---
+title: "Sampling From Distributions"
+description: "The raw material of every simulation: turning a stream of uniform random numbers into normal returns, fat-tailed shocks, and any distribution you can describe. Inverse-transform sampling and the Box-Muller trick."
+topic: "en/monte-carlo-finance"
+order: 2
+minutes: 9
+updated: 2026-06-05
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, Categorize, MatchConcepts, MindMap, SamplingHistogram } from '@/components/react';
+
+Every Monte Carlo engine you will ever build runs on a single, humble fuel: a stream of random numbers between 0 and 1. That's it. Normal returns, fat-tailed crashes, correlated baskets of assets, whole simulated decades of price history — all of it is manufactured from the same flat, featureless trickle of uniform draws. The art of sampling is the art of **bending** that flat stream into whatever shape your model demands.
+
+So before we can simulate a single stock price, we have to answer a deceptively basic question: given a generator that only knows how to spit out $U \sim \mathrm{Uniform}(0,1)$, how do we conjure a draw from a *bell curve*? Or a fat-tailed Student-t? Or a correlated pair of assets that crash together? This lesson is the machine shop where uniforms go in and any distribution you can describe comes out.
+
+<MCQ
+  client:visible
+  pretest
+  question="A Monte Carlo simulation needs to draw normal returns, but the random-number generator only produces uniform numbers in [0, 1]. How do we get the normal draws?"
+  options={[
+    { text: 'We transform the uniform draws — feed them through a recipe (an inverse CDF or a trick like Box–Muller) that reshapes a flat distribution into the target one', correct: true },
+    { text: 'We download a list of historical normal returns and replay them' },
+    { text: 'We average many uniform draws and call the average normal' },
+    { text: 'Modern generators output normal numbers directly, so no transform is needed' },
+  ]}
+  explanation="The generator only ever produces Uniform(0,1) draws. To get any other distribution we apply a transform: inverse-transform sampling (run uniforms through the inverse CDF) or a purpose-built recipe such as Box–Muller for normals. Averaging uniforms gives a triangle-ish bump, not a true normal, and replaying history is a different method entirely."
+/>
+
+## Uniform draws: the universal raw material
+
+**Analogy.** A pasta machine starts with one bland lump of dough and presses it through different dies to get spaghetti, tagliatelle, or ravioli. The dough is always the same; the *die* decides the shape. In Monte Carlo, $U \sim \mathrm{Uniform}(0,1)$ is the dough — perfectly flat, equally likely to land anywhere in $[0,1]$ — and every sampling method is just a different die.
+
+**Definition.** A **pseudo-random number generator (PRNG)** produces a sequence of numbers that *looks* statistically random — uniformly spread over $[0,1]$, no detectable patterns — but is in fact computed deterministically from a starting **seed**. Give it the same seed and it replays the exact same sequence, draw for draw.
+
+That word "pseudo" sounds like a flaw, but it's a gift. Because the stream is reproducible, you can rerun yesterday's simulation and get **byte-for-byte the same answer** — essential for debugging ("why did path 4,182 blow up?"), for auditing a risk number a regulator is questioning, and for comparing two models on the *identical* set of random shocks so any difference is the model, not the luck of the draw. A risk run you can't reproduce is a risk run you can't defend.
+
+<Callout variant="info" title="Set the seed, keep your sanity">
+Fix the seed and your "random" simulation becomes perfectly repeatable. Two analysts on two laptops, same seed, get the same ten thousand scenarios. Forget to fix it and every run wanders, making bugs impossible to reproduce and results impossible to audit. Determinism isn't cheating — it's the difference between a science experiment and a slot machine.
+</Callout>
+
+## Inverse-transform sampling: the master key
+
+Here is the single most important idea in this lesson, and it works for *any* distribution whose cumulative distribution function you can invert.
+
+**Analogy.** Think of a distribution's **CDF** as a height chart for a crowd. The CDF $F(x)$ answers "what fraction of the crowd is shorter than $x$?" — it climbs from 0 to 1 as you sweep $x$ from small to large. Now run it backwards: pick a percentile at random (a uniform number between 0 and 1) and ask "*who* stands at that percentile?" Feed 0.5 and you get the median height; feed 0.99 and you get someone in the towering 1% tail. Drop in uniformly random percentiles and the people you pull out are distributed exactly like the real crowd — tall people rare, average people common — because the CDF stretches and squeezes the flat $[0,1]$ line to match the distribution's true density.
+
+**Definition.** **Inverse-transform sampling.** If $F$ is the CDF of a target distribution and $U \sim \mathrm{Uniform}(0,1)$, then
+
+$$X = F^{-1}(U)$$
+
+is a draw from that distribution. The function $F^{-1}$ (the inverse CDF, also called the **quantile function**) maps a percentile back to its value. Uniform percentiles in, correctly-distributed samples out.
+
+**Worked example — the exponential distribution.** The exponential (waiting times, time-to-default in credit models) with rate $\lambda$ has CDF $F(x) = 1 - e^{-\lambda x}$. Invert it step by step. Set $U = 1 - e^{-\lambda x}$ and solve for $x$:
+
+$$e^{-\lambda x} = 1 - U \;\Longrightarrow\; -\lambda x = \ln(1 - U) \;\Longrightarrow\; x = -\frac{\ln(1 - U)}{\lambda}.$$
+
+Since $1 - U$ is itself uniform on $[0,1]$, this is usually written $X = -\ln(U)/\lambda$. Concretely, with $\lambda = 2$ and a draw $U = 0.30$: $X = -\ln(0.30)/2 = -(-1.204)/2 = 0.602$. One uniform number, one exponential sample — pure algebra, no magic.
+
+**The normal's catch.** This master key has one stubborn lock it can't open cleanly: the normal distribution's CDF has **no closed-form inverse**. There's simply no tidy formula $F^{-1}(U)$ you can write down with logs and roots. You can *approximate* it numerically, but for the most important distribution in finance we reach instead for a purpose-built trick — Box–Muller — which sidesteps the inverse entirely.
+
+<Callout variant="warning" title="The pitfall: not every CDF inverts nicely">
+Inverse-transform is elegant *when the inverse CDF has a clean formula* — exponential, uniform, logistic, and a handful of others. For the normal (and many real-world distributions) it doesn't, so a naive "just invert the CDF" plan stalls. Knowing *which* distributions invert cleanly — and which need a dedicated recipe or numerical approximation — is half of practical sampling.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Fill in the logic of inverse-transform sampling."
+  text="If F is a distribution's {{CDF|mean|variance}}, then X = {{F⁻¹(U)|F(U)|U·F}} has that distribution. The trick works because the CDF maps values to {{percentiles in [0,1]|raw counts|standard deviations}}, so running uniform percentiles backwards through F⁻¹ lands samples where the {{density|seed|sample size}} says they belong. The catch: the normal's inverse CDF has {{no closed form|two solutions|a negative sign}}."
+  explanation="X = F⁻¹(U) inverts the CDF: uniform percentiles in, correctly-distributed values out, with sample density matching the distribution. It only works cleanly when F⁻¹ has a usable formula — which the normal lacks, forcing a different recipe (Box–Muller)."
+/>
+
+## Box–Muller: a recipe for normals
+
+Since we can't invert the normal's CDF, we cheat in a clever way — and the cheat is one of the prettiest tricks in computational statistics.
+
+**Analogy.** Imagine throwing darts at a flat dartboard so that the cloud of holes forms a perfectly circular 2D bell — denser in the middle, thinning toward the edges. Each dart has two coordinates, and *each coordinate* is an independent standard normal. Box–Muller is the recipe that, given a random **angle** and a random **distance** from the center, places exactly such a dart — and then just reads off its $x$ and $y$ as two normal draws. It's the normal distribution described in polar coordinates.
+
+**Definition.** The **Box–Muller transform** takes two independent uniforms $U_1, U_2 \sim \mathrm{Uniform}(0,1)$ and produces two independent **standard normal** draws (mean 0, variance 1):
+
+$$Z_1 = \sqrt{-2\ln U_1}\,\cos(2\pi U_2), \qquad Z_2 = \sqrt{-2\ln U_1}\,\sin(2\pi U_2).$$
+
+The $\sqrt{-2\ln U_1}$ term sets the dart's distance from the center (notice the exponential-style $-\ln U_1$ from the previous section sneaking back in — that's the radius), and the $2\pi U_2$ term picks a uniformly random angle around the circle. Together they scatter darts into a Gaussian cloud, and the $\cos$/$\sin$ projections are the two normal coordinates.
+
+**You do not need to memorize this.** That's the whole point. The takeaway is conceptual: *there exists a deterministic recipe that turns plain uniform draws into normal draws*, with no inverse CDF required. Once you trust that such a recipe exists, the normal distribution becomes just another die for the pasta machine. Every numerical library has Box–Muller (or a faster cousin like the Ziggurat algorithm) baked in; you call `randn()` and the uniforms-to-normals plumbing happens invisibly underneath.
+
+<MCQ
+  client:visible
+  question="Which best describes what the Box–Muller transform does?"
+  options={[
+    { text: 'Converts two independent uniform draws into two independent standard normal draws, dodging the normal’s missing inverse CDF', correct: true },
+    { text: 'Inverts the normal CDF using a closed-form formula' },
+    { text: 'Turns normal draws into uniform draws for storage' },
+    { text: 'Averages many uniforms together until they look bell-shaped' },
+  ]}
+  explanation="Box–Muller maps (U₁, U₂) → (Z₁, Z₂), two standard normals, by treating them as polar coordinates of a 2D Gaussian. It's precisely the workaround for the fact that the normal CDF has no closed-form inverse — no averaging and no closed-form inversion involved."
+/>
+
+## From standard normal to a real return
+
+A standard normal $Z$ — mean 0, standard deviation 1 — is a generic, dimensionless shock. Real returns have a *level* (a drift) and a *scale* (a volatility). Bridging the two is the easiest step in the whole pipeline.
+
+**Analogy.** $Z$ is a temperature reading in some abstract unit centered on zero. To make it a real-world return you slide it to the right average (add the drift) and stretch it to the right spread (multiply by volatility) — exactly like converting a z-score on a test back into an actual score using the class mean and standard deviation.
+
+**Definition — the location-scale transform.** If $Z \sim \mathcal{N}(0,1)$, then
+
+$$r = \mu + \sigma Z$$
+
+is a draw from $\mathcal{N}(\mu, \sigma^2)$: a normal return with mean (drift) $\mu$ and volatility $\sigma$. Adding $\mu$ shifts the *location*; multiplying by $\sigma$ sets the *scale*.
+
+**Worked example.** A stock with expected annual return $\mu = 8\%$ and annual volatility $\sigma = 20\%$. The generator hands you a standard-normal draw $Z = -1.5$ — a shock one-and-a-half standard deviations below average. The simulated annual return is
+
+$$r = \mu + \sigma Z = 8\% + 20\% \times (-1.5) = 8\% - 30\% = -22\%.$$
+
+A grim year, but exactly the kind of grim year a $-1.5\sigma$ draw should produce. Hand the same machinery a $Z = +1.0$ and you'd get $8\% + 20\% = 28\%$, a banner year. The drift recenters; the volatility decides how violently the shocks swing.
+
+<MCQ
+  client:visible
+  question="Using r = μ + σZ with μ = 5% and σ = 30%, a draw Z = +2 produces what return?"
+  options={[
+    { text: '65%', correct: true },
+    { text: '35%' },
+    { text: '11%' },
+    { text: '60%' },
+  ]}
+  explanation="r = 5% + 30%×2 = 5% + 60% = 65%. The drift μ shifts the center and σ scales the standard-normal shock; a +2σ draw is a big upside move."
+/>
+
+## Fat tails: same machine, scarier die
+
+Here is where sampling stops being a math exercise and starts being a matter of survival. The normal distribution is *thin-tailed*: it treats a $5\sigma$ move as so absurdly unlikely (roughly a once-in-14,000-year event for daily returns) that a normal-driven simulation will essentially never produce one. Real markets produce them roughly every few years. The normal isn't cautious — it's **complacent**.
+
+**Analogy.** Sampling normal returns is like designing a levee using only the calm-weather river levels: most days it looks generous, right up until the hundred-year flood that your data swore couldn't happen washes the town away. A **Student-t** distribution with low degrees of freedom is the same river with the floods written back in — most of the mass still sits in the calm middle, but a meaningful chunk lives far out in the tails, exactly where catastrophic losses come from.
+
+**Definition.** The **Student-t distribution** with $\nu$ (nu) **degrees of freedom** looks like a normal bell but with heavier tails; the *lower* the $\nu$, the fatter the tails. As $\nu \to \infty$ it converges back to the normal. With $\nu = 3$ or $\nu = 4$, extreme moves that a normal calls impossible become merely *rare* — which is what real return data actually shows.
+
+**The crucial point: the machinery doesn't change.** You still draw $U \sim \mathrm{Uniform}(0,1)$ and run it through a recipe (inverse-transform or a t-specific generator); you've just swapped the **target distribution**. Same dough, different die. This is the deep power of Monte Carlo — to model fat tails you don't rebuild the engine, you only feed it a fatter-tailed distribution.
+
+The histogram below makes the contrast visceral. Draw samples from a thin-tailed normal and watch them pile into a tidy bell that converges to its target curve. Then switch to the fat-tailed target and watch the same draws scatter far more often into the extremes — the danger zone where the normal model swore nothing lived.
+
+<SamplingHistogram
+  client:visible
+  title="Watch a distribution emerge, one draw at a time"
+  normalLabel="Normal (thin tails)"
+  fatTailLabel="Fat tails"
+  drawLabel="Draw samples"
+  samplesLabel="Samples drawn"
+  densityLabel="Target density"
+  caption="Each click adds draws; the bars converge to the smooth target curve. Flip between the thin-tailed normal and the fat-tailed target and watch how much more often the fat-tailed die lands a sample way out in the extremes — exactly the moves a normal-driven simulation tells you to ignore."
+/>
+
+**Why this is a risk story, not a stats story.** Recall how parametric, normal-driven VaR sailed serenely into 2008: the models *assumed* thin normal tails, so the once-a-century moves that actually arrived registered as impossible, and the reported risk numbers were confidently, catastrophically low. A Monte Carlo simulation fed a normal distribution inherits that exact blind spot. Feeding it a fat-tailed Student-t instead is how you stop your own simulation from lulling you into the same false sense of safety. The die you choose *is* the risk you see.
+
+<Categorize
+  client:visible
+  question="Sort each statement under the distribution it describes."
+  buckets={['Thin-tailed normal', 'Fat-tailed Student-t']}
+  items={[
+    { text: 'Treats a 5σ crash as effectively impossible', bucket: 'Thin-tailed normal' },
+    { text: 'Underestimated risk going into 2008', bucket: 'Thin-tailed normal' },
+    { text: 'Defined by μ and σ alone, with light tails', bucket: 'Thin-tailed normal' },
+    { text: 'Puts much more probability mass far out in the tails', bucket: 'Fat-tailed Student-t' },
+    { text: 'Low degrees of freedom (ν = 3) make extremes merely rare, not impossible', bucket: 'Fat-tailed Student-t' },
+    { text: 'Better matches the frequency of real-world market crashes', bucket: 'Fat-tailed Student-t' },
+  ]}
+  explanation="The normal is light-tailed and complacent about extremes, which is exactly why normal-driven risk models understated 2008. The Student-t with low ν fattens the tails so rare crashes carry realistic probability — a better match to actual return data."
+/>
+
+## Correlated draws: assets that crash together
+
+So far every draw has been a lone asset. Real portfolios hold *many* assets, and the whole drama of risk is that they don't move independently — when tech sells off, it tends to drag the whole index with it. A simulation that draws each asset in isolation will badly misjudge the days they all sink at once.
+
+**Analogy.** Picture a rowing crew. If every rower stroked independently, the boat would wobble randomly and average out. But real markets are a crew whose strokes are *partially synchronized* — when one pulls hard, the others tend to follow. To simulate that, you start with independent rowers (independent standard normals) and then **mix** them so their motions line up to the right degree.
+
+**The idea (conceptually).** You begin with a vector of independent standard normals — uncorrelated shocks — and multiply it by the **Cholesky factor** of the target **covariance matrix**. The covariance matrix encodes how strongly each pair of assets moves together; its Cholesky factor is the precise "mixing recipe" that blends the independent shocks into correlated ones with exactly the right co-movement. Independent draws go in, a correlated basket of returns comes out — the same uniforms-to-normals pipeline, with one extra mixing step bolted on for multiple assets. You don't need the linear algebra today; the point is that correlation is *imposed* on independent draws, not drawn directly.
+
+<MatchConcepts
+  client:visible
+  question="Match each sampling building block to what it does."
+  pairs={[
+    { term: 'Uniform(0,1) draw', definition: 'The raw, flat random fuel every method starts from' },
+    { term: 'Inverse-transform X = F⁻¹(U)', definition: 'Reshapes uniforms into any distribution with an invertible CDF' },
+    { term: 'Box–Muller', definition: 'Turns two uniforms into two standard normals' },
+    { term: 'r = μ + σZ', definition: 'Slides and scales a standard normal into a real return' },
+    { term: 'Student-t (low ν)', definition: 'A fatter-tailed target for realistic extreme moves' },
+    { term: 'Cholesky factor', definition: 'Mixes independent normals into correlated ones' },
+  ]}
+  explanation="The pipeline: uniform fuel → inverse-transform or Box–Muller to hit a target shape → location-scale to make it a real return → swap in a Student-t for fat tails → mix with the Cholesky factor for correlated baskets. Every piece bends the same flat random stream."
+/>
+
+## Garbage in, garbage out — faithfully
+
+There is one principle that sits above every technique in this lesson, and it's worth tattooing on the inside of your eyelids.
+
+**Monte Carlo reproduces whatever distribution you feed it — faithfully, including its flaws.** The machinery is gloriously neutral: it will sample a thin-tailed normal with the same flawless precision it samples a fat-tailed t, a skewed distribution, or a wildly wrong one you mis-specified at 2 a.m. The simulation never editorializes. If you hand it a distribution that pretends crashes can't happen, it will obediently generate a crash-free fantasy and render it in beautiful high resolution.
+
+This is why the *choice* of distribution is the single most consequential decision in any simulation — far more than the number of paths or the cleverness of the code. A perfect sampler drawing from a wrong distribution gives you a perfectly precise wrong answer. **Garbage distribution in, garbage simulation out** — and the polish of the output is exactly what makes the garbage so dangerous, because it looks authoritative no matter what went in.
+
+<MCQ
+  client:visible
+  question="Spot the trap. A quant builds a flawless, well-tested sampler but feeds it a thin-tailed normal for an asset whose real returns are heavily fat-tailed. What happens?"
+  options={[
+    { text: 'The simulation faithfully reproduces the normal’s thin tails, so it systematically under-samples the extreme losses that actually occur — a precise but wrong risk picture', correct: true },
+    { text: 'The sampler detects the mismatch and automatically fattens the tails' },
+    { text: 'The extra precision of the code corrects for the wrong distribution' },
+    { text: 'Fat tails only matter for the mean, so the simulation is fine' },
+  ]}
+  explanation="Monte Carlo reproduces whatever distribution it's given, flaws and all. A perfect sampler on a wrong (too-thin) distribution under-represents extremes and produces a confidently precise but wrong tail. The engine never warns you; the distribution choice is yours to get right."
+/>
+
+<Reveal client:visible>
+  <details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+    <summary className="cursor-pointer font-medium">If everything is built from Uniform(0,1), how good does the underlying generator have to be?</summary>
+
+    Very good — and it's a quietly serious topic. Every transform in this lesson assumes the uniforms are *genuinely* uniform and *genuinely* independent of one another. A weak generator with hidden structure (correlations between successive draws, a too-short repeat cycle, clumping in higher dimensions) poisons everything built on top of it: your "normals" inherit the flaws, your correlations get subtly wrong, and your tail estimates drift. Old generators like the linear congruential RAND used in mid-century simulations had exactly such defects and produced biased results. Modern engines (the Mersenne Twister, PCG, philox/counter-based generators) have enormous periods and pass stringent statistical test batteries, which is why you can treat `random()` as trustworthy fuel. But the lesson stands: the quality of your simulation is capped by the quality of its uniform stream, the same way it's capped by the distribution you choose. Both the fuel and the die have to be right.
+  </details>
+</Reveal>
+
+## Putting it together
+
+Every simulation runs on one fuel — $U \sim \mathrm{Uniform}(0,1)$, deterministic from a seed so your runs are reproducible — and the entire craft of sampling is bending that flat stream into the shape your model needs. **Inverse-transform sampling** ($X = F^{-1}(U)$) is the master key for any distribution with an invertible CDF; the normal lacks one, so **Box–Muller** turns two uniforms into two standard normals via polar coordinates. A location-scale step, $r = \mu + \sigma Z$, makes a standard normal into a real return. Swap the normal for a low-$\nu$ **Student-t** and you get the fat tails that real crashes demand; multiply independent normals by a **Cholesky factor** and you get a correlated basket. Above it all sits the iron law: Monte Carlo faithfully reproduces whatever distribution you feed it, flaws included — so choose the die with care.
+
+<MindMap
+  client:visible
+  title="Sampling from distributions — the whole machine shop"
+  caption="One flat stream of uniforms, bent into any distribution you can describe — normals, fat tails, correlated baskets — and faithfully so, flaws and all."
+  root={{
+    label: 'Sampling from distributions',
+    children: [
+      {
+        label: 'The raw fuel',
+        children: [
+          { label: 'U ~ Uniform(0,1) from a PRNG' },
+          { label: 'Pseudo-random: deterministic from a seed' },
+          { label: 'Seed ⇒ reproducible, auditable runs' },
+        ],
+      },
+      {
+        label: 'Reshape uniforms',
+        children: [
+          { label: 'Inverse-transform: X = F⁻¹(U)' },
+          { label: 'Exponential: X = −ln(U)/λ' },
+          { label: 'Normal CDF has no closed-form inverse' },
+          { label: 'Box–Muller: 2 uniforms → 2 standard normals' },
+        ],
+      },
+      {
+        label: 'Make it a return',
+        children: [
+          { label: 'Location-scale: r = μ + σZ' },
+          { label: 'μ shifts the center, σ sets the spread' },
+        ],
+      },
+      {
+        label: 'Match reality',
+        children: [
+          { label: 'Fat tails: Student-t with low ν' },
+          { label: 'Correlation: mix via the Cholesky factor' },
+          { label: 'Same machine, different target distribution' },
+        ],
+      },
+      {
+        label: 'The iron law',
+        children: [
+          { label: 'Reproduces whatever distribution you feed it' },
+          { label: 'Garbage distribution in, garbage simulation out' },
+          { label: 'Precise ≠ accurate' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Recap: sampling from distributions"
+  questions={[
+    {
+      question: 'Why is it useful that a PRNG is "pseudo"-random (deterministic from a seed) rather than truly random?',
+      options: [
+        { text: 'Fixing the seed makes runs reproducible — essential for debugging, auditing, and comparing models on identical shocks', correct: true },
+        { text: 'Deterministic numbers are more uniformly spread than truly random ones' },
+        { text: 'It lets the generator produce normal numbers without any transform' },
+        { text: 'It removes the need to choose a target distribution' },
+      ],
+      explanation: 'Same seed ⇒ same sequence ⇒ reproducible results. That reproducibility is what lets you debug a specific path, defend a risk number to a regulator, and compare two models on the exact same random shocks.',
+    },
+    {
+      question: 'The exponential CDF is F(x) = 1 − e^(−λx). Which inverse-transform formula samples it from U ~ Uniform(0,1)?',
+      options: [
+        { text: 'X = −ln(U)/λ', correct: true },
+        { text: 'X = λ·U' },
+        { text: 'X = e^(−λU)' },
+        { text: 'X = √(−2 ln U)' },
+      ],
+      explanation: 'Solving U = 1 − e^(−λx) gives x = −ln(1−U)/λ, and since 1−U is also uniform this is written X = −ln(U)/λ. The last option is the radius term from Box–Muller, a different recipe.',
+    },
+    {
+      question: 'Why does the normal distribution need a special recipe like Box–Muller instead of plain inverse-transform sampling?',
+      options: [
+        { text: 'Its CDF has no closed-form inverse, so there is no tidy F⁻¹(U) formula to apply', correct: true },
+        { text: 'Its CDF is not a valid probability distribution' },
+        { text: 'The normal has no mean or variance to scale by' },
+        { text: 'Uniform draws cannot be transformed into normal ones at all' },
+      ],
+      explanation: 'Inverse-transform needs a usable inverse CDF; the normal’s has no closed form. Box–Muller sidesteps this by treating two uniforms as the polar coordinates of a 2D Gaussian and reading off two standard normals.',
+    },
+    {
+      question: 'Using r = μ + σZ with μ = 6% and σ = 25%, a standard-normal draw Z = −1.2 gives which simulated return?',
+      options: [
+        { text: '−24%', correct: true },
+        { text: '−30%' },
+        { text: '−18%' },
+        { text: '+36%' },
+      ],
+      explanation: 'r = 6% + 25%×(−1.2) = 6% − 30% = −24%. The drift recenters the shock and the volatility scales it; a −1.2σ draw is a sizeable down move.',
+    },
+    {
+      question: 'A simulation uses a flawless sampler but feeds it a thin-tailed normal for a fat-tailed asset. What is the consequence, and what does it echo?',
+      options: [
+        { text: 'It under-samples extreme losses and reports a confidently precise but wrong tail — the same blind spot that sank normal-driven VaR in 2008', correct: true },
+        { text: 'The sampler auto-corrects the tails, so the result is fine' },
+        { text: 'Adding more paths fixes the wrong distribution' },
+        { text: 'Fat tails affect only the mean, so risk is unaffected' },
+      ],
+      explanation: 'Monte Carlo faithfully reproduces whatever distribution it’s fed. A too-thin normal under-weights extremes, producing a precise-looking but wrong risk picture — exactly the complacency behind 2008’s normal-driven VaR. More paths only sharpen a wrong answer.',
+    },
+  ]}
+/>
+
+Next up — **Geometric Brownian Motion** — we stop drawing single returns and start chaining them: feed a fresh draw into each time-step and watch a whole price *path* unspool, one synthetic day at a time, into the random walks that power option pricing and risk simulation alike.

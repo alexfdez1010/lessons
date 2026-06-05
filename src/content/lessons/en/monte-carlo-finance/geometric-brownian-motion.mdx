@@ -1,0 +1,342 @@
+---
+title: "Geometric Brownian Motion"
+description: "The engine under simulated asset prices: random walks, drift versus diffusion, why GBM keeps prices positive and lognormal, and how to roll one random draw per step into a whole fan of price paths."
+topic: "en/monte-carlo-finance"
+order: 3
+minutes: 9
+updated: 2026-06-05
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, Categorize, MatchConcepts, MindMap, GbmPaths } from '@/components/react';
+
+You can now sample from any distribution you like (lesson 2). But a single random draw is a single dot — a one-off coin flip. A *price* is a story that unfolds over time: tomorrow built on today, the day after built on tomorrow. To simulate a stock, you don't want one draw — you want a **path**, hundreds of draws chained nose-to-tail so each day inherits where the last one left off. The model that does this chaining, the workhorse under almost every Monte Carlo engine in finance, is **Geometric Brownian Motion (GBM)**. This lesson is about the engine itself: how one random number per step rolls into a whole fan of plausible futures.
+
+<MCQ
+  client:visible
+  pretest
+  question="What does Geometric Brownian Motion actually model?"
+  options={[
+    { text: 'How an asset price evolves step by step as a random walk in percentage (log) terms, keeping prices positive', correct: true },
+    { text: 'The exact price a stock will reach in one year' },
+    { text: 'The fair value of an option given today’s inputs' },
+    { text: 'The correlation between two different stocks' },
+  ]}
+  explanation="GBM is a model for how a single price wanders over time: each step adds a random percentage move, so prices compound multiplicatively, stay positive, and end up lognormally distributed. It predicts no single future — it generates the whole cloud of possible ones."
+/>
+
+## The random walk, and why the naive version is broken
+
+**Analogy.** Picture a drunkard leaving the pub. Each step he lurches a random amount left or right. Where he ends up after a hundred steps is a **random walk** — the sum of a hundred little random shocks. Prices feel the same: tomorrow's price is today's price plus some random jostle.
+
+The tempting first model writes that literally. Tomorrow's price equals today's plus a random shock measured in dollars:
+
+$$S_{t+1} = S_t + \sigma\, Z, \quad Z \sim N(0,1)$$
+
+This is an **additive (arithmetic) random walk**, and for prices it is broken in two ways.
+
+First, **it can go negative.** A normal shock has no floor — string together enough bad draws and $S_t$ marches straight through zero into negative territory. A stock can't cost &minus;$4. The model permits an impossible state.
+
+Second, **a fixed dollar shock is nonsense across price levels.** A $1 wiggle is a yawn on a $1000 stock (0.1%) and an earthquake on a $1 penny stock (100%). Real markets don't move in fixed dollars — they move in **percentages**. A blue chip and a penny stock can both have 2% days; they will never have the same *dollar* days. The additive walk bakes in the wrong unit.
+
+<MCQ
+  client:visible
+  question="Why is a naive additive random walk (tomorrow’s price = today’s + a normal dollar shock) a bad model for stock prices?"
+  options={[
+    { text: 'It allows negative prices and treats a fixed dollar move as equally meaningful on a 1 stock and a 1000 stock', correct: true },
+    { text: 'It is too slow to simulate on a computer' },
+    { text: 'It assumes prices never change from day to day' },
+    { text: 'It requires knowing the future correlation matrix' },
+  ]}
+  explanation="An additive normal shock has no lower bound, so prices can go negative, and a fixed dollar move is trivial on an expensive stock but catastrophic on a cheap one. Real prices move in percentages, not fixed dollars — which is exactly what GBM fixes."
+/>
+
+## GBM's fix: walk in log returns, not dollars
+
+GBM repairs both flaws with one move: **don't add a random number to the price — multiply the price by a random factor.** Equivalently, do the random walk on the **log return** rather than on the price itself. Model the *percentage* change, and two things fall out for free.
+
+Because the change is multiplicative, the price can only ever be scaled up or down — never pushed below zero. Multiply $100 by anything positive and you stay positive. And because the move is a percentage, a 2% shock means the same thing whether the stock costs $5 or $5000. Both problems vanish at once.
+
+This connects straight to the **lognormal prices** you met in options pricing. If each step's log return is normal, and you add up many normal log returns, the *total* log return is normal too — which means the **price** (the exponential of that total) is **lognormal**. A lognormal variable can't be negative and is **right-skewed**: a long tail of big winners on the upside, a floor at zero on the downside. That is exactly the shape of real long-horizon stock returns, and it's the shape GBM produces by construction.
+
+| | **Additive random walk** | **Geometric Brownian Motion** |
+|---|---|---|
+| **What does the walking** | The price, in dollars | The log return (percentage) |
+| **Shock type** | Add a normal dollar amount | Multiply by a random factor |
+| **Can the price go negative?** | Yes — broken | No — stays positive |
+| **Same shock on a 5 vs 5000 stock?** | Wildly different in % | Identical in % |
+| **Resulting price distribution** | Normal (symmetric) | Lognormal (right-skewed) |
+
+<FillBlank
+  client:visible
+  question="Fill in why GBM beats the additive walk."
+  text="GBM does the random walk on the {{log return|dollar price|trading volume}}, so price changes are {{multiplicative|additive|fixed}}, which keeps prices {{positive|symmetric|constant}} and makes the price distribution {{lognormal|uniform|normal}}."
+  explanation="Walking in log returns makes each step a percentage multiplier, so prices compound, never cross zero, and end up lognormal (right-skewed) — the same lognormal prices you met in options pricing."
+/>
+
+## Drift versus diffusion: the discrete step
+
+Here is the engine itself — the formula you simulate one step at a time:
+
+$$S_{t+\Delta t} = S_t \exp\!\left(\left(\mu - \tfrac{1}{2}\sigma^2\right)\Delta t + \sigma\sqrt{\Delta t}\,Z\right),\quad Z \sim N(0,1)$$
+
+Don't be spooked — every piece is something you already know. Take them one at a time:
+
+- **$S_t$** — today's price, where the step starts.
+- **$\mu$** — the **drift**: the expected log-growth rate per year (say 10% for a stock you expect to grow). This is the *deterministic* pull, the direction the price leans on average.
+- **$\sigma$** — the **volatility**: the annual standard deviation of returns, your old friend. This scales the *random* jostle.
+- **$\Delta t$** — the **time step**, in years. For a daily simulation, $\Delta t = 1/252$ (252 trading days per year). Smaller step = finer-grained path.
+- **$Z$** — a fresh **standard normal draw**, a brand-new $N(0,1)$ sample at *every single step*. This is precisely the lesson-2 sampling, now chained: one draw per day, 252 draws for a year.
+- **$\sqrt{\Delta t}$** — the random part scales with the *square root* of time, because variance (not standard deviation) adds linearly. Over a step a quarter as long, the random move shrinks only by a half, not a quarter.
+
+The exponent splits cleanly into two parts. The **drift term** $\left(\mu - \tfrac{1}{2}\sigma^2\right)\Delta t$ is deterministic — it's the same every step, the steady lean. The **diffusion term** $\sigma\sqrt{\Delta t}\,Z$ is random — it's the dice-roll, the wandering. Drift is where the price *wants* to go; diffusion is the noise that knocks it around on the way. Every GBM step is a tug-of-war between the two.
+
+<Callout variant="info" title="Why exp(...) and not just multiply?">
+Wrapping the step in $\exp(\cdot)$ is what makes the move multiplicative. The thing inside the exponent is a (normal) **log return**; exponentiating turns it into a growth *factor* like 1.013 or 0.987 that you multiply onto the price. That single $\exp$ is the entire reason prices stay positive and end up lognormal — it's the "geometric" in Geometric Brownian Motion.
+</Callout>
+
+<MatchConcepts
+  client:visible
+  question="Match each symbol in the GBM step to what it means."
+  pairs={[
+    { term: 'mu', definition: 'Drift — expected log-growth rate per year' },
+    { term: 'sigma', definition: 'Volatility — annual standard deviation of returns' },
+    { term: 'delta t', definition: 'Length of one time step, e.g. 1/252 for daily' },
+    { term: 'Z', definition: 'A fresh standard normal draw at every single step' },
+    { term: 'the exp wrapper', definition: 'Makes the move multiplicative, keeping prices positive' },
+  ]}
+  explanation="Drift (mu) is the deterministic lean, volatility (sigma) scales the random jostle, delta t sets the step size, Z is the per-step random draw, and the exponential makes each step a growth factor — the heart of GBM."
+/>
+
+## The mysterious &minus;½σ² term
+
+You probably eyed that $-\tfrac{1}{2}\sigma^2$ sitting next to the drift and wondered where it crawled in from. It's called the **Itô correction**, but forget the calculus — the intuition is the genuinely useful part, and you already met it as **variance drag**.
+
+**Analogy.** A stock drops 50% one day and gains 50% the next. Are you back where you started? No — you're at $100 \to 50 \to 75$. You're down 25%, despite the *average* daily return being a cheerful $(-50\% + 50\%)/2 = 0\%$. Volatility quietly ate your money. The **arithmetic mean** return (the simple average) overstates what you actually *compound*; the **geometric mean** (what your wealth really grows at) is always lower, and the gap between them widens with volatility.
+
+That gap is exactly $\tfrac{1}{2}\sigma^2$. The drift you *feel* in your compounded wealth isn't the raw $\mu$ — it's $\mu - \tfrac{1}{2}\sigma^2$. The correction term docks your growth rate by half the variance to account for the drag that bouncing around inflicts on compounding. Leave it out and your simulated paths drift systematically *too high*: you'd be claiming the price grows at its arithmetic average, which volatility makes impossible to actually achieve.
+
+**The consequence.** Two stocks with the *same* expected return $\mu$ but different volatility do **not** grow your money at the same rate. The more volatile one suffers more drag and compounds slower. This is why, in a moment, you'll see the *median* GBM path drift below the *mean*: the average is dragged up by a few lucky exponential winners, but the typical path lags, taxed by its own variance.
+
+<MCQ
+  client:visible
+  question="Why does the GBM step subtract ½σ² from the drift?"
+  options={[
+    { text: 'To correct for variance drag — volatility makes compounded (geometric) growth fall below the arithmetic-average return', correct: true },
+    { text: 'To make the price more likely to go negative' },
+    { text: 'To cancel out the time step delta t entirely' },
+    { text: 'Because volatility increases the geometric growth rate' },
+  ]}
+  explanation="A +50% then −50% swing leaves you down 25% even though the average move is 0%. That gap is ½σ². The correction docks the drift so simulated paths compound at the realistic geometric rate, not the inflated arithmetic one. Drop it and paths drift too high."
+/>
+
+## One step, worked end to end
+
+Let's actually turn the crank once. Take a stock with:
+
+- $S_0 = 100$ (starting price)
+- $\mu = 10\%$ per year $= 0.10$ (drift)
+- $\sigma = 20\%$ per year $= 0.20$ (volatility)
+- $\Delta t = 1/252 \approx 0.003968$ (one trading day)
+
+**Step 1 — the drift per step.** The deterministic part of the exponent is $\left(\mu - \tfrac{1}{2}\sigma^2\right)\Delta t$. First the variance-drag-adjusted drift: $\mu - \tfrac{1}{2}\sigma^2 = 0.10 - \tfrac{1}{2}(0.20)^2 = 0.10 - 0.02 = 0.08$ per year. Per day: $0.08 \times \tfrac{1}{252} \approx 0.000317$. Tiny — a daily lean of about +0.0317%.
+
+**Step 2 — the diffusion magnitude per step.** The random part scales by $\sigma\sqrt{\Delta t} = 0.20 \times \sqrt{1/252} = 0.20 \times 0.06300 \approx 0.01260$. So a one-standard-deviation day is about a 1.26% jostle — *forty times larger* than the drift. On any single day, randomness utterly dominates the gentle drift. (That's why one day tells you nothing and a year tells you a lot: drift accumulates, noise partly cancels.)
+
+**Step 3 — draw a Z and take the step.** Suppose today's normal draw lands at $Z = +1.0$ (a one-sigma up day). The exponent is:
+
+$$0.000317 + 0.01260 \times 1.0 = 0.01292$$
+
+Exponentiate to get the growth factor: $\exp(0.01292) \approx 1.01300$. Multiply onto the price:
+
+$$S_{t+\Delta t} = 100 \times 1.01300 = 101.30$$
+
+A one-sigma-up day nudged $100 to about $101.30. Had $Z$ come in at $-1.0$ instead, the factor would be $\exp(0.000317 - 0.01260) \approx \exp(-0.01228) \approx 0.98780$, landing the price at about $98.78.
+
+**Step 4 — roll it 252 times.** Now chain it: feed $101.30$ back in as the new $S_t$, draw a *fresh* $Z$, take another step. Do this 252 times, each with its own independent normal draw, and you've simulated one full year — one complete **price path**, one possible future for the stock. The drift quietly accumulates across the year; the noise wanders up and down but its ups and downs partly cancel, so over 252 steps the drift finally becomes visible under the jitter.
+
+<MCQ
+  client:visible
+  question="In the worked example (sigma = 20%/yr, daily steps), the one-day diffusion magnitude (~1.26%) is about 40× the one-day drift (~0.03%). What does that tell you?"
+  options={[
+    { text: 'On any single day, randomness dominates; drift only becomes visible after it accumulates over many steps', correct: true },
+    { text: 'The drift term is a mistake and should be deleted' },
+    { text: 'A single day’s path is enough to estimate the annual return precisely' },
+    { text: 'Volatility has no effect on where the price ends up' },
+  ]}
+  explanation="Per step, the random jostle swamps the tiny drift, so one day is almost pure noise. But drift adds up step after step while noise partly cancels, so over a full year the gentle lean finally emerges from under the jitter — which is exactly why you simulate whole paths, not single steps."
+/>
+
+## Why one path is useless and a thousand is gold
+
+Here is the trap. You run GBM once, get a path that ends at $134, and conclude "the stock will be worth $134." **Wrong.** That single path is *one* draw from an infinite cloud of possible futures — a single roll of a 252-sided dice rolled 252 times over. Run it again with fresh random draws and you'll land somewhere completely different. One path tells you almost nothing.
+
+The power comes from simulating **thousands of paths**. Each is a different possible future; together they trace out the entire **distribution of outcomes**. Now you can ask real questions: *what's the median ending price? The 5th percentile (a bad year)? The chance of ending below $80?* None of those is answerable from one path; all of them fall out of ten thousand.
+
+And the shape of that fan is the lognormal you were promised. It's **right-skewed**: a handful of paths catch a long winning streak and rocket far above the crowd (no ceiling on the upside), while the worst paths are floored at zero. Those few exponential winners drag the **mean** ending price *above* the **median** — the typical path lands lower than the average, because the average is inflated by a small number of moonshots. The mean is not the most likely outcome; in a right-skewed world, most paths land *below* average.
+
+The island below is that fan. Each thread is one GBM path starting from the same price; the cloud they form is the outcome distribution. Drag the drift to tilt the whole cloud up or down, and crank the volatility to watch the fan widen — and the right-skew exaggerate — as variance drag pushes the typical path further below the lucky outliers.
+
+<GbmPaths
+  client:visible
+  title="A fan of GBM price paths"
+  driftLabel="Drift (annual)"
+  volLabel="Volatility (annual)"
+  resimulateLabel="Resimulate"
+  startLabel="Start"
+  caption="Every thread is one possible future, all launched from the same starting price. The whole fan is the distribution of outcomes. Raise the volatility and the fan flares wider while a few lucky paths run far above the crowd — the right-skewed lognormal shape. Nudge the drift and the entire cloud tilts. Hit resimulate to draw a fresh batch of random futures."
+/>
+
+<FillBlank
+  client:visible
+  question="Fill in why we simulate many paths."
+  text="A single path is just {{one possible future|the guaranteed outcome|the average}}, so it tells you almost nothing. Thousands of paths reveal the {{distribution of outcomes|exact final price|risk-free rate}}, which is {{right-skewed|symmetric|uniform}} — so a few big winners pull the {{mean above the median|median above the mean|price below zero}}."
+  explanation="One path is a single draw; the fan of thousands is the outcome distribution. Because GBM produces lognormal (right-skewed) prices, rare exponential winners lift the mean above the median, so the typical path lands below average."
+/>
+
+## Pitfalls: GBM is a baseline, not the truth
+
+GBM is gorgeous and it is *wrong* — usefully wrong, the way a frictionless plane is useful in physics, but wrong in ways that matter when money is on the line. Two assumptions are doing heavy lifting:
+
+**Constant volatility.** GBM uses a single fixed $\sigma$ forever. Real markets have **volatility clustering** — calm stretches and stormy stretches arrive in clumps (big moves beget big moves). A model with one constant $\sigma$ can't capture that rhythm; it sprinkles its volatility evenly, like a weather forecast that predicts the same drizzle every day of the year.
+
+**Independent normal increments.** GBM assumes each day's $Z$ is an independent, *normal* draw. Reality has **fat tails** (crashes happen far more often than a normal allows — the 1987 single-day move was a "25-sigma" event a normal model says should never occur in the universe's lifetime) and **jumps** (prices gap on news without trading through the intervening levels). GBM's smooth, continuous, thin-tailed paths simply can't gap or crash the way real prices do.
+
+So treat GBM as the **honest baseline**: the simplest model that gets positivity, percentage moves, and lognormal shape right — and the foundation everything fancier is built *on top of*. When its assumptions chafe, quants reach for richer engines: **jump-diffusion** (bolt sudden gaps onto GBM), **stochastic volatility** (let $\sigma$ itself wander randomly, e.g. the Heston model), and others you'll meet later. GBM isn't the destination; it's the launchpad.
+
+<Categorize
+  client:visible
+  question="Sort each statement: a faithful feature of GBM, or a real-market behaviour GBM misses?"
+  buckets={['GBM gets this right', 'GBM misses this']}
+  items={[
+    { text: 'Prices stay positive no matter how many bad days', bucket: 'GBM gets this right' },
+    { text: 'Returns are measured in percentages, not fixed dollars', bucket: 'GBM gets this right' },
+    { text: 'Long-horizon prices come out lognormal (right-skewed)', bucket: 'GBM gets this right' },
+    { text: 'Calm and stormy periods cluster together over time', bucket: 'GBM misses this' },
+    { text: 'Crashes happen far more often than a normal would allow (fat tails)', bucket: 'GBM misses this' },
+    { text: 'Prices can gap suddenly on news without trading through', bucket: 'GBM misses this' },
+  ]}
+  explanation="GBM nails positivity, percentage moves, and the lognormal shape. It assumes constant volatility and independent normal increments, so it misses volatility clustering, fat tails, and jumps — gaps that richer models (jump-diffusion, stochastic vol) are built to add."
+/>
+
+<Reveal client:visible>
+  <details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+    <summary className="cursor-pointer font-medium">If GBM is wrong about fat tails and jumps, why is it still everywhere?</summary>
+
+    Because it is the best *simple* thing that gets the essentials right, and simplicity buys you three precious things: it has closed-form answers (the Black–Scholes formula falls straight out of GBM, no simulation needed), it needs only two parameters you can actually estimate (drift and volatility), and it's the shared baseline everyone understands. Richer models — jump-diffusion, stochastic volatility — are quite literally *GBM plus corrections*: you start from the GBM skeleton and bolt on jumps or a wandering sigma. You can't appreciate, calibrate, or debug those extensions without fluency in the baseline they extend. GBM is wrong in known, bounded ways, and knowing exactly *how* it's wrong is what lets you reach for the right fix. The right model is the simplest one that doesn't lie about your particular problem — and for a startling amount of finance, GBM is honest enough.
+  </details>
+</Reveal>
+
+## Putting it together
+
+Geometric Brownian Motion is the engine under simulated prices. It walks not the dollar price but the **log return**, so moves are multiplicative percentages — which keeps prices positive and makes the price distribution **lognormal**. Each discrete step, $S_{t+\Delta t} = S_t \exp\!\left(\left(\mu - \tfrac{1}{2}\sigma^2\right)\Delta t + \sigma\sqrt{\Delta t}\,Z\right)$, is a tug-of-war between a deterministic **drift** and a random **diffusion** driven by a fresh standard normal $Z$. The $-\tfrac{1}{2}\sigma^2$ term is **variance drag** made honest: it docks growth so paths compound at the realistic geometric rate. Chain 252 of these and you get one path — a single possible future. Roll *thousands* and you get the whole right-skewed fan, the outcome distribution where a few exponential winners lift the mean above the median. And remember GBM is a **baseline**, not gospel: constant vol and normal increments miss the clustering, fat tails, and jumps that fancier models add.
+
+<MindMap
+  client:visible
+  title="Geometric Brownian Motion — the whole engine"
+  caption="Walk the log return, split each step into drift and diffusion, chain many draws into a path, and simulate thousands of paths to see the lognormal fan of futures."
+  root={{
+    label: 'Geometric Brownian Motion',
+    children: [
+      {
+        label: 'Why not an additive walk',
+        children: [
+          { label: 'Additive: price can go negative' },
+          { label: 'Additive: fixed dollar move misjudges price level' },
+          { label: 'GBM walks the log return (percentage) instead' },
+        ],
+      },
+      {
+        label: 'The discrete step',
+        children: [
+          { label: 'Drift term: (mu − ½σ²)·delta t, deterministic' },
+          { label: 'Diffusion term: sigma·√(delta t)·Z, random' },
+          { label: 'Fresh standard normal Z every step' },
+          { label: 'exp wrapper keeps prices positive and lognormal' },
+        ],
+      },
+      {
+        label: 'Variance drag (−½σ²)',
+        children: [
+          { label: 'Geometric growth < arithmetic average' },
+          { label: 'Volatility eats compounded returns' },
+          { label: 'Median path lands below the mean' },
+        ],
+      },
+      {
+        label: 'Why many paths',
+        children: [
+          { label: 'One path = one possible future, near useless' },
+          { label: 'Thousands reveal the outcome distribution' },
+          { label: 'Right-skewed: winners pull mean above median' },
+        ],
+      },
+      {
+        label: 'Limits — a baseline only',
+        children: [
+          { label: 'Constant vol misses volatility clustering' },
+          { label: 'Normal increments miss fat tails and jumps' },
+          { label: 'Fancier: jump-diffusion, stochastic vol' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Recap: Geometric Brownian Motion"
+  questions={[
+    {
+      question: 'What is the single change GBM makes to fix the broken additive random walk?',
+      options: [
+        { text: 'It walks the log return (multiplicative percentage moves) instead of adding dollar shocks to the price', correct: true },
+        { text: 'It uses a uniform distribution instead of a normal one' },
+        { text: 'It removes randomness so prices follow a straight line' },
+        { text: 'It lets prices become negative to model defaults' },
+      ],
+      explanation: 'GBM does the random walk on the log return, so each step multiplies the price by a growth factor. That makes moves percentages (meaningful at any price level), keeps prices positive, and yields a lognormal price distribution.',
+    },
+    {
+      question: 'In the GBM step, which part is deterministic and which is random?',
+      options: [
+        { text: 'The drift term (mu − ½σ²)·delta t is deterministic; the diffusion term sigma·√(delta t)·Z is random', correct: true },
+        { text: 'Both terms are random because Z appears in each' },
+        { text: 'The drift is random and the diffusion is fixed' },
+        { text: 'Neither term changes from step to step' },
+      ],
+      explanation: 'The drift term is the same every step — a steady lean. The diffusion term carries the fresh standard normal draw Z, so it is the random jostle. Each step is a tug-of-war between the two.',
+    },
+    {
+      question: 'Why does the exponent subtract ½σ² from the drift?',
+      options: [
+        { text: 'Variance drag: volatility makes geometric (compounded) growth fall below the arithmetic average, so the drift is docked to stay realistic', correct: true },
+        { text: 'To make the simulation run faster' },
+        { text: 'To guarantee every path ends above its starting price' },
+        { text: 'Because higher volatility raises compounded growth' },
+      ],
+      explanation: 'A +50%/−50% pair leaves you down 25% despite a 0% average — that gap is ½σ². The correction lowers the drift so paths compound at the achievable geometric rate; omit it and paths drift systematically too high.',
+    },
+    {
+      question: 'One GBM path ends at 134. What can you legitimately conclude about the stock’s future?',
+      options: [
+        { text: 'Almost nothing — it is one draw from a cloud of futures; you need thousands of paths to learn the distribution of outcomes', correct: true },
+        { text: 'The stock will definitely be worth 134' },
+        { text: 'The stock’s volatility must be zero' },
+        { text: 'The mean and median ending prices are both 134' },
+      ],
+      explanation: 'A single path is one random future and tells you next to nothing. Only the fan of thousands reveals the outcome distribution — median, percentiles, probabilities — and that distribution is right-skewed, so the mean sits above the median.',
+    },
+    {
+      question: 'Which real-market behaviour does plain GBM fail to capture?',
+      options: [
+        { text: 'Volatility clustering, fat tails, and sudden jumps — its constant σ and normal increments smooth all three away', correct: true },
+        { text: 'That prices stay positive' },
+        { text: 'That returns are measured in percentages' },
+        { text: 'That long-horizon prices are lognormal' },
+      ],
+      explanation: 'GBM correctly delivers positivity, percentage moves, and lognormal prices. But constant volatility misses clustering, and independent normal increments miss fat tails and jumps — gaps that jump-diffusion and stochastic-vol models are built to fill.',
+    },
+  ]}
+/>
+
+Next up — **Simulating Portfolio Outcomes** — we point this engine at a real goal. Feed GBM your retirement contributions and a multi-decade horizon, and the fan of paths becomes a **cone of outcomes**: the spread of pots you might retire on, from the unlucky 5th percentile to the lucky 95th. Same engine, now answering the question that actually keeps people up at night — *will I have enough?*

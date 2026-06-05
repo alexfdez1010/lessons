@@ -1,0 +1,330 @@
+---
+title: "Muestreo de distribuciones"
+description: "La materia prima de toda simulación: convertir un chorro de números aleatorios uniformes en rentabilidades normales, choques de colas gruesas y cualquier distribución que puedas describir. El muestreo por transformada inversa y el truco de Box-Muller."
+topic: "es/monte-carlo-finance"
+order: 2
+minutes: 9
+updated: 2026-06-05
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, Categorize, MatchConcepts, MindMap, SamplingHistogram } from '@/components/react';
+
+Todo motor de Montecarlo que construyas jamás funciona con un único y humilde combustible: un chorro de números aleatorios entre 0 y 1. Eso es todo. Rentabilidades normales, desplomes de colas gruesas, cestas correlacionadas de activos, décadas enteras de historial de precios simuladas — todo se fabrica a partir del mismo goteo plano y sin rasgos de extracciones uniformes. El arte del muestreo es el arte de **doblar** ese chorro plano hasta darle la forma que tu modelo exija.
+
+Así que antes de poder simular un solo precio de una acción, tenemos que responder a una pregunta engañosamente básica: dado un generador que solo sabe escupir $U \sim \mathrm{Uniform}(0,1)$, ¿cómo conjuramos una extracción de una *campana de Gauss*? ¿O de una t de Student de colas gruesas? ¿O de un par correlacionado de activos que se desploman juntos? Esta lección es el taller donde entran uniformes y sale cualquier distribución que puedas describir.
+
+<MCQ
+  client:visible
+  pretest
+  question="Una simulación de Montecarlo necesita extraer rentabilidades normales, pero el generador de números aleatorios solo produce números uniformes en [0, 1]. ¿Cómo conseguimos las extracciones normales?"
+  options={[
+    { text: 'Transformamos las extracciones uniformes — las pasamos por una receta (una CDF inversa o un truco como Box–Muller) que reconfigura una distribución plana en la objetivo', correct: true },
+    { text: 'Descargamos una lista de rentabilidades normales históricas y las reproducimos' },
+    { text: 'Promediamos muchas extracciones uniformes y llamamos normal al promedio' },
+    { text: 'Los generadores modernos producen números normales directamente, así que no hace falta transformar' },
+  ]}
+  explanation="El generador solo produce extracciones Uniform(0,1). Para obtener cualquier otra distribución aplicamos una transformación: muestreo por transformada inversa (pasar uniformes por la CDF inversa) o una receta hecha a medida como Box–Muller para las normales. Promediar uniformes da un bulto triangularoide, no una verdadera normal, y reproducir el historial es un método del todo distinto."
+/>
+
+## Extracciones uniformes: la materia prima universal
+
+**Analogía.** Una máquina de pasta empieza con un soso pegote de masa y lo presiona por distintos moldes para sacar espaguetis, tallarines o raviolis. La masa siempre es la misma; el *molde* decide la forma. En Montecarlo, $U \sim \mathrm{Uniform}(0,1)$ es la masa — perfectamente plana, igual de probable que caiga en cualquier punto de $[0,1]$ — y cada método de muestreo no es más que un molde distinto.
+
+**Definición.** Un **generador de números pseudoaleatorios (PRNG)** produce una secuencia de números que *parece* estadísticamente aleatoria — repartida uniformemente sobre $[0,1]$, sin patrones detectables — pero que en realidad se calcula de forma determinista a partir de una **semilla** inicial. Dale la misma semilla y reproduce la misma secuencia exacta, extracción a extracción.
+
+Esa palabra "pseudo" suena a defecto, pero es un regalo. Como el chorro es reproducible, puedes reejecutar la simulación de ayer y obtener **byte a byte la misma respuesta** — esencial para depurar ("¿por qué reventó la trayectoria 4.182?"), para auditar un número de riesgo que un regulador está cuestionando y para comparar dos modelos sobre el conjunto *idéntico* de choques aleatorios, de modo que cualquier diferencia sea el modelo, no la suerte del sorteo. Una ejecución de riesgo que no puedes reproducir es una ejecución de riesgo que no puedes defender.
+
+<Callout variant="info" title="Fija la semilla, conserva la cordura">
+Fija la semilla y tu simulación "aleatoria" se vuelve perfectamente repetible. Dos analistas en dos ordenadores, con la misma semilla, obtienen los mismos diez mil escenarios. Olvídate de fijarla y cada ejecución divaga, haciendo los fallos imposibles de reproducir y los resultados imposibles de auditar. El determinismo no es hacer trampa — es la diferencia entre un experimento científico y una máquina tragaperras.
+</Callout>
+
+## Muestreo por transformada inversa: la llave maestra
+
+Aquí está la idea más importante de toda esta lección, y funciona para *cualquier* distribución cuya función de distribución acumulada puedas invertir.
+
+**Analogía.** Piensa en la **CDF** de una distribución como una tabla de alturas de una multitud. La CDF $F(x)$ responde "¿qué fracción de la multitud mide menos que $x$?" — sube de 0 a 1 a medida que barres $x$ de pequeño a grande. Ahora recórrela al revés: elige un percentil al azar (un número uniforme entre 0 y 1) y pregunta "¿*quién* está en ese percentil?" Mete 0,5 y obtienes la altura mediana; mete 0,99 y obtienes a alguien del altísimo 1 % de la cola. Suelta percentiles uniformemente aleatorios y las personas que sacas están distribuidas exactamente como la multitud real — gente alta rara, gente media común — porque la CDF estira y comprime la línea plana $[0,1]$ hasta hacerla coincidir con la densidad verdadera de la distribución.
+
+**Definición.** **Muestreo por transformada inversa.** Si $F$ es la CDF de una distribución objetivo y $U \sim \mathrm{Uniform}(0,1)$, entonces
+
+$$X = F^{-1}(U)$$
+
+es una extracción de esa distribución. La función $F^{-1}$ (la CDF inversa, también llamada **función cuantil**) mapea un percentil de vuelta a su valor. Percentiles uniformes dentro, muestras correctamente distribuidas fuera.
+
+**Ejemplo resuelto — la distribución exponencial.** La exponencial (tiempos de espera, tiempo hasta impago en modelos de crédito) con tasa $\lambda$ tiene CDF $F(x) = 1 - e^{-\lambda x}$. Invírtela paso a paso. Pon $U = 1 - e^{-\lambda x}$ y despeja $x$:
+
+$$e^{-\lambda x} = 1 - U \;\Longrightarrow\; -\lambda x = \ln(1 - U) \;\Longrightarrow\; x = -\frac{\ln(1 - U)}{\lambda}.$$
+
+Como $1 - U$ es a su vez uniforme en $[0,1]$, esto se suele escribir $X = -\ln(U)/\lambda$. En concreto, con $\lambda = 2$ y una extracción $U = 0.30$: $X = -\ln(0.30)/2 = -(-1.204)/2 = 0.602$. Un número uniforme, una muestra exponencial — puro álgebra, sin magia.
+
+**El pero de la normal.** Esta llave maestra tiene una cerradura testaruda que no puede abrir limpiamente: la CDF de la distribución normal **no tiene inversa de forma cerrada**. Sencillamente no hay fórmula pulcra $F^{-1}(U)$ que puedas escribir con logaritmos y raíces. Puedes *aproximarla* numéricamente, pero para la distribución más importante de las finanzas recurrimos en su lugar a un truco hecho a medida — Box–Muller — que esquiva la inversa por completo.
+
+<Callout variant="warning" title="La trampa: no toda CDF se invierte con elegancia">
+La transformada inversa es elegante *cuando la CDF inversa tiene una fórmula limpia* — exponencial, uniforme, logística y un puñado de otras. Para la normal (y muchas distribuciones del mundo real) no la tiene, así que un plan ingenuo de "simplemente invierte la CDF" se atasca. Saber *qué* distribuciones se invierten limpiamente — y cuáles necesitan una receta dedicada o una aproximación numérica — es la mitad del muestreo práctico.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Completa la lógica del muestreo por transformada inversa."
+  text="Si F es la {{CDF|media|varianza}} de una distribución, entonces X = {{F⁻¹(U)|F(U)|U·F}} tiene esa distribución. El truco funciona porque la CDF mapea valores a {{percentiles en [0,1]|recuentos crudos|desviaciones típicas}}, así que recorrer percentiles uniformes hacia atrás por F⁻¹ deposita las muestras donde la {{densidad|semilla|tamaño muestral}} dice que pertenecen. El pero: la CDF inversa de la normal {{no tiene forma cerrada|tiene dos soluciones|lleva un signo negativo}}."
+  explanation="X = F⁻¹(U) invierte la CDF: percentiles uniformes dentro, valores correctamente distribuidos fuera, con la densidad muestral igualando a la distribución. Solo funciona limpiamente cuando F⁻¹ tiene una fórmula utilizable — que a la normal le falta, forzando una receta distinta (Box–Muller)."
+/>
+
+## Box–Muller: una receta para normales
+
+Como no podemos invertir la CDF de la normal, hacemos trampa de una manera ingeniosa — y la trampa es uno de los trucos más bonitos de la estadística computacional.
+
+**Analogía.** Imagina lanzar dardos a una diana plana de modo que la nube de agujeros forme una campana 2D perfectamente circular — más densa en el centro, adelgazándose hacia los bordes. Cada dardo tiene dos coordenadas, y *cada coordenada* es una normal estándar independiente. Box–Muller es la receta que, dados un **ángulo** aleatorio y una **distancia** aleatoria desde el centro, coloca exactamente uno de esos dardos — y luego simplemente lee su $x$ e $y$ como dos extracciones normales. Es la distribución normal descrita en coordenadas polares.
+
+**Definición.** La **transformación de Box–Muller** toma dos uniformes independientes $U_1, U_2 \sim \mathrm{Uniform}(0,1)$ y produce dos extracciones **normales estándar** independientes (media 0, varianza 1):
+
+$$Z_1 = \sqrt{-2\ln U_1}\,\cos(2\pi U_2), \qquad Z_2 = \sqrt{-2\ln U_1}\,\sin(2\pi U_2).$$
+
+El término $\sqrt{-2\ln U_1}$ fija la distancia del dardo desde el centro (fíjate en el $-\ln U_1$ de estilo exponencial de la sección anterior colándose de vuelta — ese es el radio), y el término $2\pi U_2$ elige un ángulo uniformemente aleatorio alrededor de la circunferencia. Juntos esparcen los dardos en una nube gaussiana, y las proyecciones $\cos$/$\sin$ son las dos coordenadas normales.
+
+**No necesitas memorizar esto.** Esa es justo la cuestión. La conclusión es conceptual: *existe una receta determinista que convierte simples extracciones uniformes en extracciones normales*, sin necesidad de CDF inversa. Una vez que confías en que existe tal receta, la distribución normal se convierte en un molde más para la máquina de pasta. Toda biblioteca numérica trae Box–Muller (o un primo más rápido como el algoritmo Ziggurat) integrado; llamas a `randn()` y la fontanería de uniformes-a-normales ocurre invisiblemente por debajo.
+
+<MCQ
+  client:visible
+  question="¿Qué describe mejor lo que hace la transformación de Box–Muller?"
+  options={[
+    { text: 'Convierte dos extracciones uniformes independientes en dos extracciones normales estándar independientes, esquivando la CDF inversa ausente de la normal', correct: true },
+    { text: 'Invierte la CDF de la normal usando una fórmula de forma cerrada' },
+    { text: 'Convierte extracciones normales en extracciones uniformes para su almacenamiento' },
+    { text: 'Promedia muchos uniformes juntos hasta que parecen tener forma de campana' },
+  ]}
+  explanation="Box–Muller mapea (U₁, U₂) → (Z₁, Z₂), dos normales estándar, tratándolos como coordenadas polares de una gaussiana 2D. Es precisamente el apaño para el hecho de que la CDF de la normal no tiene inversa de forma cerrada — sin promediar ni inversión de forma cerrada de por medio."
+/>
+
+## De la normal estándar a una rentabilidad real
+
+Una normal estándar $Z$ — media 0, desviación típica 1 — es un choque genérico y sin dimensiones. Las rentabilidades reales tienen un *nivel* (una deriva) y una *escala* (una volatilidad). Tender el puente entre ambos es el paso más fácil de toda la cadena.
+
+**Analogía.** $Z$ es una lectura de temperatura en alguna unidad abstracta centrada en cero. Para convertirla en una rentabilidad del mundo real la deslizas hacia la media correcta (sumas la deriva) y la estiras a la dispersión correcta (multiplicas por la volatilidad) — exactamente como convertir un z-score de un examen de vuelta en una nota real usando la media y la desviación típica de la clase.
+
+**Definición — la transformación de localización-escala.** Si $Z \sim \mathcal{N}(0,1)$, entonces
+
+$$r = \mu + \sigma Z$$
+
+es una extracción de $\mathcal{N}(\mu, \sigma^2)$: una rentabilidad normal con media (deriva) $\mu$ y volatilidad $\sigma$. Sumar $\mu$ desplaza la *localización*; multiplicar por $\sigma$ fija la *escala*.
+
+**Ejemplo resuelto.** Una acción con rentabilidad anual esperada $\mu = 8\%$ y volatilidad anual $\sigma = 20\%$. El generador te entrega una extracción normal estándar $Z = -1.5$ — un choque de una desviación típica y media por debajo de la media. La rentabilidad anual simulada es
+
+$$r = \mu + \sigma Z = 8\% + 20\% \times (-1.5) = 8\% - 30\% = -22\%.$$
+
+Un año sombrío, pero exactamente el tipo de año sombrío que una extracción de $-1.5\sigma$ debería producir. Dale a la misma maquinaria un $Z = +1.0$ y obtendrías $8\% + 20\% = 28\%$, un año de bandera. La deriva recentra; la volatilidad decide cuán violentamente oscilan los choques.
+
+<MCQ
+  client:visible
+  question="Usando r = μ + σZ con μ = 5% y σ = 30%, una extracción Z = +2 produce ¿qué rentabilidad?"
+  options={[
+    { text: '65%', correct: true },
+    { text: '35%' },
+    { text: '11%' },
+    { text: '60%' },
+  ]}
+  explanation="r = 5% + 30%×2 = 5% + 60% = 65%. La deriva μ desplaza el centro y σ escala el choque normal estándar; una extracción de +2σ es un gran movimiento al alza."
+/>
+
+## Colas gruesas: la misma máquina, un molde más aterrador
+
+Aquí es donde el muestreo deja de ser un ejercicio de matemáticas y empieza a ser una cuestión de supervivencia. La distribución normal es *de colas finas*: trata un movimiento de $5\sigma$ como tan absurdamente improbable (más o menos un suceso de una-vez-cada-14.000-años para rentabilidades diarias) que una simulación impulsada por una normal esencialmente nunca producirá uno. Los mercados reales los producen más o menos cada pocos años. La normal no es cauta — es **complaciente**.
+
+**Analogía.** Muestrear rentabilidades normales es como diseñar un dique usando solo los niveles del río en tiempo de calma: la mayoría de los días parece generoso, hasta justo la inundación de los cien años que tus datos juraban que no podía ocurrir y se lleva por delante el pueblo. Una distribución **t de Student** con pocos grados de libertad es el mismo río con las inundaciones reescritas — la mayor parte de la masa sigue sentada en el centro tranquilo, pero un trozo significativo vive muy afuera en las colas, exactamente donde llegan las pérdidas catastróficas.
+
+**Definición.** La **distribución t de Student** con $\nu$ (nu) **grados de libertad** parece una campana normal pero con colas más pesadas; cuanto *menor* el $\nu$, más gruesas las colas. Cuando $\nu \to \infty$ converge de vuelta a la normal. Con $\nu = 3$ o $\nu = 4$, los movimientos extremos que una normal tacha de imposibles se vuelven meramente *raros* — que es lo que de verdad muestran los datos de rentabilidad reales.
+
+**El punto crucial: la maquinaria no cambia.** Sigues extrayendo $U \sim \mathrm{Uniform}(0,1)$ y pasándolo por una receta (transformada inversa o un generador específico de la t); solo has cambiado la **distribución objetivo**. La misma masa, distinto molde. Este es el poder profundo de Montecarlo — para modelar colas gruesas no reconstruyes el motor, solo le das de comer una distribución de colas más gruesas.
+
+El histograma de abajo hace el contraste visceral. Extrae muestras de una normal de colas finas y observa cómo se apilan en una campana pulcra que converge a su curva objetivo. Luego cambia a la distribución objetivo de colas gruesas y observa cómo las mismas extracciones se dispersan mucho más a menudo hacia los extremos — la zona de peligro donde la normal juraba que no vivía nada.
+
+<SamplingHistogram
+  client:visible
+  title="Observa cómo emerge una distribución, una extracción cada vez"
+  normalLabel="Normal (colas finas)"
+  fatTailLabel="Colas gruesas"
+  drawLabel="Generar muestras"
+  samplesLabel="Muestras generadas"
+  densityLabel="Densidad objetivo"
+  caption="Cada clic añade extracciones; las barras convergen a la curva objetivo suave. Alterna entre la normal de colas finas y la objetivo de colas gruesas y observa cuánto más a menudo el molde de colas gruesas deposita una muestra muy afuera en los extremos — exactamente los movimientos que una simulación impulsada por una normal te dice que ignores."
+/>
+
+**Por qué esto es una historia de riesgo, no una historia de estadística.** Recuerda cómo la VaR paramétrica impulsada por una normal navegó serenamente hacia 2008: los modelos *asumían* colas normales finas, así que los movimientos de una-vez-por-siglo que de verdad llegaron registraron como imposibles, y los números de riesgo reportados eran, con aplomo, catastróficamente bajos. Una simulación de Montecarlo alimentada con una distribución normal hereda ese punto ciego exacto. Alimentarla en su lugar con una t de Student de colas gruesas es cómo evitas que tu propia simulación te arrulle hacia la misma falsa sensación de seguridad. El molde que elijes *es* el riesgo que ves.
+
+<Categorize
+  client:visible
+  question="Clasifica cada afirmación bajo la distribución que describe."
+  buckets={['Normal de colas finas', 't de Student de colas gruesas']}
+  items={[
+    { text: 'Trata un desplome de 5σ como efectivamente imposible', bucket: 'Normal de colas finas' },
+    { text: 'Subestimó el riesgo al entrar en 2008', bucket: 'Normal de colas finas' },
+    { text: 'Definida solo por μ y σ, con colas ligeras', bucket: 'Normal de colas finas' },
+    { text: 'Pone mucha más masa de probabilidad muy afuera en las colas', bucket: 't de Student de colas gruesas' },
+    { text: 'Pocos grados de libertad (ν = 3) hacen los extremos meramente raros, no imposibles', bucket: 't de Student de colas gruesas' },
+    { text: 'Encaja mejor con la frecuencia de los desplomes de mercado del mundo real', bucket: 't de Student de colas gruesas' },
+  ]}
+  explanation="La normal es de colas ligeras y complaciente con los extremos, que es justo por lo que los modelos de riesgo impulsados por una normal subestimaron 2008. La t de Student con ν bajo engorda las colas para que los desplomes raros carguen una probabilidad realista — un mejor encaje con los datos de rentabilidad reales."
+/>
+
+## Extracciones correlacionadas: activos que se desploman juntos
+
+Hasta ahora cada extracción ha sido un activo solitario. Las carteras reales tienen *muchos* activos, y todo el drama del riesgo es que no se mueven de forma independiente — cuando la tecnología se vende, tiende a arrastrar todo el índice con ella. Una simulación que extrae cada activo de forma aislada juzgará muy mal los días en que todos se hunden a la vez.
+
+**Analogía.** Imagina una tripulación de remo. Si cada remero diera paladas de forma independiente, el bote se bambolearía al azar y se promediaría. Pero los mercados reales son una tripulación cuyas paladas están *parcialmente sincronizadas* — cuando uno tira fuerte, los demás tienden a seguir. Para simular eso, empiezas con remeros independientes (normales estándar independientes) y luego los **mezclas** de modo que sus movimientos se alineen en el grado correcto.
+
+**La idea (conceptualmente).** Empiezas con un vector de normales estándar independientes — choques no correlacionados — y lo multiplicas por el **factor de Cholesky** de la **matriz de covarianzas** objetivo. La matriz de covarianzas codifica cuán fuertemente se mueve junto cada par de activos; su factor de Cholesky es la "receta de mezcla" precisa que combina los choques independientes en correlacionados con exactamente el comovimiento correcto. Extracciones independientes dentro, una cesta correlacionada de rentabilidades fuera — la misma cadena de uniformes-a-normales, con un paso extra de mezcla atornillado para múltiples activos. Hoy no necesitas el álgebra lineal; la cuestión es que la correlación se *impone* sobre extracciones independientes, no se extrae directamente.
+
+<MatchConcepts
+  client:visible
+  question="Empareja cada bloque de construcción del muestreo con lo que hace."
+  pairs={[
+    { term: 'Extracción Uniform(0,1)', definition: 'El combustible aleatorio crudo y plano del que parte todo método' },
+    { term: 'Transformada inversa X = F⁻¹(U)', definition: 'Reconfigura uniformes en cualquier distribución con CDF invertible' },
+    { term: 'Box–Muller', definition: 'Convierte dos uniformes en dos normales estándar' },
+    { term: 'r = μ + σZ', definition: 'Desliza y escala una normal estándar hasta una rentabilidad real' },
+    { term: 't de Student (ν bajo)', definition: 'Una objetivo de colas más gruesas para movimientos extremos realistas' },
+    { term: 'Factor de Cholesky', definition: 'Mezcla normales independientes en correlacionadas' },
+  ]}
+  explanation="La cadena: combustible uniforme → transformada inversa o Box–Muller para acertar una forma objetivo → localización-escala para hacerla una rentabilidad real → cambia a una t de Student para colas gruesas → mezcla con el factor de Cholesky para cestas correlacionadas. Cada pieza dobla el mismo chorro aleatorio plano."
+/>
+
+## Basura entra, basura sale — fielmente
+
+Hay un principio que se sitúa por encima de toda técnica de esta lección, y merece la pena tatuárselo por dentro de los párpados.
+
+**Montecarlo reproduce cualquier distribución que le des — fielmente, incluidos sus defectos.** La maquinaria es gloriosamente neutral: muestreará una normal de colas finas con la misma precisión impecable con que muestrea una t de colas gruesas, una distribución asimétrica o una salvajemente equivocada que mal-especificaste a las 2 de la mañana. La simulación nunca editorializa. Si le das una distribución que finge que los desplomes no pueden pasar, generará obedientemente una fantasía sin desplomes y la renderizará en preciosa alta resolución.
+
+Por eso la *elección* de la distribución es la decisión más trascendental de cualquier simulación — mucho más que el número de trayectorias o lo ingenioso del código. Un muestreador perfecto extrayendo de una distribución equivocada te da una respuesta equivocada perfectamente precisa. **Distribución basura dentro, simulación basura fuera** — y el lustre de la salida es justo lo que hace la basura tan peligrosa, porque parece autorizada sin importar lo que entró.
+
+<MCQ
+  client:visible
+  question="Detecta la trampa. Un quant construye un muestreador impecable y bien probado pero le da de comer una normal de colas finas para un activo cuyas rentabilidades reales son fuertemente de colas gruesas. ¿Qué ocurre?"
+  options={[
+    { text: 'La simulación reproduce fielmente las colas finas de la normal, así que infra-muestrea sistemáticamente las pérdidas extremas que de verdad ocurren — una imagen de riesgo precisa pero equivocada', correct: true },
+    { text: 'El muestreador detecta el desajuste y engorda automáticamente las colas' },
+    { text: 'La precisión extra del código corrige la distribución equivocada' },
+    { text: 'Las colas gruesas solo importan para la media, así que la simulación está bien' },
+  ]}
+  explanation="Montecarlo reproduce cualquier distribución que se le dé, defectos incluidos. Un muestreador perfecto sobre una distribución equivocada (demasiado fina) infra-representa los extremos y produce una cola precisa pero equivocada con aplomo. El motor nunca te avisa; la elección de la distribución es tuya y hay que acertarla."
+/>
+
+<Reveal client:visible>
+  <details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+    <summary className="cursor-pointer font-medium">Si todo se construye a partir de Uniform(0,1), ¿cómo de bueno tiene que ser el generador subyacente?</summary>
+
+    Muy bueno — y es un tema calladamente serio. Toda transformación de esta lección asume que los uniformes son *genuinamente* uniformes y *genuinamente* independientes entre sí. Un generador débil con estructura oculta (correlaciones entre extracciones sucesivas, un ciclo de repetición demasiado corto, apelmazamiento en dimensiones altas) envenena todo lo construido encima: tus "normales" heredan los defectos, tus correlaciones salen sutilmente mal y tus estimaciones de cola se desvían. Generadores antiguos como el RAND congruencial lineal usado en simulaciones de mediados de siglo tenían exactamente esos defectos y producían resultados sesgados. Los motores modernos (el Mersenne Twister, PCG, generadores philox/basados en contador) tienen periodos enormes y pasan exigentes baterías de tests estadísticos, que es por lo que puedes tratar `random()` como combustible de fiar. Pero la lección se mantiene: la calidad de tu simulación está topada por la calidad de su chorro de uniformes, igual que está topada por la distribución que elijes. Tanto el combustible como el molde tienen que estar bien.
+  </details>
+</Reveal>
+
+## Atándolo todo
+
+Toda simulación funciona con un combustible — $U \sim \mathrm{Uniform}(0,1)$, determinista a partir de una semilla para que tus ejecuciones sean reproducibles — y todo el oficio del muestreo es doblar ese chorro plano hasta la forma que tu modelo necesita. El **muestreo por transformada inversa** ($X = F^{-1}(U)$) es la llave maestra para cualquier distribución con CDF invertible; la normal carece de una, así que **Box–Muller** convierte dos uniformes en dos normales estándar mediante coordenadas polares. Un paso de localización-escala, $r = \mu + \sigma Z$, convierte una normal estándar en una rentabilidad real. Cambia la normal por una **t de Student** de $\nu$ bajo y obtienes las colas gruesas que los desplomes reales exigen; multiplica normales independientes por un **factor de Cholesky** y obtienes una cesta correlacionada. Por encima de todo se sienta la ley de hierro: Montecarlo reproduce fielmente cualquier distribución que le des, defectos incluidos — así que elige el molde con cuidado.
+
+<MindMap
+  client:visible
+  title="Muestreo de distribuciones — todo el taller"
+  caption="Un chorro plano de uniformes, doblado en cualquier distribución que puedas describir — normales, colas gruesas, cestas correlacionadas — y fielmente, defectos incluidos."
+  root={{
+    label: 'Muestreo de distribuciones',
+    children: [
+      {
+        label: 'El combustible crudo',
+        children: [
+          { label: 'U ~ Uniform(0,1) de un PRNG' },
+          { label: 'Pseudoaleatorio: determinista a partir de una semilla' },
+          { label: 'Semilla ⇒ ejecuciones reproducibles y auditables' },
+        ],
+      },
+      {
+        label: 'Reconfigura uniformes',
+        children: [
+          { label: 'Transformada inversa: X = F⁻¹(U)' },
+          { label: 'Exponencial: X = −ln(U)/λ' },
+          { label: 'La CDF de la normal no tiene inversa de forma cerrada' },
+          { label: 'Box–Muller: 2 uniformes → 2 normales estándar' },
+        ],
+      },
+      {
+        label: 'Hazla una rentabilidad',
+        children: [
+          { label: 'Localización-escala: r = μ + σZ' },
+          { label: 'μ desplaza el centro, σ fija la dispersión' },
+        ],
+      },
+      {
+        label: 'Iguala la realidad',
+        children: [
+          { label: 'Colas gruesas: t de Student con ν bajo' },
+          { label: 'Correlación: mezcla vía el factor de Cholesky' },
+          { label: 'La misma máquina, distinta distribución objetivo' },
+        ],
+      },
+      {
+        label: 'La ley de hierro',
+        children: [
+          { label: 'Reproduce cualquier distribución que le des' },
+          { label: 'Distribución basura dentro, simulación basura fuera' },
+          { label: 'Preciso ≠ exacto' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Repaso: muestreo de distribuciones"
+  questions={[
+    {
+      question: '¿Por qué es útil que un PRNG sea "pseudo"-aleatorio (determinista a partir de una semilla) en lugar de verdaderamente aleatorio?',
+      options: [
+        { text: 'Fijar la semilla hace las ejecuciones reproducibles — esencial para depurar, auditar y comparar modelos sobre choques idénticos', correct: true },
+        { text: 'Los números deterministas están repartidos más uniformemente que los verdaderamente aleatorios' },
+        { text: 'Permite que el generador produzca números normales sin transformación alguna' },
+        { text: 'Elimina la necesidad de elegir una distribución objetivo' },
+      ],
+      explanation: 'Misma semilla ⇒ misma secuencia ⇒ resultados reproducibles. Esa reproducibilidad es lo que te permite depurar una trayectoria concreta, defender un número de riesgo ante un regulador y comparar dos modelos sobre exactamente los mismos choques aleatorios.',
+    },
+    {
+      question: 'La CDF exponencial es F(x) = 1 − e^(−λx). ¿Qué fórmula de transformada inversa la muestrea a partir de U ~ Uniform(0,1)?',
+      options: [
+        { text: 'X = −ln(U)/λ', correct: true },
+        { text: 'X = λ·U' },
+        { text: 'X = e^(−λU)' },
+        { text: 'X = √(−2 ln U)' },
+      ],
+      explanation: 'Resolver U = 1 − e^(−λx) da x = −ln(1−U)/λ, y como 1−U también es uniforme esto se escribe X = −ln(U)/λ. La última opción es el término del radio de Box–Muller, una receta distinta.',
+    },
+    {
+      question: '¿Por qué la distribución normal necesita una receta especial como Box–Muller en lugar del simple muestreo por transformada inversa?',
+      options: [
+        { text: 'Su CDF no tiene inversa de forma cerrada, así que no hay una fórmula pulcra F⁻¹(U) que aplicar', correct: true },
+        { text: 'Su CDF no es una distribución de probabilidad válida' },
+        { text: 'La normal no tiene media ni varianza por las que escalar' },
+        { text: 'Las extracciones uniformes no pueden transformarse en normales en absoluto' },
+      ],
+      explanation: 'La transformada inversa necesita una CDF inversa utilizable; la de la normal no tiene forma cerrada. Box–Muller esquiva esto tratando dos uniformes como las coordenadas polares de una gaussiana 2D y leyendo dos normales estándar.',
+    },
+    {
+      question: 'Usando r = μ + σZ con μ = 6% y σ = 25%, una extracción normal estándar Z = −1,2 da ¿qué rentabilidad simulada?',
+      options: [
+        { text: '−24%', correct: true },
+        { text: '−30%' },
+        { text: '−18%' },
+        { text: '+36%' },
+      ],
+      explanation: 'r = 6% + 25%×(−1,2) = 6% − 30% = −24%. La deriva recentra el choque y la volatilidad lo escala; una extracción de −1,2σ es un movimiento a la baja considerable.',
+    },
+    {
+      question: 'Una simulación usa un muestreador impecable pero le da de comer una normal de colas finas para un activo de colas gruesas. ¿Cuál es la consecuencia, y a qué hace eco?',
+      options: [
+        { text: 'Infra-muestrea las pérdidas extremas y reporta una cola precisa pero equivocada con aplomo — el mismo punto ciego que hundió la VaR impulsada por una normal en 2008', correct: true },
+        { text: 'El muestreador autocorrige las colas, así que el resultado está bien' },
+        { text: 'Añadir más trayectorias arregla la distribución equivocada' },
+        { text: 'Las colas gruesas afectan solo a la media, así que el riesgo no se ve afectado' },
+      ],
+      explanation: 'Montecarlo reproduce fielmente cualquier distribución que se le dé. Una normal demasiado fina infrapondera los extremos, produciendo una imagen de riesgo de aspecto preciso pero equivocada — justo la complacencia detrás de la VaR impulsada por una normal de 2008. Más trayectorias solo afilan una respuesta equivocada.',
+    },
+  ]}
+/>
+
+A continuación — **Movimiento browniano geométrico** — dejamos de extraer rentabilidades sueltas y empezamos a encadenarlas: alimentamos una extracción nueva en cada paso temporal y observamos cómo se desenrolla toda una *trayectoria* de precios, un día sintético cada vez, en los paseos aleatorios que impulsan por igual la valoración de opciones y la simulación de riesgo.

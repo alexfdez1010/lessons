@@ -94,7 +94,7 @@ derivations, multiple worked numeric examples, and a chart/simulation island per
 quantitative relationship. Build after the learner has `investment-metrics`,
 `portfolio-theory` and `value-at-risk`._
 
-- [ ] **monte-carlo-finance** — Monte Carlo simulation for finance: the law of
+- [x] **monte-carlo-finance** _(2026-06-05)_ — Monte Carlo simulation for finance: the law of
   large numbers, sampling from return distributions, geometric Brownian motion
   paths, simulating portfolio/retirement outcomes, pricing path-dependent
   options, convergence & standard error, variance-reduction (antithetic

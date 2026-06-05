@@ -277,3 +277,18 @@ export type { BlockOrderTimelineProps } from '@/components/react/BlockOrderTimel
 
 export { MevSupplyChain, default as MevSupplyChainDefault } from '@/components/react/MevSupplyChain';
 export type { MevSupplyChainProps, MevStage } from '@/components/react/MevSupplyChain';
+
+export { MonteCarloConverge, default as MonteCarloConvergeDefault } from '@/components/react/MonteCarloConverge';
+export type { MonteCarloConvergeProps } from '@/components/react/MonteCarloConverge';
+
+export { SamplingHistogram, default as SamplingHistogramDefault } from '@/components/react/SamplingHistogram';
+export type { SamplingHistogramProps } from '@/components/react/SamplingHistogram';
+
+export { GbmPaths, default as GbmPathsDefault } from '@/components/react/GbmPaths';
+export type { GbmPathsProps } from '@/components/react/GbmPaths';
+
+export { OutcomeFan, default as OutcomeFanDefault } from '@/components/react/OutcomeFan';
+export type { OutcomeFanProps } from '@/components/react/OutcomeFan';
+
+export { VarianceReductionChart, default as VarianceReductionChartDefault } from '@/components/react/VarianceReductionChart';
+export type { VarianceReductionChartProps } from '@/components/react/VarianceReductionChart';
