@@ -1,0 +1,289 @@
+---
+title: "The Mempool & How Ordering Is Auctioned"
+description: "Pending transactions wait in a public mempool, and block builders order them to maximize revenue. How priority fees turned transaction ordering into a live, competitive auction — the priority gas auction."
+topic: "en/mev-and-ordering"
+order: 2
+minutes: 9
+updated: 2026-06-05
+---
+
+import { Callout, MCQ, Quiz, FillBlank, MindMap, MempoolFeeMarket, MevOrderingAuction } from '@/components/react';
+
+Lesson 1 told you *what* MEV is: value a block producer can extract by choosing the order transactions land in. This lesson is about the machinery that makes that extraction possible — and turns it into a live, money-burning auction. Two questions answer almost everything: **where do pending transactions wait?** and **who decides their order, and how do they decide?**
+
+The answer to the first is the **mempool**. The answer to the second is *whoever bids the most* — because, it turns out, the right to order transactions is a product, and there's an open market for it.
+
+Quick instinct check before we open the hood.
+
+<MCQ
+  client:visible
+  pretest
+  question="When you broadcast a swap to Ethereum but it hasn't been mined yet, where does it live — and who can see it?"
+  options={[
+    { text: "In the public mempool, visible to anyone running a node", correct: true },
+    { text: 'Encrypted on the proposer’s machine until the block is sealed' },
+    { text: 'In a private queue only your wallet provider can read' },
+    { text: 'It is already in a block — broadcasting and mining are the same step' },
+  ]}
+  explanation="A broadcast-but-unconfirmed transaction sits in the public mempool, which is gossiped peer-to-peer across the network. Anyone running a node sees it in plaintext — fees, calldata, target contract, all of it. That visibility is the raw material for MEV: searchers read your pending swap and react to it before it confirms."
+/>
+
+## The mempool: a transparent waiting room
+
+**Analogy.** Picture a restaurant where every order ticket is pinned to a giant glass wall the moment a customer places it — before the kitchen has cooked anything. Any passer-by can read every ticket: who ordered what, and how big a tip they promised. The kitchen will eventually cook some of them, in whatever sequence it likes. The mempool is that glass wall. It's a **public to-do list anyone can read**, and the cooking hasn't started yet.
+
+**Definition.** The **mempool** (memory pool) is the set of transactions that have been **broadcast to the network but not yet included in a block**. When your wallet signs and sends a transaction, it doesn't go straight to a block — it's gossiped peer-to-peer from node to node, and each node holds it in a local pool of pending transactions until some block producer picks it up. The "mempool" is loosely the union of all those local pools: every transaction that's been announced but not yet confirmed.
+
+Three properties make it the engine room of MEV:
+
+- **It's public.** A standard transaction in the public mempool is plaintext. Its sender, target contract, calldata (so, *what* it does — which pool it swaps in, how much, at what slippage), and its fees are all readable by anyone running a node. There is no privacy by default.
+- **It propagates with latency.** Transactions don't appear everywhere at once; they ripple outward across the peer-to-peer network over tens to hundreds of milliseconds. Being well-connected (seeing transactions a beat earlier than rivals) is itself an edge.
+- **Its visibility is the raw material for MEV.** Because a searcher can *see your pending swap before it executes*, they can construct a response — a front-run, a back-run, a sandwich — and try to get it ordered favourably around yours. No public mempool, no easy MEV. (Hold that thought; it's the whole motivation for the private-orderflow story later.)
+
+<Callout variant="warning" title="“Pending” does not mean “private,” and it does not mean “safe.”">
+A common beginner mistake is to treat a broadcast transaction as a private message to the validator that will quietly get mined. It's the opposite: the instant you broadcast, your transaction is a **public announcement** of intent, sitting exposed for anyone to read and react to — and it can sit there for many blocks if your fee is too low. Until it's *confirmed in a block*, nothing about it is settled, and everyone has had a chance to trade against it.
+</Callout>
+
+### When it matters
+
+The mempool's transparency matters most the instant you submit anything **exploitable on sight** — a large swap with loose slippage, an arbitrage you spotted, a liquidation you want to claim. By broadcasting publicly, you've told every searcher exactly what you're about to do, and handed them the time window to react. That single fact is why "where pending transactions wait" is not a boring plumbing detail — it's the front door MEV walks through.
+
+## How a builder picks and orders: maximize the block's revenue
+
+**Analogy.** The kitchen reading that glass wall isn't cooking tickets in the order they arrived, and not even strictly by tip size. It's cooking whatever sequence **earns the kitchen the most money** — and sometimes that means cooking ticket #7 right after ticket #3 because doing so unlocks a fat catering bonus that only pays out in that exact sequence.
+
+**Definition.** A **block builder** (the entity that assembles the ordered list of transactions in a block) chooses the contents and order to **maximize the block's total revenue**:
+
+> total block reward = sum of priority fees (tips) it collects + MEV it captures by ordering
+
+The lazy, naive heuristic is **"highest priority fee first."** Grab the transactions offering the biggest tips, slot them in descending order, done. That captures the tips — but it leaves MEV on the table. A profit-maximizing builder instead **reorders** so that value-extracting bundles (an arbitrage that depends on running right after a big swap, a liquidation that must go first) land in the exact slots where they pay out. This is the bridge straight from Lesson 1: reordering the same set of transactions changes who gets paid, and the builder pockets the difference.
+
+**Worked example.** Five pending transactions, each offering a tip, in gwei. Three are plain user transactions; two are searcher bundles that pay an *extra bribe* — but only if the builder places them in their profitable slot:
+
+| Transaction | Tip (gwei) | Extra value *if slotted right* (gwei) |
+|---|---|---|
+| Alice swap | 2 | 0 |
+| Arb bot bundle | 5 | 28 (only if right after Alice) |
+| Liquidation bot | 9 | 14 (only if it goes first) |
+| NFT mint | 3 | 0 |
+| Bob swap | 4 | 0 |
+
+**Tip-only ordering (highest fee first):** the builder sorts by tip — Liquidation (9), Arb (5), Bob (4), NFT (3), Alice (2) — and collects just the tips:
+
+$$9 + 5 + 4 + 3 + 2 = 23 \text{ gwei}$$
+
+The two bundles' extra value never pays out, because neither sits in its required slot (the arb bundle needs to be right after Alice; here it's two rows above her).
+
+**Builder-optimal reordering:** the builder slots each extractor into its profitable position — liquidation first, the arb bundle immediately after Alice — so *both* extra payouts fire. Now revenue is the tips **plus** the captured value:
+
+$$\underbrace{23}_{\text{tips}} + \underbrace{28 + 14}_{\text{captured MEV}} = 65 \text{ gwei}$$
+
+Same five transactions, same tips, nearly triple the revenue — purely from the *order*. Flip between the orderings below and watch the headline number jump:
+
+<MevOrderingAuction
+  client:visible
+  title="Same block, three orderings — only the order changes who gets paid"
+  caption="The tips are identical under every ordering. But the builder-optimal arrangement slots the searcher bundles into the exact positions where their extra value pays out, so the block's total revenue leaps. The right to choose that order is precisely what the fee auction is selling."
+/>
+
+<MCQ
+  client:visible
+  question="Using the five-transaction table above (tips 9, 5, 4, 3, 2; extractable 28 and 14 when slotted right), how much more does the builder-optimal ordering earn than the naive highest-tip-first ordering?"
+  options={[
+    { text: '42 gwei', correct: true },
+    { text: '23 gwei' },
+    { text: '65 gwei' },
+    { text: '14 gwei' },
+  ]}
+  explanation="Tip-first earns the tips only: 9+5+4+3+2 = 23. Builder-optimal earns 23 + 28 + 14 = 65. The difference is the captured MEV: 65 − 23 = 28 + 14 = 42 gwei. The tips are common to both orderings, so the entire gap is the extractable value the reordering unlocks."
+/>
+
+### When it matters
+
+This matters every time an opportunity's value **depends on adjacency** — front-runs, back-runs, sandwiches, liquidations that must beat rivals to the collateral. For an ordering-independent transaction (a plain transfer), tip-first and builder-optimal coincide and the distinction is academic. The moment a bundle's payout is *positional*, the builder's reordering power becomes real money, and a builder that only sorts by tip is leaving revenue uncollected.
+
+## Gas and fees in the MEV context: the tip is your lever
+
+**Analogy.** Splitting your bill at that restaurant: part of what you pay is a mandatory service charge the restaurant must *destroy* (it doesn't keep it — think of it as legally burned), and part is a **tip you hand directly to the chef**. Only the tip influences whether the chef bumps your ticket up the queue. Raising the burned service charge does nothing for your position; raising the tip is how you buy your way forward.
+
+**Definition (EIP-1559 recap, framed for MEV).** Every Ethereum transaction's fee splits into two parts:
+
+- **Base fee** — a per-gas price the protocol sets algorithmically based on how full recent blocks are. It is **burned** (removed from circulation), so the proposer gets none of it. Because the proposer earns nothing from it, the base fee is **not a lever for ordering** — every transaction in a given block pays the same base fee per gas.
+- **Priority fee (the tip)** — a per-gas price you *add on top*, which goes **to the proposer**. This is the part the block producer actually pockets, so **this is the lever you pull to buy better placement.** Higher tip, better expected position.
+
+Total fee for a transaction is:
+
+$$\text{total fee} = (\text{base fee} + \text{priority fee}) \times \text{gas used}$$
+
+**Worked example.** A swap uses **150,000 gas**. The current base fee is **20 gwei** per gas, and you set a priority fee of **3 gwei** per gas. Then:
+
+- Burned (to no one): $20 \times 150{,}000 = 3{,}000{,}000$ gwei $= 0.003$ ETH.
+- Tip (to the proposer): $3 \times 150{,}000 = 450{,}000$ gwei $= 0.00045$ ETH.
+- Total you pay: $(20 + 3) \times 150{,}000 = 3{,}450{,}000$ gwei $= 0.00345$ ETH.
+
+Of everything you paid, **only the 0.00045 ETH tip influences ordering** — that's the part the proposer keeps and the part that makes it worth their while to place you ahead of someone tipping less. If you wanted to outbid a rival for the same slot, you'd raise the *priority fee*, not the base fee (which you can't control anyway).
+
+<FillBlank
+  client:visible
+  question="Fill in the fee arithmetic and the ordering logic."
+  text="A transaction uses 100,000 gas at a base fee of {{20|3|150}} gwei and a priority fee of {{3|20|0}} gwei. The total fee is (base + priority) × gas = {{2,300,000|2,000,000|300,000}} gwei. Of that, the {{base|priority}} fee is burned and the {{priority|base}} fee — worth 300,000 gwei here — goes to the proposer, which is why it is the part that influences {{ordering|gas usage|block size}}."
+  explanation="(20 + 3) × 100,000 = 2,300,000 gwei total. The base fee (20 × 100,000 = 2,000,000) is burned; the priority fee (3 × 100,000 = 300,000) goes to the proposer. Because only the tip reaches the proposer, only the tip is the lever for buying better ordering."
+/>
+
+The slider below makes the lever tactile: a block has limited room, the producer grabs the highest-tip transactions first, and your transaction only confirms if your tip beats enough rivals to fit. Drag your fee up and watch yourself jump the queue.
+
+<MempoolFeeMarket
+  client:visible
+  title="Your tip is the lever: bid up to jump the queue"
+  caption="The block has limited slots, so the producer fills them with the highest-tip transactions first. The base fee is the same for everyone and is burned — it never changes your position. Raise your priority fee (tip) and you climb past lower bidders into the block; bid too low and higher tippers fill it ahead of you."
+/>
+
+### When it matters
+
+The tip-as-lever framing matters whenever blocks are **congested** — when there are more transactions wanting in than fit. In a quiet block with empty space, a near-zero tip confirms fine; ordering is barely contested. But the instant demand for blockspace exceeds supply — and especially when a *specific, time-sensitive opportunity* is up for grabs — the tip becomes a bid in a real auction, and that's where the next idea kicks in.
+
+## Priority gas auctions: bidding the profit away
+
+**Analogy.** Two scrap dealers spot the same \$100 antique at a yard sale, both desperate to buy it before the other. They bid each other up — \$40, \$60, \$80, \$95 — until whoever wins pays \$95 for a \$100 item, netting a measly \$5, while the *seller* pockets nearly the whole \$100. They competed the profit away. Replace "scrap dealers" with "MEV searcher bots," "the antique" with "an on-chain arbitrage," and "the bid" with "the priority fee," and you have a **priority gas auction**.
+
+**Definition.** A **priority gas auction (PGA)** is what happens when multiple bots compete for the *same* MEV opportunity by repeatedly bidding up their **priority fees**, racing to be the one the builder places in the profitable slot. Because only the highest bidder captures the opportunity, each bot keeps raising its tip — an open, escalating auction — until the tip approaches the opportunity's value itself.
+
+**Cause → effect.** The more obvious and contested an opportunity is, the more bots pile in, and the more the profit gets **competed away to the proposer in fees**:
+
+- One bot, no competition → it captures nearly the whole opportunity, paying only a tiny tip.
+- Many bots, fierce competition → the winning tip is bid up toward the opportunity's full value, and the *proposer* (who pockets the tips) captures most of it. The searcher's net edge collapses toward zero.
+
+**Worked example.** Suppose a freshly visible arbitrage is worth **0.5 ETH** to whoever lands it. With a single searcher and no rival, that bot might tip **0.01 ETH** and net $0.5 - 0.01 = 0.49$ ETH. Now make it a crowded PGA: three bots bid each other up — 0.2, then 0.35, then 0.47 ETH — and the winner tips **0.47 ETH** to secure the slot. Its net edge is now $0.5 - 0.47 = 0.03$ ETH, while the **proposer collects 0.47 ETH in priority fees** — roughly 94% of the opportunity, handed over purely because the auction was competitive. The opportunity's *value* didn't change; competition just redistributed almost all of it from searcher to validator.
+
+<MCQ
+  client:visible
+  question="Two searcher bots discover the same 0.5 ETH arbitrage and enter a priority gas auction, bidding each other up until the winner tips 0.46 ETH. Who ends up with the lion's share of that 0.5 ETH — and why? (Spot the trap.)"
+  options={[
+    { text: 'The proposer, because the competing tips were bid up to nearly the opportunity’s full value and the proposer pockets the tips', correct: true },
+    { text: 'The winning searcher, because winning the auction means capturing the MEV' },
+    { text: 'Both searchers split it evenly, since they competed for it equally' },
+    { text: 'No one — the base fee burned the entire opportunity' },
+  ]}
+  explanation="The trap is assuming the auction *winner* keeps the prize. In a competitive PGA the searchers bid the tip up toward the opportunity's value, so the winner nets only the sliver above its bid (0.5 − 0.46 = 0.04 ETH) and the proposer pockets the 0.46 ETH tip — the lion's share. The losing bot gets nothing. The base fee is unrelated; it's burned regardless and doesn't touch the MEV."
+/>
+
+PGAs have an ugly side effect beyond thin searcher margins. Because bots spam the public mempool with rapidly escalating, often-failing bids, they **congest the chain** — pushing up the base fee and clogging blockspace for ordinary users, who get caught in the crossfire of a fight they're not even part of. This pain — public, wasteful, and chain-clogging — is exactly what **motivated private orderflow**: routing transactions and bids *around* the public mempool to a builder directly, so the auction happens off-chain and quietly. That's the heart of the next-but-one lesson on proposer-builder separation (PBS); for now, just file the tease: PGAs were the loud, public auction, and the ecosystem moved to make it private.
+
+## Order flow is the product
+
+Step back and name what's actually being bought and sold. The proposer doesn't really sell *blockspace* alone — plenty of chains have spare space. What's scarce and valuable is the **right to decide the order**, because that right is what unlocks MEV. When a searcher bids a priority fee, or routes a bundle to a builder, they are **paying for ordering** — for their transaction to land in a specific position relative to others.
+
+That reframing is the thesis of this whole topic: **order flow is the product.** The mempool is where order flow becomes visible; the priority fee is how the right to order gets priced; the PGA is the auction's loud public form. Every later lesson — front-running, PBS, fair ordering, encrypted mempools — is a different answer to the same question: *who should get to decide the order, and how should that right be sold or constrained?*
+
+<MindMap
+  client:visible
+  title="The mempool and the ordering auction — the whole picture"
+  caption="Pending transactions wait in a public mempool; builders order them to maximize revenue; the priority fee prices the right to order; competition (PGAs) hands most of the profit to validators."
+  root={{
+    label: 'Mempool & ordering',
+    children: [
+      {
+        label: 'The mempool',
+        children: [
+          { label: 'Broadcast-but-unconfirmed transactions' },
+          { label: 'Public & plaintext — anyone can read it' },
+          { label: 'Propagates peer-to-peer with latency' },
+          { label: 'Visibility = raw material for MEV' },
+        ],
+      },
+      {
+        label: 'How builders order',
+        children: [
+          { label: 'Maximize total reward = tips + captured MEV' },
+          { label: 'Naive heuristic: highest tip first' },
+          { label: 'Profit-max: reorder to slot bundles' },
+          { label: 'Same txs, different order, different revenue' },
+        ],
+      },
+      {
+        label: 'Gas & fees',
+        children: [
+          { label: 'Base fee: burned, not a lever' },
+          { label: 'Priority fee (tip): goes to proposer' },
+          { label: 'Tip is the lever for placement' },
+          { label: 'Total = (base + priority) × gas' },
+        ],
+      },
+      {
+        label: 'Priority gas auctions',
+        children: [
+          { label: 'Bots bid up tips for the same opportunity' },
+          { label: 'More obvious → more profit competed away' },
+          { label: 'Validator pockets most of the value' },
+          { label: 'Congests chain → motivated private orderflow' },
+        ],
+      },
+      {
+        label: 'Order flow is the product',
+        children: [
+          { label: 'The right to order is what’s sold' },
+          { label: 'Priority fee prices that right' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Recap: the mempool and the ordering auction"
+  questions={[
+    {
+      question: 'Which best describes the mempool?',
+      options: [
+        { text: 'The set of broadcast-but-unconfirmed transactions, publicly visible across the network', correct: true },
+        { text: 'The proposer’s private, encrypted queue of transactions to mine' },
+        { text: 'The list of transactions already finalized in the last block' },
+        { text: 'A registry of validator addresses eligible to propose blocks' },
+      ],
+      explanation: 'The mempool is pending (announced, not yet mined) transactions, gossiped peer-to-peer and readable in plaintext by anyone running a node. That public visibility is what makes MEV easy.',
+    },
+    {
+      question: 'A profit-maximizing builder does NOT simply order by highest tip first because:',
+      options: [
+        { text: 'Reordering to slot value-extracting bundles into their profitable positions earns more than the tips alone', correct: true },
+        { text: 'The protocol forbids ordering by tip' },
+        { text: 'Tips are burned, so they don’t count toward revenue' },
+        { text: 'Builders are required to use strict arrival order (FIFO)' },
+      ],
+      explanation: 'Total reward = tips + captured MEV. Tip-first captures only the tips; a builder-optimal reordering also captures positional MEV by placing bundles in their paying slots, which is strictly more revenue when opportunities are present.',
+    },
+    {
+      question: 'A transaction uses 200,000 gas at a base fee of 15 gwei and a priority fee of 5 gwei. Which statement is correct?',
+      options: [
+        { text: 'The proposer receives 1,000,000 gwei (the 5 gwei tip × 200,000 gas); the 3,000,000 gwei base-fee portion is burned', correct: true },
+        { text: 'The proposer receives the full 4,000,000 gwei' },
+        { text: 'The proposer receives 3,000,000 gwei and the tip is burned' },
+        { text: 'Nothing is burned; all fees go to the proposer under EIP-1559' },
+      ],
+      explanation: 'Priority fee to proposer = 5 × 200,000 = 1,000,000 gwei. Base-fee portion = 15 × 200,000 = 3,000,000 gwei, which is burned. Only the tip reaches the proposer — and only the tip is the ordering lever.',
+    },
+    {
+      question: 'In a competitive priority gas auction over an obvious 1 ETH opportunity, what tends to happen to that 1 ETH of value?',
+      options: [
+        { text: 'Most of it is competed away to the proposer via bid-up priority fees; the winning searcher keeps only a thin margin', correct: true },
+        { text: 'The winning searcher keeps almost all of it as pure profit' },
+        { text: 'It is split equally among every bot that bid' },
+        { text: 'It is burned along with the base fee' },
+      ],
+      explanation: 'The more obvious the opportunity, the harder bots bid up their tips, pushing the winning tip toward the opportunity’s value. The proposer pockets that tip — most of the 1 ETH — while the searcher nets only the sliver above its bid.',
+    },
+    {
+      question: 'What is the central thesis "order flow is the product" getting at?',
+      options: [
+        { text: 'The scarce, valuable thing being auctioned is the right to decide transaction order, since ordering is what unlocks MEV', correct: true },
+        { text: 'Selling user data from the mempool is the main business model of validators' },
+        { text: 'Blockspace is infinite, so only the transaction data itself has value' },
+        { text: 'Proposers sell finalized blocks to searchers after the fact' },
+      ],
+      explanation: 'What is really for sale is the right to order. Priority fees price that right; PGAs are its loud public auction. Every later topic is a different answer to who should hold that right and how it should be sold or constrained.',
+    },
+  ]}
+/>
+
+So far the auction has been **public and honest about what it sells** — tips bid in the open mempool for better placement. But we haven't yet looked at the most pointed thing a builder can *do* with a freshly visible transaction. The next lesson, **front-running and back-running**, zooms in on the two primitive moves of MEV: jumping *ahead* of your transaction to profit from the price you're about to move, and slotting in *right behind* it to clean up the aftermath — the two halves that, sandwiched together, make the attack you'll learn to recognize on sight.

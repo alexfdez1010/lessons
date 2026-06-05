@@ -1,0 +1,304 @@
+---
+title: "PBS, MEV-Boost & Mitigations"
+description: "How Ethereum tries to tame MEV: Proposer-Builder Separation, MEV-Boost and relays, private orderflow, MEV-aware routers and protection RPCs, fair-ordering and encrypted mempools, and MEV redistribution (MEV-Share/SUAVE)."
+topic: "en/mev-and-ordering"
+order: 6
+minutes: 10
+updated: 2026-06-05
+---
+
+import { Callout, MCQ, FillBlank, Categorize, MevSupplyChain, MindMap, Quiz } from '@/components/react';
+
+By now you've seen MEV from the predator's side: the mempool is a glass house, ordering is worth money, and a searcher with the right bundle can sandwich your swap before you blink. The natural question is the one this whole topic has been building toward — *can we stop it?* The honest answer is **no, not entirely** — ordering value is baked into the very idea of a shared, sequential ledger. So the real game isn't elimination. It's three quieter verbs: **minimise** the toxic, victimising part; **democratise** who gets to extract the rest; and **redistribute** the proceeds back toward the users who generated them. This lesson is the toolbox for all three.
+
+<MCQ
+  client:visible
+  pretest
+  question="Before we dig in — what's the single most realistic goal of Ethereum's MEV countermeasures?"
+  options={[
+    { text: 'Minimise the toxic part, democratise access to extraction, and redistribute the proceeds — because MEV is inherent to ordering and can’t be fully erased', correct: true },
+    { text: 'Eliminate MEV completely by banning reordering at the protocol level' },
+    { text: 'Force every validator to run its own MEV-extraction software' },
+    { text: 'Make all transactions public sooner so searchers compete harder' },
+  ]}
+  explanation="MEV is structural: whenever someone chooses the order of value-bearing transactions, that choice has value. You can't legislate it away. The practical agenda is to shrink the harmful (sandwiching/front-running) slice, spread access so a cartel of pros doesn't monopolise it, and route the value back to users. Keep that triad in mind — every tool below serves one of those three verbs."
+/>
+
+## The problem PBS solves: don't make every validator a quant
+
+**Analogy.** Imagine a restaurant where the owner — whose only real job is to unlock the doors and keep the lights on — is *also* forced to be a world-class chef, or the restaurant fails. Most owners can't cook at that level, so either the food is terrible or only a handful of chef-owners survive and everyone else is squeezed out. The fix is obvious: **separate the chef from the owner.** Let specialist chefs (who live and breathe technique) compete to cook, and let owners simply pick the best dish on offer and serve it.
+
+**Definition.** On Ethereum, validators are chosen to **propose** the next block — but extracting MEV well requires sophisticated, latency-sensitive software: scanning the mempool, simulating thousands of orderings, integrating searcher bundles, and computing the single most valuable block. If every validator had to do that to stay competitive, block production would **centralise** around the few firms that could afford the engineering — exactly the outcome a decentralised chain wants to avoid. **Proposer-Builder Separation (PBS)** splits the job in two: **builders** specialise in *ordering* (assembling the most valuable block), and **proposers** (validators) keep the *right to propose* but do almost no work — they just pick the highest-paying block offered to them.
+
+So the validator running a humble home node and a billion-dollar trading desk end up earning **the same** MEV-inflated reward for the slot, because both simply accept the best bid. The skill gap moves to the builders, where competition is fine; the proposer role stays cheap, so it stays decentralised.
+
+<Callout variant="warning" title="PBS isn't 'no MEV' — it's MEV with the centralising pressure removed">
+A common misread: "PBS solves MEV." It does not reduce how much MEV exists, and it doesn't stop sandwiching by itself. What it solves is a narrower, sneakier problem — that **competing for MEV would otherwise centralise validation**. PBS keeps the proposer's job trivial so anyone can validate, while letting builders fight over ordering. Extraction continues; it just no longer threatens to collapse the validator set into an oligopoly.
+</Callout>
+
+### When it matters
+
+PBS matters most for **credible decentralisation under proof-of-stake**. The whole pitch of staking is that many independent validators secure the chain. If MEV made solo staking uneconomical versus industrial builders, that pitch dies. PBS is the structural patch that lets a hobbyist validator earn competitive rewards without ever writing a block-building algorithm.
+
+## The MEV supply chain, end to end
+
+**Analogy.** Think of a sealed-bid art auction run through a trusted auction house. Artists (searchers) submit framed pieces; a curator (builder) assembles the best gallery wall; the auction house (relay) holds every gallery in a vault and shows the buyer only a **photo of the wall plus its price tag** — never the actual paintings — so no one can copy the arrangement. The buyer (proposer) points at the highest price tag, pays, and *only then* receives the real paintings to hang.
+
+**Definition.** The modern Ethereum MEV pipeline has five roles, and value flows forward as data and backward as payment:
+
+| Role | What it does | What it sees |
+|---|---|---|
+| **User / Wallet** | Signs a transaction (a swap, a transfer) and broadcasts it, wanting inclusion but with no say over its position | Only its own transaction |
+| **Searcher** | Scans pending transactions for MEV (arbitrage, liquidations), then packages a profitable, precisely-ordered **bundle** | The public mempool + its own strategy |
+| **Builder** | Assembles many bundles and transactions into a full, ordered **block** and computes the max it can pay to have it proposed | Everything it received; the full block contents |
+| **Relay** | Runs a **sealed-bid auction**: escrows builders' blocks and exposes only the **header + bid** so no one can steal the ordering | Full blocks (in escrow); reveals only headers |
+| **Proposer / Validator** | Picks the highest-paying **header**, signs it, and pockets the bid — committing to a block it never saw inside | Only headers + bids, until after it signs |
+
+The clever bit is how the proposer earns MEV **without seeing the block contents**. It signs a *header* — a cryptographic commitment to "whatever block hashes to this" — and the bid amount. The relay only releases the full block body once the signed header is in hand. So the proposer can't peek at the juicy transactions, copy the builder's ordering, and steal the profit; and the builder can't get its block proposed without paying the promised bid. The relay sits in the middle holding both halves hostage until the trade is fair.
+
+Step through the pipeline below. Watch the forward flow — transaction → bundle → block → signed header — and the **value arrow running backward** from builder to proposer: that's the whole economic point made visible.
+
+<MevSupplyChain
+  client:visible
+  caption="Value flows forward as data (transaction → bundle → block → signed header) while the payment flows backward (builder's winning bid → the proposer's MEV reward). The relay's sealed-bid escrow is what lets the proposer collect the MEV without ever seeing — or being able to steal — the ordering inside the block."
+/>
+
+<MCQ
+  client:visible
+  question="In the MEV-Boost pipeline, how does a proposer earn the MEV reward without being able to steal the builder's ordering?"
+  options={[
+    { text: 'It signs only the block header + bid; the relay releases the full block body only after receiving the signed header, so the proposer never sees the ordering before committing', correct: true },
+    { text: 'It downloads the full block, copies the most profitable transactions, and rebuilds the block itself' },
+    { text: 'The builder publishes the block publicly and trusts the proposer not to copy it' },
+    { text: 'The searcher pays the proposer directly and skips the builder and relay entirely' },
+  ]}
+  explanation="The relay escrows the body and exposes only the header and bid. The proposer commits by signing the header — a hash of a block it hasn't seen — and only then does the relay reveal the contents. This sealed-bid design is exactly what stops the proposer from unbundling and copying the builder's work."
+/>
+
+## MEV-Boost: PBS as bolt-on software (and the relay trust problem)
+
+**Analogy.** Ethereum's base protocol doesn't *natively* run the sealed-bid auction described above — at least not yet. MEV-Boost is like a popular third-party plugin that nearly every validator installs to get the feature the core software hasn't shipped. It works beautifully, almost everyone uses it, and that ubiquity is precisely what makes its weak points scary.
+
+**Definition.** **MEV-Boost** is out-of-protocol middleware (originally built by **Flashbots**) that implements PBS on Ethereum *today*. A validator runs it alongside its consensus client; MEV-Boost connects to one or more **relays**, collects builder bids, and hands the validator the highest-paying header to sign. The large majority of Ethereum blocks are now built this way — PBS in practice, even though it isn't yet in the protocol itself.
+
+The catch is the **relay**, which is a **trusted** party doing two delicate jobs: it must (1) faithfully escrow the block and reveal it only after the header is signed, and (2) not censor, steal, or leak the contents. That trust is a real bottleneck:
+
+- A **malicious or buggy relay** could fail to release a block after the proposer signs, costing the proposer its slot reward.
+- Relays can **censor** transactions (e.g. excluding sanctioned addresses), and because so few relays carry most blocks, a handful of operators can shape what gets included chain-wide — a centralisation and neutrality risk.
+
+<Callout variant="warning" title="Relays are the soft underbelly — a small, trusted set carrying most blocks">
+Don't picture MEV-Boost as trustless just because the rest of Ethereum is. The relay is an off-chain, **trusted** intermediary, and there are only a few major ones. If most blocks flow through two or three relays, those operators become a quiet choke point for **censorship** and a single point of failure. The fix isn't a better relay — it's removing the need to trust one at all, which is the whole motivation for **enshrined PBS (ePBS)**: baking the proposer-builder auction directly into the Ethereum protocol so the escrow is enforced by consensus, not by a company's good behaviour. ePBS is an active research and roadmap item, not yet shipped.
+</Callout>
+
+<MCQ
+  client:visible
+  question="Which statement about relays in MEV-Boost is TRUE?"
+  options={[
+    { text: 'A relay is a trusted intermediary that escrows the block and can censor or withhold it, making the small set of major relays a centralisation and neutrality risk', correct: true },
+    { text: 'Relays are fully trustless smart contracts enforced by Ethereum consensus' },
+    { text: 'Relays build the blocks themselves and don’t interact with builders' },
+    { text: 'Removing relays is impossible, so ePBS was abandoned' },
+  ]}
+  explanation="This is the spot-the-trap: relays are off-chain, trusted parties. They can censor and withhold, and a tiny number of them carry most blocks — a real centralisation/censorship concern. Enshrined PBS (ePBS) aims to move that escrow into the protocol so no trusted relay is needed; it's on the roadmap, not abandoned."
+/>
+
+## User-side mitigations: get out of the glass house
+
+**Analogy.** The public mempool is a glass house — broadcast your move and every searcher watches you telegraph it. The simplest defence is to **stop announcing your trade to the whole world** before it's mined. Instead of shouting your order across a crowded floor, you whisper it to a trusted broker who places it without tipping off the front-runners.
+
+**Definition.** **Private orderflow** (via a **private RPC** or **protection RPC**, e.g. an MEV-protect endpoint) sends your transaction *directly to builders* over a private channel instead of the public mempool. If a sandwich attacker can't *see* your pending swap, they can't wrap it. Complementary user-side tools:
+
+- **MEV-aware routers** split a large swap across pools and paths to flatten the price impact a sandwicher would feed on, and may route through protected channels by default.
+- **Tighter slippage tolerance** caps how far your fill price can move — a sandwich that would push you past the cap simply reverts, so the attack can't profit from you (at the cost of more failed transactions in volatile markets).
+- **Splitting orders** into smaller clips reduces the per-trade MEV worth attacking.
+- **RFQ / just-in-time (JIT) liquidity:** instead of hitting a public pool, you request quotes from market makers who fill you off the curve at a firm price, sidestepping on-chain sandwiching entirely.
+
+**Concrete example.** You want to swap a large amount of ETH for USDC. Sent to the public mempool with loose slippage, a searcher front-runs to push the price up, lets you buy high, then back-runs to sell — the classic sandwich, and you eat the spread. Send the *same* swap through a private RPC with tight slippage, and the attacker never sees it in time to wrap it; worst case your tight slippage bound makes any attempted manipulation revert. Same trade, no sandwich.
+
+<Callout variant="warning" title="Privacy has a price: orderflow concentration is its own centralisation risk">
+Private orderflow protects *you*, but if everyone's transactions flow through a few private channels, those channels gain enormous power: they choose which builders see your trade, can extract value themselves, and starve the public mempool that keeps building permissionless and competitive. **Exclusive orderflow** can let dominant builders entrench (only they get the good flow), recreating centralisation through the back door. The user-level win (no sandwich) can trade off against a system-level loss (a less neutral, more captured market). Privacy vs. censorship/centralisation is the core tension here — neither side is free.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Fill in the logic of user-side protection and its tradeoff."
+  text="Sending a swap through a {{private|public|broadcast}} RPC keeps it out of the public mempool, so a sandwich attacker can't {{see|sign|mine}} it in time to wrap it. A {{tighter|looser|removed}} slippage tolerance makes any manipulated fill {{revert|confirm|repeat}}. But if most flow concentrates in a few private channels, those channels gain power that can {{centralise|decentralise|randomise}} block building."
+  explanation="Private RPCs hide the trade so it can't be front-run; tight slippage makes a manipulated fill revert rather than execute at a bad price. The systemic cost is that concentrated, exclusive orderflow hands a few intermediaries outsized power — a centralisation risk that offsets the individual privacy win."
+/>
+
+## Protocol- and ordering-level mitigations: change the rules of the auction
+
+User tools help individuals; the deeper fixes change *how ordering itself works* so the toxic MEV has nowhere to live. Four families, each with real tradeoffs.
+
+**Fair ordering / first-come-first-served (FCFS).** Instead of letting whoever pays the most jump the queue, sequence transactions by **arrival time** as agreed by a committee of nodes. Front-running becomes harder because you can't simply outbid your way ahead of a victim. *Tradeoff:* "arrival time" is fuzzy and gameable across a global network (latency races, spamming), and it doesn't kill arbitrage MEV.
+
+**Batch auctions with uniform clearing price.** Collect all trades over a short window into one **batch**, then settle them at a **single clearing price** that everyone in the batch receives (the CoW Swap–style design). If everyone trading the same pair in the same batch gets the *identical* price, there's no "in-front" and "behind" to exploit — **sandwiching dies**, because the attacker can't get a better price than its victim. Coincidences of wants can even match traders directly, skipping the AMM. *Tradeoff:* you wait for the batch, and you rely on solvers competing honestly to find the best settlement.
+
+**Threshold-encrypted mempools.** Transactions enter the mempool **encrypted**; their contents are revealed only *after* the ordering for the block is fixed (decryption needs a threshold of validators to cooperate). You can't front-run what you can't read, and you can't reorder based on contents you commit to before seeing. *Tradeoff:* added latency and complexity, liveness risk if the decryption committee misbehaves, and it doesn't stop MEV that's visible from on-chain state alone (e.g. a liquidation anyone can compute).
+
+**MEV redistribution.** Accept that MEV will be extracted, but **route the proceeds back to the users who created it.** **MEV-Share** (an **order-flow auction**, OFA) lets a user expose just enough of their transaction for searchers to bid on the MEV it enables, then **refunds the user a share** of the winning bid — you get paid for the value your trade generates instead of being silently sandwiched. **SUAVE** (Single Unifying Auction for Value Expression) is a more ambitious vision: a dedicated, decentralised platform for orderflow, building, and bidding that aims to make this competition open and credibly neutral rather than captured by a few firms.
+
+<Callout variant="warning" title="None of these fully solves MEV — they move it and trade it off">
+There is no silver bullet, and any source that says "this ends MEV" is overselling. Batch auctions kill *sandwiching* but not arbitrage; encrypted mempools hide intent but add latency and can't stop state-visible MEV like liquidations; FCFS fights priority front-running but invents latency games; redistribution doesn't reduce extraction at all — it just shares the spoils. Every mitigation buys a property (no sandwich / hidden intent / shared proceeds) by paying with another (latency / complexity / new trust assumptions). Expertise here is knowing *which* MEV each tool addresses and what it costs.
+</Callout>
+
+<Categorize
+  client:visible
+  question="Sort each mitigation by where it lives: something a user/wallet chooses, or something baked into the protocol/ordering mechanism."
+  buckets={['User-side', 'Protocol / ordering-side']}
+  items={[
+    { text: 'Private / protection RPC (skip the public mempool)', bucket: 'User-side' },
+    { text: 'Tighter slippage tolerance on a swap', bucket: 'User-side' },
+    { text: 'MEV-aware router that splits the order across paths', bucket: 'User-side' },
+    { text: 'RFQ / just-in-time liquidity quote from a market maker', bucket: 'User-side' },
+    { text: 'Batch auction with a uniform clearing price', bucket: 'Protocol / ordering-side' },
+    { text: 'Threshold-encrypted mempool', bucket: 'Protocol / ordering-side' },
+    { text: 'First-come-first-served fair ordering', bucket: 'Protocol / ordering-side' },
+    { text: 'MEV-Share order-flow auction with user refunds', bucket: 'Protocol / ordering-side' },
+  ]}
+  explanation="User-side tools are choices an individual makes about how to send a single transaction: private RPCs, tight slippage, smart routers, RFQ/JIT fills. Protocol/ordering-side changes rewrite how everyone's transactions get sequenced or settled: batch auctions, encrypted mempools, FCFS, and order-flow auctions that redistribute MEV at the mechanism level. The distinction matters because user tools protect you now, while ordering-level changes shape the whole market."
+/>
+
+<MCQ
+  client:visible
+  question="A protocol moves to batch auctions with a single uniform clearing price for everyone trading the same pair in a window. What's the most direct effect on MEV?"
+  options={[
+    { text: 'Sandwiching is killed — there’s no “in front of” vs “behind” advantage when every trade in the batch settles at the same price', correct: true },
+    { text: 'All MEV including cross-pool arbitrage disappears entirely' },
+    { text: 'Front-running gets cheaper because order matters more' },
+    { text: 'Liquidations can no longer be computed by anyone' },
+  ]}
+  explanation="A uniform clearing price removes the positional advantage a sandwicher needs — you can't buy cheaper than your victim if you both clear at the same price, so sandwiching collapses. But it's a cause→effect about sandwiching specifically: arbitrage MEV and state-visible MEV like liquidations don't vanish, which is exactly why no single mitigation 'ends MEV.'"
+/>
+
+## The big picture: minimise, democratise, redistribute
+
+**Analogy.** MEV is like friction in a machine: you can lubricate it, route it through bearings, and capture the heat to do useful work — but you can't make it zero, because it's a property of moving parts touching each other. Ordering value is the friction of a shared sequential ledger.
+
+So the expert mental model isn't "kill MEV." It's a **layered defence** matched to the three verbs:
+
+- **Minimise the toxic part.** Sandwiching and front-running victimise users for no productive reason — squeeze these with private orderflow, tight slippage, batch auctions, and encryption.
+- **Democratise access.** Don't let a cartel of pros monopolise extraction or validation — PBS keeps proposing cheap, SUAVE-style open auctions keep the searcher/builder game competitive, and ePBS aims to remove the trusted relay entirely.
+- **Redistribute the proceeds.** The MEV that *will* be extracted (arbitrage, liquidations — the load-bearing kind that keeps prices aligned and lending solvent) should pay the users who generated it, via order-flow auctions like MEV-Share.
+
+Every tool in this lesson slots into one of those three. Hold them together and "I made a swap" stops being a quiet mugging and becomes a transparent, contested, increasingly fair pipeline — one you can now reason about, price, and defend.
+
+<MindMap
+  client:visible
+  title="Taming MEV — the whole mitigation toolbox"
+  caption="The closing map of the topic: PBS and its supply chain, MEV-Boost and the relay trust problem, user-side defences, ordering-level fixes, and the minimise/democratise/redistribute triad that ties them together."
+  root={{
+    label: 'Taming MEV',
+    children: [
+      {
+        label: 'PBS (why)',
+        children: [
+          { label: 'Splits ORDER (builder) from PROPOSE (validator)' },
+          { label: 'Keeps proposing cheap → validation stays decentralised' },
+          { label: 'Chef vs restaurant owner, sealed-bid' },
+        ],
+      },
+      {
+        label: 'Supply chain',
+        children: [
+          { label: 'User → Searcher → Builder → Relay → Proposer' },
+          { label: 'Forward: tx → bundle → block → header' },
+          { label: 'Backward: bid → MEV payment' },
+          { label: 'Proposer signs the header, never sees contents' },
+        ],
+      },
+      {
+        label: 'MEV-Boost & relays',
+        children: [
+          { label: 'Out-of-protocol PBS (Flashbots)' },
+          { label: 'Relay = trusted escrow → censorship / centralisation risk' },
+          { label: 'ePBS: enshrine the auction, drop the trusted relay' },
+        ],
+      },
+      {
+        label: 'User-side',
+        children: [
+          { label: 'Private / protection RPC (skip public mempool)' },
+          { label: 'MEV-aware routers, tight slippage, split orders' },
+          { label: 'RFQ / JIT quotes off the curve' },
+          { label: 'Tradeoff: orderflow concentration centralises' },
+        ],
+      },
+      {
+        label: 'Ordering-side',
+        children: [
+          { label: 'FCFS / fair ordering' },
+          { label: 'Batch auction + uniform price → no sandwich' },
+          { label: 'Threshold-encrypted mempool → hide intent' },
+          { label: 'MEV-Share / SUAVE → redistribute proceeds' },
+        ],
+      },
+      {
+        label: 'Big picture',
+        children: [
+          { label: 'MEV can’t be eliminated' },
+          { label: 'Minimise toxic · Democratise access · Redistribute' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Recap: PBS, MEV-Boost & mitigations"
+  questions={[
+    {
+      question: 'What centralising problem does Proposer-Builder Separation specifically prevent?',
+      options: [
+        { text: 'That competing for MEV would force every validator to run sophisticated block-building software, collapsing validation into a few firms', correct: true },
+        { text: 'That arbitrage between pools keeps prices aligned' },
+        { text: 'That users broadcast transactions to a public mempool' },
+        { text: 'That gas fees rise during congestion' },
+      ],
+      explanation: 'PBS keeps the proposer’s job trivial (just pick the best bid) so anyone can validate, while specialist builders compete on ordering. It doesn’t reduce how much MEV exists — it removes the pressure for MEV to centralise the validator set.',
+    },
+    {
+      question: 'Order the MEV supply chain correctly from origin to block proposal.',
+      options: [
+        { text: 'User → Searcher → Builder → Relay → Proposer/Validator', correct: true },
+        { text: 'Builder → User → Relay → Searcher → Proposer' },
+        { text: 'Searcher → Proposer → Relay → Builder → User' },
+        { text: 'Relay → Builder → User → Proposer → Searcher' },
+      ],
+      explanation: 'The user signs a transaction; the searcher packages a profitable bundle; the builder assembles the full block and a bid; the relay escrows it and exposes only the header; the proposer signs the highest-paying header and collects the MEV.',
+    },
+    {
+      question: 'Why is the relay considered the trust bottleneck in MEV-Boost?',
+      options: [
+        { text: 'It’s an off-chain trusted party that escrows blocks and can censor or withhold them, and a small number of relays carry most blocks', correct: true },
+        { text: 'It builds every block itself with no input from builders' },
+        { text: 'It is enforced by Ethereum consensus, so it cannot misbehave' },
+        { text: 'It pays validators directly out of its own treasury' },
+      ],
+      explanation: 'Relays are trusted off-chain intermediaries. They can censor or fail to release a block, and concentration among a few major relays makes them a censorship and centralisation risk — which is exactly why enshrined PBS aims to remove the need to trust them.',
+    },
+    {
+      question: 'A trader sends a large swap through a private RPC with tight slippage. What does each choice do?',
+      options: [
+        { text: 'The private RPC hides the swap from sandwich attackers; the tight slippage makes any manipulated fill revert instead of executing at a bad price', correct: true },
+        { text: 'The private RPC raises the gas fee; the tight slippage guarantees a better price' },
+        { text: 'Both eliminate arbitrage MEV across all pools' },
+        { text: 'Both force the transaction through a public mempool faster' },
+      ],
+      explanation: 'Skipping the public mempool means attackers can’t see the trade to wrap it; tight slippage caps the fill price so a manipulation attempt reverts rather than profiting. The systemic cost is that concentrated private orderflow can centralise block building.',
+    },
+    {
+      question: 'Which mitigation REDISTRIBUTES MEV to users rather than trying to prevent its extraction?',
+      options: [
+        { text: 'MEV-Share / order-flow auctions — searchers bid on the MEV a user’s transaction enables, and the user is refunded a share of the winning bid', correct: true },
+        { text: 'Threshold-encrypted mempools' },
+        { text: 'First-come-first-served fair ordering' },
+        { text: 'Tighter slippage tolerance' },
+      ],
+      explanation: 'Encrypted mempools and FCFS try to prevent or reorder away toxic MEV; tight slippage is a user defence. MEV-Share (and the broader SUAVE vision) instead accepts extraction and routes a share of the proceeds back to the user who generated the value.',
+    },
+  ]}
+/>
+
+That's the full machine — from the glass-house mempool all the way to the auction that prices its own friction. You can now name every role in the MEV supply chain, explain why PBS keeps validation decentralised, spot the relay as the trust bottleneck, choose the right user-side defence, and reason honestly about what each ordering-level fix buys and costs. One thing remains: prove it. The **final exam** is a single graded run across the whole topic — one question at a time, each answer locked the moment you submit, score revealed only at the end. No notes, no second chances. Go earn it.

@@ -1,0 +1,302 @@
+---
+title: "Qué es el MEV"
+description: "El Valor Máximo Extraíble es el beneficio que un productor de bloques puede capturar solo eligiendo qué transacciones incluir, excluir y reordenar — el impuesto oculto de las blockchains públicas."
+topic: "es/mev-and-ordering"
+order: 1
+minutes: 9
+updated: 2026-06-05
+---
+
+import { Callout, MCQ, Quiz, FillBlank, Categorize, MindMap, MevOrderingAuction } from '@/components/react';
+
+Ya sabéis que un bloque es una lista de transacciones, que el gas es el peaje por la ejecución, y que la mempool es el corral donde las transacciones pendientes esperan a la vista de todos. Aquí está la parte que nadie menciona en el tutorial de tarifas de gas: la entidad que construye un bloque no se limita a *copiar* la mempool. Puede elegir **qué** transacciones entran, **cuáles** se quedan fuera, y, crucialmente, **en qué orden** se ejecutan. En una máquina donde cada transacción muta un estado compartido — reservas de pools, saldos de cuentas, precios de oráculos — esa elección de orden vale dinero. A veces, mucho dinero. Ese dinero tiene un nombre, y aprender a verlo cambia cómo leéis cada bloque de la cadena.
+
+Una comprobación de intuición antes de cualquier definición.
+
+<MCQ
+  client:visible
+  pretest
+  question="Dos transacciones de swap idénticas están en la mempool contra el mismo pool de un AMM. Un productor de bloques puede elegir el orden en que se ejecutan. ¿Tiene esa elección valor económico?"
+  options={[
+    { text: 'Sí — en un AMM el precio se mueve con cada operación, así que el orden cambia quién consigue qué precio, y el productor puede insertar sus propias operaciones alrededor para sacar beneficio', correct: true },
+    { text: 'No — ambas transacciones pagan el mismo gas, así que al productor le da igual el orden' },
+    { text: 'No — el AMM da a todos el mismo precio independientemente del orden' },
+    { text: 'Solo si las dos transacciones pagan tarifas de prioridad distintas' },
+  ]}
+  explanation="En un pool x·y=k el precio se desplaza con cada ejecución, así que el orden determina quién opera contra qué reservas — y permite al productor encajar sus propias transacciones en medio para capturar el slippage. Ese beneficio-por-secuenciación es exactamente el MEV. Un gas igual no hace que al productor le dé igual, y un AMM rotundamente no cotiza el mismo precio a todos dentro de un bloque."
+/>
+
+## Qué significa MEV — y por qué le cambiaron el nombre
+
+**Analogía.** Imaginad una cabina de peaje en un puente de un solo carril. El peaje oficial es fijo, pero el operario también controla la *barrera* — y descubre en silencio que el orden en que cruzan los coches afecta a quién llega primero a la subasta al otro lado del río. El peaje es la tarifa visible. La ventaja de ordenación es el *extra* que el operario puede desviar. El MEV es ese desvío.
+
+**Definición.** **MEV — Valor Máximo Extraíble** (Maximal Extractable Value) — es el beneficio máximo que un productor de bloques puede capturar, *por encima* de la recompensa de bloque ordinaria y de las tarifas de prioridad, solo **incluyendo, excluyendo y reordenando** transacciones dentro de un bloque. Es valor que existe porque el productor tiene un monopolio, durante un bloque, sobre la secuencia de transiciones de estado.
+
+El acrónimo solía significar **Miner Extractable Value** (Valor Extraíble por el Minero). Antes de la Fusión (the Merge), los *mineros* de prueba de trabajo eran quienes ensamblaban los bloques, así que ostentaban el monopolio de la ordenación. Tras la Fusión de Ethereum a prueba de participación, los mineros desaparecieron — los bloques los producen ahora **validadores** (y, en la práctica, **constructores** especializados que actúan en su nombre, una estructura que diseccionaremos en una lección posterior). El fenómeno, sin embargo, nunca dependió de *quién* fuera el productor; depende solo del poder del productor para ordenar. Así que la comunidad mantuvo las iniciales y cambió el significado a **Maximal** (Máximo): el mayor valor extraíble por quien ostente el derecho de ordenación, sea minero o no.
+
+<Callout variant="warning" title="El MEV no es 'tarifas de gas' ni es un bug">
+Un malentendido común es que el MEV es solo otra palabra para la tarifa de prioridad, o que es algún exploit que un parche arreglará. Ninguna de las dos cosas es cierta. Las tarifas de prioridad son el precio *anunciado* de la inclusión; el MEV es el valor *latente* de la secuenciación que se sitúa encima de ellas. Y no es un defecto — es una consecuencia inevitable de tener un libro mayor ordenado cuyo estado cambia con cada transacción. Podéis redistribuir el MEV u ocultarlo, pero en una cadena pública y ordenada no podéis hacerlo cero.
+</Callout>
+
+### Cuándo importa
+
+El cambio de nombre no es pedantería. Señala que el MEV es una propiedad *estructural* de las blockchains permisionless y ordenadas — no un artefacto de la minería. Por eso sobrevivió al mayor cambio individual de la historia de Ethereum y por eso toda L1 y L2 nueva tiene que lidiar con él.
+
+## Un bloque es una lista ordenada, y el orden tiene valor
+
+**Analogía.** Imaginad un árbitro que puede decidir la secuencia en que los jugadores lanzan los penaltis. Los mismos once jugadores, la misma portería — pero si el árbitro manda primero a vuestro novato nervioso y deja al astro del rival para el final, el resultado cambia. O un cajero de supermercado que puede reordenar la cola de pago: a quien deje pasar consigue el último artículo rebajado antes de que se agote. El *contenido* no cambió. El *orden* sí, y eso solo decidió quién ganó.
+
+**Definición.** Como una blockchain ejecuta las transacciones **estrictamente en el orden en que el bloque las lista**, y como cada transacción lee y escribe un estado compartido, el estado final — y quién se beneficia de él — es función de la ordenación. El productor que elige esa ordenación puede, por tanto, seleccionar la disposición que le paga más *a él*. La brecha entre una ordenación justa/arbitraria y la ordenación óptima-para-el-productor es el valor extraíble.
+
+**Ejemplo resuelto.** Supongamos que la mempool contiene cinco transacciones pendientes, cada una ofreciendo una propina de prioridad (en gwei), y dos de ellas son bots cuyo beneficio depende de *dónde* aterrizan en el bloque:
+
+| Transacción | Propina (gwei) | Valor extra si se coloca de forma óptima |
+|---|---|---|
+| Swap de Alice | 2 | — (es el objetivo, no una beneficiaria) |
+| Bundle del bot de arbitraje | 5 | 28 |
+| Bot de liquidación | 9 | 14 |
+| Acuñación de NFT | 3 | — |
+| Swap de Bob | 4 | — |
+
+Ordenad el bloque **por tarifa de prioridad** (el mercado ingenuo) y el productor solo recauda las propinas: $2 + 5 + 9 + 3 + 4 = 23$ gwei. Ahora ordenadlo de forma **óptima-para-el-constructor** — colocad el bundle de arbitraje justo después del swap de Alice para que pueda hacer back-running de su impacto en el precio, y dejad que el bot de liquidación dispare donde gane el colateral. El productor sigue recaudando los $23$ en propinas **más** el valor extraíble $28 + 14 = 42$, para un total de $23 + 42 = 65$ gwei. Las mismas cinco transacciones. Casi **3×** la recaudación, conjurada solo a partir de la secuencia. Alternad entre las ordenaciones de abajo y ved cómo salta la cifra principal:
+
+<MevOrderingAuction
+  client:visible
+  title="Reordenar el mismo bloque cambia quién cobra"
+  caption="Las mismas cinco transacciones pendientes, tres ordenaciones. Por tarifa de prioridad y por FIFO ambas pagan solo las propinas. La ordenación óptima-para-el-constructor coloca el bundle del searcher en su posición rentable — justo donde depreda al swap que tiene delante — así que el productor se embolsa las propinas MÁS el valor extraíble. Ese poder de ordenación es precisamente lo que las tarifas de prioridad y los sobornos están pujando por conseguir."
+  byFeeLabel="Por tarifa de prioridad"
+  builderOptimalLabel="Óptima-para-el-constructor (máx. extraíble)"
+  fifoLabel="FIFO / justa"
+  orderingGroupLabel="Ordenación de transacciones"
+  tipsCapturedLabel="Propinas capturadas"
+  mevCapturedLabel="MEV extra capturado"
+  totalCapturedLabel="Valor total capturado"
+  tipColumnLabel="Propina"
+  extractedHereLabel="valor extraído aquí"
+  feeUnit="gwei"
+  transactions={[
+    { key: 'alice', label: 'Swap de Alice', tip: 2, positionHint: 'Objetivo del front-running' },
+    { key: 'arb', label: 'Bundle del bot de arbitraje', tip: 5, extractable: 28, positionHint: 'Debe ejecutarse justo después de Alice' },
+    { key: 'liq', label: 'Bot de liquidación', tip: 9, extractable: 14, positionHint: 'Gana el colateral si va primero' },
+    { key: 'nft', label: 'Acuñación de NFT', tip: 3 },
+    { key: 'bob', label: 'Swap de Bob', tip: 4 },
+  ]}
+/>
+
+<FillBlank
+  client:visible
+  question="Rellenad el mecanismo central."
+  text="Un bloque es una lista {{ordenada|desordenada|aleatoria}}, y como cada transacción cambia el {{estado|gas|nonce}} compartido, el productor que elige el orden puede escoger la disposición que paga {{más a él|la tarifa más baja|a todos por igual}}. El extra que captura por encima de las propinas ordinarias se llama {{MEV|gas|la tarifa base}}."
+  explanation="El orden importa solo porque el estado cambia con cada transacción; el productor optimiza el orden para su propio beneficio, y el excedente sobre las tarifas normales es el MEV."
+/>
+
+## De dónde viene el MEV: una mempool pública choca con un estado determinista
+
+**Analogía.** Imaginad que todos tuvieran que gritar sus órdenes de bolsa a través de una sala abarrotada *antes* de que la bolsa las ejecutara, y que los precios los fijara una fórmula que cualquiera pudiera calcular de cabeza. Un oyente rápido podría escuchar venir vuestra gran orden de compra, hacer la aritmética de cómo moverá el precio, y operar por delante de vosotros — legalmente, porque las reglas se lo permiten. Esa es la mempool pública más los precios deterministas on-chain en una sola imagen.
+
+**Definición.** Las oportunidades de MEV surgen de la colisión de dos hechos:
+
+1. **Las transacciones son públicas antes de confirmarse.** Un swap pendiente, una devolución de préstamo o una orden grande está en la mempool a plena vista, difundida a toda la red mientras espera.
+2. **El estado y los precios on-chain son deterministas.** Cualquiera puede calcular *exactamente* cómo una transacción pendiente moverá las reservas de un AMM o disparará el umbral de liquidación de un protocolo de préstamos, porque las matemáticas (p. ej. $x \cdot y = k$) son fijas y públicas.
+
+Juntadlos y el beneficio se vuelve **predecible**: podéis ver venir una transacción que mueve el precio y calcular, al wei, cómo secuenciar operaciones a su alrededor para sacar beneficio. Sin información privilegiada, sin suerte — solo órdenes visibles y aritmética pública.
+
+**Ejemplo resuelto.** Un trader difunde un swap que empujará el precio de un pool al alza, digamos, un 1,2%. Un searcher lo ve en la mempool, calcula las reservas exactas tras el swap, y construye un bundle: compra justo antes del swap del trader (más barato), deja que el swap del trader suba el precio, luego vende justo después. Si el ida y vuelta neta, tras el gas, un beneficio del $0.8\%$ sobre una posición de \$500k, eso son unos \$4.000 de valor extraído del slippage de una sola víctima — valor que existía solo porque la orden era visible y el precio era calculable.
+
+<Callout variant="warning" title="Una mempool privada reduce el MEV pero no lo abole">
+Es tentador concluir "basta con ocultar la mempool y el MEV desaparece". El flujo de órdenes privado (enviar transacciones directamente a un constructor en vez de al pool público) sí mata los tipos *front-runneables* — no os pueden hacer un sándwich si nadie os vio venir. Pero el constructor en quien confiasteis sigue ostentando el monopolio de la ordenación y puede extraer valor él mismo, y el MEV benigno como el arbitraje entre pools no necesita en absoluto que vuestra transacción sea pública. La privacidad reorganiza *quién* captura el MEV; no lleva el total a cero.
+</Callout>
+
+## Una taxonomía: MEV tóxico frente a benigno
+
+**Analogía.** Dos personas reordenan la cola de un bufé. Una se cuela delante de vosotros y coge la última porción de pastel que ibais a alcanzar — pura pérdida para vosotros, puro beneficio para ella. La otra se da cuenta de que la mesa de postres tiene pastel a \$3 y la mesa de al lado vende la porción idéntica a \$5, compra barato y vende caro, y al hacerlo empuja ambas mesas hacia el mismo precio. La primera es depredadora; la segunda es discutiblemente *útil*. El MEV se divide por la misma línea.
+
+**Definición.** El MEV se clasifica a grandes rasgos en dos familias:
+
+- **MEV tóxico / depredador** transfiere valor *fuera de* un usuario concreto sin prestar ningún servicio. Los arquetipos:
+  - **Front-running** — ver vuestra transacción pendiente y saltar por delante de ella para agarrar la oportunidad que estabais a punto de tomar.
+  - **Sándwich (sandwiching)** — colocar una operación *antes* de vuestro swap (para empujar el precio en vuestra contra) y otra *después* (para revender al precio que movisteis), embolsándose vuestro slippage. Conseguís una peor ejecución solo para que el atacante saque beneficio.
+- **MEV benigno / necesario** es un subproducto de una actividad que el protocolo realmente *necesita*:
+  - **Arbitraje** — comprar un activo barato en un sitio y venderlo caro en otro. Esto arrastra los precios de distintos AMM de vuelta a la línea, que es precisamente lo que mantiene honestos los precios cotizados.
+  - **Liquidaciones** — devolver el préstamo de un prestatario con garantía insuficiente a cambio de su colateral con descuento. Así es como los protocolos de préstamos se mantienen solventes; sin alguien corriendo a hacerlo, la deuda incobrable se acumula.
+
+**Ejemplo resuelto.** Un pool DAI/USDC en un DEX cotiza 1 DAI = 1,004 USDC mientras otro cotiza 1 DAI = 0,998 USDC. Un searcher compra DAI en el sitio barato y vende en el caro, capturando la brecha de ~0,6% sobre, digamos, \$1M por aproximadamente \$6.000 — y en el proceso empuja ambos pools hacia 1,000, restaurando un precio correcto para el siguiente usuario. Eso es MEV, y mejoró el mercado. Contrastadlo con un sándwich sobre el swap de \$10k de un trader minorista que le cuesta \$120 en peor precio para que el atacante neto \$110: la misma habilidad, signo social opuesto.
+
+<Callout variant="warning" title="La línea entre tóxico y benigno es genuinamente borrosa">
+No tratéis "benigno" como un salvoconducto moral. El arbitraje alinea precios *y* extrae valor del proveedor de liquidez lento que está en el lado equivocado. Una liquidación mantiene solvente el protocolo *y* puede dispararse de forma agresiva manipulando un oráculo. El mismo back-run puede ser un arbitraje sano o parte de un sándwich según la intención y el contexto. La división tóxico/benigno es un primer corte útil, no una frontera limpia — la mayoría del MEV real se sitúa en algún punto del espectro.
+</Callout>
+
+<Categorize
+  client:visible
+  question="Clasificad cada actividad de MEV según si principalmente perjudica a un usuario concreto (tóxico) o realiza una función que el sistema necesita (benigno)."
+  buckets={['Tóxico / depredador', 'Benigno / necesario']}
+  items={[
+    { text: 'Hacer un sándwich a un swap minorista para embolsarse su slippage', bucket: 'Tóxico / depredador' },
+    { text: 'Hacer front-running a una operación pendiente para agarrar su oportunidad primero', bucket: 'Tóxico / depredador' },
+    { text: 'Arbitraje entre DEX que realinea dos pools al mismo precio', bucket: 'Benigno / necesario' },
+    { text: 'Liquidar un préstamo con garantía insuficiente para mantener solvente el pool de préstamos', bucket: 'Benigno / necesario' },
+  ]}
+  explanation="El sándwich y el front-running quitan valor a un usuario concreto sin prestar servicio — tóxico. El arbitraje y las liquidaciones son subproductos de actividad de la que dependen los protocolos (precios honestos, solvencia) — benigno. Recordad que la frontera es difusa en la práctica."
+/>
+
+<MCQ
+  client:visible
+  question="¿Por qué al arbitraje entre DEX se le llama a menudo MEV 'benigno' a pesar de seguir extrayendo valor?"
+  options={[
+    { text: 'Lleva los precios de distintos sitios de vuelta a la línea, así que el siguiente usuario ve un precio más exacto', correct: true },
+    { text: 'Es gratis — el arbitraje no le cuesta nada al searcher en gas' },
+    { text: 'Solo beneficia al trader original, nunca al searcher' },
+    { text: 'Es imposible de realizar en un AMM' },
+  ]}
+  explanation="El rendimiento social del arbitraje es la alineación de precios entre sitios, que mantiene honestas las cotizaciones. Sigue costando gas y sigue extrayendo valor (de quien estuviera en el lado equivocado), por lo que 'benigno' es relativo, no absoluto."
+/>
+
+## Escala: el MEV es un impuesto, y moldea el diseño del protocolo
+
+**Analogía.** Pensad en el MEV como un impuesto sobre las ventas que nadie legisló y que la mayoría nunca ve en el recibo. Cada swap que hacéis en una mempool pública paga en silencio un poco extra a quien secuenció vuestro bloque — la peor ejecución de una operación con sándwich, el diferencial que un arbitrajista desvía. Individualmente son unos pocos euros; en conjunto, a lo largo de millones de transacciones, es una industria.
+
+**Definición.** En conjunto, el MEV es *grande* — medido acumulativamente en **cientos de millones a miles de millones de dólares** extraídos en Ethereum desde que empezó la medición seria. Como gran parte de la cuota tóxica sale de las operaciones de los usuarios corrientes (slippage que no eligieron), el MEV funciona como un **impuesto implícito sobre los usuarios normales**, redistribuido hacia arriba en la pila a searchers, constructores y validadores.
+
+**Ejemplo resuelto.** Supongamos que una cadena procesa \$50B de volumen en DEX en un año y el MEV tóxico (sándwiches, front-running dañino) desvía una media de solo **3 puntos básicos** — 0,03% — de ese flujo. Eso son $0.0003 \times 50{,}000{,}000{,}000 = 15{,}000{,}000$, es decir, **\$15M** transferidos en silencio de los traders a los extractores en un solo año, a partir de una tasa lo bastante pequeña como para que casi ningún trader individual la note en su propia ejecución.
+
+### Por qué importa
+
+Como el MEV es así de grande y así de estructural, no solo afecta a los traders — **remodela el propio protocolo**. Si los validadores pueden ganar más extrayendo MEV, entonces el MEV influye en quién se beneficia del staking, en cómo se construyen los bloques, e incluso en la estabilidad de la cadena (un bloque que vale una fortuna para hacerle un re-org es una preocupación de seguridad). La consecuencia más importante: es la razón por la que existe la **Separación Proponente-Constructor (PBS)** — una arquitectura que separa *construir* un bloque de *proponerlo*, precisamente para gestionar quién captura el MEV y evitar que centralice la producción de bloques. Diseccionaremos la PBS, y la cadena de suministro searcher → constructor → proponente, más abajo, en lecciones posteriores.
+
+## Los actores clave (avance)
+
+**Analogía.** El MEV tiene una cadena de suministro como cualquier materia prima: los prospectores encuentran el mineral, los refinadores lo convierten en lingotes, y la casa de la moneda lo acuña en moneda. On-chain, tres roles encajan en esa tubería.
+
+**Definición (breve — el detalle completo llega en la lección de PBS):**
+
+- **Searchers (buscadores)** — los prospectores. Escanean la mempool y el estado de la cadena en busca de oportunidades rentables (arbitrajes, liquidaciones, sándwiches) y las empaquetan en **bundles** de transacciones con un orden deseado.
+- **Constructores (builders)** — los refinadores. Ensamblan muchos bundles y transacciones ordinarias en un bloque completo que maximiza el beneficio, y luego pujan por que se incluya.
+- **Proponentes / validadores** — la casa de la moneda. Ostentan el derecho real a publicar un bloque para un slot y, bajo la PBS, venden ese derecho al constructor que más puje.
+
+El valor fluye por esta cadena vía una subasta: los searchers pagan a los constructores (en propinas/sobornos de bundle), los constructores pagan a los proponentes (en pujas de bloque), y el proponente publica el bloque que más le paga. Esa subasta *es* el mercado del MEV — y es exactamente la maquinaria a la que apunta el `MevOrderingAuction` de arriba cuando gana la ordenación "óptima-para-el-constructor".
+
+<MCQ
+  client:visible
+  question="Emparejad el rol con su trabajo: ¿quién escanea la cadena en busca de oportunidades rentables y las empaqueta en bundles ordenados?"
+  options={[
+    { text: 'Searchers', correct: true },
+    { text: 'Constructores' },
+    { text: 'Proponentes / validadores' },
+    { text: 'El mecanismo de quema de la tarifa base' },
+  ]}
+  explanation="Los searchers prospectan oportunidades y envían bundles. Los constructores ensamblan bundles en bloques completos; los proponentes/validadores ostentan el derecho a publicar un bloque y lo subastan. La quema de la tarifa base no tiene relación con la cadena de suministro del MEV."
+/>
+
+## Juntándolo todo
+
+El MEV — **Valor Máximo** (antes **del Minero**) **Extraíble** — es el beneficio que un productor de bloques captura solo decidiendo qué transacciones incluir, excluir y reordenar. Existe porque un bloque es una lista **ordenada** y el estado on-chain cambia con cada transacción, así que *la secuencia tiene valor económico*. Es *predecible* porque la mempool es pública y los precios on-chain son deterministas. Viene en sabores **tóxicos** (sándwiches, front-running) que gravan a los usuarios corrientes y **benignos** (arbitraje, liquidaciones) que el sistema necesita — con una línea borrosa entre ellos. En conjunto es enorme, funciona como un impuesto oculto, y es lo bastante estructural como para remodelar el propio diseño del protocolo — razón por la que existen la **PBS** y la cadena de suministro **searcher → constructor → proponente**.
+
+<MindMap
+  client:visible
+  title="MEV — valor oculto en el orden de un bloque"
+  caption="Qué es, por qué existe, las dos familias, y los actores que pelean por él."
+  root={{
+    label: 'Valor Máximo Extraíble',
+    children: [
+      {
+        label: 'Qué es',
+        children: [
+          { label: 'Beneficio de incluir / excluir / reordenar' },
+          { label: 'Por encima de propinas + recompensa de bloque' },
+          { label: 'Renombrado Minero → Máximo tras la Fusión' },
+        ],
+      },
+      {
+        label: 'Por qué existe',
+        children: [
+          { label: 'Un bloque es una lista ordenada' },
+          { label: 'El estado cambia por transacción → el orden tiene valor' },
+          { label: 'Mempool pública + precios deterministas → predecible' },
+        ],
+      },
+      {
+        label: 'Dos familias',
+        children: [
+          { label: 'Tóxico: sándwich, front-run (grava a usuarios)' },
+          { label: 'Benigno: arbitraje, liquidaciones (el sistema los necesita)' },
+          { label: 'La línea es borrosa' },
+        ],
+      },
+      {
+        label: 'Por qué importa',
+        children: [
+          { label: 'Grande en conjunto — un impuesto implícito al usuario' },
+          { label: 'Remodela el diseño del protocolo' },
+          { label: 'Razón por la que existe la PBS' },
+        ],
+      },
+      {
+        label: 'Actores (avance)',
+        children: [
+          { label: 'Searchers — encuentran y empaquetan' },
+          { label: 'Constructores — ensamblan bloques' },
+          { label: 'Proponentes / validadores — publican y subastan' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Repaso: qué es el MEV"
+  questions={[
+    {
+      question: '¿Por qué se cambió el acrónimo MEV de "Miner" (Minero) a "Maximal" (Máximo) Extractable Value?',
+      options: [
+        { text: 'Tras la Fusión, los bloques los producen validadores/constructores, no mineros — pero el valor de la ordenación persiste independientemente de quién los produzca', correct: true },
+        { text: 'Porque la cantidad de valor extraíble se hizo menor, así que "máximo" era irónico' },
+        { text: 'Porque a los mineros se les prohibió extraer valor mediante una actualización del protocolo' },
+        { text: 'Porque "máximo" se refiere solo al arbitraje, no a los sándwiches' },
+      ],
+      explanation: 'La prueba de participación retiró a los mineros, así que el rol que ostentaba el monopolio de la ordenación cambió de nombre. El fenómeno nunca dependió de ser minero, así que las iniciales se mantuvieron y "Minero" pasó a ser "Máximo".',
+    },
+    {
+      question: 'Un productor ordena un bloque por tarifa de prioridad y recauda 23 gwei en propinas. Reordenar a la secuencia óptima-para-el-constructor permite a dos bundles capturar 28 y 14 gwei de valor extraíble por encima. ¿Cuál es el total capturado?',
+      options: [
+        { text: '65 gwei', correct: true },
+        { text: '42 gwei' },
+        { text: '23 gwei' },
+        { text: '51 gwei' },
+      ],
+      explanation: 'Total = propinas + extraíble = 23 + (28 + 14) = 23 + 42 = 65 gwei. Los 42 son solo el MEV extra; los 23 son solo las propinas.',
+    },
+    {
+      question: '¿Qué condición es OBLIGATORIA para que los tipos clásicos de MEV front-runneables sean predecibles?',
+      options: [
+        { text: 'Las transacciones pendientes son visibles en una mempool pública Y los precios on-chain son deterministas', correct: true },
+        { text: 'Los validadores se seleccionan al azar cada slot' },
+        { text: 'La tarifa base se quema en vez de pagarse al productor' },
+        { text: 'Cada transacción paga una tarifa de prioridad idéntica' },
+      ],
+      explanation: 'Las transacciones pendientes visibles permiten a un searcher ver lo que viene; el precio determinista le permite calcular exactamente cómo secuenciar a su alrededor. Juntos hacen que el beneficio sea predecible en vez de afortunado.',
+    },
+    {
+      question: 'Detectad la trampa: un colega dice "enrutamos todos nuestros swaps a través de un constructor privado, así que tenemos exposición cero al MEV". ¿Cuál es la corrección precisa?',
+      options: [
+        { text: 'La privacidad evita que os hagan un sándwich, pero el constructor sigue ostentando el monopolio de la ordenación y puede extraer valor — la privacidad cambia quién captura el MEV, no si existe', correct: true },
+        { text: 'Tienen razón — una mempool privada lleva el MEV total a cero' },
+        { text: 'Los constructores privados no pueden ordenar transacciones, así que no hay MEV' },
+        { text: 'El MEV solo afecta a las acuñaciones de NFT, nunca a los swaps' },
+      ],
+      explanation: 'Ocultar el flujo de órdenes elimina la superficie front-runneable pero entrega el poder de ordenación al constructor en quien confiasteis, que aún puede extraer. El MEV total en una cadena ordenada y determinista no puede hacerse cero.',
+    },
+    {
+      question: '¿Qué emparejamiento de tipo de MEV y su efecto social es correcto?',
+      options: [
+        { text: 'Arbitraje → realinea precios entre sitios (benigno); sándwich → grava el slippage de un usuario concreto (tóxico)', correct: true },
+        { text: 'Arbitraje → grava a un usuario concreto (tóxico); sándwich → mantiene solventes los préstamos (benigno)' },
+        { text: 'Liquidaciones → perjudican a usuarios sin beneficio (tóxico); front-running → realinea precios (benigno)' },
+        { text: 'Todo el MEV es tóxico; no hay categoría benigna' },
+      ],
+      explanation: 'El arbitraje y las liquidaciones son subproductos de actividad necesaria (precios honestos, solvencia) — benignos. Los sándwiches y el front-running quitan valor a un usuario concreto sin servicio — tóxicos. La frontera es real pero difusa.',
+    },
+  ]}
+/>
+
+Hemos puesto nombre al valor que se esconde en el orden de un bloque. La pregunta natural siguiente es *cómo se decide realmente ese orden* — así que la siguiente lección abre **la mempool y cómo se subasta la ordenación**: quién ve vuestra transacción, cómo se colocan las pujas por la secuencia, y cómo el mercado de tarifas de prioridad se convirtió silenciosamente en una subasta por el derecho a reordenaros.

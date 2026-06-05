@@ -1,0 +1,276 @@
+---
+title: "Arbitrage & Liquidation MEV"
+description: "The load-bearing side of MEV: DEX arbitrage that keeps prices aligned across pools and exchanges, and liquidation MEV that keeps lending protocols solvent. Why some extraction is a feature, not a bug — and where it shades back into harm."
+topic: "en/mev-and-ordering"
+order: 5
+minutes: 9
+updated: 2026-06-05
+---
+
+import { Callout, MCQ, FillBlank, Categorize, MatchConcepts, MindMap, Quiz, ConstantProductCurve } from '@/components/react';
+
+The earlier lessons painted MEV mostly as a mugging: sandwiches, front-running, the searcher who profits by hurting you. Fair — but it's only half the story, and the smaller half. Most extracted value on Ethereum doesn't come from preying on users at all. It comes from two activities the system *needs*: keeping prices consistent across venues, and keeping lending protocols from going insolvent. This lesson is about that load-bearing MEV — why it's a feature, how the arithmetic of the profit works, and the uncomfortable bit where "benign" extraction starts behaving badly anyway.
+
+You already know AMMs and DeFi lending — health factors, liquidations, the lot. So we go straight to the mechanics and the money.
+
+<MCQ
+  client:visible
+  pretest
+  question="ETH trades at $2000 on pool A and $2040 on pool B in the same block. A searcher who buys on A and sells on B does what to the two prices?"
+  options={[
+    { text: 'Pushes A up and B down, dragging them toward each other', correct: true, explanation: 'Buying on A raises A’s price; selling on B lowers B’s. The act of capturing the spread is the same act that closes it.' },
+    { text: 'Pushes both prices up equally', explanation: 'Buying on one pool and selling on the other move them in opposite directions, not the same direction.' },
+    { text: 'Leaves prices unchanged — only the searcher’s balance moves', explanation: 'Every AMM trade moves the pool’s spot price along its curve; arbitrage necessarily nudges both pools.' },
+    { text: 'Widens the gap between A and B', explanation: 'That would be the opposite of arbitrage. Buying cheap and selling dear closes the gap — that’s why it’s self-extinguishing.' },
+  ]}
+  explanation="Arbitrage is a price-equalizing machine. The trade that pockets the spread is the very trade that erases it: A is bid up, B is sold down, and they converge. Hold that picture — it’s the whole reason this kind of MEV is considered healthy."
+/>
+
+## DEX arbitrage: the price-equalizing machine
+
+**Analogy.** Connect two water tanks at different levels with a pipe and water rushes from high to low until the levels match. DEX arbitrage is that pipe for prices. When the same asset sits cheaper on one pool than another, capital flows through trades from the cheap venue to the dear one until the prices level off. The searcher is just the pipe — and they get to keep a cup of the water for laying it.
+
+**Definition.** *DEX arbitrage* is the act of buying an asset where it's underpriced and simultaneously selling it where it's overpriced, capturing the price difference. On a blockchain this happens in a **single atomic transaction**, so the buy and the sell either both land or both revert.
+
+**Worked example.** Pool A prices ETH at \$2000; pool B prices it at \$2040. Ignore fees and slippage for the clean version: a searcher buys 1 ETH on A for \$2000 and sells it on B for \$2040.
+
+$$\text{gross profit} = \$2040 - \$2000 = \$40 \text{ per ETH}$$
+
+But the trades themselves move the prices. Buying ETH on A removes ETH from A's reserves and adds USDC, walking A's spot price *up* from \$2000. Selling ETH on B adds ETH to B's reserves, walking B's price *down* from \$2040. The searcher keeps buying-and-selling until the two prices meet somewhere in the middle — say \$2020. At that point the spread is gone and there's no profit left to take, which is exactly why the searcher stops. The leftover, after the prices have converged, is their fee for doing the system's housekeeping.
+
+<ConstantProductCurve
+  client:visible
+  title="Buying on pool A walks its price up the curve"
+  caption="Pool A starts with ETH priced at $2000. Each unit of ETH the arbitrageur buys removes ETH from the pool and pushes the spot price higher — the point climbs the curve. The arbitrageur keeps buying only until pool A’s price has risen to meet the price they’re selling at on pool B. Where the prices meet, the spread — and the profit — is gone. That self-extinguishing property is what makes arbitrage a price-equalizing machine, not a perpetual money pump."
+/>
+
+The deep point: the profit and the public good are the *same action*. You cannot capture the \$40 without simultaneously dragging the prices together. That's why this is the canonical "benign" MEV — the extraction *is* the price correction. A world with no arbitrageurs is a world where pool prices drift apart and stay wrong.
+
+<Callout variant="warning" title="Convergence isn't always to the midpoint">
+Don't assume the two prices meet exactly halfway. Where they converge depends on each pool's liquidity (depth): the price of a thin, shallow pool moves a lot per unit traded, while a deep pool barely budges. The arbitrageur stops at the point where the marginal buy price on A equals the marginal sell price on B — which is closer to the deeper pool's starting price. "Split the difference" is a convenient story for a worked example, not a law.
+</Callout>
+
+### When it matters
+
+DEX arbitrage matters most when **prices fragment** — many pools for the same pair, lots of independent trading, volatile markets. After every large swap, after every new block, small misalignments open up and arbitrageurs immediately close them. Without this constant correction, the price you see on any single pool would be unreliable, and every protocol that reads an on-chain price (lending markets, derivatives, oracles) would inherit the error.
+
+## Atomic arbitrage and why blockchains make it special
+
+**Analogy.** In tradfi, arbitrage means *holding* something for a moment — buy here, sprint to the other exchange, hope the price hasn't moved by the time you sell. That gap is inventory risk. Atomic arbitrage is teleportation: the buy and sell happen in the same indivisible instant, so there's no in-between to be exposed in.
+
+**Definition.** *Atomic arbitrage* bundles every leg of the trade into one transaction that the EVM executes as an all-or-nothing unit. If the sell leg would not clear at a profit, the whole transaction **reverts** — the searcher pays gas for the failed attempt but never ends up holding the asset at a loss. No price-movement risk, no inventory risk, no overnight exposure. This is structurally impossible across two separate centralized exchanges, and it's the single biggest reason on-chain arbitrage is so ruthlessly efficient.
+
+It gets sharper with **flash loans**. A flash loan lets a searcher borrow a large sum *within one transaction* with no collateral, on the sole condition that it's repaid before the transaction ends — and if it isn't, the whole thing reverts as though it never happened. So the arbitrageur needs essentially *no capital of their own*: borrow millions, buy on A, sell on B, repay the loan, keep the spread, all atomically. Capital stops being the barrier to entry; speed and search quality become everything.
+
+This is also where back-running ties back to Lesson 3. A large swap *creates* an arbitrage opportunity by knocking one pool's price out of line. A searcher who lands a transaction **immediately after** that swap — back-running it — captures the resulting spread. Back-running a big trade is, mechanically, just atomic arbitrage triggered by someone else's price impact. It's why pending large swaps are so contested: the realignment behind them is free money for whoever gets there first.
+
+<FillBlank
+  client:visible
+  question="Pin down the atomic-arbitrage mechanics."
+  text="In an atomic arbitrage, if the profitable sell leg fails, the whole transaction {{reverts|settles partially|holds the asset}}, so the searcher carries {{no inventory|full inventory|overnight}} risk. Funding the trade with a {{flash loan|margin account|bank wire}} means the searcher needs almost no capital of their own, because the borrowed sum must be repaid within the {{same transaction|same block|same day}} or the whole thing unwinds."
+  explanation="Atomicity makes the buy+sell all-or-nothing: a failing leg reverts everything, so there’s no inventory risk. A flash loan supplies capital that must be repaid inside the same transaction, turning arbitrage into a near-capital-free game where speed and search quality decide the winner."
+/>
+
+## CEX-DEX arbitrage: the non-atomic cousin
+
+**Analogy.** Atomic arbitrage is teleportation; CEX-DEX arbitrage is a courier run. You buy on one side, then physically carry the goods to the other venue to sell — and during the carry, the market can move against you. The profit is real but so is the risk.
+
+**Definition.** *CEX-DEX arbitrage* exploits price differences between a **centralized exchange** (Binance, Coinbase) and an **on-chain pool**. Crucially, it is **not atomic**: the on-chain leg and the off-chain leg live in different systems that cannot settle together in one indivisible step. The searcher executes one leg, then the other, and in between they are *holding inventory* and bearing real price risk on the leg that hasn't closed yet.
+
+| | Atomic (DEX-DEX) | Non-atomic (CEX-DEX) |
+|---|---|---|
+| Legs settle together? | Yes — one transaction | No — separate systems |
+| Inventory / price risk | None (reverts if unprofitable) | Real — you hold one leg |
+| Capital needed | \~Zero (flash loan) | Real capital / exchange balances |
+| Who wins | Fastest searcher with best routing | Players with CEX inventory + latency edge |
+
+Despite the risk, CEX-DEX arbitrage is one of the **largest categories of MEV**, because CEX prices update continuously while on-chain prices only update block-by-block — so the on-chain price is *always* a little stale relative to the CEX, and that staleness is a near-permanent edge for whoever can act on it fastest. It's also a major source of **toxic order flow to builders**: a CEX-DEX arbitrageur who knows the "true" CEX price will pick off on-chain liquidity providers, and that flow is precisely what builders fight to capture (Lesson 6's territory). The presence of inventory risk also means CEX-DEX arbitrage doesn't fully self-extinguish the way atomic arbitrage does — it's a feature *and* a steady tax on passive on-chain liquidity.
+
+<Callout variant="warning" title="“Arbitrage is risk-free” — only the atomic kind">
+The textbook line that arbitrage is riskless applies cleanly to *atomic* on-chain arbitrage, where a bad leg just reverts. CEX-DEX arbitrage is the opposite: you commit one leg and then sit exposed while you complete the other, so a fast adverse move can turn the “sure thing” into a loss. Don’t carry the risk-free intuition across the atomic/non-atomic line — the entire difference between these two categories lives there.
+</Callout>
+
+## Liquidation MEV: the solvency machine
+
+**Analogy.** A lending protocol is a pawnshop that lends against collateral. As long as your collateral comfortably covers your loan, all is well. But if the collateral's value falls too far, the shop needs someone to step in *fast*, sell the collateral, and clear the bad loan before it goes underwater and the shop eats the loss. Liquidators are that someone — and the shop pays them a finder's fee for showing up first.
+
+**Definition.** When a borrower's **health factor drops below 1** (their collateral no longer adequately covers their debt), the position becomes *liquidatable*: anyone may repay part of the borrower's debt and, in return, seize a chunk of the collateral at a discount. That discount is the **liquidation bonus** — the liquidator's incentive. Searchers race to be the one who lands the liquidation, because the bonus is pure profit.
+
+**Worked example.** A borrower has \$10,000 of ETH collateral against a loan, and their health factor has just slipped below 1. The protocol offers a **8% liquidation bonus**. A liquidator repays \$5,000 of the borrower's debt. In exchange, they're entitled to seize collateral worth the repayment *plus* the bonus:
+
+$$\text{collateral seized} = \$5{,}000 \times (1 + 0.08) = \$5{,}400$$
+
+$$\text{liquidator profit} = \$5{,}400 - \$5{,}000 = \$400$$
+
+The liquidator put up \$5,000 to clear debt and walked away with \$5,400 of ETH — a \$400 gross profit (before gas and before selling the seized ETH, which itself carries price risk unless they hedge or do it atomically). The borrower eats the bonus as a penalty for letting their position go underwater. The *protocol* gets exactly what it wanted: a risky loan cleared before it became a bad debt the protocol itself would have to absorb.
+
+This is **necessary, benign MEV**. If nobody liquidated underwater positions, lending protocols would accumulate bad debt and eventually become insolvent — depositors couldn't be paid back. The liquidation bonus exists precisely to *summon* searchers to do this job promptly.
+
+But the *competition* for that \$400 is pure MEV. The moment a position crosses health factor &lt; 1, a swarm of bots fights to be the liquidator. Often the trigger is an **oracle price update** — a transaction that posts a new, lower collateral price and pushes the borrower underwater. Searchers **back-run that oracle update**: the instant the new price lands, they fire the liquidation in the very next slot. The race is frequently a **priority gas auction** (bidding up fees to win ordering) or a sealed bid to a builder. The solvency service is a public good; the scramble to provide it is a textbook ordering game.
+
+<MCQ
+  client:visible
+  question="A liquidator repays $8,000 of an underwater loan on a protocol with a 6% liquidation bonus, seizing collateral at that bonus. What is the liquidator’s gross profit (before gas)?"
+  options={[
+    { text: '$480', correct: true, explanation: 'Collateral seized = $8,000 × 1.06 = $8,480. Profit = $8,480 − $8,000 = $480 (which is just 6% of $8,000).' },
+    { text: '$8,480', explanation: 'That’s the total collateral seized, not the profit. Subtract the $8,000 the liquidator paid out.' },
+    { text: '$8,000', explanation: 'That’s the debt repaid — the liquidator’s outlay, not their gain.' },
+    { text: '$1,280', explanation: 'That looks like 16%. The bonus here is 6%, so the profit is 6% of $8,000 = $480.' },
+  ]}
+  explanation="The bonus is a percentage discount on seized collateral: seize $8,000 × 1.06 = $8,480 worth of collateral for an $8,000 debt repayment, netting $480 = 6% × $8,000. The profit is just the bonus rate times the repaid amount."
+/>
+
+<MCQ
+  client:visible
+  question="Why do liquidation bots so often try to land their transaction directly after an oracle price update?"
+  options={[
+    { text: 'The oracle update is what pushes the borrower underwater, so back-running it is the first chance to liquidate — winning that slot wins the bonus', correct: true, explanation: 'Exactly cause→effect: the new, lower price drops the health factor below 1; the back-runner who fires next captures the liquidation before rivals.' },
+    { text: 'Oracle updates lower the liquidation bonus, so acting after one is cheaper', explanation: 'The bonus is a fixed protocol parameter; it isn’t changed by an oracle update.' },
+    { text: 'Transactions after an oracle update pay no gas', explanation: 'There’s no such gas exemption — if anything these slots are fiercely contested and gas is bid up.' },
+    { text: 'The protocol forces liquidations to come immediately after oracle updates', explanation: 'Nothing enforces that ordering; bots race to it because that’s where the opportunity opens, not because it’s mandated.' },
+  ]}
+  explanation="An oracle update posting a lower collateral price is frequently the exact event that knocks a position below health factor 1. Back-running it is the earliest moment the position is liquidatable, so the searcher who lands next grabs the bonus — a clean cause→effect chain that turns oracle updates into liquidation starting guns."
+/>
+
+## The blurry line: necessary, but still a scramble
+
+Here's the nuance, and it deserves to be stated without moralizing. Arbitrage and liquidations are *good*: they make prices accurate and keep protocols solvent. The system would be worse without them. **And yet:**
+
+- The **competition** for these opportunities congests the chain. Dozens of bots submitting and reverting transactions to win one liquidation is real waste — failed transactions still consume blockspace and drive up fees for everyone.
+- The **profit mostly leaks upward**. Through priority fees and direct bribes, the bulk of arbitrage and liquidation revenue ends up with **builders and validators**, not with users or even, in the long run, with the searchers (whose margins get competed to the bone).
+- "Benign" extraction can still **misbehave in practice**. The same infrastructure that does honest back-running arbitrage can front-run and sandwich users. A liquidator racing for a bonus can grief rivals. The category label "benign" describes the *function*, not a guarantee about every actor's behavior.
+
+So the right mental model isn't "good MEV vs. bad MEV" as two clean bins. It's a spectrum: the *function* of arbitrage and liquidation is load-bearing and healthy, while the *competition* to perform it is a costly ordering game whose spoils flow to whoever controls block construction. That tension — useful work, extractive race, value captured upstream — is exactly the problem the next lesson's machinery tries to manage.
+
+<Categorize
+  client:visible
+  question="Sort each MEV activity by its function — is it load-bearing (the system needs it) or predatory (it profits by harming a user)?"
+  buckets={['Benign / necessary', 'Toxic / predatory']}
+  items={[
+    { text: 'Cross-pool arbitrage that realigns two ETH prices', bucket: 'Benign / necessary' },
+    { text: 'Liquidating a loan whose health factor fell below 1', bucket: 'Benign / necessary' },
+    { text: 'Back-running an oracle update to win a liquidation bonus', bucket: 'Benign / necessary' },
+    { text: 'Sandwiching a retail user’s swap to skim their slippage', bucket: 'Toxic / predatory' },
+    { text: 'Front-running a user’s pending trade to buy ahead of them', bucket: 'Toxic / predatory' },
+  ]}
+  explanation="Arbitrage, liquidations, and back-running an oracle to liquidate all perform work the protocol needs — accurate prices, solvency. Sandwiching and front-running profit only by degrading a specific user’s execution. The function is what classifies them; the same searcher can do both."
+/>
+
+<MatchConcepts
+  client:visible
+  question="Match each term to its precise definition."
+  pairs={[
+    { term: 'Atomic arbitrage', definition: 'A single all-or-nothing transaction where the buy and sell legs both land or both revert — no inventory risk' },
+    { term: 'CEX-DEX arbitrage', definition: 'Exploiting a price gap between a centralized exchange and an on-chain pool; non-atomic, so the searcher holds inventory and bears risk' },
+    { term: 'Liquidation bonus', definition: 'The discount a liquidator earns on seized collateral for repaying an underwater borrower’s debt' },
+    { term: 'Health factor', definition: 'A borrower’s collateral-to-debt safety ratio; below 1 the position becomes liquidatable' },
+    { term: 'Flash-loan-funded arbitrage', definition: 'Arbitrage where the capital is borrowed and repaid inside the same transaction, needing almost no funds of the searcher’s own' },
+  ]}
+  explanation="These five terms are the vocabulary of load-bearing MEV: two flavors of arbitrage (atomic vs. CEX-DEX), the liquidation mechanics (health factor triggers it, the bonus pays for it), and the capital trick (flash loans) that makes on-chain arbitrage nearly capital-free."
+/>
+
+<MindMap
+  client:visible
+  title="Arbitrage & liquidation MEV — the load-bearing map"
+  caption="Two kinds of necessary extraction — price alignment and protocol solvency — plus the spectrum where they shade back toward harm."
+  root={{
+    label: 'Load-bearing MEV',
+    children: [
+      {
+        label: 'DEX arbitrage',
+        children: [
+          { label: 'Buy cheap pool, sell dear pool' },
+          { label: 'Same act captures spread AND closes it' },
+          { label: 'Self-extinguishing — prices converge' },
+          { label: 'Benign: extraction = price correction' },
+        ],
+      },
+      {
+        label: 'Atomic vs non-atomic',
+        children: [
+          { label: 'Atomic: one tx, reverts if unprofitable, no inventory risk' },
+          { label: 'Flash loans → near-capital-free' },
+          { label: 'Back-running a big swap = arbitrage' },
+          { label: 'CEX-DEX: non-atomic, real inventory risk' },
+          { label: 'CEX-DEX drives toxic flow to builders' },
+        ],
+      },
+      {
+        label: 'Liquidation MEV',
+        children: [
+          { label: 'Triggered when health factor below 1' },
+          { label: 'Repay debt, seize collateral at a bonus' },
+          { label: 'Keeps lending protocols solvent' },
+          { label: 'Race: back-run the oracle, PGA / builder bid' },
+        ],
+      },
+      {
+        label: 'The blurry line',
+        children: [
+          { label: 'Function is necessary; competition is wasteful' },
+          { label: 'Profit leaks up to builders / validators' },
+          { label: '“Benign” describes function, not every actor' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Recap: arbitrage & liquidation MEV"
+  questions={[
+    {
+      question: 'What makes DEX arbitrage the canonical “benign” MEV?',
+      options: [
+        { text: 'The trade that captures the price spread is the same trade that closes it, so extraction equals price correction', correct: true },
+        { text: 'It can never be profitable, so no harm is done' },
+        { text: 'It only ever runs on testnets' },
+        { text: 'Regulators have approved it' },
+      ],
+      explanation: 'Buying cheap and selling dear drags the two prices together. You can’t pocket the spread without erasing it — the profit IS the public good of accurate prices.',
+    },
+    {
+      question: 'Pool A prices ETH at $1,000 and pool B at $1,050. Ignoring fees and slippage, the gross spread an arbitrageur captures on 1 ETH (buy A, sell B) is:',
+      options: [
+        { text: '$50', correct: true },
+        { text: '$1,050' },
+        { text: '$1,000' },
+        { text: '$5' },
+      ],
+      explanation: 'Buy at $1,000, sell at $1,050 → $1,050 − $1,000 = $50 per ETH. In reality the trades move both prices toward each other, shrinking that $50 as they converge.',
+    },
+    {
+      question: 'A liquidator repays $12,000 of an underwater loan on a protocol with a 5% liquidation bonus, seizing collateral at that bonus. Gross profit (before gas) is:',
+      options: [
+        { text: '$600', correct: true },
+        { text: '$12,600' },
+        { text: '$6,000' },
+        { text: '$1,200' },
+      ],
+      explanation: 'Seize $12,000 × 1.05 = $12,600 of collateral for a $12,000 repayment → $600 profit, which is just 5% × $12,000.',
+    },
+    {
+      question: 'Which statement about CEX-DEX arbitrage is TRUE?',
+      options: [
+        { text: 'It is non-atomic, so the searcher holds inventory and bears real price risk between legs', correct: true },
+        { text: 'It is atomic, so a bad leg simply reverts with no risk' },
+        { text: 'It requires no capital because both legs settle in one EVM transaction' },
+        { text: 'It tightens on-chain liquidity providers’ profits to zero' },
+      ],
+      explanation: 'CEX and on-chain venues are separate systems that can’t settle in one indivisible step. The searcher commits one leg, then the other, holding inventory and bearing risk in between — the opposite of atomic arbitrage.',
+    },
+    {
+      question: 'A liquidation bot fires immediately after an oracle posts a lower collateral price. The most direct reason is:',
+      options: [
+        { text: 'That price update is what pushes the borrower’s health factor below 1, opening the liquidation — back-running it wins the bonus first', correct: true },
+        { text: 'Oracle updates make gas free for the next transaction' },
+        { text: 'The protocol mandates liquidations come right after oracle updates' },
+        { text: 'The liquidation bonus doubles right after an oracle update' },
+      ],
+      explanation: 'The lower price is the trigger event — it drops the health factor below 1. The earliest possible liquidation is the slot right after, so bots race to back-run the oracle. Gas isn’t free and the bonus is a fixed parameter.',
+    },
+  ]}
+/>
+
+We've now seen MEV in full: the predatory side (sandwiches, front-running) and the load-bearing side (arbitrage, liquidations), and the spectrum that connects them. We've also seen a recurring theme — the *profit* of all this activity keeps flowing upward, to whoever controls how blocks are built and ordered. That concentration is dangerous: if one party both decides ordering and captures the spoils, the chain's neutrality is at stake. **Lesson 6 — Proposer-Builder Separation, MEV-Boost, and mitigations** — is about the machinery built to defuse exactly that: splitting block *building* from block *proposing*, auctioning blockspace transparently, and the design ideas (encrypted mempools, fair ordering, MEV redistribution) aimed at taming the race we just mapped.

@@ -265,3 +265,15 @@ export type { VarHorizonScalingProps } from '@/components/react/VarHorizonScalin
 
 export { VarBacktestTimeline, default as VarBacktestTimelineDefault } from '@/components/react/VarBacktestTimeline';
 export type { VarBacktestTimelineProps } from '@/components/react/VarBacktestTimeline';
+
+export { MevOrderingAuction, default as MevOrderingAuctionDefault } from '@/components/react/MevOrderingAuction';
+export type { MevOrderingAuctionProps, MevTransaction } from '@/components/react/MevOrderingAuction';
+
+export { SandwichAttack, default as SandwichAttackDefault } from '@/components/react/SandwichAttack';
+export type { SandwichAttackProps } from '@/components/react/SandwichAttack';
+
+export { BlockOrderTimeline, default as BlockOrderTimelineDefault } from '@/components/react/BlockOrderTimeline';
+export type { BlockOrderTimelineProps } from '@/components/react/BlockOrderTimeline';
+
+export { MevSupplyChain, default as MevSupplyChainDefault } from '@/components/react/MevSupplyChain';
+export type { MevSupplyChainProps, MevStage } from '@/components/react/MevSupplyChain';

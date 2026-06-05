@@ -1,0 +1,302 @@
+---
+title: "Sandwich Attacks"
+description: "The signature DeFi MEV attack: front-run a victim's swap to push the price against them, let them fill at the worse price, then back-run to bank the difference. The exact constant-product math of the victim's loss and the attacker's profit."
+topic: "en/mev-and-ordering"
+order: 4
+minutes: 10
+updated: 2026-06-05
+---
+
+import { Callout, MCQ, Quiz, FillBlank, MindMap, SandwichAttack, SlippageCurve } from '@/components/react';
+
+You've seen what MEV *is* and how the orderflow auction decides who gets to sit where in a block. Now meet the attack that put MEV on the map — the one that taxes ordinary DeFi traders thousands of times a day, mechanically, with surgical precision. It's called a **sandwich**, and once you've seen the constant-product math, you'll never look at a pending swap the same way again.
+
+The whole thing rides on a single fact you already know: a swap on an automated market maker (AMM) *moves the price*. The pool sits on the curve $x \cdot y = k$, and every trade walks it along that curve. The attacker's entire trick is to move the price **before** you, so you fill at a worse spot, then move it **back** after you, banking the gap. Your loss is, almost to the penny, their gain.
+
+<MCQ
+  client:visible
+  pretest
+  question="What is a sandwich attack, in one sentence?"
+  options={[
+    { text: "An attacker front-runs a victim's swap to push the price against them, lets the victim fill at the worse price, then back-runs to sell at a profit — all in one block", correct: true },
+    { text: 'An attacker copies the victim’s exact trade so both fill at the same price' },
+    { text: 'An attacker bribes the validator to delete the victim’s transaction entirely' },
+    { text: 'An attacker provides extra liquidity so the victim’s trade fills with zero slippage' },
+  ]}
+  explanation="A sandwich brackets the victim's swap with two of the attacker's own: a front-run buy that worsens the price, the victim's swap at that worsened price, and a back-run sell that cashes out. All three land in the same block, in that exact order."
+/>
+
+## The anatomy: buy, let them fill, sell — in one block
+
+**Analogy.** Picture a concert ticket scalper standing by the box office. The instant they see *you* walk up to the queue, they sprint to the window, buy every front-row seat, and watch the price tick up as the good seats vanish. You reach the window, find only the now-pricier seats left, and grudgingly buy. The moment your money clears, the scalper turns around and resells their hoard into the demand they just manufactured. They were never going to the concert. They were going to *you*.
+
+**Definition.** A **sandwich attack** is a three-transaction MEV strategy executed within a single block, in this exact order:
+
+1. **Front-run** — the attacker, seeing the victim's pending swap, buys the same asset *first*, pushing the spot price up.
+2. **Victim swap** — the victim's transaction now executes against the worsened pool and receives *fewer* tokens than they would have unmolested.
+3. **Back-run** — the attacker immediately sells back exactly what they bought, into the price the victim's own trade just propped up. The difference, minus fees, is profit.
+
+The "in one block, in that order" part is non-negotiable. The attacker pays for that ordering — through priority fees or a direct bid to the block builder — which is precisely the MEV-auction machinery from the previous lessons. A sandwich is just an ordering preference with a profit motive attached.
+
+<Callout variant="warning" title="The victim isn't a whale being targeted personally">
+A common misconception: "sandwiches only hit huge, careless trades." Not so. Bots scan the public mempool for *any* swap whose size and slippage tolerance leave room for profit — a routine \$2,000 token buy is fair game. It's not personal and it's not rare; it's an automated tax on visible orderflow. The defense isn't being small, it's being *unpredictable* (private orderflow) or leaving *no room* (tight slippage).
+</Callout>
+
+## Why it works: a market order moves the price, slippage tolerance makes you fillable
+
+**Analogy.** Slippage tolerance is the blank space you leave on a signed cheque. Set it to 0.5% and you've told the pool, "fill me as long as I get within 0.5% of the quote — otherwise tear it up." Set it to 20% and you've signed a cheque with a *huge* blank space, and you've invited anyone watching to fill in a number right up to the limit. The attacker reads that limit straight off your transaction and pushes the price to the very edge of it.
+
+Here's the chain of cause and effect:
+
+- A swap on an AMM is a **market order** — it walks the $x \cdot y = k$ curve, and bigger orders walk further, so the **average price you fill at gets worse** the more you buy. (This is exactly the price-impact curve from the AMM lessons.)
+- The attacker's **front-run buy moves the pool up the curve first**, so when your swap lands, it starts from a *worse* spot price than the one you saw when you signed.
+- Your transaction still goes through — *because of your slippage tolerance*. You authorized a fill anywhere down to `spot × (1 − tolerance)`. The attacker's job is to shove the price as close to that floor as they can without crossing it.
+
+So slippage tolerance is the whole ballgame:
+
+- **Tolerance too high** → a fat sandwich. You've authorized a big price move, so the attacker can front-run aggressively and still leave your trade fillable. More room = more extractable profit.
+- **Tolerance too low** → the attack *fails*. If the attacker's front-run pushes the price past your floor, your swap **reverts** (it can't fill within tolerance), the attacker is left holding tokens with no victim to sell into, and they eat the loss. A trade that reverts pays no sandwich.
+
+The curve below is the price-impact relationship the attacker is exploiting. Notice how a tight slippage tolerance (the dashed guardrail) cancels trades that would fill too far from quote — that same guardrail is what protects you from a sandwich.
+
+<SlippageCurve
+  client:visible
+  title="Price impact is the lever the attacker pulls"
+  caption="A swap walks the x·y=k curve, so the average fill price worsens as the trade grows — that's the price impact a sandwich manufactures by going first. The dashed line is your slippage tolerance: drop it and the trade reverts rather than filling far from quote, which is exactly what starves an attacker of a sandwich."
+/>
+
+<MCQ
+  client:visible
+  question="Spot the trap. A trader sets a 15% slippage tolerance on a token swap to 'make sure it goes through.' Why is this dangerous?"
+  options={[
+    { text: 'It hands the attacker a huge price-move budget — they can front-run aggressively and the trade still fills, so the sandwich is as fat as the tolerance allows', correct: true },
+    { text: 'A high tolerance makes the transaction revert more often, wasting gas' },
+    { text: 'Slippage tolerance only affects limit orders, so it has no effect on a market swap' },
+    { text: 'A 15% tolerance forces the pool to fill at exactly the quoted price' },
+  ]}
+  explanation="Slippage tolerance is the maximum adverse price move you'll accept. A wide tolerance is an open invitation: the attacker pushes the price right up to your floor, extracting the most profit while your trade still fills. 'Make sure it goes through' is exactly how you get sandwiched hardest."
+/>
+
+## The exact math, worked
+
+Let's compute a real sandwich on a clean pool, no fees, so every digit is traceable. This matches the interactive defaults below exactly.
+
+**Setup.** A constant-product pool holds $x = 100$ ETH and $y = 200{,}000$ USDC, so the invariant is
+
+$$k = x \cdot y = 100 \times 200{,}000 = 2 \times 10^{7}.$$
+
+The starting spot price is $y / x = 200{,}000 / 100 = 2000$ USDC per ETH. The victim wants to spend \$20,000 buying ETH. The attacker also front-runs with \$20,000.
+
+The two formulas we need (buying ETH with USDC, then selling ETH back for USDC), both straight from $x \cdot y = k$:
+
+- **Buy ETH:** pay $\Delta y$ USDC into the pool; you receive $\Delta x = x - \dfrac{k}{y + \Delta y}$ ETH.
+- **Sell ETH:** put $\Delta x$ ETH into the pool; you receive $\Delta y = y - \dfrac{k}{x + \Delta x}$ USDC.
+
+**Baseline — the victim alone, no attacker.** The victim's \$20,000 hits the untouched pool:
+
+$$\Delta x = 100 - \frac{2 \times 10^7}{200{,}000 + 20{,}000} = 100 - \frac{2 \times 10^7}{220{,}000} = 100 - 90.9091 = 9.0909 \text{ ETH}.$$
+
+So with no attack the victim gets **9.0909 ETH**. Hold that number.
+
+**Step 1 — Front-run.** The attacker buys first with \$20,000, against the *same* untouched pool. The arithmetic is identical to the baseline, so the attacker receives $9.0909$ ETH. The pool is now
+
+$$x_1 = 100 - 9.0909 = 90.9091 \text{ ETH}, \qquad y_1 = 200{,}000 + 20{,}000 = 220{,}000 \text{ USDC}.$$
+
+New spot price: $y_1 / x_1 = 220{,}000 / 90.9091 = 2420$ USDC/ETH. The price jumped from \$2000 to \$2420 *before the victim's trade even runs.*
+
+**Step 2 — Victim swap.** Now the victim's \$20,000 hits the *worsened* pool $(x_1, y_1)$:
+
+$$\Delta x = 90.9091 - \frac{2 \times 10^7}{220{,}000 + 20{,}000} = 90.9091 - \frac{2 \times 10^7}{240{,}000} = 90.9091 - 83.3333 = 7.5758 \text{ ETH}.$$
+
+The victim gets only **7.5758 ETH** — versus 9.0909 unmolested. The pool moves to
+
+$$x_2 = 90.9091 - 7.5758 = 83.3333 \text{ ETH}, \qquad y_2 = 240{,}000 \text{ USDC},$$
+
+so the spot price is now $240{,}000 / 83.3333 = 2880$ USDC/ETH.
+
+**Step 3 — Back-run.** The attacker sells back exactly the $9.0909$ ETH they bought, into pool $(x_2, y_2)$:
+
+$$\Delta y = 240{,}000 - \frac{2 \times 10^7}{83.3333 + 9.0909} = 240{,}000 - \frac{2 \times 10^7}{92.4242} = 240{,}000 - 216{,}393 = 23{,}607 \text{ USDC}.$$
+
+The attacker spent \$20,000 and received \$23,607, for a **profit of ≈ \$3,606**. The back-run drops the price to roughly $217{,}393 / 92.4242 \approx 2341$ USDC/ETH — note it does *not* return to \$2000, because the victim's purchase permanently shifted the reserves.
+
+Here is the whole sequence as a ledger of pool states and prices:
+
+| Step | Reserves $x$ (ETH) | Reserves $y$ (USDC) | Spot price (USDC/ETH) | Who fills, and how much |
+|---|---|---|---|---|
+| Start | 100.0000 | 200,000 | \$2,000 | — |
+| After front-run | 90.9091 | 220,000 | \$2,420 | Attacker buys **9.0909 ETH** |
+| After victim | 83.3333 | 240,000 | \$2,880 | Victim buys only **7.5758 ETH** |
+| After back-run | 92.4242 | ≈217,393 | ≈\$2,341 | Attacker sells 9.0909 ETH for ≈\$23,607 |
+
+**The punchline.** The victim lost $9.0909 - 7.5758 = \textbf{1.5152}$ **ETH** to the sandwich (worth about \$3,030 at the \$2000 start price). The attacker walked away with **≈ \$3,606**. The two numbers aren't identical — fees, the asymmetry of the curve, and the back-run selling into a price *the attacker's own back-run depresses* mean the attacker's profit and the victim's loss don't tie out exactly — but the victim's loss is the *source* of the attacker's gain. Wealth was transferred, not created.
+
+<SandwichAttack
+  client:visible
+  caption="The defaults here are the worked example exactly: a 100 ETH / 200,000 USDC pool, a $20,000 victim swap, a $20,000 front-run. Watch the price track $2000 → $2420 → $2880 → $2341 as the three trades land. The victim gets 9.0909 ETH alone but only 7.5758 ETH sandwiched — a 1.5152 ETH loss — while the attacker banks about $3,606. Drag the sliders: a smaller victim trade or a smaller front-run shrinks the bite."
+/>
+
+<MCQ
+  client:visible
+  question="Using the worked pool (100 ETH / 200,000 USDC, k = 2×10⁷), the victim would get 9.0909 ETH unsandwiched but only 7.5758 ETH after the front-run. What is the victim's loss?"
+  options={[
+    { text: '1.5152 ETH', correct: true },
+    { text: '7.5758 ETH — the full amount they received' },
+    { text: '0.4242 ETH' },
+    { text: '9.0909 ETH — they lose everything' },
+  ]}
+  explanation="The loss is the difference between the clean fill and the sandwiched fill: 9.0909 − 7.5758 = 1.5152 ETH (≈ $3,030 at the $2000 start price). That gap is what the front-run's price move cost the victim, and it's the raw material for the attacker's ≈$3,606 profit."
+/>
+
+<FillBlank
+  client:visible
+  question="Fill in the constant-product mechanics of the sandwich."
+  text="A swap walks the pool along {{x·y = k|x + y = k|x − y = k}}. The attacker's front-run {{raises|lowers|freezes}} the spot price before the victim fills, so the victim receives {{fewer|more|exactly the same}} tokens. The attack only goes through because the victim's {{slippage tolerance|gas limit|nonce}} authorizes a fill at the worsened price; set it tight enough and the victim's trade {{reverts|fills better|gets refunded}}, starving the attacker."
+  explanation="Constant product x·y=k means every trade moves the price. The front-run buy raises the spot price, so the victim's market order fills for fewer tokens — but only if it stays within the victim's slippage tolerance. Too tight a tolerance and the front-run pushes the price past the floor, the trade reverts, and there's no sandwich to make."
+/>
+
+## The attacker's optimization: there's a Goldilocks front-run size
+
+The attacker doesn't just pick any front-run size — there's an **optimal** one, and both extremes leave money behind.
+
+**Analogy.** Think of squeezing a sponge to wring out water. Squeeze too gently and water stays trapped (profit left on the table). Squeeze with your whole body weight and you've spent more effort than the last few drops are worth — and you might crush the sponge entirely (the victim's trade reverts). There's a sweet middle squeeze that extracts the most.
+
+The trade-offs:
+
+- **Front-run too small** → you barely move the price, the victim fills almost as well as they would have, and the gap you can harvest on the back-run is tiny. Profit left on the table.
+- **Front-run too big** → two problems compound. First, you've bought a *lot* of ETH at progressively worse prices, and when you back-run you're **selling into a price your own back-run depresses** (a large sell walks the curve back down), so your average exit is poor. Second, and worse, if your front-run pushes the spot price past the **victim's slippage floor**, the victim's trade **reverts** — and now you're holding a big inventory of ETH with *no victim* to sell into, possibly at a loss.
+
+So the optimal front-run is **bounded above by the victim's slippage tolerance**: you push the price as far as you can *without* tripping the revert, and no further. The exact optimum has a closed-form solution in terms of the reserves and the victim's size, but the intuition is what matters here — the profit-maximizing squeeze sits right at the edge of what the victim authorized. Crank the attacker slider in the widget above past a point and you'll see the attacker's profit *fall*, not rise: that's the over-squeeze.
+
+<MCQ
+  client:visible
+  question="Cause and effect: an attacker keeps increasing their front-run size on a fixed victim trade. Beyond the optimal point, what happens to the attacker's profit, and why?"
+  options={[
+    { text: 'It falls — the back-run sells into a price the oversized front-run forces the attacker to depress, and a too-large front-run risks pushing the victim past their slippage floor (reverting the trade entirely)', correct: true },
+    { text: 'It keeps rising forever — a bigger front-run is always strictly more profitable' },
+    { text: 'It stays flat — front-run size has no effect on profit once the victim is committed' },
+    { text: 'It rises, because reverting the victim’s trade is the attacker’s real goal' },
+  ]}
+  explanation="Profit is hump-shaped in front-run size. Too small wrings out little; too big means the attacker's own back-run sale walks the price back down (poor exit) and risks shoving the victim past their slippage floor, reverting the victim's trade and leaving the attacker stuck with unsold inventory. The optimum sits just under the victim's tolerance."
+/>
+
+## Defenses preview: starve the sandwich
+
+You don't have to be lunch. Every defense attacks one of the two ingredients a sandwich needs — *visibility* of your pending swap, or *room* in your slippage tolerance. We'll give each a full treatment in the mitigations lesson, but here's the map:
+
+- **Tighter slippage tolerance.** Leave the attacker no room. A 0.1–0.5% tolerance on a liquid pair means the front-run can't move the price far before your trade would revert — so there's no profitable sandwich to make. The cost: legitimate volatility can revert your trade too.
+- **Smaller / split trades.** A big order is a big, juicy target with lots of price impact to harvest. Splitting it into smaller pieces (or routing through deeper pools) shrinks the impact per fill and the profit available.
+- **Private orderflow / MEV-protect RPCs.** If the attacker can't *see* your pending swap, they can't front-run it. Sending transactions through a private relay or an MEV-protected RPC keeps them out of the public mempool until they're already in a block.
+- **MEV-aware routers.** Modern routers split orders across pools, set sane default tolerances, and can route through private orderflow automatically — bundling several of the above into one click.
+
+<MindMap
+  client:visible
+  title="Sandwich attacks — the whole mechanism"
+  caption="Two transactions bracket the victim, exploiting price impact and slippage tolerance; defenses kill either the visibility or the room the attack needs."
+  root={{
+    label: 'Sandwich attack',
+    children: [
+      {
+        label: 'Anatomy (one block)',
+        children: [
+          { label: '1. Front-run buy → price up' },
+          { label: '2. Victim fills at worse price' },
+          { label: '3. Back-run sell → bank the gap' },
+        ],
+      },
+      {
+        label: 'Why it works',
+        children: [
+          { label: 'AMM swap walks x·y=k → price impact' },
+          { label: 'Front-run worsens the victim’s spot' },
+          { label: 'Slippage tolerance makes the victim fillable' },
+        ],
+      },
+      {
+        label: 'The math (worked)',
+        children: [
+          { label: 'Pool 100 ETH / 200k USDC, k=2×10⁷' },
+          { label: 'Price $2000 → $2420 → $2880 → $2341' },
+          { label: 'Victim loses 1.5152 ETH' },
+          { label: 'Attacker profit ≈ $3,606' },
+        ],
+      },
+      {
+        label: 'Attacker optimization',
+        children: [
+          { label: 'Profit is hump-shaped in front-run size' },
+          { label: 'Too big → bad exit + revert risk' },
+          { label: 'Bounded by victim’s slippage floor' },
+        ],
+      },
+      {
+        label: 'Defenses (preview)',
+        children: [
+          { label: 'Tighter slippage tolerance' },
+          { label: 'Smaller / split trades' },
+          { label: 'Private orderflow / MEV-protect RPC' },
+          { label: 'MEV-aware routers' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Recap: sandwich attacks"
+  questions={[
+    {
+      question: 'Put the three transactions of a sandwich in the order they execute within the block.',
+      options: [
+        { text: 'Attacker front-run buy → victim swap → attacker back-run sell', correct: true },
+        { text: 'Victim swap → attacker front-run buy → attacker back-run sell' },
+        { text: 'Attacker back-run sell → victim swap → attacker front-run buy' },
+        { text: 'Attacker front-run buy → attacker back-run sell → victim swap' },
+      ],
+      explanation: 'The attacker must buy first (to raise the price), let the victim fill at that worsened price, then sell after. The ordering is the entire attack — and securing it is what the MEV auction pays for.',
+    },
+    {
+      question: 'In the worked pool (100 ETH / 200,000 USDC), the front-run buy of $20,000 moves the spot price from $2000 to what?',
+      options: [
+        { text: '$2,420 — reserves become 90.9091 ETH and 220,000 USDC, so 220,000 / 90.9091 = 2420', correct: true },
+        { text: '$2,880 — that is the price after the victim swap, not the front-run' },
+        { text: '$2,000 — a front-run does not change the spot price' },
+        { text: '$2,341 — that is the price after the back-run' },
+      ],
+      explanation: 'The $20,000 front-run buys 9.0909 ETH, leaving x = 90.9091 and y = 220,000. Spot = y/x = 220,000 / 90.9091 = $2,420. The victim then fills starting from this worsened price.',
+    },
+    {
+      question: 'A victim would receive 9.0909 ETH with no attack but only 7.5758 ETH sandwiched, while the attacker nets about $3,606. Which statement is true?',
+      options: [
+        { text: 'The victim’s ≈$3,030 loss (1.5152 ETH at the start price) is the source of the attacker’s gain; the figures differ because of the curve’s asymmetry and the back-run depressing its own exit price', correct: true },
+        { text: 'The victim’s loss in dollars must exactly equal the attacker’s profit, always' },
+        { text: 'The attacker created new value out of nothing; the victim lost nothing real' },
+        { text: 'The victim actually profited, since they still received 7.5758 ETH' },
+      ],
+      explanation: 'A sandwich is a wealth transfer, not wealth creation: the victim’s lost ETH funds the attacker’s gain. They don’t tie out to the penny because of fees, the convex curve, and the back-run selling into a price the attacker’s own sale walks down.',
+    },
+    {
+      question: 'Why does setting a slippage tolerance too LOW protect a trader from being sandwiched?',
+      options: [
+        { text: 'If the front-run pushes the price past the tight floor, the victim’s swap reverts — so the attacker is left holding inventory with no one to sell into, and the sandwich is unprofitable', correct: true },
+        { text: 'A low tolerance forces the pool to refund the attacker’s front-run' },
+        { text: 'A low tolerance increases the victim’s price impact, scaring the attacker off' },
+        { text: 'Slippage tolerance only applies to the attacker, never the victim' },
+      ],
+      explanation: 'A tight tolerance leaves the attacker no room: the smallest profitable front-run already pushes the price past the victim’s floor, reverting the trade. No fill, no victim to sell into, no sandwich. The trade-off is that genuine volatility can revert your trade too.',
+    },
+    {
+      question: 'An attacker increases their front-run far beyond the optimal size against a fixed victim trade. What is the most likely result?',
+      options: [
+        { text: 'Lower profit, and possibly a total loss — the oversized back-run sells into a price it depresses, and the front-run may push the victim past their slippage floor, reverting the victim trade and stranding the attacker’s inventory', correct: true },
+        { text: 'Strictly higher profit — bigger is always better in a sandwich' },
+        { text: 'No change — front-run size is irrelevant once the victim has signed' },
+        { text: 'The victim’s trade fills at a better price, helping the victim' },
+      ],
+      explanation: 'Profit is hump-shaped. Past the optimum, the attacker’s own large back-run walks the price back down (a poor exit), and an over-aggressive front-run risks reverting the victim’s trade entirely — leaving the attacker holding unsold tokens. The optimum sits just under the victim’s tolerance.',
+    },
+  ]}
+/>
+
+You now understand MEV's most notorious face — the predatory sandwich, worked out to the last decimal of $x \cdot y = k$. But not all MEV is theft. Next up, **arbitrage and liquidations** — the *benign* side of ordering, where the same speed-and-sequence game keeps prices consistent across venues and clears bad debt out of lending protocols. Same mechanics, very different ethics.

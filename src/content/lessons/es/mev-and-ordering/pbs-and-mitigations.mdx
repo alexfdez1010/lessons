@@ -1,0 +1,389 @@
+---
+title: "PBS, MEV-Boost y mitigaciones"
+description: "Cómo Ethereum intenta domar el MEV: separación proponente-constructor, MEV-Boost y relays, flujo de órdenes privado, routers conscientes del MEV y RPC de protección, ordenación justa y mempools cifradas, y redistribución del MEV (MEV-Share/SUAVE)."
+topic: "es/mev-and-ordering"
+order: 6
+minutes: 10
+updated: 2026-06-05
+---
+
+import { Callout, MCQ, FillBlank, Categorize, MevSupplyChain, MindMap, Quiz } from '@/components/react';
+
+A estas alturas ya habéis visto el MEV desde el lado del depredador: la mempool es una casa de cristal, la ordenación vale dinero, y un buscador con el bundle adecuado puede hacerle un sándwich a vuestro swap antes de que parpadeéis. La pregunta natural es la que todo este tema venía preparando — *¿podemos pararlo?* La respuesta honesta es **no, no del todo** — el valor de la ordenación está cosido a la propia idea de un libro mayor compartido y secuencial. Así que el juego de verdad no es eliminarlo. Son tres verbos más callados: **minimizar** la parte tóxica que hace víctimas; **democratizar** quién puede extraer el resto; y **redistribuir** los beneficios de vuelta hacia los usuarios que los generaron. Esta lección es la caja de herramientas para los tres.
+
+<MCQ
+  client:visible
+  pretest
+  pretestLabel="Antes de leer — adivina"
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="¡Correcto!"
+  incorrectLabel="Incorrecto"
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  question="Antes de entrar en materia — ¿cuál es el único objetivo realista de las contramedidas de Ethereum frente al MEV?"
+  options={[
+    { text: 'Minimizar la parte tóxica, democratizar el acceso a la extracción y redistribuir los beneficios — porque el MEV es inherente a la ordenación y no se puede borrar del todo', correct: true },
+    { text: 'Eliminar el MEV por completo prohibiendo la reordenación a nivel de protocolo' },
+    { text: 'Obligar a cada validador a ejecutar su propio software de extracción de MEV' },
+    { text: 'Hacer públicas todas las transacciones cuanto antes para que los buscadores compitan más' },
+  ]}
+  explanation="El MEV es estructural: cada vez que alguien elige el orden de transacciones que portan valor, esa elección tiene valor. No se puede legislar para que desaparezca. La agenda práctica es encoger la porción dañina (sándwiches/front-running), repartir el acceso para que un cartel de profesionales no la monopolice, y devolver el valor a los usuarios. Tened presente esa tríada — cada herramienta de abajo sirve a uno de esos tres verbos."
+/>
+
+## El problema que resuelve PBS: no conviertas a cada validador en un quant
+
+**Analogía.** Imaginad un restaurante donde el dueño — cuyo único trabajo real es abrir las puertas y mantener las luces encendidas — está *además* obligado a ser un chef de primer nivel mundial, o el restaurante quiebra. La mayoría de los dueños no saben cocinar a ese nivel, así que o la comida es terrible o solo sobreviven un puñado de dueños-chefs y a los demás se les expulsa. La solución es obvia: **separa al chef del dueño.** Deja que chefs especialistas (que viven y respiran técnica) compitan por cocinar, y deja que los dueños simplemente elijan el mejor plato disponible y lo sirvan.
+
+**Definición.** En Ethereum, los validadores son elegidos para **proponer** el siguiente bloque — pero extraer MEV bien requiere software sofisticado y sensible a la latencia: escanear la mempool, simular miles de ordenaciones, integrar bundles de buscadores y computar el bloque más valioso. Si cada validador tuviera que hacer eso para seguir siendo competitivo, la producción de bloques se **centralizaría** en torno a las pocas empresas que pudieran permitirse la ingeniería — exactamente el resultado que una cadena descentralizada quiere evitar. La **separación proponente-constructor (PBS, por sus siglas en inglés)** divide el trabajo en dos: los **constructores** se especializan en *ordenar* (ensamblar el bloque más valioso), y los **proponentes** (validadores) conservan el *derecho a proponer* pero hacen casi nada — simplemente eligen el bloque mejor pagado que se les ofrece.
+
+Así, el validador que corre un humilde nodo casero y una mesa de trading de mil millones de dólares acaban ganando **la misma** recompensa inflada por MEV para el slot, porque ambos simplemente aceptan la mejor puja. La brecha de habilidad se traslada a los constructores, donde la competencia está bien; el rol de proponente sigue siendo barato, así que sigue siendo descentralizado.
+
+<Callout variant="warning" title="PBS no es 'cero MEV' — es MEV con la presión centralizadora retirada">
+Un malentendido común: "PBS resuelve el MEV." No lo hace. No reduce cuánto MEV existe, y no detiene los sándwiches por sí mismo. Lo que resuelve es un problema más estrecho y más taimado — que **competir por el MEV centralizaría, si no, la validación**. PBS mantiene trivial el trabajo del proponente para que cualquiera pueda validar, mientras deja que los constructores se peleen por la ordenación. La extracción continúa; simplemente ya no amenaza con colapsar el conjunto de validadores en un oligopolio.
+</Callout>
+
+### Cuándo importa
+
+PBS importa sobre todo para la **descentralización creíble bajo prueba de participación**. Toda la propuesta del staking es que muchos validadores independientes aseguran la cadena. Si el MEV hiciera el staking en solitario antieconómico frente a los constructores industriales, esa propuesta muere. PBS es el parche estructural que permite a un validador aficionado ganar recompensas competitivas sin escribir jamás un algoritmo de construcción de bloques.
+
+## La cadena de suministro del MEV, de principio a fin
+
+**Analogía.** Pensad en una subasta de arte a sobre cerrado gestionada por una casa de subastas de confianza. Los artistas (buscadores) presentan piezas enmarcadas; un comisario (constructor) monta la mejor pared de galería; la casa de subastas (relay) guarda cada galería en una cámara acorazada y le muestra al comprador solo una **foto de la pared más su etiqueta de precio** — nunca los cuadros reales — para que nadie pueda copiar la disposición. El comprador (proponente) señala la etiqueta de precio más alta, paga, y *solo entonces* recibe los cuadros reales para colgarlos.
+
+**Definición.** La tubería moderna del MEV en Ethereum tiene cinco roles, y el valor fluye hacia delante como datos y hacia atrás como pago:
+
+| Rol | Qué hace | Qué ve |
+|---|---|---|
+| **Usuario / Cartera** | Firma una transacción (un swap, una transferencia) y la difunde, queriendo inclusión pero sin voz sobre su posición | Solo su propia transacción |
+| **Buscador** | Escanea las transacciones pendientes en busca de MEV (arbitraje, liquidaciones), y luego empaqueta un **bundle** rentable y ordenado con precisión | La mempool pública + su propia estrategia |
+| **Constructor** | Ensambla muchos bundles y transacciones en un **bloque** completo y ordenado y computa el máximo que puede pagar para que se proponga | Todo lo que recibió; el contenido completo del bloque |
+| **Relay** | Ejecuta una **subasta a sobre cerrado**: custodia los bloques de los constructores y expone solo la **cabecera + puja** para que nadie pueda robar la ordenación | Bloques completos (en custodia); revela solo las cabeceras |
+| **Proponente / Validador** | Elige la **cabecera** mejor pagada, la firma y se embolsa la puja — comprometiéndose con un bloque cuyo interior nunca vio | Solo cabeceras + pujas, hasta después de firmar |
+
+Lo ingenioso es cómo el proponente gana MEV **sin ver el contenido del bloque**. Firma una *cabecera* — un compromiso criptográfico con "el bloque que tenga este hash" — y el importe de la puja. El relay solo libera el cuerpo completo del bloque una vez tiene en mano la cabecera firmada. Así el proponente no puede espiar las transacciones jugosas, copiar la ordenación del constructor y robar el beneficio; y el constructor no puede conseguir que su bloque se proponga sin pagar la puja prometida. El relay se sitúa en medio reteniendo ambas mitades como rehén hasta que el trato sea justo.
+
+Recorred la tubería de abajo. Observad el flujo hacia delante — transacción → bundle → bloque → cabecera firmada — y la **flecha de valor que corre hacia atrás** del constructor al proponente: ese es todo el sentido económico hecho visible.
+
+<MevSupplyChain
+  client:visible
+  title="La cadena de suministro del MEV (PBS / MEV-Boost)"
+  stages={[
+    {
+      name: 'Usuario / Cartera',
+      role: 'Firma una transacción y la difunde — quiere que se incluya, pero sin voz sobre dónde acaba dentro del bloque.',
+    },
+    {
+      name: 'Buscador',
+      role: 'Escanea las transacciones pendientes en busca de MEV (arbitraje, liquidaciones), y luego empaqueta un bundle rentable y ordenado con precisión.',
+    },
+    {
+      name: 'Constructor',
+      role: 'Ensambla muchos bundles y transacciones en un bloque completo y ordenado y computa cuánto puede pagar para que se proponga.',
+    },
+    {
+      name: 'Relay',
+      role: 'Ejecuta una subasta a sobre cerrado: retiene los bloques de los constructores, los custodia, y expone solo la cabecera + puja para que nadie pueda robar el orden.',
+    },
+    {
+      name: 'Proponente / Validador',
+      role: 'Elige la cabecera mejor pagada y la firma — comprometiéndose con un bloque cuyo contenido nunca vio, y embolsándose la puja.',
+    },
+  ]}
+  flowLabels={['transacción', 'bundle', 'bloque', 'cabecera firmada']}
+  bidLabel="puja (ETH)"
+  paymentLabel="pago de MEV"
+  prevLabel="Paso anterior"
+  nextLabel="Paso siguiente"
+  playLabel="Reproducir"
+  pauseLabel="Pausar"
+  resetLabel="Reiniciar"
+  stepAnnouncePrefix="Paso"
+  stepAnnounceOf="de"
+  caption="El valor fluye hacia delante como datos (transacción → bundle → bloque → cabecera firmada) mientras el pago fluye hacia atrás (la puja ganadora del constructor → la recompensa de MEV del proponente). La custodia a sobre cerrado del relay es lo que permite al proponente cobrar el MEV sin ver jamás — ni poder robar — la ordenación dentro del bloque."
+/>
+
+<MCQ
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="¡Correcto!"
+  incorrectLabel="Incorrecto"
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  question="En la tubería de MEV-Boost, ¿cómo gana el proponente la recompensa de MEV sin poder robar la ordenación del constructor?"
+  options={[
+    { text: 'Firma solo la cabecera del bloque + la puja; el relay libera el cuerpo completo del bloque únicamente tras recibir la cabecera firmada, así que el proponente nunca ve la ordenación antes de comprometerse', correct: true },
+    { text: 'Descarga el bloque completo, copia las transacciones más rentables y reconstruye el bloque él mismo' },
+    { text: 'El constructor publica el bloque públicamente y confía en que el proponente no lo copie' },
+    { text: 'El buscador paga al proponente directamente y se salta al constructor y al relay por completo' },
+  ]}
+  explanation="El relay custodia el cuerpo y expone solo la cabecera y la puja. El proponente se compromete firmando la cabecera — un hash de un bloque que no ha visto — y solo entonces el relay revela el contenido. Este diseño a sobre cerrado es exactamente lo que impide que el proponente desempaquete y copie el trabajo del constructor."
+/>
+
+## MEV-Boost: PBS como software añadido (y el problema de confianza del relay)
+
+**Analogía.** El protocolo base de Ethereum no ejecuta de forma *nativa* la subasta a sobre cerrado descrita arriba — al menos todavía no. MEV-Boost es como un popular plugin de terceros que casi todos los validadores instalan para obtener la característica que el software del núcleo no ha lanzado. Funciona de maravilla, casi todo el mundo lo usa, y esa ubicuidad es precisamente lo que hace que sus puntos débiles den miedo.
+
+**Definición.** **MEV-Boost** es middleware fuera del protocolo (construido originalmente por **Flashbots**) que implementa PBS en Ethereum *hoy*. Un validador lo ejecuta junto a su cliente de consenso; MEV-Boost se conecta a uno o más **relays**, recoge las pujas de los constructores y le entrega al validador la cabecera mejor pagada para firmar. La gran mayoría de los bloques de Ethereum se construyen ahora así — PBS en la práctica, aunque todavía no esté en el protocolo mismo.
+
+La trampa es el **relay**, que es una parte **de confianza** haciendo dos trabajos delicados: debe (1) custodiar fielmente el bloque y revelarlo solo tras firmar la cabecera, y (2) no censurar, robar ni filtrar el contenido. Esa confianza es un cuello de botella real:
+
+- Un **relay malicioso o con bugs** podría no liberar un bloque después de que el proponente firme, costándole al proponente la recompensa de su slot.
+- Los relays pueden **censurar** transacciones (p. ej. excluyendo direcciones sancionadas), y como tan pocos relays cargan la mayoría de los bloques, un puñado de operadores puede moldear qué se incluye en toda la cadena — un riesgo de centralización y neutralidad.
+
+<Callout variant="warning" title="Los relays son el punto débil — un conjunto pequeño y de confianza cargando la mayoría de los bloques">
+No imaginéis MEV-Boost como sin confianza solo porque el resto de Ethereum lo sea. El relay es un intermediario fuera de cadena, **de confianza**, y solo hay unos pocos importantes. Si la mayoría de los bloques fluyen a través de dos o tres relays, esos operadores se convierten en un callado punto de estrangulamiento para la **censura** y en un único punto de fallo. La solución no es un relay mejor — es eliminar la necesidad de confiar en uno en absoluto, que es toda la motivación detrás de la **PBS consagrada (ePBS)**: hornear la subasta proponente-constructor directamente en el protocolo de Ethereum para que la custodia la imponga el consenso, no el buen comportamiento de una empresa. ePBS es un punto activo de investigación y hoja de ruta, todavía no lanzado.
+</Callout>
+
+<MCQ
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="¡Correcto!"
+  incorrectLabel="Incorrecto"
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  question="¿Qué afirmación sobre los relays en MEV-Boost es VERDADERA?"
+  options={[
+    { text: 'Un relay es un intermediario de confianza que custodia el bloque y puede censurarlo o retenerlo, lo que convierte al pequeño conjunto de relays importantes en un riesgo de centralización y neutralidad', correct: true },
+    { text: 'Los relays son contratos inteligentes completamente sin confianza impuestos por el consenso de Ethereum' },
+    { text: 'Los relays construyen los bloques ellos mismos y no interactúan con los constructores' },
+    { text: 'Eliminar los relays es imposible, así que se abandonó ePBS' },
+  ]}
+  explanation="Esta es la trampa a detectar: los relays son partes fuera de cadena y de confianza. Pueden censurar y retener, y un número minúsculo de ellos carga la mayoría de los bloques — una preocupación real de centralización/censura. La PBS consagrada (ePBS) pretende mover esa custodia al protocolo para que no se necesite un relay de confianza; está en la hoja de ruta, no abandonada."
+/>
+
+## Mitigaciones del lado del usuario: sal de la casa de cristal
+
+**Analogía.** La mempool pública es una casa de cristal — difunde tu movimiento y cada buscador te observa telegrafiarlo. La defensa más simple es **dejar de anunciar tu operación al mundo entero** antes de que se mine. En vez de gritar tu orden a través de una sala abarrotada, se la susurras a un corredor de confianza que la coloca sin avisar a los front-runners.
+
+**Definición.** El **flujo de órdenes privado** (vía un **RPC privado** o **RPC de protección**, p. ej. un endpoint de protección de MEV) envía tu transacción *directamente a los constructores* por un canal privado en vez de a la mempool pública. Si un atacante de sándwich no puede *ver* tu swap pendiente, no puede envolverlo. Herramientas complementarias del lado del usuario:
+
+- Los **routers conscientes del MEV** reparten un swap grande entre varios pools y rutas para aplanar el impacto en el precio del que se alimentaría un sandwicher, y pueden enrutar por canales protegidos por defecto.
+- Una **tolerancia de slippage más ajustada** limita cuánto puede moverse tu precio de ejecución — un sándwich que te empujaría más allá del límite simplemente revierte, así que el ataque no puede sacarte beneficio (a costa de más transacciones fallidas en mercados volátiles).
+- **Dividir las órdenes** en porciones más pequeñas reduce el MEV por operación que merece la pena atacar.
+- **RFQ / liquidez justo-a-tiempo (JIT):** en vez de golpear un pool público, pides cotizaciones a creadores de mercado que te ejecutan fuera de la curva a un precio firme, esquivando por completo el sándwich en cadena.
+
+**Ejemplo concreto.** Quieres intercambiar una gran cantidad de ETH por USDC. Enviado a la mempool pública con slippage holgado, un buscador hace front-run para empujar el precio arriba, te deja comprar caro, y luego hace back-run para vender — el sándwich clásico, y tú te comes el diferencial. Envía el *mismo* swap por un RPC privado con slippage ajustado, y el atacante nunca lo ve a tiempo para envolverlo; en el peor caso tu límite ajustado de slippage hace que cualquier intento de manipulación revierta. Misma operación, sin sándwich.
+
+<Callout variant="warning" title="La privacidad tiene precio: la concentración del flujo de órdenes es su propio riesgo de centralización">
+El flujo de órdenes privado te protege *a ti*, pero si las transacciones de todo el mundo fluyen por unos pocos canales privados, esos canales ganan un poder enorme: eligen qué constructores ven tu operación, pueden extraer valor ellos mismos, y matan de hambre a la mempool pública que mantiene la construcción sin permiso y competitiva. El **flujo de órdenes exclusivo** puede dejar que los constructores dominantes se atrincheren (solo ellos reciben el buen flujo), recreando la centralización por la puerta de atrás. La victoria a nivel de usuario (sin sándwich) puede contraponerse a una pérdida a nivel de sistema (un mercado menos neutral, más capturado). Privacidad frente a censura/centralización es la tensión central aquí — ningún lado es gratis.
+</Callout>
+
+<FillBlank
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  explanationLabel="Explicación"
+  correctResultLabel="✓ Correcto"
+  partialResultWord="correctas"
+  question="Completa la lógica de la protección del lado del usuario y su contrapartida."
+  text="Enviar un swap por un RPC {{privado|público|de difusión}} lo mantiene fuera de la mempool pública, así que un atacante de sándwich no puede {{verlo|firmarlo|minarlo}} a tiempo para envolverlo. Una tolerancia de slippage más {{ajustada|holgada|eliminada}} hace que cualquier ejecución manipulada {{revierta|confirme|repita}}. Pero si la mayor parte del flujo se concentra en unos pocos canales privados, esos canales ganan un poder que puede {{centralizar|descentralizar|aleatorizar}} la construcción de bloques."
+  explanation="Los RPC privados ocultan la operación para que no se le pueda hacer front-run; el slippage ajustado hace que una ejecución manipulada revierta en vez de ejecutarse a mal precio. El coste sistémico es que un flujo de órdenes concentrado y exclusivo entrega a unos pocos intermediarios un poder desmesurado — un riesgo de centralización que contrarresta la victoria individual de privacidad."
+/>
+
+## Mitigaciones a nivel de protocolo y de ordenación: cambia las reglas de la subasta
+
+Las herramientas de usuario ayudan a individuos; los arreglos más profundos cambian *cómo funciona la ordenación misma* para que el MEV tóxico no tenga dónde vivir. Cuatro familias, cada una con contrapartidas reales.
+
+**Ordenación justa / primero en llegar, primero en ser servido (FCFS).** En vez de dejar que quien más paga se cuele en la cola, secuencia las transacciones por **hora de llegada** según la acuerden un comité de nodos. El front-running se vuelve más difícil porque no puedes simplemente superar la puja para ponerte por delante de una víctima. *Contrapartida:* la "hora de llegada" es difusa y manipulable en una red global (carreras de latencia, spam), y no mata el MEV de arbitraje.
+
+**Subastas por lotes con precio de liquidación uniforme.** Recoge todas las operaciones de una ventana corta en un solo **lote**, y luego liquídalas a un **único precio de liquidación** que reciben todos los del lote (el diseño estilo CoW Swap). Si todos los que operan el mismo par en el mismo lote obtienen el precio *idéntico*, no hay "delante" ni "detrás" que explotar — **el sándwich muere**, porque el atacante no puede conseguir mejor precio que su víctima. Las coincidencias de deseos pueden incluso emparejar a los traders directamente, saltándose el AMM. *Contrapartida:* esperas al lote, y confías en que los solvers compitan honestamente por encontrar la mejor liquidación.
+
+**Mempools con cifrado por umbral.** Las transacciones entran en la mempool **cifradas**; su contenido se revela solo *después* de que la ordenación del bloque esté fijada (el descifrado necesita que coopere un umbral de validadores). No puedes hacer front-run a lo que no puedes leer, y no puedes reordenar según un contenido al que te comprometiste antes de verlo. *Contrapartida:* latencia y complejidad añadidas, riesgo de liveness si el comité de descifrado se porta mal, y no detiene el MEV visible solo desde el estado en cadena (p. ej. una liquidación que cualquiera puede computar).
+
+**Redistribución de MEV.** Acepta que el MEV se extraerá, pero **devuelve los beneficios a los usuarios que lo crearon.** **MEV-Share** (una **subasta de flujo de órdenes**, OFA) deja que un usuario exponga justo lo suficiente de su transacción para que los buscadores pujen por el MEV que habilita, y luego **reembolsa al usuario una parte** de la puja ganadora — cobras por el valor que genera tu operación en vez de que te hagan un sándwich en silencio. **SUAVE** (Single Unifying Auction for Value Expression) es una visión más ambiciosa: una plataforma dedicada y descentralizada para el flujo de órdenes, la construcción y las pujas que aspira a hacer esta competencia abierta y creíblemente neutral en vez de capturada por unas pocas empresas.
+
+<Callout variant="warning" title="Ninguno de estos resuelve el MEV del todo — lo mueven y lo intercambian">
+No hay bala de plata, y cualquier fuente que diga "esto acaba con el MEV" está exagerando. Las subastas por lotes matan el *sándwich* pero no el arbitraje; las mempools cifradas ocultan la intención pero añaden latencia y no pueden detener el MEV visible en el estado como las liquidaciones; FCFS combate el front-running por prioridad pero inventa juegos de latencia; la redistribución no reduce nada la extracción — solo reparte el botín. Cada mitigación compra una propiedad (sin sándwich / intención oculta / beneficios compartidos) pagando con otra (latencia / complejidad / nuevas hipótesis de confianza). La pericia aquí está en saber *qué* MEV aborda cada herramienta y qué cuesta.
+</Callout>
+
+<Categorize
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  explanationLabel="Explicación"
+  allCorrectLabel="✓ Todo ordenado"
+  partialResultWord="correctas"
+  question="Clasifica cada mitigación por dónde vive: algo que un usuario/cartera elige, o algo horneado en el mecanismo de protocolo/ordenación."
+  buckets={['Del lado del usuario', 'Del lado del protocolo / ordenación']}
+  items={[
+    { text: 'RPC privado / de protección (saltarse la mempool pública)', bucket: 'Del lado del usuario' },
+    { text: 'Tolerancia de slippage más ajustada en un swap', bucket: 'Del lado del usuario' },
+    { text: 'Router consciente del MEV que reparte la orden entre rutas', bucket: 'Del lado del usuario' },
+    { text: 'Cotización RFQ / liquidez justo-a-tiempo de un creador de mercado', bucket: 'Del lado del usuario' },
+    { text: 'Subasta por lotes con precio de liquidación uniforme', bucket: 'Del lado del protocolo / ordenación' },
+    { text: 'Mempool con cifrado por umbral', bucket: 'Del lado del protocolo / ordenación' },
+    { text: 'Ordenación justa primero en llegar, primero en ser servido', bucket: 'Del lado del protocolo / ordenación' },
+    { text: 'Subasta de flujo de órdenes MEV-Share con reembolsos al usuario', bucket: 'Del lado del protocolo / ordenación' },
+  ]}
+  explanation="Las herramientas del lado del usuario son elecciones que un individuo hace sobre cómo enviar una sola transacción: RPC privados, slippage ajustado, routers inteligentes, ejecuciones RFQ/JIT. Los cambios del lado del protocolo/ordenación reescriben cómo se secuencian o liquidan las transacciones de todos: subastas por lotes, mempools cifradas, FCFS, y subastas de flujo de órdenes que redistribuyen el MEV a nivel de mecanismo. La distinción importa porque las herramientas de usuario te protegen ahora, mientras que los cambios a nivel de ordenación moldean el mercado entero."
+/>
+
+<MCQ
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="¡Correcto!"
+  incorrectLabel="Incorrecto"
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  question="Un protocolo pasa a subastas por lotes con un único precio de liquidación uniforme para todos los que operan el mismo par en una ventana. ¿Cuál es el efecto más directo sobre el MEV?"
+  options={[
+    { text: 'El sándwich muere — no hay ventaja de “delante de” frente a “detrás de” cuando cada operación del lote se liquida al mismo precio', correct: true },
+    { text: 'Todo el MEV, incluido el arbitraje entre pools, desaparece por completo' },
+    { text: 'El front-running se abarata porque el orden importa más' },
+    { text: 'Las liquidaciones ya no pueden ser computadas por nadie' },
+  ]}
+  explanation="Un precio de liquidación uniforme elimina la ventaja posicional que necesita un sandwicher — no puedes comprar más barato que tu víctima si ambos liquidáis al mismo precio, así que el sándwich se desploma. Pero es una relación causa→efecto sobre el sándwich en concreto: el MEV de arbitraje y el MEV visible en el estado como las liquidaciones no se esfuman, que es exactamente por qué ninguna mitigación aislada 'acaba con el MEV'."
+/>
+
+## La imagen completa: minimizar, democratizar, redistribuir
+
+**Analogía.** El MEV es como la fricción en una máquina: puedes lubricarla, encauzarla por cojinetes y capturar el calor para hacer trabajo útil — pero no puedes hacerla cero, porque es una propiedad de piezas móviles tocándose entre sí. El valor de la ordenación es la fricción de un libro mayor compartido y secuencial.
+
+Así que el modelo mental del experto no es "matar el MEV." Es una **defensa por capas** emparejada con los tres verbos:
+
+- **Minimiza la parte tóxica.** El sándwich y el front-running hacen víctimas a los usuarios sin razón productiva — exprime esto con flujo de órdenes privado, slippage ajustado, subastas por lotes y cifrado.
+- **Democratiza el acceso.** No dejes que un cartel de profesionales monopolice la extracción o la validación — PBS mantiene barato el proponer, las subastas abiertas al estilo SUAVE mantienen competitivo el juego de buscador/constructor, y ePBS aspira a eliminar por completo el relay de confianza.
+- **Redistribuye los beneficios.** El MEV que *sí* se extraerá (arbitraje, liquidaciones — el tipo que soporta carga y que mantiene los precios alineados y el préstamo solvente) debería pagar a los usuarios que lo generaron, vía subastas de flujo de órdenes como MEV-Share.
+
+Cada herramienta de esta lección encaja en uno de esos tres. Mantenlos juntos y "hice un swap" deja de ser un atraco silencioso y se convierte en una tubería transparente, disputada y cada vez más justa — una sobre la que ahora puedes razonar, poner precio y defender.
+
+<MindMap
+  client:visible
+  title="Domar el MEV — toda la caja de herramientas de mitigación"
+  caption="El mapa de cierre del tema: PBS y su cadena de suministro, MEV-Boost y el problema de confianza del relay, defensas del lado del usuario, arreglos a nivel de ordenación, y la tríada minimizar/democratizar/redistribuir que los une."
+  root={{
+    label: 'Domar el MEV',
+    children: [
+      {
+        label: 'PBS (por qué)',
+        children: [
+          { label: 'Separa ORDENAR (constructor) de PROPONER (validador)' },
+          { label: 'Mantiene barato el proponer → la validación sigue descentralizada' },
+          { label: 'Chef vs. dueño del restaurante, a sobre cerrado' },
+        ],
+      },
+      {
+        label: 'Cadena de suministro',
+        children: [
+          { label: 'Usuario → Buscador → Constructor → Relay → Proponente' },
+          { label: 'Hacia delante: tx → bundle → bloque → cabecera' },
+          { label: 'Hacia atrás: puja → pago de MEV' },
+          { label: 'El proponente firma la cabecera, nunca ve el contenido' },
+        ],
+      },
+      {
+        label: 'MEV-Boost y relays',
+        children: [
+          { label: 'PBS fuera del protocolo (Flashbots)' },
+          { label: 'Relay = custodia de confianza → riesgo de censura / centralización' },
+          { label: 'ePBS: consagrar la subasta, soltar el relay de confianza' },
+        ],
+      },
+      {
+        label: 'Del lado del usuario',
+        children: [
+          { label: 'RPC privado / de protección (saltarse la mempool pública)' },
+          { label: 'Routers conscientes del MEV, slippage ajustado, dividir órdenes' },
+          { label: 'Cotizaciones RFQ / JIT fuera de la curva' },
+          { label: 'Contrapartida: la concentración del flujo centraliza' },
+        ],
+      },
+      {
+        label: 'Del lado de la ordenación',
+        children: [
+          { label: 'FCFS / ordenación justa' },
+          { label: 'Subasta por lotes + precio uniforme → sin sándwich' },
+          { label: 'Mempool con cifrado por umbral → ocultar la intención' },
+          { label: 'MEV-Share / SUAVE → redistribuir los beneficios' },
+        ],
+      },
+      {
+        label: 'Imagen completa',
+        children: [
+          { label: 'El MEV no se puede eliminar' },
+          { label: 'Minimizar lo tóxico · Democratizar el acceso · Redistribuir' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Repaso: PBS, MEV-Boost y mitigaciones"
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  nextLabel="Siguiente pregunta"
+  backLabel="Atrás"
+  restartLabel="Reiniciar"
+  scoreLabel="Has acertado"
+  reviewLabel="Tus respuestas"
+  correctLabel="¡Correcto!"
+  incorrectLabel="Incorrecto"
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  seeResultsLabel="Ver resultados"
+  correctCountLabel="correctas"
+  completeLabel="Repaso completado"
+  completeTitleLabel="Repaso completado"
+  questions={[
+    {
+      question: '¿Qué problema centralizador previene específicamente la separación proponente-constructor?',
+      options: [
+        { text: 'Que competir por el MEV obligaría a cada validador a ejecutar software sofisticado de construcción de bloques, colapsando la validación en unas pocas empresas', correct: true },
+        { text: 'Que el arbitraje entre pools mantiene los precios alineados' },
+        { text: 'Que los usuarios difunden transacciones a una mempool pública' },
+        { text: 'Que las comisiones de gas suben durante la congestión' },
+      ],
+      explanation: 'PBS mantiene trivial el trabajo del proponente (solo elegir la mejor puja) para que cualquiera pueda validar, mientras los constructores especialistas compiten en la ordenación. No reduce cuánto MEV existe — elimina la presión para que el MEV centralice el conjunto de validadores.',
+    },
+    {
+      question: 'Ordena correctamente la cadena de suministro del MEV desde el origen hasta la propuesta del bloque.',
+      options: [
+        { text: 'Usuario → Buscador → Constructor → Relay → Proponente/Validador', correct: true },
+        { text: 'Constructor → Usuario → Relay → Buscador → Proponente' },
+        { text: 'Buscador → Proponente → Relay → Constructor → Usuario' },
+        { text: 'Relay → Constructor → Usuario → Proponente → Buscador' },
+      ],
+      explanation: 'El usuario firma una transacción; el buscador empaqueta un bundle rentable; el constructor ensambla el bloque completo y una puja; el relay lo custodia y expone solo la cabecera; el proponente firma la cabecera mejor pagada y cobra el MEV.',
+    },
+    {
+      question: '¿Por qué se considera el relay el cuello de botella de confianza en MEV-Boost?',
+      options: [
+        { text: 'Es una parte de confianza fuera de cadena que custodia los bloques y puede censurarlos o retenerlos, y un número pequeño de relays carga la mayoría de los bloques', correct: true },
+        { text: 'Construye él mismo cada bloque sin aporte de los constructores' },
+        { text: 'Lo impone el consenso de Ethereum, así que no puede portarse mal' },
+        { text: 'Paga a los validadores directamente de su propia tesorería' },
+      ],
+      explanation: 'Los relays son intermediarios de confianza fuera de cadena. Pueden censurar o no liberar un bloque, y la concentración en unos pocos relays importantes los convierte en un riesgo de censura y centralización — que es exactamente por qué la PBS consagrada aspira a eliminar la necesidad de confiar en ellos.',
+    },
+    {
+      question: 'Un trader envía un swap grande por un RPC privado con slippage ajustado. ¿Qué hace cada elección?',
+      options: [
+        { text: 'El RPC privado oculta el swap a los atacantes de sándwich; el slippage ajustado hace que cualquier ejecución manipulada revierta en vez de ejecutarse a mal precio', correct: true },
+        { text: 'El RPC privado sube la comisión de gas; el slippage ajustado garantiza un precio mejor' },
+        { text: 'Ambos eliminan el MEV de arbitraje en todos los pools' },
+        { text: 'Ambos fuerzan la transacción a través de una mempool pública más rápido' },
+      ],
+      explanation: 'Saltarse la mempool pública significa que los atacantes no pueden ver la operación para envolverla; el slippage ajustado limita el precio de ejecución para que un intento de manipulación revierta en vez de dar beneficio. El coste sistémico es que un flujo de órdenes privado concentrado puede centralizar la construcción de bloques.',
+    },
+    {
+      question: '¿Qué mitigación REDISTRIBUYE el MEV a los usuarios en vez de intentar prevenir su extracción?',
+      options: [
+        { text: 'MEV-Share / subastas de flujo de órdenes — los buscadores pujan por el MEV que habilita la transacción de un usuario, y al usuario se le reembolsa una parte de la puja ganadora', correct: true },
+        { text: 'Mempools con cifrado por umbral' },
+        { text: 'Ordenación justa primero en llegar, primero en ser servido' },
+        { text: 'Tolerancia de slippage más ajustada' },
+      ],
+      explanation: 'Las mempools cifradas y FCFS intentan prevenir o reordenar para quitar el MEV tóxico; el slippage ajustado es una defensa de usuario. MEV-Share (y la visión más amplia de SUAVE) en cambio acepta la extracción y devuelve una parte de los beneficios al usuario que generó el valor.',
+    },
+  ]}
+/>
+
+Esa es la máquina completa — desde la mempool casa de cristal hasta la subasta que pone precio a su propia fricción. Ahora puedes nombrar cada rol de la cadena de suministro del MEV, explicar por qué PBS mantiene la validación descentralizada, detectar el relay como cuello de botella de confianza, elegir la defensa adecuada del lado del usuario, y razonar honestamente sobre lo que compra y cuesta cada arreglo a nivel de ordenación. Queda una cosa: demostrarlo. El **examen final** es una única tanda evaluada sobre todo el tema — una pregunta cada vez, cada respuesta bloqueada en el momento en que la envías, puntuación revelada solo al final. Sin apuntes, sin segundas oportunidades. Ve a ganártelo.

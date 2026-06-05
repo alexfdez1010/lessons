@@ -1,0 +1,316 @@
+---
+title: "El mempool y cómo se subasta la ordenación"
+description: "Las transacciones pendientes esperan en un mempool público, y los constructores de bloques las ordenan para maximizar sus ingresos. Cómo las comisiones de prioridad convirtieron la ordenación de transacciones en una subasta viva y competitiva: la subasta de gas por prioridad."
+topic: "es/mev-and-ordering"
+order: 2
+minutes: 9
+updated: 2026-06-05
+---
+
+import { Callout, MCQ, Quiz, FillBlank, MindMap, MempoolFeeMarket, MevOrderingAuction } from '@/components/react';
+
+La lección 1 os contó *qué* es el MEV: el valor que un productor de bloques puede extraer eligiendo el orden en que aterrizan las transacciones. Esta lección trata sobre la maquinaria que hace posible esa extracción, y que la convierte en una subasta viva que quema dinero. Dos preguntas responden casi todo: **¿dónde esperan las transacciones pendientes?** y **¿quién decide su orden, y cómo lo decide?**
+
+La respuesta a la primera es el **mempool**. La respuesta a la segunda es *quienquiera que puje más alto*, porque, resulta que, el derecho a ordenar transacciones es un producto, y existe un mercado abierto para él.
+
+Una comprobación rápida del instinto antes de abrir el capó.
+
+<MCQ
+  client:visible
+  pretest
+  question="Cuando difundes un swap a Ethereum pero todavía no se ha minado, ¿dónde vive y quién puede verlo?"
+  options={[
+    { text: "En el mempool público, visible para cualquiera que ejecute un nodo", correct: true },
+    { text: 'Cifrado en la máquina del proponente hasta que el bloque se sella' },
+    { text: 'En una cola privada que solo tu proveedor de cartera puede leer' },
+    { text: 'Ya está en un bloque: difundir y minar son el mismo paso' },
+  ]}
+  explanation="Una transacción difundida pero no confirmada se sienta en el mempool público, que se propaga peer-to-peer por toda la red. Cualquiera que ejecute un nodo la ve en texto plano: comisiones, calldata, contrato objetivo, todo. Esa visibilidad es la materia prima del MEV: los buscadores leen tu swap pendiente y reaccionan a él antes de que se confirme."
+/>
+
+## El mempool: una sala de espera transparente
+
+**Analogía.** Imagina un restaurante donde cada comanda se clava en una enorme pared de cristal en el instante en que el cliente la hace, antes de que la cocina haya cocinado nada. Cualquier transeúnte puede leer cada comanda: quién pidió qué, y qué propina prometió. La cocina acabará cocinando algunas, en el orden que le apetezca. El mempool es esa pared de cristal. Es una **lista de tareas pública que cualquiera puede leer**, y el cocinado aún no ha empezado.
+
+**Definición.** El **mempool** (memory pool, o pila de memoria) es el conjunto de transacciones que se han **difundido a la red pero todavía no se han incluido en un bloque**. Cuando tu cartera firma y envía una transacción, no va directa a un bloque: se propaga peer-to-peer de nodo en nodo, y cada nodo la guarda en una pila local de transacciones pendientes hasta que algún productor de bloques la recoge. El "mempool" es, a grandes rasgos, la unión de todas esas pilas locales: cada transacción anunciada pero todavía no confirmada.
+
+Tres propiedades lo convierten en la sala de máquinas del MEV:
+
+- **Es público.** Una transacción estándar en el mempool público está en texto plano. Su emisor, contrato objetivo, calldata (es decir, *qué* hace: en qué pool hace swap, cuánto, con qué slippage) y sus comisiones son legibles por cualquiera que ejecute un nodo. No hay privacidad por defecto.
+- **Se propaga con latencia.** Las transacciones no aparecen en todas partes a la vez; se propagan hacia fuera por la red peer-to-peer durante decenas o centenares de milisegundos. Estar bien conectado (ver las transacciones un instante antes que los rivales) es en sí mismo una ventaja.
+- **Su visibilidad es la materia prima del MEV.** Como un buscador puede *ver tu swap pendiente antes de que se ejecute*, puede construir una respuesta (un front-run, un back-run, un sándwich) e intentar que se ordene favorablemente alrededor de la tuya. Sin mempool público, no hay MEV fácil. (Quédate con esta idea; es toda la motivación de la historia del orderflow privado más adelante.)
+
+<Callout variant="warning" title="“Pendiente” no significa “privada”, y no significa “segura”.">
+Un error típico de principiante es tratar una transacción difundida como un mensaje privado al validador que la minará discretamente. Es lo contrario: en el instante en que la difundes, tu transacción es un **anuncio público** de intenciones, expuesto para que cualquiera lo lea y reaccione, y puede quedarse ahí durante muchos bloques si tu comisión es demasiado baja. Hasta que está *confirmada en un bloque*, nada de ella está zanjado, y todo el mundo ha tenido la oportunidad de operar en su contra.
+</Callout>
+
+### Cuándo importa
+
+La transparencia del mempool importa sobre todo en el instante en que envías cualquier cosa **explotable a simple vista**: un swap grande con slippage holgado, un arbitraje que has detectado, una liquidación que quieres reclamar. Al difundirla públicamente, has avisado a cada buscador de exactamente lo que vas a hacer, y les has entregado la ventana de tiempo para reaccionar. Ese único hecho es la razón por la que "dónde esperan las transacciones pendientes" no es un detalle aburrido de fontanería: es la puerta de entrada por la que pasa el MEV.
+
+## Cómo elige y ordena un constructor: maximizar los ingresos del bloque
+
+**Analogía.** La cocina que lee esa pared de cristal no cocina las comandas en el orden en que llegaron, ni siquiera estrictamente por tamaño de la propina. Cocina la secuencia que **le hace ganar más dinero a la cocina**, y a veces eso significa cocinar la comanda n.º 7 justo después de la n.º 3 porque hacerlo desbloquea un jugoso bonus de catering que solo se paga en esa secuencia exacta.
+
+**Definición.** Un **constructor de bloques** (la entidad que ensambla la lista ordenada de transacciones de un bloque) elige el contenido y el orden para **maximizar los ingresos totales del bloque**:
+
+> recompensa total del bloque = suma de las comisiones de prioridad (propinas) que recauda + MEV que captura al ordenar
+
+La heurística perezosa e ingenua es **"primero la comisión de prioridad más alta"**. Coge las transacciones que ofrecen las propinas más grandes, colócalas en orden descendente, listo. Eso captura las propinas, pero deja MEV sobre la mesa. Un constructor que maximiza beneficios, en cambio, **reordena** para que los bundles que extraen valor (un arbitraje que depende de ejecutarse justo después de un swap grande, una liquidación que debe ir primero) aterricen en los huecos exactos donde se pagan. Este es el puente directo desde la lección 1: reordenar el mismo conjunto de transacciones cambia quién cobra, y el constructor se embolsa la diferencia.
+
+**Ejemplo resuelto.** Cinco transacciones pendientes, cada una ofreciendo una propina, en gwei. Tres son transacciones de usuario corrientes; dos son bundles de buscadores que pagan un *soborno extra*, pero solo si el constructor los coloca en su hueco rentable:
+
+| Transacción | Propina (gwei) | Valor extra *si se coloca bien* (gwei) |
+|---|---|---|
+| Swap de Alice | 2 | 0 |
+| Bundle de bot de arbitraje | 5 | 28 (solo si va justo después de Alice) |
+| Bot de liquidación | 9 | 14 (solo si va primero) |
+| Acuñación de NFT | 3 | 0 |
+| Swap de Bob | 4 | 0 |
+
+**Ordenación solo por propina (la comisión más alta primero):** el constructor ordena por propina (Liquidación (9), Arbitraje (5), Bob (4), NFT (3), Alice (2)) y recauda solo las propinas:
+
+$$9 + 5 + 4 + 3 + 2 = 23 \text{ gwei}$$
+
+El valor extra de los dos bundles nunca se paga, porque ninguno se sienta en su hueco requerido (el bundle de arbitraje necesita ir justo después de Alice; aquí está dos filas por encima de ella).
+
+**Reordenación óptima para el constructor:** el constructor coloca cada extractor en su posición rentable (la liquidación primero, el bundle de arbitraje inmediatamente después de Alice), de modo que *ambos* pagos extra se disparan. Ahora los ingresos son las propinas **más** el valor capturado:
+
+$$\underbrace{23}_{\text{propinas}} + \underbrace{28 + 14}_{\text{MEV capturado}} = 65 \text{ gwei}$$
+
+Las mismas cinco transacciones, las mismas propinas, casi el triple de ingresos, puramente por el *orden*. Alterna entre las ordenaciones de abajo y observa cómo salta el número principal.
+
+<MevOrderingAuction
+  client:visible
+  title="El mismo bloque, tres ordenaciones: solo el orden cambia quién cobra"
+  transactions={[
+    { key: 'alice', label: 'Swap de Alice', tip: 2, positionHint: 'Objetivo de front-running' },
+    { key: 'arb', label: 'Bundle de bot de arbitraje', tip: 5, extractable: 28, positionHint: 'Debe ejecutarse justo después de Alice' },
+    { key: 'liq', label: 'Bot de liquidación', tip: 9, extractable: 14, positionHint: 'Gana el colateral si va primero' },
+    { key: 'nft', label: 'Acuñación de NFT', tip: 3 },
+    { key: 'bob', label: 'Swap de Bob', tip: 4 },
+  ]}
+  byFeeLabel="Por comisión de prioridad"
+  builderOptimalLabel="Óptima para el constructor (máximo extraíble)"
+  fifoLabel="FIFO / justa"
+  orderingGroupLabel="Ordenación de transacciones"
+  tipsCapturedLabel="Propinas capturadas"
+  mevCapturedLabel="MEV extra capturado"
+  totalCapturedLabel="Valor total capturado"
+  tipColumnLabel="Propina"
+  extractedHereLabel="valor extraído aquí"
+  feeUnit="gwei"
+  caption="Las propinas son idénticas en cada ordenación. Pero la disposición óptima para el constructor coloca los bundles de los buscadores en las posiciones exactas donde su valor extra se paga, así que los ingresos totales del bloque se disparan. El derecho a elegir ese orden es precisamente lo que vende la subasta de comisiones."
+/>
+
+<MCQ
+  client:visible
+  question="Usando la tabla de cinco transacciones de arriba (propinas 9, 5, 4, 3, 2; extraíble 28 y 14 si se colocan bien), ¿cuánto más gana la ordenación óptima para el constructor que la ordenación ingenua de propina-más-alta-primero?"
+  options={[
+    { text: '42 gwei', correct: true },
+    { text: '23 gwei' },
+    { text: '65 gwei' },
+    { text: '14 gwei' },
+  ]}
+  explanation="Propina-primero gana solo las propinas: 9+5+4+3+2 = 23. La óptima para el constructor gana 23 + 28 + 14 = 65. La diferencia es el MEV capturado: 65 − 23 = 28 + 14 = 42 gwei. Las propinas son comunes a ambas ordenaciones, así que toda la brecha es el valor extraíble que la reordenación desbloquea."
+/>
+
+### Cuándo importa
+
+Esto importa cada vez que el valor de una oportunidad **depende de la adyacencia**: front-runs, back-runs, sándwiches, liquidaciones que deben ganar a los rivales en la carrera por el colateral. Para una transacción independiente del orden (una transferencia corriente), propina-primero y óptima-para-el-constructor coinciden y la distinción es académica. En el momento en que el pago de un bundle es *posicional*, el poder de reordenación del constructor se convierte en dinero real, y un constructor que solo ordena por propina deja ingresos sin recaudar.
+
+## Gas y comisiones en el contexto del MEV: la propina es tu palanca
+
+**Analogía.** Dividir la cuenta en aquel restaurante: parte de lo que pagas es un cargo de servicio obligatorio que el restaurante debe *destruir* (no se lo queda; piénsalo como legalmente quemado), y parte es una **propina que entregas directamente al chef**. Solo la propina influye en si el chef adelanta tu comanda en la cola. Subir el cargo de servicio quemado no hace nada por tu posición; subir la propina es como compras tu avance.
+
+**Definición (repaso de EIP-1559, enmarcado para el MEV).** La comisión de cada transacción de Ethereum se divide en dos partes:
+
+- **Comisión base (base fee)**: un precio por unidad de gas que el protocolo fija algorítmicamente según lo llenos que estén los bloques recientes. Se **quema** (se retira de la circulación), así que el proponente no recibe nada de ella. Como el proponente no gana nada de ella, la comisión base **no es una palanca para la ordenación**: cada transacción de un bloque dado paga la misma comisión base por unidad de gas.
+- **Comisión de prioridad (la propina)**: un precio por unidad de gas que *añades por encima*, y que va **al proponente**. Esta es la parte que el productor de bloques realmente se embolsa, así que **esta es la palanca que accionas para comprar una mejor colocación.** Mayor propina, mejor posición esperada.
+
+La comisión total de una transacción es:
+
+$$\text{comisión total} = (\text{comisión base} + \text{comisión de prioridad}) \times \text{gas usado}$$
+
+**Ejemplo resuelto.** Un swap usa **150 000 de gas**. La comisión base actual es de **20 gwei** por unidad de gas, y fijas una comisión de prioridad de **3 gwei** por unidad de gas. Entonces:
+
+- Quemado (a nadie): $20 \times 150{,}000 = 3{,}000{,}000$ gwei $= 0.003$ ETH.
+- Propina (al proponente): $3 \times 150{,}000 = 450{,}000$ gwei $= 0.00045$ ETH.
+- Total que pagas: $(20 + 3) \times 150{,}000 = 3{,}450{,}000$ gwei $= 0.00345$ ETH.
+
+De todo lo que pagaste, **solo la propina de 0.00045 ETH influye en la ordenación**: esa es la parte que el proponente se queda y la parte que hace que le merezca la pena colocarte por delante de alguien que da menos propina. Si quisieras superar la puja de un rival por el mismo hueco, subirías la *comisión de prioridad*, no la comisión base (que de todas formas no controlas).
+
+<FillBlank
+  client:visible
+  question="Completa la aritmética de comisiones y la lógica de ordenación."
+  text="Una transacción usa 100 000 de gas con una comisión base de {{20|3|150}} gwei y una comisión de prioridad de {{3|20|0}} gwei. La comisión total es (base + prioridad) × gas = {{2,300,000|2,000,000|300,000}} gwei. De eso, la comisión {{base|prioridad}} se quema y la comisión {{prioridad|base}} —que aquí vale 300 000 gwei— va al proponente, que es la razón por la que es la parte que influye en {{la ordenación|el uso de gas|el tamaño del bloque}}."
+  explanation="(20 + 3) × 100,000 = 2,300,000 gwei en total. La comisión base (20 × 100,000 = 2,000,000) se quema; la comisión de prioridad (3 × 100,000 = 300,000) va al proponente. Como solo la propina llega al proponente, solo la propina es la palanca para comprar una mejor ordenación."
+/>
+
+El deslizador de abajo hace tangible la palanca: un bloque tiene espacio limitado, el productor coge primero las transacciones con la propina más alta, y tu transacción solo se confirma si tu propina supera a suficientes rivales para que quepa. Arrastra tu comisión hacia arriba y observa cómo te saltas la cola.
+
+<MempoolFeeMarket
+  client:visible
+  title="Tu propina es la palanca: puja para saltarte la cola"
+  yourTxLabel="Tu transacción"
+  feeLabel="Tu comisión"
+  lowLabel="Baja"
+  highLabel="Alta"
+  produceBlockLabel="Producir el siguiente bloque"
+  resetLabel="Reiniciar el mempool"
+  includedLabel="Tu transacción entró en el bloque."
+  waitingLabel="Tu comisión fue demasiado baja: sigues esperando en el mempool."
+  mempoolLabel="Mempool (esperando a confirmar)"
+  blockLabel="Siguiente bloque (espacio limitado)"
+  caption="El bloque tiene huecos limitados, así que el productor los llena primero con las transacciones de propina más alta. La comisión base es igual para todos y se quema: nunca cambia tu posición. Sube tu comisión de prioridad (propina) y escalas por delante de los que pujan menos hasta entrar en el bloque; puja demasiado bajo y los que dan más propina lo llenan antes que tú."
+/>
+
+### Cuándo importa
+
+El enfoque de la propina-como-palanca importa siempre que los bloques están **congestionados**: cuando hay más transacciones que quieren entrar de las que caben. En un bloque tranquilo con espacio vacío, una propina casi nula se confirma sin problema; la ordenación apenas se disputa. Pero en el instante en que la demanda de espacio de bloque supera la oferta —y especialmente cuando hay en juego una *oportunidad concreta y sensible al tiempo*— la propina se convierte en una puja en una subasta real, y ahí es donde entra la siguiente idea.
+
+## Subastas de gas por prioridad: pujar hasta esfumar el beneficio
+
+**Analogía.** Dos chatarreros ven la misma antigüedad de \$100 en un mercadillo, ambos desesperados por comprarla antes que el otro. Se pujan el uno al otro —\$40, \$60, \$80, \$95— hasta que quien gana paga \$95 por un artículo de \$100, sacando unos miserables \$5, mientras que el *vendedor* se embolsa casi los \$100 enteros. Compitieron hasta esfumar el beneficio. Sustituye "chatarreros" por "bots buscadores de MEV", "la antigüedad" por "un arbitraje on-chain" y "la puja" por "la comisión de prioridad", y tienes una **subasta de gas por prioridad**.
+
+**Definición.** Una **subasta de gas por prioridad (PGA, priority gas auction)** es lo que ocurre cuando varios bots compiten por la *misma* oportunidad de MEV pujando repetidamente al alza sus **comisiones de prioridad**, en una carrera por ser el que el constructor coloca en el hueco rentable. Como solo el mejor postor captura la oportunidad, cada bot sigue subiendo su propina —una subasta abierta y en escalada— hasta que la propina se aproxima al valor mismo de la oportunidad.
+
+**Causa → efecto.** Cuanto más evidente y disputada es una oportunidad, más bots se apuntan, y más se **esfuma el beneficio en comisiones que van al proponente**:
+
+- Un bot, sin competencia → captura casi toda la oportunidad, pagando solo una propina minúscula.
+- Muchos bots, competencia feroz → la propina ganadora se puja al alza hacia el valor total de la oportunidad, y el *proponente* (que se embolsa las propinas) captura la mayor parte. La ventaja neta del buscador se desploma hacia cero.
+
+**Ejemplo resuelto.** Supón que un arbitraje recién visible vale **0.5 ETH** para quien lo consiga. Con un único buscador y sin rival, ese bot podría dar de propina **0.01 ETH** y sacar neto $0.5 - 0.01 = 0.49$ ETH. Ahora conviértelo en una PGA abarrotada: tres bots se pujan al alza —0.2, luego 0.35, luego 0.47 ETH— y el ganador da de propina **0.47 ETH** para asegurarse el hueco. Su ventaja neta es ahora $0.5 - 0.47 = 0.03$ ETH, mientras que el **proponente recauda 0.47 ETH en comisiones de prioridad**, aproximadamente el 94 % de la oportunidad, entregado puramente porque la subasta fue competitiva. El *valor* de la oportunidad no cambió; la competencia simplemente redistribuyó casi todo del buscador al validador.
+
+<MCQ
+  client:visible
+  question="Dos bots buscadores descubren el mismo arbitraje de 0.5 ETH y entran en una subasta de gas por prioridad, pujándose al alza hasta que el ganador da de propina 0.46 ETH. ¿Quién acaba con la parte del león de esos 0.5 ETH, y por qué? (Detecta la trampa.)"
+  options={[
+    { text: 'El proponente, porque las propinas en competencia se pujaron al alza hasta casi el valor total de la oportunidad y el proponente se embolsa las propinas', correct: true },
+    { text: 'El buscador ganador, porque ganar la subasta significa capturar el MEV' },
+    { text: 'Ambos buscadores se lo reparten a partes iguales, ya que compitieron por igual' },
+    { text: 'Nadie: la comisión base quemó toda la oportunidad' },
+  ]}
+  explanation="La trampa es suponer que el *ganador* de la subasta se queda el premio. En una PGA competitiva los buscadores pujan la propina al alza hacia el valor de la oportunidad, así que el ganador saca neto solo la rendija por encima de su puja (0.5 − 0.46 = 0.04 ETH) y el proponente se embolsa la propina de 0.46 ETH: la parte del león. El bot perdedor no se lleva nada. La comisión base no tiene relación; se quema en cualquier caso y no toca el MEV."
+/>
+
+Las PGA tienen un efecto secundario feo más allá de los márgenes raquíticos de los buscadores. Como los bots inundan el mempool público con pujas que escalan rápidamente y a menudo fallan, **congestionan la cadena**: empujan al alza la comisión base y atascan el espacio de bloque para los usuarios corrientes, que quedan atrapados en el fuego cruzado de una pelea de la que ni siquiera forman parte. Este dolor —público, derrochador y atascador de la cadena— es exactamente lo que **motivó el orderflow privado**: enrutar transacciones y pujas *alrededor* del mempool público directamente hacia un constructor, para que la subasta ocurra fuera de la cadena y en silencio. Ese es el corazón de la lección dentro de dos sobre separación proponente-constructor (PBS); por ahora, quédate con el anticipo: las PGA eran la subasta ruidosa y pública, y el ecosistema se movió para hacerla privada.
+
+## El order flow es el producto
+
+Da un paso atrás y nombra lo que realmente se compra y se vende. El proponente no vende realmente solo *espacio de bloque*: muchas cadenas tienen espacio de sobra. Lo escaso y valioso es el **derecho a decidir el orden**, porque ese derecho es lo que desbloquea el MEV. Cuando un buscador puja una comisión de prioridad, o enruta un bundle a un constructor, está **pagando por la ordenación**: por que su transacción aterrice en una posición concreta respecto a las demás.
+
+Ese replanteamiento es la tesis de todo este tema: **el order flow es el producto.** El mempool es donde el order flow se vuelve visible; la comisión de prioridad es como se pone precio al derecho a ordenar; la PGA es la forma pública y ruidosa de la subasta. Cada lección posterior —front-running, PBS, ordenación justa, mempools cifrados— es una respuesta distinta a la misma pregunta: *¿quién debería poder decidir el orden, y cómo debería venderse o restringirse ese derecho?*
+
+<MindMap
+  client:visible
+  title="El mempool y la subasta de ordenación: el panorama completo"
+  caption="Las transacciones pendientes esperan en un mempool público; los constructores las ordenan para maximizar ingresos; la comisión de prioridad pone precio al derecho a ordenar; la competencia (PGA) entrega la mayor parte del beneficio a los validadores."
+  root={{
+    label: 'Mempool y ordenación',
+    children: [
+      {
+        label: 'El mempool',
+        children: [
+          { label: 'Transacciones difundidas pero no confirmadas' },
+          { label: 'Público y en texto plano: cualquiera puede leerlo' },
+          { label: 'Se propaga peer-to-peer con latencia' },
+          { label: 'Visibilidad = materia prima del MEV' },
+        ],
+      },
+      {
+        label: 'Cómo ordenan los constructores',
+        children: [
+          { label: 'Maximizar recompensa total = propinas + MEV capturado' },
+          { label: 'Heurística ingenua: propina más alta primero' },
+          { label: 'Máximo beneficio: reordenar para colocar bundles' },
+          { label: 'Mismas txs, distinto orden, distintos ingresos' },
+        ],
+      },
+      {
+        label: 'Gas y comisiones',
+        children: [
+          { label: 'Comisión base: se quema, no es palanca' },
+          { label: 'Comisión de prioridad (propina): va al proponente' },
+          { label: 'La propina es la palanca para la colocación' },
+          { label: 'Total = (base + prioridad) × gas' },
+        ],
+      },
+      {
+        label: 'Subastas de gas por prioridad',
+        children: [
+          { label: 'Los bots pujan al alza por la misma oportunidad' },
+          { label: 'Más evidente → más beneficio esfumado' },
+          { label: 'El validador se embolsa casi todo el valor' },
+          { label: 'Congestiona la cadena → motivó el orderflow privado' },
+        ],
+      },
+      {
+        label: 'El order flow es el producto',
+        children: [
+          { label: 'Lo que se vende es el derecho a ordenar' },
+          { label: 'La comisión de prioridad pone precio a ese derecho' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Repaso: el mempool y la subasta de ordenación"
+  questions={[
+    {
+      question: '¿Qué describe mejor el mempool?',
+      options: [
+        { text: 'El conjunto de transacciones difundidas pero no confirmadas, visibles públicamente por toda la red', correct: true },
+        { text: 'La cola privada y cifrada de transacciones del proponente para minar' },
+        { text: 'La lista de transacciones ya finalizadas en el último bloque' },
+        { text: 'Un registro de direcciones de validadores elegibles para proponer bloques' },
+      ],
+      explanation: 'El mempool son las transacciones pendientes (anunciadas, todavía no minadas), propagadas peer-to-peer y legibles en texto plano por cualquiera que ejecute un nodo. Esa visibilidad pública es lo que facilita el MEV.',
+    },
+    {
+      question: 'Un constructor que maximiza beneficios NO ordena simplemente por la propina más alta primero porque:',
+      options: [
+        { text: 'Reordenar para colocar los bundles extractores de valor en sus posiciones rentables gana más que las propinas solas', correct: true },
+        { text: 'El protocolo prohíbe ordenar por propina' },
+        { text: 'Las propinas se queman, así que no cuentan hacia los ingresos' },
+        { text: 'Los constructores están obligados a usar el orden estricto de llegada (FIFO)' },
+      ],
+      explanation: 'Recompensa total = propinas + MEV capturado. Propina-primero captura solo las propinas; una reordenación óptima para el constructor captura además el MEV posicional colocando los bundles en sus huecos de pago, que es estrictamente más ingresos cuando hay oportunidades presentes.',
+    },
+    {
+      question: 'Una transacción usa 200 000 de gas con una comisión base de 15 gwei y una comisión de prioridad de 5 gwei. ¿Qué afirmación es correcta?',
+      options: [
+        { text: 'El proponente recibe 1 000 000 de gwei (la propina de 5 gwei × 200 000 de gas); la porción de 3 000 000 de gwei de la comisión base se quema', correct: true },
+        { text: 'El proponente recibe los 4 000 000 de gwei completos' },
+        { text: 'El proponente recibe 3 000 000 de gwei y la propina se quema' },
+        { text: 'No se quema nada; todas las comisiones van al proponente bajo EIP-1559' },
+      ],
+      explanation: 'Comisión de prioridad al proponente = 5 × 200 000 = 1 000 000 de gwei. Porción de la comisión base = 15 × 200 000 = 3 000 000 de gwei, que se quema. Solo la propina llega al proponente, y solo la propina es la palanca de la ordenación.',
+    },
+    {
+      question: 'En una subasta de gas por prioridad competitiva sobre una oportunidad evidente de 1 ETH, ¿qué tiende a pasar con ese 1 ETH de valor?',
+      options: [
+        { text: 'La mayor parte se esfuma hacia el proponente vía comisiones de prioridad pujadas al alza; el buscador ganador se queda solo un margen raquítico', correct: true },
+        { text: 'El buscador ganador se queda casi todo como beneficio puro' },
+        { text: 'Se reparte a partes iguales entre todos los bots que pujaron' },
+        { text: 'Se quema junto con la comisión base' },
+      ],
+      explanation: 'Cuanto más evidente es la oportunidad, con más fuerza pujan al alza los bots sus propinas, empujando la propina ganadora hacia el valor de la oportunidad. El proponente se embolsa esa propina —casi todo el 1 ETH— mientras que el buscador saca neto solo la rendija por encima de su puja.',
+    },
+    {
+      question: '¿A qué apunta la tesis central "el order flow es el producto"?',
+      options: [
+        { text: 'Lo escaso y valioso que se subasta es el derecho a decidir el orden de las transacciones, ya que la ordenación es lo que desbloquea el MEV', correct: true },
+        { text: 'Vender datos de usuario del mempool es el principal modelo de negocio de los validadores' },
+        { text: 'El espacio de bloque es infinito, así que solo los datos de la transacción en sí tienen valor' },
+        { text: 'Los proponentes venden bloques finalizados a los buscadores a posteriori' },
+      ],
+      explanation: 'Lo que realmente está en venta es el derecho a ordenar. Las comisiones de prioridad ponen precio a ese derecho; las PGA son su subasta pública y ruidosa. Cada tema posterior es una respuesta distinta a quién debería tener ese derecho y cómo debería venderse o restringirse.',
+    },
+  ]}
+/>
+
+Hasta ahora la subasta ha sido **pública y honesta sobre lo que vende**: propinas pujadas a la vista en el mempool para una mejor colocación. Pero todavía no hemos mirado lo más afilado que un constructor puede *hacer* con una transacción recién visible. La siguiente lección, **front-running y back-running**, hace zoom sobre los dos movimientos primitivos del MEV: saltar *por delante* de tu transacción para aprovechar el precio que estás a punto de mover, y colarse *justo detrás* de ella para limpiar lo que queda; las dos mitades que, en sándwich, componen el ataque que aprenderás a reconocer a simple vista.

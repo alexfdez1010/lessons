@@ -1,0 +1,309 @@
+---
+title: "Front-Running & Back-Running"
+description: "The two primitive ordering attacks: slipping a transaction in just before a victim to act on their pending move, or just after to capture the price change it causes. Displacement, insertion, and suppression attacks."
+topic: "en/mev-and-ordering"
+order: 3
+minutes: 9
+updated: 2026-06-05
+---
+
+import { Callout, MCQ, Quiz, FillBlank, MatchConcepts, MindMap, BlockOrderTimeline } from '@/components/react';
+
+Every block is, at heart, an *ordered list*. Once you internalize that — that a block isn't a bag of transactions but a strictly sequenced queue, executed top to bottom, with the previous transaction's effects fully baked in before the next one runs — MEV stops looking mysterious. It becomes obvious. If you can choose *where* your transaction lands relative to someone else's, and you can *see their transaction before it executes*, then you can act on information they've already revealed but not yet realized. That's the whole trick.
+
+This lesson covers the two primitive ordering moves — **front-running** (jump in *before* the victim) and **back-running** (slot in *after*) — plus the formal taxonomy that every later attack is built from. Sandwiches, JIT liquidity, oracle sniping: all of them are just front-runs and back-runs wearing fancier clothes.
+
+<MCQ
+  client:visible
+  pretest
+  question="A front-running attack, in the on-chain MEV sense, is best described as:"
+  options={[
+    { text: 'Placing your transaction immediately before a victim’s pending transaction to act on the information it reveals', correct: true },
+    { text: 'Placing your transaction immediately after a victim’s to capture the state change it caused' },
+    { text: 'Bribing a validator to exclude a competitor’s transaction from the block entirely' },
+    { text: 'Submitting the same transaction twice to double your fees' },
+  ]}
+  explanation="Front-running = get in front of the victim and exploit what their pending transaction tells you (e.g. a large buy you can buy ahead of). Slotting in after them is back-running; excluding a rival is suppression/censorship. We'll define all three precisely below."
+/>
+
+## Front-running: jump the queue, act on the leak
+
+**Analogy.** Picture a stockbroker who receives a huge client order — "buy 500,000 shares of Acme." The broker knows that order, once it hits the market, will push Acme's price up. So before filling the client, the broker quietly buys Acme for their *own* account, lets the client's order shove the price higher, and pockets the difference. In traditional finance this is the textbook crime of **front-running**, and it's illegal precisely because it requires *privileged access* — you have to be the insider who sees the order flow.
+
+On a public blockchain, that privilege is *abolished*. The pending-transaction pool — the **mempool** — is broadcast to everyone. Anyone running a node sees the victim's transaction the instant it's announced, long before it's mined. There's no insider, because everyone is an insider.
+
+**Definition.** **Front-running** is the act of placing your transaction so that it executes *immediately before* a target ("victim") transaction, in order to profit from information that the victim's pending transaction reveals. You're not stealing their transaction — you're racing to act on its *consequences* before they do, by occupying an earlier slot in the block.
+
+**Worked example.** You watch the mempool and spot a pending swap: a trader is about to market-buy a large amount of a token on a Uniswap-style constant-product AMM. You know that a big buy walks *up* the bonding curve, so the post-trade price will be meaningfully higher than the current one. Concretely:
+
+1. You submit your *own* buy of the same token, with a higher priority fee so it's ordered **before** the victim's swap. You fill at the current, lower price.
+2. The victim's large buy executes next, pushing the price up — exactly as predicted.
+3. You're now sitting on tokens you bought cheaply, just before a price-moving trade you *knew was coming*.
+
+You captured value that was, in effect, leaked by the victim broadcasting their intent into a public pool. The victim, meanwhile, fills at a slightly worse price than they would have, because your buy nudged the curve before theirs landed.
+
+<Callout variant="warning" title="Front-running isn't “fast trading” — it's information-conditioned ordering">
+A common misconception is that front-running just means "submitting transactions quickly." Speed alone isn't the attack. The defining feature is that you act *conditionally on a specific pending transaction you've observed* — your move only makes sense *because* you saw the victim's. A bot blasting random fast buys isn't front-running anyone; a bot that buys *only when it sees a large pending buy it can get ahead of* is. The leak, not the latency, is the heart of it.
+</Callout>
+
+<MCQ
+  client:visible
+  question="Why is on-chain front-running fundamentally easier to perform than the classic TradFi version?"
+  options={[
+    { text: 'The mempool is public, so anyone can see pending transactions — no privileged access is required', correct: true },
+    { text: 'Blockchains have no transaction ordering, so anyone can rewrite history' },
+    { text: 'Smart contracts execute randomly, so attackers can guess the outcome' },
+    { text: 'Gas fees are too low for victims to defend themselves' },
+  ]}
+  explanation="TradFi front-running needs an insider who can see order flow. On-chain, the pending-transaction pool is broadcast to every node, so the 'privileged view' is available to all. Blockchains absolutely do order transactions — deterministically — which is exactly what makes ordering attacks possible."
+/>
+
+## Back-running: ride the wake the trade leaves behind
+
+**Analogy.** Front-running is cutting in line ahead of someone; back-running is standing *right behind* them to scoop up whatever they drop. When a big ship passes, it leaves a wake — and a clever surfer doesn't fight the ship, they ride the wake it creates. Back-running profits from the *aftermath* of the victim's transaction, not from getting ahead of it.
+
+**Definition.** **Back-running** is placing your transaction so it executes *immediately after* a target transaction, in order to capture a state change that the target *creates*. You're not competing for the victim's price — you're harvesting the new opportunity their transaction opens up.
+
+The classic back-run is **arbitrage**. A large swap on one AMM pushes that pool's price away from the rest of the market. The instant the swap lands, there's a price discrepancy between that pool and others — free money for whoever trades it back into line first. A back-runner slots in directly after the big swap and captures that arbitrage. Other back-run targets:
+
+- Being **first to act on a fresh oracle update** (e.g. a new price feed enables a profitable liquidation).
+- Being **first into a newly created pool or a newly funded contract** (sniping the initial state).
+- Capturing the rebalancing opportunity a large deposit or withdrawal creates.
+
+**Worked example.** A whale market-sells a token into a constant-product pool, crashing that pool's price 4% below every other venue. You back-run them:
+
+1. Your transaction is ordered *immediately after* the whale's sell.
+2. You buy the now-underpriced token from that depleted pool and simultaneously sell it on another venue still at the old price.
+3. You pocket roughly the spread the whale's trade just opened — a near-risk-free arbitrage that existed for exactly one transaction slot.
+
+**Generally gentler on the victim.** Back-running usually *doesn't worsen the victim's fill* — you act after their trade is already settled, so you don't move the price against them the way a front-run does. The arbitrage you capture is value the AMM's pricing inefficiency created, not value extracted directly from the victim's pocket. That's why back-running is often considered the more "benign" cousin: the whale already got their (bad) price; you're just cleaning up the mess afterward. Front-running, by contrast, *directly degrades* the victim's execution.
+
+<FillBlank
+  client:visible
+  question="Place each attack on the right side of the victim."
+  text="To act on the information a pending trade *reveals*, an attacker {{front-runs|back-runs}} it by landing just {{before|after}} the victim. To capture the arbitrage a large trade *creates*, an attacker {{back-runs|front-runs}} it, landing just {{after|before}} the victim — a move that is generally {{less|more}} harmful to the victim."
+  explanation="Front-running = before the victim, exploiting the leaked intent and worsening their fill. Back-running = after the victim, harvesting the state change (often arbitrage) the trade created — generally less harmful, since the victim's price is already locked in."
+/>
+
+## The position is the attack: see it in the block
+
+A block is just an ordered list, and the attacker's only real decision is *which slot to stand in* relative to the victim. Put one transaction above the victim and you're front-running; below, and you're back-running; both, and you've built a sandwich (next lesson). Use the controls below to drop the attacker's transaction into each position and watch what that buys them.
+
+<BlockOrderTimeline
+  client:visible
+  title="Where the attacker stands relative to the victim"
+  victimLabel="Victim swap"
+  attackerLabel="Attacker tx"
+  otherTxLabels={["Unrelated tx", "Unrelated tx", "Unrelated tx", "Unrelated tx"]}
+  attackerBeforeLabel="Buy before"
+  attackerAfterLabel="Arb after"
+  caption="Front-run = one slot above (act on the leaked intent, worsen the victim's fill). Back-run = one slot below (capture the arbitrage the trade just opened). Sandwich = both at once — the subject of the next lesson. The attack is entirely a choice of position in the ordered list."
+/>
+
+<MCQ
+  client:visible
+  question="A trader's large pending swap will crash a pool's price below the rest of the market. A bot wants to capture the arbitrage that swap will create, without worsening the trader's fill. The bot should:"
+  options={[
+    { text: 'Back-run: place its arbitrage transaction immediately after the victim’s swap', correct: true },
+    { text: 'Front-run: place its buy immediately before the victim’s swap' },
+    { text: 'Sandwich: place transactions both before and after the victim' },
+    { text: 'Suppress the victim’s transaction so it never executes' },
+  ]}
+  explanation="The arbitrage only exists *after* the swap moves the price, and capturing it doesn't touch the victim's already-settled fill — that's a textbook back-run. Front-running here would move the price against the victim. Sandwiching adds an unnecessary (and victim-harming) leg; suppression doesn't capture the arb at all."
+/>
+
+## A taxonomy of ordering attacks
+
+In 2019 a foundational paper ("Flash Boys 2.0") gave the field a clean vocabulary. Every ordering attack falls into one of three buckets, defined by what your transaction *does to the victim's*:
+
+### Displacement
+
+A **displacement** attack makes the victim's transaction *fail, revert, or become irrelevant* — you grab the opportunity they were going for, and theirs no longer does anything useful. You don't need the victim's transaction to succeed; you just need to get there first.
+
+- **Example.** A profitable bug-bounty claim, an airdrop allocation, a one-shot arbitrage, or a liquidation that only one transaction can win. You see the victim's pending claim, copy it, pay a higher priority fee, and land first. You collect the reward; the victim's transaction now reverts or no-ops because the opportunity is already gone.
+- **Key trait.** The victim's transaction is *displaced* — its success was mutually exclusive with yours, and you won the race.
+
+### Insertion
+
+An **insertion** attack wraps the victim: you place a transaction *before* and another *after* them — front-run plus back-run combined — so the victim executes squeezed in the middle. The canonical insertion attack is the **sandwich**, where you buy ahead of the victim's buy to inflate the price, let them fill at the inflated price, then sell right after. Both your transactions need the victim's to succeed (it's the filling in your sandwich). We give insertion its own full lesson next, with the exact math.
+
+### Suppression (censorship)
+
+A **suppression** attack *delays or excludes* the victim's transaction — keeping it out of the block, or pushing it to a later block. You don't reorder around it; you make sure it doesn't run *now*.
+
+- **Example.** Stalling a competitor's liquidation or oracle update long enough for your own to win, or censoring transactions so a time-sensitive opportunity stays open for you. Historically this was sometimes done by spamming the chain to crowd out the target; with modern block-building it can mean a builder simply choosing to omit a transaction.
+- **Key trait.** The attack is about *absence* — the victim's transaction is suppressed rather than surrounded.
+
+<Callout variant="warning" title="Displacement ≠ front-running, even though both put you 'before' the victim">
+It's tempting to lump displacement in with front-running since both involve landing ahead of the victim. The distinction is what happens to the victim's transaction. In a classic front-run, the victim's transaction *still executes* — you just profit from having gone first (you bought ahead of their buy; they still fill, only worse). In a displacement, the victim's transaction *becomes worthless* — you took the one-shot prize, so theirs reverts or no-ops. Front-running coexists with the victim; displacement annihilates their transaction's purpose.
+</Callout>
+
+<MatchConcepts
+  client:visible
+  question="Match each ordering attack to its precise definition."
+  pairs={[
+    { term: 'Front-running', definition: 'Land just before the victim to act on the information their pending transaction reveals, while their tx still executes' },
+    { term: 'Back-running', definition: 'Land just after the victim to capture a state change (e.g. arbitrage) their transaction creates' },
+    { term: 'Displacement', definition: 'Grab a one-shot opportunity first so the victim’s transaction reverts or becomes a no-op' },
+    { term: 'Insertion', definition: 'Wrap the victim with a transaction both before and after — the sandwich pattern' },
+    { term: 'Suppression', definition: 'Delay or exclude the victim’s transaction so it doesn’t execute now' },
+  ]}
+  explanation="Front-run = before, victim still runs. Back-run = after, harvest the wake. Displacement = before, victim's tx dies. Insertion = both sides (sandwich). Suppression = absence — the victim's tx is censored or delayed rather than surrounded."
+/>
+
+## Why this is uniquely a blockchain problem
+
+Ordering attacks aren't new ideas — TradFi has fought front-running for a century. What's new is that blockchains make them *permissionless* and *programmable*. Three properties combine into a perfect storm:
+
+1. **Public mempool.** Pending transactions are broadcast to every node before they're mined. The "privileged view of order flow" that a TradFi front-runner needs an insider seat for is, on-chain, simply *the default* — anyone can read it.
+2. **Permissionless block construction.** Anyone can pay to influence ordering. By bidding a higher priority fee (and, in the modern stack, by submitting bundles to block builders), an ordinary participant can buy a chosen position in the block. There's no exchange compliance desk to stop you.
+3. **Deterministic execution.** The EVM runs transactions in a fixed sequence with each one's effects fully applied before the next. So an attacker can *simulate* the exact outcome of "my tx, then the victim's" off-chain and know precisely what they'll earn before committing. The profit isn't a gamble; it's computed.
+
+**Contrast with TradFi.** There, front-running is *illegal*, *prosecutable*, and requires *privileged access* (you must be a broker or insider who can see the flow). On-chain, the same act is *permissionless* (no special access), *pseudonymous* (hard to attribute), and not obviously illegal (it's "just" paying for block position). The mechanism that makes the chain transparent and trustless is the very same one that hands attackers a free seat at the order-flow table.
+
+<MCQ
+  client:visible
+  question="Which combination of properties is what makes ordering attacks broadly available on a public chain, rather than restricted to privileged insiders?"
+  options={[
+    { text: 'A public mempool, permissionless influence over ordering, and deterministic execution that lets attackers simulate profit in advance', correct: true },
+    { text: 'High gas fees, slow block times, and anonymous validators' },
+    { text: 'Random transaction ordering and unpredictable execution outcomes' },
+    { text: 'A private mempool, regulated block builders, and probabilistic execution' },
+  ]}
+  explanation="The trio is: everyone sees pending txs (public mempool), anyone can pay to influence position (permissionless construction), and outcomes are exactly computable beforehand (deterministic execution). Random or unpredictable execution would *prevent* the attack — the attacker relies on knowing the result in advance."
+/>
+
+## Generalized front-runners: bots that don't even read the code
+
+You might assume a front-runner needs to understand *what* the victim's transaction does — recognize a swap, decode a claim, parse the calldata. The unsettling reality is that they don't. **Generalized front-runners** (sometimes "generalized frontrunning bots") work *blindly*: they pull pending transactions from the mempool, **simulate** each one against current state, and check whether simply *copying it* — swapping in their own address — would net them a profit. If the simulation shows a gain, the bot replays the transaction for itself with a higher priority fee so it lands first.
+
+The bot has no idea it's claiming an airdrop, harvesting a reward, or sniping an arbitrage — it only knows the simulator returned "this is profitable if I run it." This is why even a brand-new, obscure contract can be front-run within seconds of an exploitable transaction appearing: the attacker doesn't need to understand your protocol, only to notice that your pending transaction makes money and to steal it by going first. It's a pure cause-and-effect machine: *see profit → copy → outbid → win*.
+
+<MCQ
+  client:visible
+  question="A generalized front-running bot identifies which pending transactions to copy by:"
+  options={[
+    { text: 'Simulating each pending transaction against current state and copying any that would be profitable for itself', correct: true },
+    { text: 'Manually decoding each contract’s source to understand its business logic' },
+    { text: 'Waiting for the victim’s transaction to confirm, then submitting a refund request' },
+    { text: 'Only targeting transactions on contracts it was specifically programmed to recognize' },
+  ]}
+  explanation="The 'generalized' part means it doesn't understand the contract at all. It blindly simulates pending txs, and if copying one (with its own address swapped in) shows a profit, it replays that tx with a higher fee to land first — no protocol-specific knowledge required."
+/>
+
+## Putting it together
+
+Strip away the jargon and ordering attacks reduce to a single insight: a block is an ordered list, and choosing your position in that list is a form of power. Stand **before** the victim to act on the intent they leaked into the public mempool — that's **front-running**, and it worsens their fill. Stand **after** them to harvest the arbitrage or state change their trade created — that's **back-running**, generally gentler on the victim. The formal taxonomy sorts every variant by what your transaction does to theirs: **displacement** (theirs dies), **insertion** (you wrap them — the sandwich), and **suppression** (theirs never runs). None of this requires insider access, because the public mempool, permissionless ordering, and deterministic execution hand the privileged seat to everyone — and generalized bots exploit it without even reading your code.
+
+<MindMap
+  client:visible
+  title="Front-running, back-running & the ordering taxonomy"
+  caption="A block is an ordered list; the attacker's only choice is where to stand relative to the victim — and the public, permissionless, deterministic chain hands that choice to everyone."
+  root={{
+    label: 'Ordering attacks',
+    children: [
+      {
+        label: 'Front-running',
+        children: [
+          { label: 'Land BEFORE the victim' },
+          { label: 'Act on leaked pending intent' },
+          { label: 'Worsens the victim’s fill' },
+          { label: 'Info-conditioned, not just fast' },
+        ],
+      },
+      {
+        label: 'Back-running',
+        children: [
+          { label: 'Land AFTER the victim' },
+          { label: 'Capture the arb / state change created' },
+          { label: 'Generally gentler on the victim' },
+          { label: 'Oracle / new-pool sniping too' },
+        ],
+      },
+      {
+        label: 'Taxonomy',
+        children: [
+          { label: 'Displacement: victim’s tx reverts / no-ops' },
+          { label: 'Insertion: wrap victim → sandwich' },
+          { label: 'Suppression: delay or exclude the tx' },
+        ],
+      },
+      {
+        label: 'Why on-chain only',
+        children: [
+          { label: 'Public mempool (no insider needed)' },
+          { label: 'Permissionless ordering (pay for position)' },
+          { label: 'Deterministic execution (simulate profit first)' },
+          { label: 'TradFi: illegal + privileged access' },
+        ],
+      },
+      {
+        label: 'Generalized front-runners',
+        children: [
+          { label: 'Simulate every pending tx' },
+          { label: 'Copy any that are profitable' },
+          { label: 'Outbid to land first — no code-reading' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Recap: front-running, back-running & the taxonomy"
+  questions={[
+    {
+      question: 'The defining feature of front-running (vs. merely fast trading) is that the attacker:',
+      options: [
+        { text: 'Acts conditionally on a specific pending transaction they observed, getting ahead of it', correct: true },
+        { text: 'Submits transactions with the lowest possible gas fee' },
+        { text: 'Waits several blocks before acting on the victim' },
+        { text: 'Only ever trades on contracts they personally deployed' },
+      ],
+      explanation: 'Front-running is information-conditioned: the move only makes sense because the attacker saw the victim’s pending tx and raced ahead of it. Raw speed without that conditioning isn’t front-running anyone.',
+    },
+    {
+      question: 'A whale’s large sell is about to crash a pool 4% below other venues. A bot lands immediately after it and buys the now-cheap token to arbitrage the gap. This is:',
+      options: [
+        { text: 'Back-running — capturing the arbitrage the whale’s trade created, without worsening the whale’s fill', correct: true },
+        { text: 'Front-running — the bot got ahead of the whale’s trade' },
+        { text: 'Suppression — the bot prevented the whale’s trade from executing' },
+        { text: 'Displacement — the whale’s transaction reverted' },
+      ],
+      explanation: 'The arbitrage only exists *after* the price moves, and the bot lands after the whale, so it’s a back-run. The whale’s (bad) fill is already locked in — back-running doesn’t worsen it.',
+    },
+    {
+      question: 'An attacker copies a victim’s pending one-shot airdrop claim, pays a higher fee, and lands first; the victim’s claim then reverts. This is an example of:',
+      options: [
+        { text: 'A displacement attack — the victim’s transaction is rendered worthless', correct: true },
+        { text: 'An insertion attack (a sandwich)' },
+        { text: 'A back-running attack' },
+        { text: 'A suppression attack' },
+      ],
+      explanation: 'The opportunity was mutually exclusive: the attacker grabbing it first makes the victim’s tx revert/no-op. That’s displacement. In a sandwich/insertion the victim’s tx must succeed; in suppression it’s excluded rather than beaten to the prize.',
+    },
+    {
+      question: 'Which property would, if it were true, make ordering attacks IMPOSSIBLE rather than easy?',
+      options: [
+        { text: 'Truly random, unpredictable transaction ordering and execution outcomes', correct: true },
+        { text: 'A fully public mempool visible to all nodes' },
+        { text: 'Permissionless ability to pay for block position' },
+        { text: 'Deterministic execution attackers can simulate in advance' },
+      ],
+      explanation: 'Attackers rely on knowing the result of a chosen ordering in advance. If ordering and outcomes were genuinely random and unpredictable, simulating profit would be impossible — the other three properties are exactly what *enable* the attacks.',
+    },
+    {
+      question: 'A generalized front-running bot can exploit a brand-new, obscure contract within seconds because it:',
+      options: [
+        { text: 'Blindly simulates pending transactions and copies any that are profitable, needing no knowledge of the contract', correct: true },
+        { text: 'Has pre-audited every contract on the chain in advance' },
+        { text: 'Forces the victim’s transaction to be excluded from the block' },
+        { text: 'Can only act on contracts it was hand-coded to recognize' },
+      ],
+      explanation: 'The whole point of *generalized* front-running is that the bot doesn’t understand the contract. It simulates each pending tx, and if copying one would profit, it replays it with a higher fee — protocol-agnostic, so even novel contracts are fair game.',
+    },
+  ]}
+/>
+
+Next up — **the sandwich attack** — we take the insertion pattern we just defined and pin down the exact math: how the front-run buy walks the constant-product curve, precisely how much worse the victim's fill becomes, how slippage tolerance sets the attacker's profit ceiling, and how to compute the optimal sandwich size. The two primitives you learned here — front-run plus back-run — are about to combine into the most infamous extraction in all of MEV.
