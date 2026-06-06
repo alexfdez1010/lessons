@@ -307,3 +307,18 @@ export type { FractionalKellyBarsProps } from '@/components/react/FractionalKell
 
 export { BetSizingPaths, default as BetSizingPathsDefault } from '@/components/react/BetSizingPaths';
 export type { BetSizingPathsProps } from '@/components/react/BetSizingPaths';
+
+export { PriorPosteriorChart, default as PriorPosteriorChartDefault } from '@/components/react/PriorPosteriorChart';
+export type { PriorPosteriorChartProps } from '@/components/react/PriorPosteriorChart';
+
+export { BayesGrid, default as BayesGridDefault } from '@/components/react/BayesGrid';
+export type { BayesGridProps } from '@/components/react/BayesGrid';
+
+export { BetaUpdateChart, default as BetaUpdateChartDefault } from '@/components/react/BetaUpdateChart';
+export type { BetaUpdateChartProps } from '@/components/react/BetaUpdateChart';
+
+export { ShrinkageEstimator, default as ShrinkageEstimatorDefault } from '@/components/react/ShrinkageEstimator';
+export type { ShrinkageEstimatorProps, ShrinkAsset } from '@/components/react/ShrinkageEstimator';
+
+export { McmcSampler, default as McmcSamplerDefault } from '@/components/react/McmcSampler';
+export type { McmcSamplerProps } from '@/components/react/McmcSampler';
