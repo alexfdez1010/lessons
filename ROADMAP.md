@@ -136,7 +136,7 @@ quantitative relationship. Build after the learner has `investment-metrics`,
 - [ ] **extreme-value-and-tails** — modeling the tail: fat tails vs Gaussian,
   power laws, Extreme Value Theory, expected shortfall beyond VaR, copulas &
   tail dependence, stress testing. _(deps: `value-at-risk`, `monte-carlo-finance`)_
-- [ ] **polymarket-prediction-markets** — betting on real-world outcomes:
+- [x] **polymarket-prediction-markets** _(2026-06-07)_ — betting on real-world outcomes:
   what a prediction market is, how Polymarket works end-to-end (USDC on Polygon,
   outcome share tokens that pay $1 if right / $0 if wrong), price = implied
   probability, the order book / CLOB & how shares are minted/merged from a

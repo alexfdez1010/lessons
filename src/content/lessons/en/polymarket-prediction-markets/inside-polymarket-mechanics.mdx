@@ -1,0 +1,343 @@
+---
+title: "Inside Polymarket: Shares, Sets & the Order Book"
+description: "How Polymarket actually works end to end — USDC collateral on Polygon, outcome tokens that come in complete $1 sets, minting and merging a YES/NO pair, the central limit order book (CLOB), and how spread, depth and slippage move your fill price."
+topic: "en/polymarket-prediction-markets"
+order: 2
+minutes: 10
+updated: 2026-06-07
+---
+
+import { MCQ, Quiz, Reveal, FillBlank, Categorize, MatchConcepts, MindMap, ShareMintMerge, PredictionOrderBook } from '@/components/react';
+
+Last lesson you learned the one idea that makes prediction markets click: a share's **price is the market's implied probability**, and a YES share is a coupon that pays exactly \$1 if the event happens and \$0 if it doesn't. Buy YES at 62¢ and you're saying "this is at least 62% likely" — and if you're right, you collect a dollar.
+
+Lovely. But *where does that dollar come from*, what exactly are you holding, and why does buying 5,000 shares cost you a worse price than buying 50? This lesson opens the hood. We'll follow a real dollar from your wallet, watch it split into a YES and a NO share, see how the **order book** matches you with a counterparty, and learn why **spread and slippage** — not the headline "zero fees" — are the real cost of trading size. By the end, the abstract "62% chance" will be a concrete pile of tokens with plumbing you can name.
+
+<MCQ
+  client:visible
+  pretest
+  question="On Polymarket, when you 'bet NO' on an event, what are you actually doing under the hood?"
+  options={[
+    { text: 'Buying NO shares — outcome tokens that pay $1 if the event does NOT happen', correct: true },
+    { text: 'Borrowing YES shares and short-selling them, the way you short a stock' },
+    { text: 'Placing a wager with the Polymarket company, which is your counterparty' },
+    { text: 'Depositing margin so the house can pay you if you win' },
+  ]}
+  explanation="Betting NO is just buying NO shares — a token that resolves to $1 if the event does not happen. There's no borrowing, no short-selling, and no house as counterparty: every market is funded by traders' own collateral, and you simply buy whichever outcome token you think is underpriced."
+/>
+
+## The plumbing — USDC dollars on Polygon
+
+**Analogy.** A casino runs on chips, not loose cash: you swap dollars for chips at the cage, play in chips, and cash out at the end. Polymarket runs on *digital* chips called **USDC** — but with a twist a casino would never allow: each chip is permanently, redeemably worth exactly one US dollar, and you keep them in your *own* pocket, not the house's vault.
+
+**Definition.** **USDC** is a **stablecoin** — a cryptocurrency engineered to always trade at \$1, backed by real dollars and short-term Treasuries held in reserve. Polymarket denominates everything in USDC so that "\$1 of collateral" really is one dollar, not a coin that might be worth \$1 today and 80¢ tomorrow. The market itself lives on **Polygon**, a **layer-2 / sidechain** built on top of Ethereum: it processes transactions for a tiny fraction of Ethereum's fees ("gas"), so placing or cancelling an order costs fractions of a cent instead of dollars. And it's **non-custodial** — your shares are tokens that sit in *your* wallet, controlled by *your* keys. Polymarket can't reach in and take them.
+
+**Worked example.** You want to trade. You move, say, \$200 of USDC into your wallet. Each of those 200 USDC is redeemable for one dollar — not "about a dollar," one dollar — because that's what makes the whole probability interpretation honest. When you later buy 100 YES shares at 62¢, you spend 62 USDC = \$62, and a Polygon transaction fee of perhaps a tenth of a cent rides along. Were this on Ethereum's main layer, that same trade might cost several dollars in gas alone — which is precisely why Polymarket chose a cheap layer-2.
+
+**Pitfall.** Don't confuse a *stablecoin* with a volatile cryptocurrency like Bitcoin or Ether. If markets were collateralized in ETH, a YES share priced at "62% chance" could swing in dollar value just because ETH moved — the probability reading would be polluted by crypto noise. The dollar peg is load-bearing: it's what lets price equal probability cleanly.
+
+### When it matters
+
+The plumbing usually fades into the background — until you're moving real size or trading fast. Then the **non-custodial** part matters (no exchange can freeze withdrawals of tokens you hold in your own wallet), and the **cheap gas** matters (a market-maker posting and cancelling hundreds of orders a day would be bankrupted by mainnet fees). The stablecoin peg matters *always*: it's the silent assumption behind every "this is 62% likely."
+
+## Outcome tokens & the complete set — the \$1 conservation law
+
+**Analogy.** Think of a raffle where there are only two tickets in existence for each draw: one stamped YES, one stamped NO. After the draw, *exactly one* ticket is a winner worth \$1 and the other is worthless. So the *pair* — one YES plus one NO — is always worth exactly \$1, no matter the odds, because between them they're guaranteed to hold the single winning ticket.
+
+**Definition.** A Polymarket market mints **outcome tokens** (also called *conditional tokens*): for a yes/no question, a YES token and a NO token. Together, 1 YES + 1 NO form a **complete set**, and a complete set is *always* redeemable for exactly \$1 at resolution, because exactly one of the two will pay \$1 and the other \$0. That gives the market's **conservation law**:
+
+$$P_{\text{YES}} + P_{\text{NO}} = 1.$$
+
+This is not a market convention or a rule someone enforces — it's structural. The two tokens are two halves of a guaranteed dollar.
+
+**Worked example.** Suppose YES trades at 62¢. The conservation law instantly pins NO at \$1 − 0.62 = **38¢**. If you ever saw YES at 62¢ *and* NO at 40¢ (summing to \$1.02), you could buy a complete set for \$1.02 that's worth exactly \$1 — a guaranteed loss, so nobody sells like that for long. The reverse (set costing 96¢) would be free money — a guaranteed-dollar bundle on sale for less than a dollar — and traders would pounce until prices summed back to \$1. We'll make that arbitrage rigorous later; for now, just hold onto the identity.
+
+**Pitfall.** "If NO is cheap, the event is unlikely, so NO is a bad bet." No — *cheapness is the whole point*. NO at 38¢ pays \$1 if the event fails: that's a profit of 62¢ on a 38¢ stake (a 163% return) when it hits. A low price means a low implied probability *and* a high payoff-per-dollar. The price already encodes the odds; there is no separate "bad bet" penalty.
+
+### When it matters
+
+The complete-set identity is the backbone of every other mechanic in this lesson. Minting, merging, the two-sided order book, and the arbitrage that keeps prices honest all rest on "YES + NO = \$1." If you remember only one equation from this course, make it that one.
+
+## Minting & merging — making and unmaking the dollar
+
+**Analogy.** A money-changer who works both ways for free. Hand him a \$1 bill and he hands you two tokens, YES and NO. Bring back both tokens and he hands you the dollar. He never profits and never refuses — he's just a machine that splits and fuses, enforced by code.
+
+**Definition.** **Minting** (also *splitting*): deposit \$1 of USDC and the smart contract mints you a complete set — 1 YES + 1 NO. **Merging** (also *redeeming*): hand back a complete set — 1 YES + 1 NO — and the contract returns \$1 of USDC. Both directions are available to anyone, any time, at a fixed 1-to-1 rate. You never have to *find* a buyer to get your dollar back from a complete set; you can always merge it yourself.
+
+This is the source of every share in the market. Sellers usually aren't "the house" — they're traders who minted a set and then sold the half they didn't want.
+
+**Worked example — minting then selling the leg you don't want.** You're bullish on YES and the order book quotes NO buyers at 38¢. Instead of buying YES outright, you:
+
+1. **Mint:** deposit \$1 USDC → receive 1 YES + 1 NO.
+2. **Sell the NO** into the order book at 38¢ → collect \$0.38.
+3. **Keep the YES.** Your net cash outlay was $1.00 − $0.38 = **\$0.62**.
+
+You now hold one YES share for a net cost of 62¢ — exactly what buying YES directly at 62¢ would have cost (conservation law again). Minting-then-selling and buying directly are two routes to the same place; which is cheaper on a given day depends on where the order book is thickest. And whenever you're done, if you hold a matching YES and NO you can **merge** them back into \$1 rather than selling either into the market.
+
+Play with the splitter below: toggle mint vs. merge to watch a dollar fission into the YES/NO pair (and fuse back), and drag the YES price to see NO = \$1 − YES hold no matter what.
+
+<ShareMintMerge
+  client:visible
+  title="Mint, merge & the $1 identity"
+  mintLabel="Mint (split)"
+  mergeLabel="Merge (redeem)"
+  collateralLabel="USDC collateral"
+  yesLabel="YES share"
+  noLabel="NO share"
+  yesPriceLabel="YES price"
+  noPriceLabel="NO price"
+  identityLabel="YES + NO"
+  identityValueLabel="= $1 always"
+  mintExplain="Mint: deposit $1 of USDC and receive one complete set — 1 YES + 1 NO."
+  mergeExplain="Merge: hand back 1 YES + 1 NO and redeem exactly $1 of USDC."
+  sliderLabel="YES price (¢)"
+  yesPrice={62}
+  caption="One dollar splits into a YES + NO pair and fuses back, free and 1-to-1. Drag the YES price: NO is always 1 − YES, because the pair must redeem for exactly $1."
+/>
+
+<FillBlank
+  client:visible
+  question="Fill in the mechanics of minting and merging."
+  text="Depositing {{$1 of USDC|one YES share|a NO token}} mints a complete set of {{1 YES + 1 NO|2 YES shares|1 YES only}}, which is always redeemable for {{exactly $1|62 cents|the YES price}}. To unwind a matching pair you can {{merge|mint|stake}} it back into a dollar at any time, with no need to find a buyer."
+  explanation="Minting deposits $1 of USDC and returns 1 YES + 1 NO (a complete set), always worth exactly $1 because one of them will pay a dollar. Merging is the reverse: hand back a matching YES+NO pair and redeem $1, on demand, without needing a counterparty."
+/>
+
+<Categorize
+  client:visible
+  question="Sort each action: is it minting (splitting) or merging (redeeming)?"
+  buckets={['Mint (split)', 'Merge (redeem)']}
+  items={[
+    { text: 'Deposit $1 of USDC and receive 1 YES + 1 NO', bucket: 'Mint (split)' },
+    { text: 'Hand back a matching 1 YES + 1 NO pair to get $1', bucket: 'Merge (redeem)' },
+    { text: 'Create new outcome tokens from collateral', bucket: 'Mint (split)' },
+    { text: 'Destroy a complete set to reclaim the dollar behind it', bucket: 'Merge (redeem)' },
+    { text: 'Turn one dollar into the two halves you can sell separately', bucket: 'Mint (split)' },
+    { text: 'Recombine the two halves and exit to cash without an order book', bucket: 'Merge (redeem)' },
+  ]}
+  explanation="Minting (splitting) goes dollar → tokens: collateral in, a complete set out. Merging (redeeming) goes tokens → dollar: a matching YES+NO pair in, $1 out. Minting creates tokens from collateral; merging destroys a complete set to reclaim the dollar — and unlike selling, it never needs a counterparty."
+/>
+
+## The CLOB — a central limit order book, not an AMM
+
+**Analogy.** A stock exchange's bulletin board. On one side, buyers post: "I'll pay up to 60¢ for 500 YES." On the other, sellers post: "I'll sell 250 YES at 62¢." A match happens when a buyer's price meets a seller's. Nobody's bet is against "the house" — every trade is one trader meeting another on the board.
+
+**Definition.** Polymarket matches trades through a **CLOB — a central limit order book**: for each outcome token, a live, sorted list of resting **limit orders**. **Bids** are buy orders (sorted highest-price-first); **asks** (or offers) are sell orders (sorted lowest-price-first). The **best bid** is the highest someone will pay; the **best ask** is the lowest someone will sell for. The gap between them is the **spread**, and the **mid** — halfway between best bid and best ask — is the market's cleanest read of the implied probability.
+
+$$\text{mid} = \frac{\text{best bid} + \text{best ask}}{2} \approx \text{implied probability}.$$
+
+**This is *not* an AMM.** An *automated market maker* (AMM) like Uniswap prices trades off a formula against a shared liquidity pool — there's no order book, just a curve. A CLOB instead has named, individual orders you can hit or join. The practical upshot: on a CLOB you can post a **limit order** and *provide* liquidity (earning the spread when someone trades against you), exactly like a market-maker, rather than only trading against a pool.
+
+**Worked example.** Best bid for YES is 60¢ (someone wants to buy), best ask is 62¢ (someone wants to sell). The **spread** is 62 − 60 = **2¢**. The **mid** is (60 + 62)/2 = **61¢**, so the market reads the event as ~61% likely. If you place a market buy, you pay the *ask* (62¢); if you place a market sell, you hit the *bid* (60¢). To **bet NO**, you don't short anything — you simply switch to the NO token's book and **buy NO shares** there. No borrowing, no margin call, no locating shares to short: NO exposure is just owning NO tokens.
+
+**Pitfall.** "The mid is the price I'll get." No — the mid is a *reference*, not a fill. You buy at the ask and sell at the bid; the mid is the average of the two, and you only ever transact at one side of it (worse than mid by half the spread, at least). Confusing the mid with your fill price is the first step toward being surprised by your cost.
+
+<MatchConcepts
+  client:visible
+  question="Match each order-book term to what it means."
+  pairs={[
+    { term: 'Best bid', definition: 'The highest price any buyer is currently willing to pay' },
+    { term: 'Best ask', definition: 'The lowest price any seller is currently willing to accept' },
+    { term: 'Spread', definition: 'The gap between the best ask and the best bid' },
+    { term: 'Mid', definition: 'Halfway between best bid and best ask — the cleanest read of implied probability' },
+    { term: 'Limit order', definition: 'A resting order at a price you choose, which provides liquidity to the book' },
+  ]}
+  explanation="Bids are buy orders, asks are sell orders; the best of each is the highest bid and lowest ask. Their gap is the spread, their midpoint is the mid (≈ implied probability), and a resting limit order adds depth to the book — letting you act as a liquidity provider rather than a taker."
+/>
+
+<MCQ
+  client:visible
+  question="Which statement correctly contrasts Polymarket's CLOB with an AMM like Uniswap?"
+  options={[
+    { text: 'A CLOB matches individual limit orders between traders; an AMM prices trades off a formula against a shared liquidity pool', correct: true },
+    { text: 'A CLOB uses a constant-product curve; an AMM keeps a list of named orders' },
+    { text: 'Both are identical — "order book" and "AMM" are two names for the same mechanism' },
+    { text: 'On a CLOB you cannot post your own orders; an AMM is the only way to provide liquidity' },
+  ]}
+  explanation="A central limit order book is a sorted list of individual limit orders that get matched buyer-to-seller, and anyone can post a limit order to provide liquidity. An AMM has no order book at all — it quotes prices from a formula (e.g. constant product) against a pooled reserve. They are opposite designs, not synonyms."
+/>
+
+## Spread, depth & slippage — why size costs more
+
+**Analogy.** Buying out a farmers' market's tomatoes. The first crate is cheap, but once you've cleared the cheapest stall you have to move to the next, pricier stall, then the next. The *more* you buy at once, the *higher* the average price you end up paying — because you eat through the cheap supply and climb into the expensive stuff.
+
+**Definition.** **Depth** is how many shares are resting at each price level. A **market order** "walks the book": it fills against the best price first, and when that level's size is exhausted, it rolls up to the next-best price, and so on. **Slippage** is the gap between the price you *hoped* for (the best ask) and the **volume-weighted average price** you actually paid after climbing several levels. Thin books (little depth) produce big slippage; deep books absorb size with barely a wobble.
+
+**Worked example — walking the ask ladder.** Suppose the YES ask side looks like this, and you send a **market buy for 300 shares**:
+
+| Ask level | Shares available | Shares you take | Cost of that slice |
+|---|---|---|---|
+| 62¢ | 150 | 150 | 150 × 0.62 = \$93.00 |
+| 63¢ | 100 | 100 | 100 × 0.63 = \$63.00 |
+| 65¢ | 200 | 50 | 50 × 0.65 = \$32.50 |
+| **Total** | — | **300** | **\$188.50** |
+
+Your **average fill price** is \$188.50 / 300 = **62.83¢** per share — not the 62¢ you saw quoted. The **slippage** is 62.83 − 62 = **0.83¢ per share** (about \$2.50 across the whole order) because your size forced you up into the 63¢ and 65¢ levels. Had you bought only 150 shares, you'd have filled entirely at 62¢ with zero slippage. Size *is* the slippage.
+
+Drag the order-size slider below to watch a market buy eat deeper into the ask ladder, lifting your average fill and your slippage as it climbs:
+
+<PredictionOrderBook
+  client:visible
+  title="Walking the book: depth, spread & slippage"
+  bidsLabel="Bids (buyers)"
+  asksLabel="Asks (sellers)"
+  pricecol="Price"
+  sizeCol="Size"
+  bestBidLabel="Best bid"
+  bestAskLabel="Best ask"
+  spreadLabel="Spread"
+  midLabel="Mid (≈ probability)"
+  orderSizeLabel="Market buy size (shares)"
+  avgFillLabel="Average fill"
+  slippageLabel="Slippage vs best ask"
+  totalCostLabel="Total cost"
+  filledLabel="Filled"
+  partialLabel="Partial — book too thin"
+  asks={[
+    { price: 62, size: 150 },
+    { price: 63, size: 100 },
+    { price: 65, size: 200 },
+    { price: 67, size: 400 },
+  ]}
+  bids={[
+    { price: 60, size: 200 },
+    { price: 59, size: 350 },
+    { price: 57, size: 600 },
+    { price: 55, size: 900 },
+  ]}
+  orderSize={300}
+  caption="A market buy fills the cheapest asks first, then climbs to pricier levels. The bigger the order relative to the depth, the higher your average fill — that gap above the best ask is slippage."
+/>
+
+**Pitfall.** Reading the top-of-book price and assuming the whole order fills there. On a thin market, a single large order can blow through several levels and pay *cents* more per share than the quote — and on a *very* thin book it may only **partially fill** (there simply aren't enough sellers). Always check the *depth*, not just the best ask, before sizing up.
+
+### When it matters
+
+For a 20-share flutter, slippage is a rounding error and you can ignore the ladder. For a serious position — or in a thin, newly-listed market — slippage and spread are the dominant cost of trading, dwarfing any headline fee. The professional move is to *provide* liquidity with limit orders (and earn the spread) rather than cross it with impatient market orders.
+
+## Fees & gas — where the cost actually hides
+
+**Analogy.** A "free" checking account that still nickel-and-dimes you on the spread when you exchange currency. The advertised price (zero monthly fee) isn't where the money goes — the cost is baked into the *exchange rate* you're quoted. Same story here.
+
+**Definition.** Polymarket runs a **low-to-zero explicit trading-fee** model — it does not skim a large percentage off each trade the way a traditional bookmaker's "vig" does. And because the market lives on **Polygon**, the **gas** (network transaction fee) for placing, cancelling, or settling an order is tiny — fractions of a cent. So the headline costs are small by design. The *real* cost of trading size, as the last section showed, is the **spread you cross plus the slippage you cause** — an implicit cost set by the order book, not a fee line on a receipt.
+
+**Worked example (qualitative).** Buy 300 YES shares in our ladder above and your average fill is 62.83¢ versus a 62¢ best ask. That ~0.83¢/share is your true trading cost — and it dwarfs the trivial Polygon gas you paid to submit the order. Two traders can face the "same zero fees" yet pay wildly different *effective* prices, purely because one crossed a wide spread into a thin book and the other patiently posted a limit order at the mid.
+
+**Pitfall.** Judging a market as "cheap to trade" off its advertised fees alone. A zero-fee market with a 5¢ spread and shallow depth is *expensive* to trade in size; a market with a tiny fee but a 1¢ spread and deep books is cheap. Always price the spread and expected slippage into your edge — a thin edge can be entirely eaten by crossing a wide spread.
+
+### When it matters
+
+For occasional small trades, fees and gas are genuinely negligible and you can forget them. The moment you trade frequently, in size, or in thin markets, your P&L is governed by **execution cost** — spread + slippage — far more than by any fee schedule. Sizing your edge against the spread is the difference between a profitable strategy and a break-even one.
+
+<Reveal client:visible>
+  <details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+    <summary className="cursor-pointer font-medium">Why can't YES + NO trade below \$1 for long?</summary>
+
+    Because below \$1 the pair is a **money pump**. Say YES is 60¢ and NO is 38¢, summing to 98¢. Anyone can buy *both* halves for 98¢, hold the complete set, and **merge** it into exactly \$1 — a guaranteed 2¢ profit, risk-free, no matter how the event resolves. Traders racing to grab that free 2¢ buy YES and NO until their prices are bid back up to sum to \$1. The same force runs the other way: if the pair ever summed to *more* than \$1, you'd **mint** a set for \$1 and sell the two halves for more, again pocketing the difference until prices fall back into line. This is the **arbitrage** that nails the conservation law to exactly \$1 — and it's the whole subject of a later lesson. For now, file it away: the identity isn't enforced by Polymarket, it's enforced by greedy traders.
+  </details>
+</Reveal>
+
+## Putting it together
+
+A Polymarket trade is a tidy chain of mechanics. Your stake is **USDC** — dollar-pegged stablecoin — held **non-custodially** in your own wallet on **Polygon**, a cheap Ethereum layer-2. Every market mints **outcome tokens**: 1 YES + 1 NO is a **complete set** always redeemable for exactly one dollar, which is why $P_{\text{YES}} + P_{\text{NO}} = 1$ and why price reads as probability. You can **mint** a set from a dollar or **merge** one back to a dollar on demand. Trades match through a **CLOB** — a central limit order book of bids and asks, *not* an AMM pool — where the **spread** separates best bid from best ask and the **mid** is your cleanest probability read. Sizing up means a **market order walks the book**, climbing pricier levels and incurring **slippage**: the gap between the quoted best price and your volume-weighted average fill. And while explicit **fees and gas are tiny**, the genuine cost of trading size is the spread plus slippage — the implicit price the order book charges you for impatience.
+
+<MindMap
+  client:visible
+  title="Inside Polymarket — the mechanics"
+  caption="USDC on Polygon → outcome tokens (YES + NO = $1) → mint/merge → CLOB (bid/ask/spread/mid) → market orders walk the book → slippage is the real cost, not fees."
+  root={{
+    label: 'Inside Polymarket',
+    children: [
+      {
+        label: 'The plumbing',
+        children: [
+          { label: 'USDC — $1-pegged stablecoin collateral' },
+          { label: 'Polygon — cheap Ethereum layer-2 (low gas)' },
+          { label: 'Non-custodial — shares are tokens in your wallet' },
+        ],
+      },
+      {
+        label: 'Outcome tokens',
+        children: [
+          { label: '1 YES + 1 NO = a complete set' },
+          { label: 'A complete set always redeems for $1' },
+          { label: 'Conservation law: YES + NO = $1' },
+          { label: 'Price = implied probability' },
+        ],
+      },
+      {
+        label: 'Mint & merge',
+        children: [
+          { label: 'Mint: deposit $1 → 1 YES + 1 NO' },
+          { label: 'Merge: 1 YES + 1 NO → $1, any time' },
+          { label: 'Mint-then-sell NO = buy YES, same cost' },
+        ],
+      },
+      {
+        label: 'The CLOB',
+        children: [
+          { label: 'Order book of bids & asks (not an AMM)' },
+          { label: 'Best bid / best ask, spread between them' },
+          { label: 'Mid ≈ implied probability' },
+          { label: 'Bet NO = buy NO shares (no shorting)' },
+          { label: 'Post limit orders to provide liquidity' },
+        ],
+      },
+      {
+        label: 'Spread & slippage',
+        children: [
+          { label: 'Depth = size resting at each level' },
+          { label: 'Market order walks the book upward' },
+          { label: 'Slippage = avg fill − best price' },
+          { label: 'Thin books → big slippage' },
+        ],
+      },
+      {
+        label: 'Fees & gas',
+        children: [
+          { label: 'Low/zero explicit trading fees' },
+          { label: 'Tiny Polygon gas' },
+          { label: 'Real cost of size = spread + slippage' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Recap: inside Polymarket"
+  questions={[
+    {
+      question: 'YES is trading at 71¢. By the complete-set conservation law, what must NO be priced at?',
+      options: [
+        { text: '29¢ — because YES + NO must equal $1, so NO = 1 − 0.71', correct: true },
+        { text: '71¢ — YES and NO always carry the same price' },
+        { text: '$1.71 — you add the two prices together' },
+        { text: 'It can be anything — the two prices are independent' },
+      ],
+      explanation: 'A complete set (1 YES + 1 NO) always redeems for exactly $1, so the two prices must sum to $1. With YES at 71¢, NO is pinned at 1 − 0.71 = 29¢. The prices are not equal and not independent — they are two halves of a guaranteed dollar.',
+    },
+    {
+      question: 'You send a market buy for 400 YES shares. The ask ladder is 64¢ × 200, then 66¢ × 200. What is your average fill price, and what is that gap above 64¢ called?',
+      options: [
+        { text: '65¢ average, and the 1¢ gap above the 64¢ best ask is slippage', correct: true },
+        { text: '64¢ average, with zero slippage, because you saw 64¢ quoted' },
+        { text: '66¢ average — a market order always fills at the worst level' },
+        { text: '130¢ average — you sum the two price levels' },
+      ],
+      explanation: 'You fill 200 at 64¢ ($128) and 200 at 66¢ ($132) for $260 total over 400 shares = 65¢ average. The 1¢ gap between that average and the 64¢ best ask is slippage — caused by your order walking up into the pricier 66¢ level after exhausting the cheap depth.',
+    },
+    {
+      question: 'A friend says "Polymarket advertises near-zero fees, so trading large positions there is essentially free." What is the flaw?',
+      options: [
+        { text: 'The real cost of size is the spread crossed plus slippage from walking the book — an implicit cost the order book charges, not a headline fee', correct: true },
+        { text: 'There is no flaw — with zero fees, every trade truly is costless regardless of size' },
+        { text: 'The flaw is that Polygon gas costs several dollars per trade, the way Ethereum mainnet does' },
+        { text: 'The flaw is that Polymarket acts as the house and takes the other side of every bet' },
+      ],
+      explanation: 'Explicit fees and Polygon gas are genuinely tiny. But a large market order crosses the spread and walks the book into worse-priced levels, paying a volume-weighted average well above the best quote. That spread-plus-slippage is the dominant, implicit cost of trading size — invisible on a fee schedule but very real in your fill price.',
+    },
+  ]}
+/>
+
+Now you know what you're holding, where it lives, and how it trades. But one giant question still hangs over every market: when the event is over, **who decides who was right**? A market can quote "62% chance the bill passes" all day, yet someone — or some*thing* — must ultimately rule YES or NO so the winning shares can pay out their dollar. Next lesson we meet **resolution and the UMA optimistic oracle**: a clever escalation game where anyone can propose an outcome, anyone can dispute it by putting money on the line, and a decentralized vote settles the rare contested case. It's where a prediction market's promise either becomes a paid-out dollar — or a controversy.

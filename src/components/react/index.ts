@@ -349,3 +349,21 @@ export type { VolSurfaceGridProps } from '@/components/react/VolSurfaceGrid';
 
 export { PnlAttributionBars, default as PnlAttributionBarsDefault } from '@/components/react/PnlAttributionBars';
 export type { PnlAttributionBarsProps } from '@/components/react/PnlAttributionBars';
+
+export { OutcomeSharePayoff, default as OutcomeSharePayoffDefault } from '@/components/react/OutcomeSharePayoff';
+export type { OutcomeSharePayoffProps } from '@/components/react/OutcomeSharePayoff';
+
+export { ShareMintMerge, default as ShareMintMergeDefault } from '@/components/react/ShareMintMerge';
+export type { ShareMintMergeProps } from '@/components/react/ShareMintMerge';
+
+export { PredictionOrderBook, default as PredictionOrderBookDefault } from '@/components/react/PredictionOrderBook';
+export type { PredictionOrderBookProps, PredictionOrderLevel } from '@/components/react/PredictionOrderBook';
+
+export { UmaResolutionFlow, default as UmaResolutionFlowDefault } from '@/components/react/UmaResolutionFlow';
+export type { UmaResolutionFlowProps, UmaStage } from '@/components/react/UmaResolutionFlow';
+
+export { CalibrationCurve, default as CalibrationCurveDefault } from '@/components/react/CalibrationCurve';
+export type { CalibrationCurveProps } from '@/components/react/CalibrationCurve';
+
+export { BinaryArbitrageBars, default as BinaryArbitrageBarsDefault } from '@/components/react/BinaryArbitrageBars';
+export type { BinaryArbitrageBarsProps } from '@/components/react/BinaryArbitrageBars';
