@@ -322,3 +322,15 @@ export type { ShrinkageEstimatorProps, ShrinkAsset } from '@/components/react/Sh
 
 export { McmcSampler, default as McmcSamplerDefault } from '@/components/react/McmcSampler';
 export type { McmcSamplerProps } from '@/components/react/McmcSampler';
+
+export { FactorPremiumBars, default as FactorPremiumBarsDefault } from '@/components/react/FactorPremiumBars';
+export type { FactorPremiumBarsProps, FactorPremiumRegime, FactorPremiumBar } from '@/components/react/FactorPremiumBars';
+
+export { FactorReturnAttribution, default as FactorReturnAttributionDefault } from '@/components/react/FactorReturnAttribution';
+export type { FactorReturnAttributionProps, FactorContribution } from '@/components/react/FactorReturnAttribution';
+
+export { CrossSectionScatter, default as CrossSectionScatterDefault } from '@/components/react/CrossSectionScatter';
+export type { CrossSectionScatterProps, CrossSectionPoint } from '@/components/react/CrossSectionScatter';
+
+export { FactorDecayChart, default as FactorDecayChartDefault } from '@/components/react/FactorDecayChart';
+export type { FactorDecayChartProps, FactorDecaySeries, FactorDecayPoint } from '@/components/react/FactorDecayChart';

@@ -119,7 +119,7 @@ quantitative relationship. Build after the learner has `investment-metrics`,
 - [ ] **time-series-finance** — modeling returns over time: stationarity,
   autocorrelation, AR/MA/ARIMA, volatility clustering, GARCH, EWMA, backtesting
   pitfalls (look-ahead, overfitting, multiple testing). _(deps: `bayesian-finance`)_
-- [ ] **factor-models** — multi-factor investing: CAPM → Fama–French 3/5-factor,
+- [x] **factor-models** _(2026-06-06)_ — multi-factor investing: CAPM → Fama–French 3/5-factor,
   momentum, cross-sectional regression, factor risk decomposition, alpha vs
   factor exposure, smart beta. _(deps: `portfolio-theory`)_
 - [ ] **risk-of-ruin** — survival & position sizing: risk of ruin formula,
