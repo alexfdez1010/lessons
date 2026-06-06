@@ -1,0 +1,327 @@
+---
+title: "Delta-Neutral Hedging"
+description: "Dynamic hedging in practice — why a delta hedge won't stay put (gamma), continuous vs discrete rebalancing, hedging error proportional to gamma, and the U-shaped tradeoff where rebalancing more often shrinks error but runs up transaction costs."
+topic: "en/greeks-and-hedging"
+order: 4
+minutes: 10
+updated: 2026-06-06
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, Categorize, MindMap, DeltaHedgeSim, HedgeErrorCurve } from '@/components/react';
+
+You already know the five gauges. Delta tells you your stock exposure, gamma tells you how fast that exposure mutates, theta is the rent, vega the volatility bet. This lesson is where those gauges stop being trivia and start being a *job*: keeping a book delta-neutral isn't a single trade you make and forget — it's a chore you redo, over and over, fighting gamma the whole way, while transaction costs quietly bill you for every fidget. That tension — hedge often and pay the broker, or hedge rarely and pay the market — is the whole game.
+
+Quick instinct check before we wire it up.
+
+<MCQ
+  client:visible
+  pretest
+  question="You short one call (delta 0.50) and short 50 shares to be delta-neutral. The stock then rallies hard. Why can't you just walk away?"
+  options={[
+    { text: 'Gamma — the rally raises the call’s delta, so 50 short shares no longer offsets it; you’re no longer neutral', correct: true },
+    { text: 'Theta — time decay silently changes how many shares you need' },
+    { text: 'Rho — the rally changes interest rates, breaking the hedge' },
+    { text: 'You can walk away; once neutral, a position stays neutral forever' },
+  ]}
+  explanation="Delta isn’t constant — gamma is exactly the rate at which it changes as the stock moves. A rally pushes the short call’s delta up (toward 1), so the hedge you set at delta 0.50 goes stale and you have to re-short more stock. A one-time hedge against a moving target never stays put."
+/>
+
+## What it means to be delta-neutral
+
+**Analogy.** Being delta-neutral is balancing a broom on your palm. You don't set your hand once and admire it — the broom is always tipping, and you survive only by a constant stream of tiny corrective shuffles. Stop correcting and it falls. A delta hedge is the same: not a state you reach, but a state you continuously *defend*.
+
+**Definition & mechanics.** A position's **delta** is the sum of the deltas of everything in it, measured in equivalent shares of the underlying. You are **delta-neutral** when that total is zero: $\Delta_{\text{position}} = 0$. To first order — for a *small* move $dS$ — your profit and loss is $\text{P\&L} \approx \Delta_{\text{position}} \cdot dS$, so a zero delta means small wobbles in the stock don't move your money. You've cancelled the directional bet and kept only the higher-order stuff (gamma, theta, vega).
+
+The lever you pull to get there is the **hedge ratio**: delta is literally *shares of stock per option*. Hold an option with delta $\Delta_o$ on a 100-share contract and you carry $100\,\Delta_o$ shares of equivalent exposure; trade $-100\,\Delta_o$ shares of stock against it and the first-order exposure nets to zero.
+
+**Worked example.** You **short 1 call** with delta $0.50$ on 100 shares. The short call's position delta is $-0.50 \times 100 = -50$ — you behave like someone short 50 shares. To neutralise, **buy 50 shares**. Now stress it with the stock at \$100:
+
+- **Stock rises to \$101.** Short call loses about \$50 (since $0.50 \times 100 = 50$; the option you sold got more valuable). Your 50 long shares gain \$50 (that's $50 \times 1$). Net $\approx 0$.
+- **Stock falls to \$99.** Short call gains about \$50; long shares lose \$50. Net $\approx 0$.
+
+The book barely flinches in either direction. That is exactly what neutrality buys you — for now.
+
+<Callout variant="warning" title="Delta-neutral is NOT risk-free">
+Zeroing delta kills only the *first-order* directional exposure. You are still **long or short gamma**, **long or short vega**, and paying or collecting **theta**. A delta-neutral short-option book is a coiled spring: calm markets pay you theta, but one violent gap can hand you a loss no amount of share-shuffling prevents. "Neutral" means neutral to *small* moves, not immune to the world.
+</Callout>
+
+## Why the hedge drifts (gamma)
+
+**Analogy.** You've zeroed the bathroom scale with a 5 kg weight on it. Add a second weight and the zero you so carefully set is meaningless — the calibration only held at that one load. Delta is a calibration that only holds at one stock price. Move the price and gamma silently re-calibrates your delta out from under you.
+
+**Mechanics.** Delta is the slope of the option's value curve, and that curve is *curved* — gamma is the curvature, $\Gamma = \partial \Delta / \partial S$. So as $S$ moves by $\Delta S$, your option's delta shifts by roughly $\Gamma \cdot \Delta S$. The hedge you placed against the *old* delta is now wrong by that much. You must **re-hedge**: trade more stock to drag the position back to zero. Then the stock moves again, and you do it again. Forever, until expiry.
+
+**Worked re-hedge.** Start from the book above: **short 1 call**, delta $0.50$, hedged with $+50$ shares, stock at \$100. The stock rallies \$5 to \$105.
+
+<Reveal client:visible>
+  <details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+    <summary className="cursor-pointer font-medium">Show the re-hedge trade, step by step</summary>
+
+    At \$105 the call's delta has climbed (gamma at work) from $0.50$ to, say, $0.62$.
+
+    - **New short-call position delta:** $-0.62 \times 100 = -62$ shares of exposure.
+    - **You still hold only $+50$ shares**, so your *net* position delta is $-62 + 50 = -12$. You've drifted **net short 12 deltas** — the hedge went stale.
+    - **The fix:** buy **12 more shares** (at \$105) to get back to $+62$ shares against $-62$ of call delta. Net delta back to $0$.
+
+    Notice the reflex this short-gamma book forces: the stock went *up*, and you were made to **buy** more shares — buy high. Had the stock fallen, your call delta would drop and you'd be forced to **sell** shares low. Buy-high-sell-low on every round trip is the signature bleed of being short gamma, and it's the cost of the theta you're collecting. A long-gamma book does the opposite and gets paid.
+  </details>
+</Reveal>
+
+The simulator below makes the drift visible. The orange line is the naked short call — pure chaos, lurching with every tick. The blue line is the same call *delta-hedged*: drag the rebalance slider and watch how a hedge that updates more often flattens to near-zero, while a lazy hedge lets gamma slippage leak through.
+
+<DeltaHedgeSim
+  client:visible
+  title="Hedging a short call as the stock wanders"
+  caption="The naked short call (orange) swings wildly with the stock. Delta-hedge it (blue) and the directional risk vanishes — but only as fast as you rebalance. Few rebalances leave a visible hedging error (gamma slippage between trades); crank the slider up and the blue line hugs zero. The error never quite hits zero because real hedging happens in discrete jumps, not continuously."
+/>
+
+<MCQ
+  client:visible
+  question="You are SHORT a call and delta-hedged. The stock sells off sharply. Which re-hedge does gamma force on you, and what does it say about your position?"
+  options={[
+    { text: 'Sell shares — your short call’s delta fell, so you’re now net long delta and must sell to re-neutralise; short gamma forces sell-low', correct: true },
+    { text: 'Buy shares — falling stock always means buying more to stay hedged' },
+    { text: 'Do nothing — a delta hedge automatically re-centres itself' },
+    { text: 'Sell shares, and it shows you are long gamma harvesting the move' },
+  ]}
+  explanation="A short call is short gamma. When the stock falls, the call’s delta drops toward 0, so your fixed share hedge is now too large — you’ve drifted net long delta and must SELL shares (at the lower price) to re-neutralise. Selling low after buying high on rallies is the short-gamma bleed."
+/>
+
+## Continuous vs discrete hedging
+
+**Analogy.** Black–Scholes is a physics problem solved in a frictionless vacuum: it assumes you can rehedge *continuously* and for *free*. That's like a textbook ramp with no friction — beautiful math, but you can't actually build it. The real world has friction (costs) and you can only touch the position at discrete moments (you sleep, markets close, you can't trade infinitely fast).
+
+**The continuous ideal.** If you could rehedge continuously and costlessly, the hedge would track the option's delta *exactly* at every instant, your replicating portfolio would perfectly shadow the option, and a fairly-priced option would net you **exactly zero** P&L. That's the replication argument at the heart of Black–Scholes: the hedge *is* the option.
+
+**The discrete reality.** You actually rehedge at $N$ discrete times. Between two rehedges the stock moves by some $\Delta S$ while your share count is frozen, so your linear (delta-only) hedge misses the *curvature* of the option's payoff. Over one interval the leftover P&L — the **hedging error** — is approximately
+
+$$
+\text{error} \approx \tfrac{1}{2}\,\Gamma\,(\Delta S)^2 \; - \; (\text{theta earned or paid over the interval}).
+$$
+
+The $\tfrac12\Gamma(\Delta S)^2$ term is the gamma P&L the straight-line hedge couldn't capture; theta is the offsetting time-decay term. On a fairly-priced option these two roughly cancel *on average*, but on any single interval they don't — and the leftover is your tracking error. Critically, the error per interval scales with **gamma**: the more curved the option, the more a frozen hedge mis-tracks it.
+
+Add up the random per-interval errors over the life of the trade and the **standard deviation of the total hedging error scales like $1/\sqrt{N}$**. Rehedge four times as often and you roughly *halve* your hedging-error risk. Push $N \to \infty$ and the error vanishes — recovering the continuous, perfect-replication ideal. So far, more hedging is pure upside. (Then the bill arrives.)
+
+<Categorize
+  client:visible
+  question="The stock makes a big intraday move between two of your scheduled rehedges. Sort what happens to each quantity."
+  buckets={['Increases the hedging error', 'Does NOT increase the hedging error']}
+  items={[
+    { text: 'A larger move (bigger ΔS) before you rehedge', bucket: 'Increases the hedging error' },
+    { text: 'Higher gamma on the option you hold', bucket: 'Increases the hedging error' },
+    { text: 'Rehedging more frequently (more N)', bucket: 'Does NOT increase the hedging error' },
+    { text: 'A deep in-the-money option whose delta is pinned near 1', bucket: 'Does NOT increase the hedging error' },
+  ]}
+  explanation="Per-interval error ≈ ½·Γ·(ΔS)² − theta. It grows with both the size of the move squared and gamma, so big moves and high-gamma (near-the-money) options leak the most. Rehedging more often shrinks each ΔS and so shrinks total error (std-dev ∝ 1/√N). A deep-ITM option has near-zero gamma — its delta barely moves, so almost nothing to mis-track."
+/>
+
+<FillBlank
+  client:visible
+  question="Fill in the discrete-hedging scaling laws."
+  text="Black–Scholes assumes {{continuous|monthly|one-time}} rehedging, which makes replication {{perfect|approximate|impossible}}. In reality you rehedge {{N|0|infinitely many}} times, leaving a hedging error per interval of about ½ times {{gamma|delta|rho}} times {{(ΔS)²|ΔS|Δt}}, whose standard deviation shrinks like {{1/√N|N|√N}} as you rehedge more often."
+  explanation="Continuous costless rehedging ⇒ perfect replication ⇒ zero P&L on a fair option. Discretely, each interval leaves roughly ½·Γ·(ΔS)² of uncaptured gamma P&L (offset by theta), and aggregating the random errors gives a total std-dev that falls like 1/√N."
+/>
+
+## Transaction costs and the U-shaped tradeoff
+
+**Analogy.** Hedging error is like noise on a phone line: keep re-syncing and it gets quieter. But suppose every re-sync charged you a toll. Now syncing constantly gives you a crystal-clear line and a monstrous phone bill. Somewhere between "never sync" (unusable) and "sync constantly" (broke) is the sweet spot. Hedging lives in exactly that valley.
+
+**Mechanics.** Every rehedge is a real trade: you cross the **bid-ask spread** and may pay a commission. So while rehedging more often *shrinks* the hedging-error std-dev (the $1/\sqrt{N}$ from before), it *grows* your total transaction cost. Because each rehedge over a fixed horizon moves delta by only about $1/\sqrt{N}$, the cumulative turnover cost scales like $\propto \sqrt{N}$ (a simpler model just charges a flat fee per trade and gets $\propto N$). Either way, cost rises with $N$ while error falls with $N$:
+
+$$
+\underbrace{\text{error}(N) \approx \frac{a}{\sqrt{N}}}_{\text{falls}} \qquad \underbrace{\text{cost}(N) \approx b\,\sqrt{N}}_{\text{rises}} \qquad \text{total}(N) = \frac{a}{\sqrt{N}} + b\,\sqrt{N}.
+$$
+
+Add a falling curve to a rising curve and you get a **U-shape**: the total cost drops, bottoms out, then climbs. The bottom of that U is the **optimal rehedging frequency** — hedge any more or any less and your total cost goes up. This is the single most important practical fact about dynamic hedging.
+
+<Callout variant="tip" title="The U-curve is the whole job">
+There is no "hedge as often as possible." Infinite rehedging gives you zero hedging error and *infinite* transaction cost. The real objective is to minimise **error + cost**, and that sum is U-shaped. Cheaper trading (tight spreads, big liquid names) pushes the optimum toward *more frequent* hedging; expensive trading (wide spreads, illiquid names, fat commissions) pushes it toward *lazier*, less frequent hedging. The market structure, not your diligence, sets the sweet spot.
+</Callout>
+
+Drag the transaction-cost slider below. Watch the optimum (the dot at the bottom of the blue total-cost curve) slide toward fewer rebalances as trading gets pricier.
+
+<HedgeErrorCurve
+  client:visible
+  title="Rehedge often, or rehedge cheap — pick your poison"
+  caption="Grey: hedging error, falling like 1/√N. Orange: transaction cost, rising with N. Blue: their sum — a U with a clear bottom. That bottom is the optimal rehedging frequency. Raise the cost slider (wider spreads, fatter commissions) and the optimum slides left toward fewer, lazier rebalances; cheap trading lets you hedge more tightly."
+/>
+
+### Worked tradeoff example
+
+Take a quarter-long short-call hedge and compare three rehedging regimes. Suppose the hedging-error std-dev is \$1,000 at $N=1$ (so it scales as $1000/\sqrt{N}$) and turnover cost runs about \$60 at $N=1$ (scaling as $60\sqrt{N}$).
+
+| Regime | Rehedges $N$ | Hedging error $\approx 1000/\sqrt{N}$ | Transaction cost $\approx 60\sqrt{N}$ | Total (error + cost) |
+|---|---|---|---|---|
+| Weekly | $13$ | \$277 | \$216 | **\$493** |
+| Daily | $63$ | \$126 | \$476 | **\$602** |
+| Hourly | $\approx 440$ | \$48 | \$1,259 | **\$1,307** |
+| "Continuous-ish" | $\to \infty$ | $\to$ \$0 | $\to \infty$ | **blows up** |
+
+Reading down the table: as you rehedge more, the **error column keeps falling** (good) but the **cost column keeps rising faster** (bad). Hourly hedging nearly zeroes the tracking error yet triples the total bill versus weekly. The minimum here sits around **weekly** rehedging — the U-curve's valley — not at the extreme. "Continuous-ish" hedging, the Black–Scholes ideal, is a financial disaster in a world with spreads: perfect tracking at infinite cost. The art is finding the bottom of the U, not racing toward zero error.
+
+<MCQ
+  client:visible
+  question="A market-maker moves a delta-hedging book from a liquid mega-cap stock (penny-wide spreads) to a thinly-traded small-cap (wide spreads). All else equal, how should the optimal rehedging frequency change?"
+  options={[
+    { text: 'Rehedge LESS often — higher per-trade cost raises the cost curve, sliding the U’s minimum toward fewer rebalances', correct: true },
+    { text: 'Rehedge MORE often — illiquid names are riskier so you must hedge harder' },
+    { text: 'No change — the optimal frequency depends only on gamma, not on trading costs' },
+    { text: 'Rehedge continuously — only continuous hedging eliminates risk' },
+  ]}
+  explanation="The optimum minimises error + cost. Wider spreads raise the cost coefficient b, lifting and steepening the rising cost curve, which pulls the U-shaped total’s minimum to a lower N. Pricier trading ⇒ hedge less often and tolerate a bit more hedging error. It’s a cost-vs-risk balance, not a pure-risk decision."
+/>
+
+## Gamma and vega still leak
+
+Hedging delta to zero and rehedging diligently buys you freedom from *small directional* moves. It does **not** make you risk-free, and it's worth stating plainly one more time:
+
+- **Gamma still bites.** Between rehedges, curvature is uncaptured — that's the entire hedging error. A short-gamma book bleeds on every round trip and gaps can overwhelm any rehedging schedule.
+- **Vega is untouched.** A jump in implied volatility re-prices your option even if the stock hasn't moved an inch and your delta is dead-zero. Delta hedging does nothing for it.
+- **Theta keeps ticking.** The clock runs whether or not you rehedge.
+
+To neutralise *those*, you trade other options (gamma-hedging, vega-hedging) — the subject of later lessons. For now, the headline: **delta-neutral kills the first-order bet and nothing more.**
+
+<Categorize
+  client:visible
+  question="For a delta-hedged short-option book, sort each force by whether rehedging delta MORE often controls it."
+  buckets={['Controlled by more frequent delta-rehedging', 'NOT controlled by delta-rehedging']}
+  items={[
+    { text: 'First-order directional drift as the stock moves', bucket: 'Controlled by more frequent delta-rehedging' },
+    { text: 'Gamma slippage between rehedges (the hedging error)', bucket: 'Controlled by more frequent delta-rehedging' },
+    { text: 'A spike in implied volatility (vega)', bucket: 'NOT controlled by delta-rehedging' },
+    { text: 'Daily time decay (theta)', bucket: 'NOT controlled by delta-rehedging' },
+    { text: 'A large overnight gap with markets closed', bucket: 'NOT controlled by delta-rehedging' },
+  ]}
+  explanation="More frequent delta-rehedging cancels directional drift and shrinks gamma slippage (smaller ΔS per interval). But it does nothing for vega (volatility re-prices the option directly), nothing for theta (time runs regardless), and nothing for gaps when you literally can’t trade — those need other tools (vega/gamma hedges) or smaller size."
+/>
+
+## Putting it together
+
+Delta-neutral hedging is a *process*, not a position. You set the hedge ratio to zero out delta, then **gamma immediately drifts you off** — so you rehedge, and rehedge, balancing a broom that never stops tipping. Black–Scholes promises perfect replication only in the fairy tale of **continuous, costless** rehedging; discretely you carry a **hedging error $\approx \tfrac12\Gamma(\Delta S)^2$ net of theta**, whose risk falls like $1/\sqrt{N}$. But each rehedge pays the spread, so **transaction costs rise with $N$**, and the sum — error plus cost — is **U-shaped** with a clear optimal frequency that cheap trading pushes higher and expensive trading pushes lower. Through all of it, **gamma, vega, and theta still leak**: neutral to small moves, never neutral to the world.
+
+<MindMap
+  client:visible
+  title="Delta-neutral hedging — the whole loop"
+  caption="Zero the delta, fight the gamma drift, rehedge — and balance the U-curve of error against transaction cost while gamma, vega, and theta keep leaking."
+  root={{
+    label: 'Delta-neutral hedging',
+    children: [
+      {
+        label: 'Being neutral',
+        children: [
+          { label: 'Position delta = 0' },
+          { label: 'Hedge ratio: shares per option' },
+          { label: 'P&L ≈ delta × dS, so small moves cancel' },
+          { label: 'Neutral to small moves, NOT risk-free' },
+        ],
+      },
+      {
+        label: 'Why it drifts: gamma',
+        children: [
+          { label: 'Delta changes as S moves (Γ = ∂Δ/∂S)' },
+          { label: 'A one-time hedge goes stale' },
+          { label: 'Must rehedge again and again' },
+          { label: 'Short gamma: buy high, sell low' },
+        ],
+      },
+      {
+        label: 'Continuous vs discrete',
+        children: [
+          { label: 'BS ideal: continuous + costless = perfect replication' },
+          { label: 'Reality: rehedge at N discrete times' },
+          { label: 'Error per interval ≈ ½·Γ·(ΔS)² − theta' },
+          { label: 'Error std-dev ∝ 1/√N' },
+        ],
+      },
+      {
+        label: 'The U-curve tradeoff',
+        children: [
+          { label: 'Each rehedge pays the spread' },
+          { label: 'Cost rises with N (∝ √N)' },
+          { label: 'Error + cost is U-shaped' },
+          { label: 'Optimal frequency at the valley' },
+          { label: 'Cheap trading ⇒ hedge more often' },
+        ],
+      },
+      {
+        label: 'What still leaks',
+        children: [
+          { label: 'Gamma between rehedges' },
+          { label: 'Vega — volatility re-prices the option' },
+          { label: 'Theta — the clock keeps ticking' },
+          { label: 'Gaps when you cannot trade' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Recap: delta-neutral hedging"
+  questions={[
+    {
+      question: 'What does "delta-neutral" actually protect you against?',
+      options: [
+        { text: 'Only first-order moves — small changes in the stock price', correct: true },
+        { text: 'All possible losses — it is a risk-free position' },
+        { text: 'Volatility spikes, via vega' },
+        { text: 'Time decay, via theta' },
+      ],
+      explanation: 'Zeroing delta cancels the first-order term P&L ≈ delta × dS. Gamma, vega, and theta are untouched, so a delta-neutral book is neutral to small moves only — not risk-free.',
+    },
+    {
+      question: 'Why must a delta hedge be redone repeatedly rather than set once?',
+      options: [
+        { text: 'Gamma changes the option’s delta as the stock moves, so the hedge ratio goes stale', correct: true },
+        { text: 'Commissions reset the position each day' },
+        { text: 'Theta forces you to buy back the option periodically' },
+        { text: 'Interest accrual changes the number of shares you own' },
+      ],
+      explanation: 'Gamma = ∂Δ/∂S. As S moves by ΔS, delta shifts by ≈ Γ·ΔS, so the hedge you set is no longer neutral and must be re-struck. The hedge chases a moving target.',
+    },
+    {
+      question: 'In the Black–Scholes ideal, why does a fairly-priced option produce zero P&L for the hedger?',
+      options: [
+        { text: 'Continuous, costless rehedging replicates the option exactly, so the hedge perfectly offsets it', correct: true },
+        { text: 'Options are always priced to lose money for the seller' },
+        { text: 'Theta and rho exactly cancel each day by construction' },
+        { text: 'Because delta is held constant the whole time' },
+      ],
+      explanation: 'With continuous, costless rehedging the replicating portfolio shadows the option at every instant — the dynamic hedge IS the option — so for a fairly-priced option the net P&L is zero. Discreteness and costs are what break this in practice.',
+    },
+    {
+      question: 'The standard deviation of the discrete-hedging error scales approximately as:',
+      options: [
+        { text: '1/√N — quadrupling the number of rehedges roughly halves the error', correct: true },
+        { text: 'N — error grows with more rehedging' },
+        { text: '√N — error grows slowly with more rehedging' },
+        { text: 'Constant — rehedging frequency has no effect on error' },
+      ],
+      explanation: 'Aggregating the random ½·Γ·(ΔS)² leftovers over N intervals gives a total error whose std-dev falls like 1/√N. Rehedge 4× as often ⇒ error risk roughly halves.',
+    },
+    {
+      question: 'Why is "rehedge as often as physically possible" a bad strategy in the real world?',
+      options: [
+        { text: 'Transaction costs rise with N while error falls — total cost is U-shaped, so extreme frequency overpays', correct: true },
+        { text: 'Frequent hedging increases gamma' },
+        { text: 'It makes the position no longer delta-neutral' },
+        { text: 'Exchanges forbid rehedging more than once a day' },
+      ],
+      explanation: 'Error falls (∝ 1/√N) but every rehedge pays the spread, so cost rises (∝ √N). Their sum is U-shaped with a minimum at a finite frequency; pushing N toward infinity drives cost toward infinity for vanishing extra benefit.',
+    },
+    {
+      question: 'A delta-hedged book holds short calls. Implied volatility jumps 5 points but the stock is unchanged. What happens?',
+      options: [
+        { text: 'The book loses on vega — the short calls re-price higher — even though delta is zero', correct: true },
+        { text: 'Nothing — a delta-neutral book is immune to volatility changes' },
+        { text: 'The book gains, because higher volatility helps option sellers' },
+        { text: 'You must rehedge delta to fix it' },
+      ],
+      explanation: 'Delta hedging does nothing for vega. Short options are short vega, so a volatility spike re-prices them against you regardless of a zero delta. Neutralising vega needs other options, not more share trades.',
+    },
+  ]}
+/>
+
+Next, we stop treating the other Greeks as leaks to tolerate and start neutralising them on purpose — **gamma- and vega-hedging** with other options, so a book can be flattened against curvature and volatility, not just direction.

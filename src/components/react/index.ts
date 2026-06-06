@@ -334,3 +334,18 @@ export type { CrossSectionScatterProps, CrossSectionPoint } from '@/components/r
 
 export { FactorDecayChart, default as FactorDecayChartDefault } from '@/components/react/FactorDecayChart';
 export type { FactorDecayChartProps, FactorDecaySeries, FactorDecayPoint } from '@/components/react/FactorDecayChart';
+
+export { DeltaHedgeSim, default as DeltaHedgeSimDefault } from '@/components/react/DeltaHedgeSim';
+export type { DeltaHedgeSimProps } from '@/components/react/DeltaHedgeSim';
+
+export { HedgeErrorCurve, default as HedgeErrorCurveDefault } from '@/components/react/HedgeErrorCurve';
+export type { HedgeErrorCurveProps } from '@/components/react/HedgeErrorCurve';
+
+export { GammaScalpChart, default as GammaScalpChartDefault } from '@/components/react/GammaScalpChart';
+export type { GammaScalpChartProps } from '@/components/react/GammaScalpChart';
+
+export { VolSurfaceGrid, default as VolSurfaceGridDefault } from '@/components/react/VolSurfaceGrid';
+export type { VolSurfaceGridProps } from '@/components/react/VolSurfaceGrid';
+
+export { PnlAttributionBars, default as PnlAttributionBarsDefault } from '@/components/react/PnlAttributionBars';
+export type { PnlAttributionBarsProps } from '@/components/react/PnlAttributionBars';

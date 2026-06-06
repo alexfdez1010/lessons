@@ -130,7 +130,7 @@ quantitative relationship. Build after the learner has `investment-metrics`,
   shrinkage estimators, risk parity, the maximum-Sharpe & minimum-variance
   portfolios, constraints & transaction costs. _(deps: `portfolio-theory`,
   `factor-models`)_
-- [ ] **greeks-and-hedging** — managing an options book: delta/gamma/vega/theta/rho
+- [x] **greeks-and-hedging** _(2026-06-06)_ — managing an options book: delta/gamma/vega/theta/rho
   in depth, delta-neutral hedging, gamma scalping, the volatility surface, vega
   risk, P&L attribution. _(deps: `options-pricing`)_
 - [ ] **extreme-value-and-tails** — modeling the tail: fat tails vs Gaussian,
