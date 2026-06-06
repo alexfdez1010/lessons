@@ -106,7 +106,7 @@ quantitative relationship. Build after the learner has `investment-metrics`,
   Kelly, Kelly for continuous returns (f\* = μ/σ²), drawdown vs growth trade-off,
   multi-asset Kelly, ruin & over-betting. _(deps: `investment-metrics`,
   `portfolio-theory`; growth-curve + bet-sizing islands)_
-- [ ] **bayesian-finance** — Bayesian statistics & probability for finance: prior
+- [x] **bayesian-finance** _(2026-06-06)_ — Bayesian statistics & probability for finance: prior
   → likelihood → posterior, Bayes' rule worked on market events, conjugate
   priors, Bayesian updating of return/volatility estimates, shrinkage &
   Black–Litterman intuition, credible intervals vs confidence intervals, base
