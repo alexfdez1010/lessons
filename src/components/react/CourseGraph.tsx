@@ -111,6 +111,79 @@ function computeLayers(nodes: CourseNode[]): Map<string, number> {
 }
 
 /**
+ * Reorder the nodes **within each layer** to minimize edge crossings, the
+ * classic Sugiyama "barycenter" heuristic. Each node is repeatedly pulled
+ * toward the average horizontal position of its neighbors (both its
+ * prerequisites in earlier rows and the courses that depend on it in later
+ * rows), so children sit under their parents and arrows run mostly straight
+ * instead of fanning across the graph. Mutates `rows` in place.
+ *
+ * Positions are *normalized* to [0,1] within each row so a wide row and a
+ * narrow row exert comparable pull, and edges that skip layers (e.g. a
+ * layer-0 prerequisite of a layer-2 course) are honored just like adjacent
+ * ones. A few alternating down/up sweeps converge well past the point where
+ * extra passes change anything; ties fall back to the catalog `order` for a
+ * stable, deterministic layout.
+ */
+function orderRowsToReduceCrossings(rows: CourseNode[][], nodes: CourseNode[]): void {
+  const present = new Set(nodes.map((n) => n.slug));
+  // Adjacency: for each slug, its prerequisites and its dependents (kept to
+  // courses actually plotted, never self-referential).
+  const parents = new Map<string, string[]>();
+  const children = new Map<string, string[]>();
+  for (const n of nodes) {
+    const deps = (n.dependencies ?? []).filter((d) => present.has(d) && d !== n.slug);
+    parents.set(n.slug, deps);
+    for (const d of deps) {
+      const list = children.get(d) ?? [];
+      list.push(n.slug);
+      children.set(d, list);
+    }
+  }
+
+  // Stable starting order inside each row: catalog order, low → high.
+  const orderRank = new Map(nodes.map((n, i) => [n.slug, i]));
+  for (const row of rows) {
+    row.sort((a, b) => (orderRank.get(a.slug) ?? 0) - (orderRank.get(b.slug) ?? 0));
+  }
+
+  // Normalized x of every node in its current row (recomputed each sweep).
+  const posOf = (): Map<string, number> => {
+    const pos = new Map<string, number>();
+    for (const row of rows) {
+      const last = Math.max(1, row.length - 1);
+      row.forEach((n, i) => pos.set(n.slug, row.length === 1 ? 0.5 : i / last));
+    }
+    return pos;
+  };
+
+  const SWEEPS = 8;
+  for (let s = 0; s < SWEEPS; s++) {
+    const pos = posOf();
+    const downward = s % 2 === 0; // alternate: lean on parents, then on children.
+    for (const row of rows) {
+      const bary = new Map<string, number>();
+      for (const n of row) {
+        const neigh = downward
+          ? (parents.get(n.slug) ?? [])
+          : (children.get(n.slug) ?? []);
+        // Mix in the other direction too, lightly, so leaf/root rows still move.
+        const other = downward
+          ? (children.get(n.slug) ?? [])
+          : (parents.get(n.slug) ?? []);
+        const all = neigh.length ? neigh : other;
+        const vals = all.map((m) => pos.get(m)).filter((v): v is number => v !== undefined);
+        bary.set(n.slug, vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : pos.get(n.slug) ?? 0.5);
+      }
+      row.sort((a, b) => {
+        const d = (bary.get(a.slug) ?? 0) - (bary.get(b.slug) ?? 0);
+        return d !== 0 ? d : (orderRank.get(a.slug) ?? 0) - (orderRank.get(b.slug) ?? 0);
+      });
+    }
+  }
+}
+
+/**
  * Catalog graph island — renders every course as a card and draws an arrow
  * from each prerequisite to the courses that depend on it, roadmap.sh-style,
  * so the learning order and dependencies are obvious at a glance.
@@ -162,12 +235,7 @@ export function CourseGraph({
   // Group nodes into rows by layer, preserving array order within each row.
   const rows: CourseNode[][] = Array.from({ length: maxLayer + 1 }, () => []);
   for (const n of nodes) rows[layers.get(n.slug) ?? 0].push(n);
-  // Within each level, cluster courses by type (accent) so same-kind tracks
-  // sit together. Stable sort keeps the source order inside each cluster.
-  const ACCENT_RANK: Record<string, number> = { brand: 0, accent: 1 };
-  for (const row of rows) {
-    row.sort((a, b) => (ACCENT_RANK[a.accent ?? 'brand'] - ACCENT_RANK[b.accent ?? 'brand']));
-  }
+  orderRowsToReduceCrossings(rows, nodes);
 
   const measure = useCallback(() => {
     const container = containerRef.current;
