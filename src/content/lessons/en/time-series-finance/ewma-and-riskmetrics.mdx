@@ -1,0 +1,271 @@
+---
+title: "EWMA & RiskMetrics"
+description: "The exponentially weighted moving average for variance, the decay factor λ and its half-life, EWMA as the IGARCH special case, the RiskMetrics λ = 0.94 convention, and how EWMA compares to GARCH in practice."
+topic: "en/time-series-finance"
+order: 5
+minutes: 10
+updated: 2026-06-07
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, MindMap, TsEwmaDecay } from '@/components/react';
+
+GARCH is powerful, but fitting it means estimating three parameters by maximum likelihood — overkill when you just need a fast, robust volatility number for a risk report tonight. Enter the **exponentially weighted moving average (EWMA)**: a one-parameter volatility estimator that captures the most important feature — recent moves matter more than old ones — with arithmetic simple enough to do in a spreadsheet. It became the heart of J.P. Morgan's **RiskMetrics** system, the framework that brought Value-at-Risk to the whole industry. EWMA is the pragmatic volatility tool: not the most accurate, but the one a desk reaches for first.
+
+<MCQ
+  client:visible
+  pretest
+  question="A simple 100-day rolling standard deviation of returns suddenly drops a year after a crash, even though nothing happened that day. Why, and how does EWMA help?"
+  options={[
+    { text: 'The crash-day return falls out of the 100-day window, causing a "ghost" jump; EWMA weights fade gradually so old shocks decay smoothly instead of dropping off a cliff', correct: true },
+    { text: 'Rolling windows are always more accurate than EWMA; nothing is wrong' },
+    { text: 'The market genuinely became calmer that exact day for no reason' },
+    { text: 'EWMA cannot handle crashes, so this is unavoidable' },
+  ]}
+  explanation="An equal-weighted rolling window gives every day in it the same weight and zero outside — so when a big past return exits the window, the estimate lurches with no new information (the ghosting / plateau artifact). EWMA's exponentially decaying weights have no hard cutoff, so old shocks fade smoothly. That's its core advantage."
+/>
+
+## The problem with equal-weighted windows
+
+**Analogy.** A simple rolling-window volatility is like judging today's weather by averaging the last 100 days *equally* — a hurricane 99 days ago counts exactly as much as yesterday, and then *vanishes completely* the moment it ages out to day 101. Two artifacts follow: stale data gets equal say, and the estimate **jumps** when a big old observation exits the window even though nothing happened today.
+
+**The fix.** Common sense says recent returns should matter more than ancient ones, and influence should *fade*, not fall off a cliff. EWMA encodes exactly that: weights that decline geometrically into the past, with no hard cutoff.
+
+## EWMA: variance with fading memory
+
+**Definition.** The EWMA variance update is a weighted blend of yesterday's variance estimate and yesterday's squared return:
+$$\sigma_t^2 = \lambda\,\sigma_{t-1}^2 + (1 - \lambda)\,r_{t-1}^2,$$
+where $\lambda$ (lambda), the **decay factor**, sits between 0 and 1. Unrolling the recursion shows the geometric weighting explicitly:
+$$\sigma_t^2 = (1 - \lambda)\sum_{k=0}^{\infty}\lambda^{k}\,r_{t-1-k}^2.$$
+The return from $k$ days ago carries weight $(1-\lambda)\lambda^k$ — a geometric decay. The weights sum to 1 (a proper weighted average), and the most recent return always gets the biggest slice, $(1-\lambda)$.
+
+**What $\lambda$ controls.** $\lambda$ is the memory dial:
+
+- **High $\lambda$** (near 1, e.g. 0.97): weights decay slowly → long memory → smooth, slow-to-react estimate.
+- **Low $\lambda$** (e.g. 0.85): weights decay fast → short memory → jumpy, fast-reacting estimate that snaps to recent moves.
+
+**Worked example — one EWMA update.** Take $\lambda = 0.94$, yesterday's variance $\sigma_{t-1}^2 = 0.0004$ (vol $2\%$), and yesterday's return $r_{t-1} = -0.03$ ($-3\%$ day, $r_{t-1}^2 = 0.0009$):
+$$\sigma_t^2 = 0.94(0.0004) + 0.06(0.0009) = 0.000376 + 0.000054 = 0.00043.$$
+Today's vol estimate is $\sqrt{0.00043} \approx 0.0207 = 2.07\%$ — the $-3\%$ day nudged it up, weighted by $(1-\lambda) = 6\%$.
+
+<TsEwmaDecay
+  client:visible
+  title="EWMA weights: tuning the λ decay"
+  lambdaLabel="Decay (λ)"
+  lagLabel="Days ago (k)"
+  weightLabel="Weight"
+  halfLifeLabel="Half-life ≈"
+  caption="Each bar is the weight (1 − λ)·λ^k on the squared return from k days ago. Lower λ piles weight on the last few days (fast but jumpy); raise λ toward 1 and the weights spread into a long, smooth memory. The half-life readout shows how many days back hold half the total weight."
+/>
+
+## The half-life: how long is EWMA's memory?
+
+A clean way to summarize $\lambda$ is its **half-life** — the number of days back at which the weight has decayed to half the most recent day's. Solve $\lambda^h = 0.5$:
+$$h = \frac{\ln 0.5}{\ln \lambda}.$$
+
+**Worked examples.**
+
+- $\lambda = 0.94$ (RiskMetrics daily): $h = \ln(0.5)/\ln(0.94) = -0.693 / -0.0619 \approx 11.2$ days. Roughly the last two trading weeks hold half the weight.
+- $\lambda = 0.97$ (RiskMetrics monthly): $h = -0.693/-0.0305 \approx 22.8$ days — a longer memory, smoother estimate.
+- $\lambda = 0.85$: $h = -0.693/-0.1625 \approx 4.3$ days — very short memory, snaps to recent moves fast.
+
+The half-life turns an abstract decay factor into something interpretable: "this estimate effectively remembers about two weeks of returns."
+
+<FillBlank
+  client:visible
+  question="The EWMA decay factor."
+  text="In EWMA, the weight on the squared return from k days ago is (1 − λ)·λ^k, a {{geometric|linear|constant}} decay. A {{higher|lower|negative}} λ gives a longer memory and a smoother estimate, while a lower λ reacts faster. The half-life, ln(0.5)/ln(λ), tells you how many days back hold {{half|all|none}} of the most recent day's weight."
+  explanation="EWMA weights decay geometrically as (1−λ)λ^k. Higher λ → slower decay → longer memory → smoother. The half-life ln(0.5)/ln(λ) converts λ into an interpretable horizon: the lag at which the weight has halved relative to the latest observation."
+/>
+
+## EWMA is GARCH's special case (IGARCH)
+
+Here's the elegant connection to the previous lesson. Compare the two variance equations:
+
+- **GARCH(1,1):** $\sigma_t^2 = \omega + \alpha\,r_{t-1}^2 + \beta\,\sigma_{t-1}^2$.
+- **EWMA:** $\sigma_t^2 = (1-\lambda)\,r_{t-1}^2 + \lambda\,\sigma_{t-1}^2$.
+
+They are the *same equation* under three identifications: $\omega = 0$, $\alpha = 1 - \lambda$, and $\beta = \lambda$. So EWMA is exactly **GARCH(1,1) with $\omega = 0$ and $\alpha + \beta = (1-\lambda) + \lambda = 1$** — the **IGARCH** (integrated GARCH) case from the GARCH lesson.
+
+**The consequence:** because persistence $\alpha + \beta = 1$, EWMA has **no mean reversion** and **no long-run variance** (the formula $\omega/(1-\alpha-\beta)$ divides by zero). Volatility shocks are treated as *permanent*: EWMA never pulls its forecast back toward a long-run "climate" level the way a stationary GARCH does. Its multi-step forecast is just a flat line at the current estimate. That's the price of simplicity — and the key behavioral difference from GARCH.
+
+<MCQ
+  client:visible
+  question="EWMA is equivalent to a GARCH(1,1) with which parameter restrictions, and what is the main behavioral consequence?"
+  options={[
+    { text: 'ω = 0 and α + β = 1 (the IGARCH case) — so EWMA has no long-run variance and no mean reversion; volatility shocks are treated as permanent', correct: true },
+    { text: 'ω = 1 and α + β = 0 — so EWMA forecasts a constant variance forever' },
+    { text: 'α = 0 and β = 0 — so EWMA ignores all past data' },
+    { text: 'ω = 0 and α + β = 0.5 — so EWMA reverts faster than GARCH' },
+  ]}
+  explanation="Matching the equations gives ω = 0, α = 1−λ, β = λ, so α + β = 1: EWMA is IGARCH. With persistence exactly 1 there is no mean reversion and the long-run variance ω/(1−α−β) is undefined — EWMA treats volatility shocks as permanent and forecasts a flat line at the current level."
+/>
+
+## RiskMetrics and the famous λ = 0.94
+
+In 1994, J.P. Morgan published **RiskMetrics**, a methodology (and free dataset) for measuring market risk that put **Value-at-Risk (VaR)** on every desk. Its volatility engine was EWMA, and it shipped with a now-iconic default:
+
+- **$\lambda = 0.94$ for daily data**, and **$\lambda = 0.97$ for monthly data.**
+
+These weren't fitted per asset — they were *fixed constants*, chosen by RiskMetrics to work reasonably well across a huge cross-section of assets. That universality was the point: a single, simple, no-estimation-required recipe any institution could apply consistently to compute VaR.
+
+**How EWMA feeds VaR.** A one-day 99% VaR under a normal assumption is roughly
+$$\text{VaR} \approx 2.33 \times \sigma_t \times (\text{position value}),$$
+where $\sigma_t$ is the EWMA volatility estimate and $2.33$ is the 99% normal quantile. Because $\sigma_t$ updates daily with the EWMA recursion, the VaR *breathes* with the market — rising in turbulence, falling in calm — without re-fitting anything.
+
+**Worked example — daily VaR.** A \$10,000,000 position, EWMA daily vol $\sigma_t = 2\%$, 99% one-day VaR: $2.33 \times 0.02 \times 10\,000\,000 = 466\,000$ dollars. If a turbulent week pushes the EWMA estimate to $3\%$, the VaR rises to $2.33 \times 0.03 \times 10\,000\,000 = 699\,000$ dollars — automatically, just from the updated volatility.
+
+<MatchConcepts
+  client:visible
+  question="Match each EWMA / RiskMetrics concept to its meaning."
+  pairs={[
+    { term: 'Decay factor λ', definition: 'The memory dial: higher λ means slower decay, longer memory, smoother estimate' },
+    { term: 'Half-life ln(0.5)/ln(λ)', definition: 'The lag at which a return\'s weight has fallen to half the most recent day\'s' },
+    { term: 'λ = 0.94', definition: 'The RiskMetrics fixed default for daily data (half-life about 11 days)' },
+    { term: 'IGARCH equivalence', definition: 'EWMA equals GARCH(1,1) with ω = 0 and α + β = 1 — no mean reversion' },
+    { term: 'Value-at-Risk', definition: 'A loss threshold (e.g. 99% one-day) computed from the EWMA volatility estimate' },
+  ]}
+  explanation="λ tunes memory; the half-life interprets it in days; 0.94 is the RiskMetrics daily default; EWMA is the IGARCH special case with no long-run variance; VaR scales the EWMA volatility by a normal quantile and the position size."
+/>
+
+## EWMA vs GARCH: when to use which
+
+| Feature | EWMA | GARCH(1,1) |
+|---|---|---|
+| Parameters | one ($\lambda$, often fixed) | three ($\omega, \alpha, \beta$), estimated |
+| Mean reversion | none ($\alpha+\beta=1$) | yes (if $\alpha+\beta<1$) |
+| Long-run variance | undefined | $\omega/(1-\alpha-\beta)$ |
+| Multi-step forecast | flat at current level | reverts to long-run anchor |
+| Estimation | none (recursive) | maximum likelihood |
+| Best for | fast, robust, consistent daily VaR | accurate forecasts, term structure, research |
+
+**The trade-off.** EWMA wins on **simplicity, speed, and robustness**: no fitting, no estimation risk, transparent, reproducible across thousands of assets — ideal for production risk systems and short-horizon VaR. GARCH wins on **accuracy and structure**: it captures mean reversion, produces a proper volatility term structure for multi-horizon forecasts, and (with t-errors or asymmetry) fits the data better. The rule of thumb: **EWMA for fast, uniform, short-horizon risk numbers; GARCH when forecast accuracy and the volatility term structure matter** (options pricing, longer horizons, research).
+
+<Callout variant="warning" title="EWMA's blind spot: no mean reversion bites at longer horizons">
+Because EWMA has no long-run anchor, its multi-step volatility forecast is just *today's estimate, flat*. After a crash it will keep predicting crash-level volatility indefinitely; after a calm spell it predicts calm forever. For one-day VaR that's fine — tomorrow really does look like today. But for multi-week or option-pricing horizons, ignoring mean reversion can badly over- or under-state risk. That's precisely when you switch to a stationary GARCH whose forecast decays back toward the long-run level.
+</Callout>
+
+<Reveal client:visible>
+  <details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+    <summary className="cursor-pointer font-medium">If EWMA is just a restricted GARCH, why did it become the industry standard instead of GARCH?</summary>
+
+    Three pragmatic reasons, all about *operational robustness* over statistical optimality. First, **no estimation means no estimation risk**: GARCH parameters are fitted by maximum likelihood, which can fail to converge, land on unstable values ($\alpha+\beta>1$), or wobble month to month as the window rolls — a nightmare when you must produce the same risk number consistently across 5,000 instruments every night. EWMA's fixed $\lambda$ is deterministic and reproducible. Second, **transparency and auditability**: a regulator or risk committee can verify an EWMA number by hand; a fitted GARCH is a black box by comparison. Third, **uniformity**: RiskMetrics' whole pitch was a *single, consistent* methodology applicable to every asset class at once, so risks aggregate sensibly across the firm — fixed-$\lambda$ EWMA delivers that, per-asset GARCH fitting does not. The cost is real (no mean reversion, worse multi-horizon forecasts), but for the specific job of daily, firm-wide, defensible VaR, robustness beat accuracy. Research desks and option pricers, with different needs, still reach for GARCH.
+  </details>
+</Reveal>
+
+<MCQ
+  client:visible
+  question="For computing a fast, consistent, firm-wide ONE-DAY VaR across thousands of positions every night, which volatility estimator fits the job best and why?"
+  options={[
+    { text: 'EWMA — its single fixed λ needs no per-asset estimation, is reproducible and auditable, and at a one-day horizon its lack of mean reversion barely matters', correct: true },
+    { text: 'A full GARCH(1,1) fitted separately to each of the thousands of assets every night, for maximum accuracy' },
+    { text: 'A 100-day equal-weighted rolling window, to avoid any decay parameter' },
+    { text: 'A constant historical volatility, ignoring recent data entirely' },
+  ]}
+  explanation="EWMA's fixed λ requires no fitting, so it's fast, deterministic, reproducible, and auditable across thousands of instruments — exactly what firm-wide nightly VaR needs. Its main weakness (no mean reversion) is negligible at a one-day horizon. Per-asset GARCH fitting is accurate but operationally fragile at that scale; equal-weighted windows ghost; constant vol ignores clustering."
+/>
+
+## Putting it together
+
+**EWMA** estimates variance as a geometrically decaying weighted average of past squared returns, $\sigma_t^2 = \lambda\sigma_{t-1}^2 + (1-\lambda)r_{t-1}^2$, fixing the two flaws of equal-weighted windows: it weights recent returns more and lets old shocks **fade smoothly** rather than dropping off a cliff (the ghosting artifact). The single parameter $\lambda$ is the **memory dial** — higher means smoother and longer-memoried — and its **half-life $\ln(0.5)/\ln\lambda$** makes that memory interpretable in days. Algebraically, EWMA is exactly **GARCH(1,1) with $\omega = 0$ and $\alpha+\beta=1$** (IGARCH), so it has **no mean reversion and no long-run variance** — its multi-step forecast is a flat line. **RiskMetrics** built VaR on EWMA with the iconic fixed defaults $\lambda = 0.94$ (daily) and $0.97$ (monthly), prizing a single, no-fitting, firm-wide-consistent recipe. The trade-off is clean: **EWMA for fast, robust, short-horizon, uniform risk numbers; GARCH when accuracy, mean reversion, and the volatility term structure matter.**
+
+<MindMap
+  client:visible
+  title="EWMA & RiskMetrics — the whole picture"
+  caption="EWMA fades memory geometrically via λ; it's IGARCH with no mean reversion; RiskMetrics fixed λ = 0.94 for firm-wide VaR; GARCH wins on accuracy and horizon."
+  root={{
+    label: 'EWMA & RiskMetrics',
+    children: [
+      {
+        label: 'The problem with windows',
+        children: [
+          { label: 'Equal weights treat old = recent' },
+          { label: 'Ghosting jump when a big day exits' },
+          { label: 'EWMA fades smoothly, no hard cutoff' },
+        ],
+      },
+      {
+        label: 'EWMA mechanics',
+        children: [
+          { label: 'σ²_t = λσ²_{t−1} + (1−λ)r²_{t−1}' },
+          { label: 'Weight on k days ago = (1−λ)λ^k' },
+          { label: 'λ is the memory dial (higher = smoother)' },
+          { label: 'Half-life = ln(0.5)/ln(λ)' },
+        ],
+      },
+      {
+        label: 'IGARCH equivalence',
+        children: [
+          { label: 'EWMA = GARCH with ω=0, α+β=1' },
+          { label: 'No mean reversion' },
+          { label: 'No long-run variance; flat multi-step forecast' },
+        ],
+      },
+      {
+        label: 'RiskMetrics & VaR',
+        children: [
+          { label: 'λ = 0.94 daily, 0.97 monthly (fixed)' },
+          { label: 'VaR ≈ 2.33·σ·position (99% normal)' },
+          { label: 'VaR breathes with the EWMA estimate' },
+        ],
+      },
+      {
+        label: 'EWMA vs GARCH',
+        children: [
+          { label: 'EWMA: simple, fast, robust, auditable' },
+          { label: 'GARCH: accurate, mean-reverting, term structure' },
+          { label: 'EWMA for short-horizon firm-wide VaR' },
+          { label: 'GARCH for accuracy and longer horizons' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Recap: EWMA & RiskMetrics"
+  questions={[
+    {
+      question: 'What advantage does EWMA have over an equal-weighted rolling-window volatility?',
+      options: [
+        { text: 'EWMA weights recent returns more and lets old shocks fade geometrically, avoiding the "ghosting" jump when a large past return drops out of a fixed window', correct: true },
+        { text: 'EWMA uses no past data at all, so it is always current' },
+        { text: 'EWMA is always more accurate at every horizon without exception' },
+        { text: 'EWMA guarantees a normal distribution of returns' },
+      ],
+      explanation: 'An equal-weighted window gives every in-window day the same weight and zero outside, so the estimate lurches when a big old return exits (ghosting). EWMA decays weights geometrically with no hard cutoff, so recent data dominates and old shocks fade smoothly.',
+    },
+    {
+      question: 'Using λ = 0.97, roughly what is the half-life of EWMA\'s weights?',
+      options: [
+        { text: 'About 23 days — ln(0.5)/ln(0.97) ≈ −0.693/−0.0305 ≈ 22.8', correct: true },
+        { text: 'About 0.97 days — the half-life equals λ' },
+        { text: 'About 3 days — the half-life equals 1/(1−λ)/10' },
+        { text: 'About 100 days — EWMA always remembers 100 days' },
+      ],
+      explanation: 'Half-life = ln(0.5)/ln(λ) = −0.693/ln(0.97) = −0.693/−0.0305 ≈ 22.8 days. A higher λ (0.97 vs 0.94) means a longer half-life and a smoother, longer-memoried estimate.',
+    },
+    {
+      question: 'EWMA corresponds to a GARCH(1,1) with which restrictions, and what does that imply?',
+      options: [
+        { text: 'ω = 0 and α + β = 1 (IGARCH): no long-run variance and no mean reversion, so multi-step forecasts stay flat at the current level', correct: true },
+        { text: 'ω large and α + β = 0: forecasts revert instantly to a fixed baseline' },
+        { text: 'α = β = 0.5 with ω = 1: faster mean reversion than GARCH' },
+        { text: 'No relationship — EWMA and GARCH are unrelated models' },
+      ],
+      explanation: 'Matching equations: ω = 0, α = 1−λ, β = λ, so α + β = 1 — the IGARCH case. Persistence of exactly 1 means no mean reversion and an undefined long-run variance, so EWMA\'s multi-step forecast is a flat line at today\'s estimate.',
+    },
+    {
+      question: 'Spot the trap. A team uses EWMA (λ = 0.94) to forecast volatility 60 trading days ahead for option pricing, right after a market crash. What is the risk?',
+      options: [
+        { text: 'EWMA has no mean reversion, so it will keep forecasting crash-level volatility for all 60 days, badly overstating longer-horizon risk; a stationary GARCH that reverts to the long-run level is more appropriate', correct: true },
+        { text: 'No risk — EWMA is optimal at every horizon' },
+        { text: 'EWMA will forecast zero volatility after 60 days' },
+        { text: 'The only issue is that λ = 0.94 is too low for any use' },
+      ],
+      explanation: 'EWMA is IGARCH: its multi-step forecast is flat at the current level with no reversion. Post-crash, that means predicting elevated volatility 60 days out as if the storm never abates — overstating long-horizon risk. GARCH, whose forecast decays toward the long-run variance, fits multi-horizon and option-pricing needs far better.',
+    },
+  ]}
+/>
+
+Next up — **backtesting pitfalls** — we shift from building models to *trusting* them. Look-ahead bias, overfitting, and data-snooping are the traps that make a strategy look brilliant on history and fail live. The final lesson before the exam is about not fooling yourself.

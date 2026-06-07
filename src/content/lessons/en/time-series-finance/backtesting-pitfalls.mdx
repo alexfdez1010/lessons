@@ -1,0 +1,264 @@
+---
+title: "Backtesting Pitfalls"
+description: "Look-ahead bias, overfitting, multiple testing and data-snooping, in-sample vs out-of-sample, and walk-forward validation — the traps that make a strategy look brilliant on history and fail live."
+topic: "en/time-series-finance"
+order: 6
+minutes: 12
+updated: 2026-06-07
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, MindMap, TsOverfitCurve } from '@/components/react';
+
+You can now model the mean (ARIMA) and the variance (GARCH/EWMA) of a return series. The last and most dangerous step is *evaluating* a strategy built on those models — because this is where smart people fool themselves most reliably. A **backtest** runs a strategy on historical data to estimate how it would have performed. Done honestly, it's invaluable. Done carelessly, it's a machine for generating confident, profitable-looking, completely worthless strategies. This lesson is about the three deadliest traps — **look-ahead bias, overfitting, and data-snooping** — and the discipline that defends against them. The skill here isn't building a strategy; it's *not believing a good-looking backtest you shouldn't*.
+
+<MCQ
+  client:visible
+  pretest
+  question="A quant shows you a strategy with a backtested Sharpe ratio of 4.0 and a smooth, almost straight-up equity curve over 15 years. What is your FIRST reaction?"
+  options={[
+    { text: 'Deep suspicion — a Sharpe that high with such a clean curve usually signals look-ahead bias, overfitting, or data-snooping, not a real edge; demand to see the out-of-sample and the methodology', correct: true },
+    { text: 'Immediate excitement — fund it at maximum leverage right away' },
+    { text: 'Indifference — Sharpe ratios are meaningless and tell you nothing' },
+    { text: 'Mild interest — a Sharpe of 4.0 is completely typical for real strategies' },
+  ]}
+  explanation="Real, capacity-meaningful strategies rarely sustain a Sharpe near 4.0; such results almost always mean a bug (look-ahead bias), a model tuned to noise (overfitting), or the best of many tried (data-snooping). The correct instinct is suspicion and a demand for honest out-of-sample evidence — the entire subject of this lesson."
+/>
+
+## Look-ahead bias: using tomorrow's news today
+
+**Analogy.** Look-ahead bias is betting on a horse race after watching the replay. Of course you win — you used information that wasn't available at decision time. A backtest with look-ahead bias does the same: it lets the strategy "know" something it couldn't have known at the moment it traded.
+
+**Definition.** **Look-ahead bias** is any use of information in a backtest that would not have been available at the time of the simulated decision. It silently inflates performance and is the most common — and most embarrassing — backtest bug.
+
+**Common sources:**
+
+- **Using the close to trade at the open.** Deciding to buy "today" based on today's *closing* price, but booking the trade at today's open — you used a price from the future.
+- **Restated / revised data.** Fundamentals (earnings, GDP) get revised after their first release. Backtesting with the *final revised* numbers uses figures that didn't exist on the original date.
+- **Survivorship bias.** Testing today's index constituents over history silently excludes the companies that went bankrupt or were delisted — you only kept the survivors, so the backtest never "buys" the losers that actually existed.
+- **Point-in-time index membership.** Assuming a stock was in the S&P 500 before it was actually added.
+
+**Worked example — the close-to-open trap.** A "momentum" rule buys when today's return exceeds +2% and you record the entry at *today's open*. But you only *know* today's return at today's *close*. So you've entered before the signal existed — effectively buying at the open on days you already know closed up strongly. Fix it: act at the *next* open (or next close) after the signal completes. Done correctly, the dazzling edge usually shrinks dramatically — because the original "edge" was just look-ahead.
+
+<Callout variant="warning" title="The one-bar lag rule">
+The simplest defense: a signal computed using data up to and including time $t$ may only be traded at $t+1$ or later, at prices realized *after* the signal is fully known. Never let a decision touch a price or data point from its own bar or the future. Most look-ahead bugs are a single mis-aligned timestamp.
+</Callout>
+
+## Overfitting: fitting the noise, not the signal
+
+**Analogy.** Overfitting is memorizing the answer key instead of learning the subject. A student who memorizes last year's exam aces *that* exam and fails the new one. An overfit strategy "memorizes" the random quirks of the historical sample — quirks that won't repeat — and so it shines in the backtest and collapses live.
+
+**Definition.** **Overfitting** is tuning a model so closely to the historical data that it captures noise (idiosyncratic, non-repeating randomness) rather than signal (the persistent, repeatable structure). The more parameters and the more tuning, the easier it is to fit noise.
+
+**The signature.** As you add complexity — more parameters, more rules, more conditions — **in-sample** (backtest) performance keeps improving, but **out-of-sample** (live / unseen) performance rises to a sweet spot and then *degrades*. The widening gap between the two is the overfitting you're paying for.
+
+<TsOverfitCurve
+  client:visible
+  title="The overfitting gap: backtest soars, live collapses"
+  complexityLabel="Model complexity / strategies tried"
+  inSampleLabel="In-sample (backtest)"
+  outSampleLabel="Out-of-sample (live)"
+  performanceLabel="Apparent performance"
+  caption="Add parameters or test more variants on the same history and the backtest curve keeps climbing — it's memorizing noise. The live curve rises to a sweet spot, then falls off a cliff. The gap between the two curves is exactly the overfitting you'll pay for in production."
+/>
+
+**Worked example — the parameter count tell.** Strategy A has 2 parameters and a backtest Sharpe of 1.2. Strategy B has 14 parameters, three regime filters, and an asset-specific stop-loss tuned per name, with a backtest Sharpe of 3.5. Which do you trust? **A.** B has so many degrees of freedom that it can curve-fit almost any history; its 3.5 is far more likely to be noise-fitting than a real edge. Parsimony — the fewest parameters that work — is the single best defense, the same lesson as choosing ARIMA order by BIC.
+
+<MCQ
+  client:visible
+  question="As you add more parameters and rules to a strategy, in-sample backtest performance keeps rising while out-of-sample performance peaks then falls. What is happening?"
+  options={[
+    { text: 'Overfitting — the extra complexity is fitting non-repeating noise in the historical sample, which boosts the backtest but hurts live performance; the in-sample/out-of-sample gap is the warning', correct: true },
+    { text: 'The strategy is genuinely improving; always add as many parameters as possible' },
+    { text: 'A data error; out-of-sample performance can never differ from in-sample' },
+    { text: 'Look-ahead bias, which only ever affects out-of-sample results' },
+  ]}
+  explanation="Rising in-sample with peaking-then-falling out-of-sample is the textbook overfitting signature. Past the sweet spot, added complexity captures noise that won't recur, so the backtest improves while live performance degrades. The growing gap between the two curves is the diagnostic."
+/>
+
+## Multiple testing & data-snooping: torturing the data
+
+**Analogy.** Test 20 useless coins for "fairness" at the 5% significance level and, on average, *one* will look significantly biased — by pure chance. Report only that coin and you've "discovered" a fake effect. Data-snooping is exactly this: trying many strategies on the same data and reporting the winner as if it were the only thing you tried.
+
+**Definition.** **Multiple testing** (a.k.a. **data-snooping** or **p-hacking**) is the inflation of false positives that occurs when you evaluate many hypotheses against the same dataset and select the best. The more you try, the more likely the "best" is just the luckiest random fluke.
+
+**The math of false discovery.** If a single useless strategy has a 5% chance of looking "significant" by luck, then testing $N$ independent useless strategies gives a probability of at least one false positive of
+$$1 - (0.95)^{N}.$$
+
+**Worked example — the backtest factory.** A researcher tries 100 strategy variants on one price history:
+$$1 - (0.95)^{100} = 1 - 0.0059 \approx 0.994.$$
+A **99.4%** chance that at least one variant looks significant at 5% — *even if every single one is worthless*. Report only the winner and you've manufactured a "discovery" out of pure noise. Try 1,000 variants (trivial with a parameter grid) and you're essentially *guaranteed* several gorgeous, meaningless backtests.
+
+**Defenses:**
+
+- **Deflate for the number of trials.** A Bonferroni correction divides your significance threshold by $N$; the **deflated Sharpe ratio** explicitly discounts a Sharpe for how many strategies were tried. Always ask: *how many did you test before showing me this one?*
+- **Pre-register the hypothesis.** Decide the strategy *before* touching the data — economic reasoning first, test second.
+- **Demand a clean holdout** the strategy never touched during development.
+
+<Callout variant="warning" title="The killer question: 'How many did you try?'">
+A single backtested Sharpe is meaningless without the denominator. A Sharpe of 2.0 from one pre-specified idea is impressive; the same 2.0 selected as the best of 5,000 parameter combinations is expected noise. The number of trials is the most under-reported and most important statistic in any backtest. If someone can't tell you, assume the worst.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Multiple testing and false discovery."
+  text="If a useless strategy has a 5% chance of looking significant by luck, testing many strategies on the same data {{inflates|eliminates|fixes}} the chance of a false positive. With N independent tries the probability of at least one false 'discovery' is 1 − 0.95^N, which approaches {{certainty|zero|0.05}} as N grows. The crucial under-reported number is {{how many strategies were tried|the average return|the start date}}."
+  explanation="Each test carries a false-positive chance, so trying many on the same data makes a spurious winner almost inevitable: 1 − 0.95^N → 1. The single most important and most-hidden statistic is the number of trials behind the reported winner — without it, a backtested Sharpe can't be judged."
+/>
+
+## In-sample vs out-of-sample, and walk-forward
+
+The structural defense against overfitting and snooping is to **never judge a strategy on the data used to build it.** Split your history:
+
+- **In-sample (training):** the data you use to design, fit, and tune the strategy.
+- **Out-of-sample (test / holdout):** data the strategy has *never seen*, used *once* to estimate honest performance.
+
+The out-of-sample result is your unbiased estimate. The cardinal sin is *peeking*: if you test on the holdout, see a poor result, tweak the strategy, and re-test, the holdout is now contaminated — you've turned it into in-sample data and re-introduced snooping.
+
+**Walk-forward analysis** is the gold standard, especially for time series where regimes shift. Instead of one fixed split, you roll through time:
+
+1. Train on a window (say years 1–3), test on the next period (year 4).
+2. Slide the window forward: train on years 2–4, test on year 5.
+3. Repeat across the whole history, stitching the out-of-sample test periods into one continuous track record.
+
+This mimics live trading — you only ever use the past to predict the future — and it tests the strategy across *many* market regimes, not one lucky stretch. It also exposes strategies that only worked in a single era.
+
+**Worked example — anchored vs rolling.** Ten years of data, walk-forward with a 3-year train / 1-year test:
+
+- Train 2014–2016 → test 2017.
+- Train 2015–2017 → test 2018.
+- … → test 2023.
+
+You get **seven** independent out-of-sample years stitched together — a far more honest equity curve than a single 2014–2023 backtest, and one that reveals whether the edge survives across the 2018 selloff, the 2020 crash, and the 2022 bear market, not just an easy bull run.
+
+<MatchConcepts
+  client:visible
+  question="Match each backtesting concept to its precise meaning."
+  pairs={[
+    { term: 'Look-ahead bias', definition: 'Using information in the backtest that was not available at the simulated decision time' },
+    { term: 'Overfitting', definition: 'Tuning a model so tightly to history that it captures noise rather than repeatable signal' },
+    { term: 'Data-snooping', definition: 'Trying many strategies on the same data and reporting the luckiest winner as if it were the only one' },
+    { term: 'Out-of-sample', definition: 'Data the strategy never saw during development, used once for an honest performance estimate' },
+    { term: 'Walk-forward', definition: 'Rolling train/test windows through time, stitching out-of-sample periods into one track record' },
+  ]}
+  explanation="Look-ahead = future info leaking in; overfitting = fitting noise via excess complexity; data-snooping = selection bias from many trials; out-of-sample = untouched holdout for honest evaluation; walk-forward = rolling-window validation that mimics live trading across regimes."
+/>
+
+<Reveal client:visible>
+  <details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+    <summary className="cursor-pointer font-medium">If even out-of-sample testing can be gamed by re-tweaking, how does anyone ever trust a backtest?</summary>
+
+    You never fully trust *one* backtest — you build trust from converging evidence and disciplined process. Five habits separate honest research from self-deception. First, **economic priors before data**: a strategy should rest on a plausible reason it *should* work (a risk premium, a structural friction, a behavioral bias) — not just a curve that fit. A snooped pattern with no story is almost certainly noise. Second, **track and deflate for trials**: record every variant you test and discount the winner's statistics accordingly (deflated Sharpe, Bonferroni). Third, **a true lockbox holdout**: a final slice of data touched exactly once, after the strategy is frozen — peek and it's burned. Fourth, **walk-forward across regimes**, so the edge must survive bull, bear, and crisis, not one lucky era. Fifth, **paper-trade live** before risking capital: genuinely out-of-sample future data is the only fully un-gameable test. Even then you size positions assuming the live Sharpe will be a fraction of the backtest — because it almost always is. The goal isn't a perfect test; it's a process honest enough that you're not the easiest person to fool.
+  </details>
+</Reveal>
+
+<MCQ
+  client:visible
+  question="Why is walk-forward analysis generally preferred over a single fixed in-sample/out-of-sample split for evaluating a trading strategy?"
+  options={[
+    { text: 'It rolls train/test windows through time, mimicking live trading and testing the strategy across many market regimes rather than one lucky stretch, yielding a more honest stitched out-of-sample record', correct: true },
+    { text: 'It uses the entire dataset for training, maximizing in-sample fit' },
+    { text: 'It eliminates the need for any out-of-sample data at all' },
+    { text: 'It guarantees the strategy will be profitable in the future' },
+  ]}
+  explanation="Walk-forward repeatedly trains on a past window and tests on the following unseen period, sliding forward through the whole history. This always uses past-to-predict-future (no look-ahead), tests across multiple regimes (not one era), and stitches many out-of-sample periods into a far more honest performance estimate than a single split."
+/>
+
+## Putting it together
+
+A backtest is only as trustworthy as the discipline behind it, and three traps make good-looking results worthless. **Look-ahead bias** leaks future information into past decisions — via close-to-open mistiming, restated data, survivorship, or point-in-time errors — and the one-bar-lag rule (trade only on data fully known before the price you transact at) is the defense. **Overfitting** tunes a model to non-repeating noise; its signature is rising in-sample performance with peaking-then-falling out-of-sample performance, and parsimony (fewest parameters that work) is the cure. **Data-snooping** inflates false positives by trying many strategies and reporting the luckiest — with $1 - 0.95^N$ approaching certainty as trials grow — so you must track the number of trials, deflate the Sharpe, and pre-specify hypotheses. The structural safeguards are a clean **out-of-sample holdout** judged exactly once (never peek-and-tweak) and **walk-forward analysis** that rolls through time, mimicking live trading across many regimes. The deepest lesson: a backtest's job is to *try to kill* a strategy, not to flatter it — and the researcher's job is to not be the easiest person they fool.
+
+<MindMap
+  client:visible
+  title="Backtesting pitfalls — the whole picture"
+  caption="Look-ahead leaks the future; overfitting fits noise; data-snooping reports the luckiest of many; out-of-sample and walk-forward are the defenses."
+  root={{
+    label: 'Backtesting pitfalls',
+    children: [
+      {
+        label: 'Look-ahead bias',
+        children: [
+          { label: 'Using info not available at decision time' },
+          { label: 'Close-to-open mistiming' },
+          { label: 'Restated data; survivorship bias' },
+          { label: 'Defense: one-bar lag rule' },
+        ],
+      },
+      {
+        label: 'Overfitting',
+        children: [
+          { label: 'Fitting noise, not signal' },
+          { label: 'In-sample up, out-of-sample peaks then falls' },
+          { label: 'More parameters → more curve-fitting' },
+          { label: 'Defense: parsimony (fewest params)' },
+        ],
+      },
+      {
+        label: 'Data-snooping',
+        children: [
+          { label: 'Many trials inflate false positives' },
+          { label: '1 − 0.95^N → certainty as N grows' },
+          { label: 'Report only the luckiest winner' },
+          { label: 'Defense: track trials, deflate Sharpe, pre-register' },
+        ],
+      },
+      {
+        label: 'Honest validation',
+        children: [
+          { label: 'In-sample to build, out-of-sample to judge' },
+          { label: 'Never peek-and-tweak the holdout' },
+          { label: 'Walk-forward: rolling train/test through time' },
+          { label: 'Survive many regimes; paper-trade live' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Recap: backtesting pitfalls"
+  questions={[
+    {
+      question: 'A backtest generates a buy signal from today\'s closing price but books the trade at today\'s open. What error is this, and what is the fix?',
+      options: [
+        { text: 'Look-ahead bias — it uses the close (known only at end of day) to trade at the open (earlier); fix it by trading at the next available price after the signal is fully known', correct: true },
+        { text: 'Overfitting — fix it by adding more parameters' },
+        { text: 'Data-snooping — fix it by testing more strategies' },
+        { text: 'No error — trading at the open on a closing signal is standard practice' },
+      ],
+      explanation: 'The signal depends on the close, which is not known until end of day, yet the trade is booked at the earlier open — using future information. That is look-ahead bias. The fix is the one-bar-lag rule: transact only at prices realized after the signal is fully observable, e.g. the next open or close.',
+    },
+    {
+      question: 'A researcher tests 200 strategy variants on the same data and proudly presents the single best one. Why is its impressive Sharpe ratio suspect?',
+      options: [
+        { text: 'With 200 trials, the probability that at least one worthless strategy looks significant by luck is enormous (1 − 0.95^200 ≈ 1) — the "winner" is likely the luckiest fluke, not a real edge', correct: true },
+        { text: 'Testing many variants always reduces false positives, so it is not suspect at all' },
+        { text: 'The Sharpe ratio cannot be computed from a backtest' },
+        { text: 'The only problem is that 200 is too few trials to be reliable' },
+      ],
+      explanation: 'This is data-snooping. Each test has a false-positive chance, so across 200 trials a spurious winner is nearly guaranteed: 1 − 0.95^200 ≈ 1. Reporting only the best, without disclosing the number of trials or deflating for them, manufactures a fake discovery from noise.',
+    },
+    {
+      question: 'Which pattern across in-sample and out-of-sample results is the hallmark of overfitting?',
+      options: [
+        { text: 'In-sample performance keeps rising with complexity while out-of-sample performance rises to a peak and then declines, opening a widening gap', correct: true },
+        { text: 'Both in-sample and out-of-sample performance rise together without limit' },
+        { text: 'Out-of-sample performance always exceeds in-sample performance' },
+        { text: 'In-sample and out-of-sample performance are always identical' },
+      ],
+      explanation: 'Overfitting shows as a divergence: added complexity keeps improving the in-sample (training) fit by capturing noise, but out-of-sample (unseen) performance peaks then falls because that noise does not recur. The growing gap between the two curves is the diagnostic.',
+    },
+    {
+      question: 'Spot the trap. A team gets a weak result on their out-of-sample holdout, tweaks the strategy, re-tests on the same holdout, and repeats until it looks good. What have they done?',
+      options: [
+        { text: 'Contaminated the holdout — by repeatedly testing and tweaking against it, they turned it into in-sample data and re-introduced data-snooping; the "out-of-sample" result is no longer honest', correct: true },
+        { text: 'Performed correct walk-forward analysis' },
+        { text: 'Eliminated look-ahead bias by using the holdout repeatedly' },
+        { text: 'Nothing wrong — reusing the holdout makes the estimate more robust' },
+      ],
+      explanation: 'A holdout is only valid if judged ONCE. Peeking, tweaking, and re-testing against it leaks information from the holdout back into the design, effectively making it training data — that is data-snooping all over again. An honest holdout must be touched exactly once, after the strategy is frozen.',
+    },
+  ]}
+/>
+
+That completes the toolkit — modeling the mean, modeling the variance, and the discipline to evaluate it all honestly. Next is the **final exam**: a graded, one-shot run across the whole topic, from stationarity and unit roots through ACF/PACF, ARIMA, GARCH, EWMA, and the backtesting traps. No hints, no going back — prove the structure stuck.

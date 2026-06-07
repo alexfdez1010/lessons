@@ -1,0 +1,273 @@
+---
+title: "Monte Carlo Ruin Curves & Stops"
+description: "Estimating ruin probability by simulation, plotting ruin curves against risk-per-trade, and the stop-loss arithmetic that turns a risk budget into an exact position size."
+topic: "en/risk-of-ruin"
+order: 6
+minutes: 12
+updated: 2026-06-07
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, MindMap, RorMonteCarloRuin, RorStopLossSizer } from '@/components/react';
+
+The clean risk-of-ruin formula assumed independent, even-money bets with a known edge. Real life has fat tails, correlated positions, drifting edges, and lumpy payoffs the formula can't digest. So practitioners reach for the tool from the Monte Carlo topic: **simulate the strategy thousands of times and just count how often it blows up.** This lesson uses simulation to estimate ruin probability, plots the **ruin curve** that maps risk-per-trade to blow-up probability, and closes the loop with the **stop-loss arithmetic** that converts a risk budget into the exact position size to trade — the practical machinery every risk desk runs before sizing anything.
+
+<MCQ
+  client:visible
+  pretest
+  question="Why do practitioners estimate risk of ruin by Monte Carlo simulation rather than always using the closed-form formula?"
+  options={[
+    { text: 'Because real strategies break the formula\'s assumptions — fat tails, correlated trades, varying bet sizes, lumpy payoffs — and simulation handles all of them by brute force', correct: true },
+    { text: 'Because the formula is always wrong and simulation is always right' },
+    { text: 'Because simulation requires no assumptions about the strategy at all' },
+    { text: 'Because closed-form formulas cannot produce a probability' },
+  ]}
+  explanation="The (q/p)^N formula assumes independent, identically-sized, even-money bets with a known stationary edge — assumptions real strategies routinely violate. Monte Carlo makes no such structural demands: you simulate the actual return process (fat tails, correlations, position sizing rules and all) thousands of times and count the fraction that breach the ruin barrier. It still needs a model of returns, but it digests complexity the formula can't."
+/>
+
+## Estimating ruin by simulation
+
+**Analogy.** You can't know your real risk of ruin from a single life — you only get to live one. Monte Carlo gives you a thousand parallel lives: run the strategy through a thousand plausible futures, see how many end in ruin, and the *fraction* that blow up is your estimated probability. It's the law of large numbers turned into a risk gauge.
+
+**The procedure.**
+1. **Model the per-trade outcome** — from your edge: win probability $p$, payoff distribution (or resample your actual historical trade R-multiples).
+2. **Set a bet-sizing rule** — e.g. risk a fixed fraction $f$ of equity per trade.
+3. **Define the ruin barrier** — the equity level at which you're out (50% drawdown, redemption trigger, zero).
+4. **Simulate one path** — walk the equity through $T$ trades, flagging the path as *ruined* if it ever touches the barrier.
+5. **Repeat thousands of times** and compute $\text{RoR} \approx \dfrac{\text{ruined paths}}{\text{total paths}}$.
+
+**Worked example.** Simulate 10,000 paths of a system with $p = 0.55$, even money, risking 4% per trade over 120 trades, ruin barrier at 50% of starting equity. Suppose 1,820 paths breach the barrier. Then
+$$\text{RoR} \approx \frac{1\,820}{10\,000} = 0.182 = 18.2\%.$$
+An 18% chance of a ruinous drawdown — from a *winning* system — purely because 4% per trade is too aggressive. Crucially, simulation also hands you the *whole distribution* for free: the median drawdown, the time-under-water, the spread of final equities — not just the single ruin number.
+
+**The accuracy caveat.** A simulated probability has its own sampling error of roughly $\sqrt{\text{RoR}(1-\text{RoR})/M}$ for $M$ paths. To pin down a 1% ruin probability to a meaningful precision you need *many* thousands of paths — and, more importantly, the result is only as good as the **return model** you feed it. Garbage assumptions (too-rosy edge, ignored correlations, thin tails) produce a confidently wrong number. Simulation removes the formula's structural assumptions but *not* the need for honest inputs.
+
+<RorMonteCarloRuin
+  client:visible
+  title="Estimating ruin by brute-force simulation"
+  riskLabel="Risk per trade"
+  resimulateLabel="New batch"
+  ruinedLabel="Ruined"
+  survivedLabel="Survived"
+  ruinProbLabel="Estimated risk of ruin"
+  thresholdLabel="Ruin threshold"
+  caption="Each line is one simulated future of the same positive-edge system; red paths breached the ruin floor. The readout counts the fraction that blew up — that's your Monte Carlo risk-of-ruin estimate. Slide risk-per-trade and watch the estimate climb as more paths smash into the floor, even though the edge never changed."
+/>
+
+<FillBlank
+  client:visible
+  question="The Monte Carlo ruin procedure."
+  text="Monte Carlo estimates risk of ruin as the {{fraction of simulated paths that touch the ruin barrier|average return across paths|single worst path observed}}. Its big advantage over the formula is handling {{fat tails, correlations, and complex sizing rules|only even-money bets|a single trade}}. But its output is only as trustworthy as the {{return model and inputs you feed it|number of decimal places shown|name of the strategy}}."
+  explanation="RoR ≈ ruined paths ÷ total paths. Simulation digests real-world complexity the closed form can't, but it still needs an honest return model — bad inputs give a confidently wrong probability."
+/>
+
+<MCQ
+  client:visible
+  question="A Monte Carlo of 5,000 paths finds 350 breach the ruin barrier. What is the estimated risk of ruin, and what's a key limitation of this estimate?"
+  options={[
+    { text: '7% — and it is only as reliable as the return model fed in; a too-optimistic edge or ignored correlations would understate it', correct: true },
+    { text: '7% — and it is exact because Monte Carlo has no error' },
+    { text: '350% — the raw count of ruined paths' },
+    { text: '0.07% — the count divided by a million' },
+  ]}
+  explanation="RoR ≈ 350/5,000 = 0.07 = 7%. The estimate carries sampling error (more paths tighten it) and, more importantly, inherits every flaw in the return assumptions — an overstated edge, thin tails, or ignored correlation between trades would all make the true ruin higher than 7%. Simulation removes structural assumptions, not the need for honest inputs."
+/>
+
+## The ruin curve: ruin vs risk-per-trade
+
+The single most useful output of all this is a **curve**, not a number: plot risk of ruin (y) against the fraction of equity you risk per trade (x). It turns position sizing into a picture.
+
+**The shape.** Starting from tiny bets, ruin is near zero. As risk-per-trade rises, ruin stays low for a while, then climbs — and past a point it **shoots up toward certainty**. There's typically a 'knee': a region where a small increase in bet size causes a large jump in ruin. Sane position sizing lives to the *left* of the knee, where ruin is comfortably small and edge can do its work.
+
+**The Kelly connection.** Recall from the formula lesson: long-run growth is maximized at the full-Kelly fraction, but ruin/drawdown risk keeps climbing past it, and **beyond twice Kelly the long-run growth rate goes negative and ruin becomes certain.** So the ruin curve and the growth curve tell a joint story: there's a band — roughly *fractional Kelly* — where growth is near-optimal *and* ruin is acceptably low. The whole art of sizing is finding that band, and the ruin curve is how you see it.
+
+**Worked reading.** Suppose the curve shows: 1% risk → 0.2% ruin; 2% → 1.5%; 4% → 18%; 6% → 45%; 8% → 78%. The knee is around 4–6%. A trader wanting ruin under ~2% must size at or below 2% per trade — and notice that going from 4% to 6% (a 1.5× bigger bet) nearly *triples* ruin while adding little to growth. The curve makes the bad trade-off visible: past the knee you're buying a sliver of extra growth with a mountain of extra ruin.
+
+<Callout variant="tip" title="Size to the knee, not the peak">
+The bet size that maximizes growth (full Kelly) sits uncomfortably close to the ruin knee, and real-world estimation error pushes you effectively rightward (toward more ruin) without your knowing. So target a fraction of Kelly — well left of the knee — where you give up a little growth for a large reduction in ruin. The ruin curve, plotted from a simulation of YOUR strategy, is the right way to choose that point.
+</Callout>
+
+<MatchConcepts
+  client:visible
+  question="Match each Monte Carlo / ruin-curve concept to its meaning."
+  pairs={[
+    { term: 'Monte Carlo RoR', definition: 'Fraction of simulated paths that touch the ruin barrier' },
+    { term: 'Ruin curve', definition: 'Risk of ruin plotted against risk-per-trade' },
+    { term: 'The knee', definition: 'The bet size where ruin starts climbing steeply' },
+    { term: 'Sampling error', definition: 'The imprecision in a simulated probability, shrinking with more paths' },
+    { term: 'Fractional Kelly band', definition: 'Bet sizes left of the knee with near-optimal growth and low ruin' },
+  ]}
+  explanation="Monte Carlo RoR = ruined ÷ total paths; the ruin curve maps risk-per-trade to ruin; the knee is where it steepens; sampling error is the estimate's imprecision; and the fractional-Kelly band is the safe operating zone left of the knee."
+/>
+
+## Stop-loss math: from risk budget to position size
+
+Now the most practical arithmetic in the whole topic — turning a *risk decision* into an *order size*. This is what makes all the abstract ruin math actionable.
+
+**The identity.** Decide two things independently: how much of your account you're willing to lose on this trade (your **risk-per-trade**, e.g. 1% of equity), and where your **stop-loss** sits (how far, in %, the price can move against you before you exit). The position size that delivers exactly that risk is
+$$\text{Position size} = \frac{\text{Account} \times \text{Risk-per-trade \%}}{\text{Stop distance \%}}.$$
+Equivalently, in shares: $\text{Shares} = \dfrac{\text{Account} \times \text{Risk\%}}{\text{Entry price} - \text{Stop price}}$.
+
+**The key insight: two independent dials.** Risk-per-trade sets the *dollars you can lose*; the stop distance sets *how big a position* delivers that loss. A *tighter* stop lets you hold a *bigger* position for the **same** dollar risk — but a stop too tight gets you knocked out by ordinary noise (whipsaws). A wider stop means a smaller position for the same risk but more room to be right. The dollars-at-risk never change; only the share count does.
+
+**Worked example.** Account \$100,000, willing to risk 1% = \$1,000 on a trade. Stock trades at \$50, and you'll exit if it falls to \$46 — a stop distance of \$4, which is $4/50 = 8\%$.
+$$\text{Position size} = \frac{100\,000 \times 0.01}{0.08} = \frac{1\,000}{0.08} = 12\,500 \text{ dollars (i.e. 250 shares).}$$
+Check: 250 shares × $4 stop = $1,000 at risk = 1% of the account. ✓ Now suppose you tightened the stop to $48 (a 4% stop distance). Same $1,000 risk, but position size doubles to $25,000 (500 shares) — a tighter stop buys a bigger position for *identical* dollar risk. The risk budget controls survival; the stop placement controls how that budget is spent.
+
+<RorStopLossSizer
+  client:visible
+  title="From risk budget to position size"
+  accountRiskLabel="Account risked per trade"
+  stopDistanceLabel="Stop distance from entry"
+  positionLabel="Position size"
+  dollarRiskLabel="Dollars at risk"
+  exposureLabel="Position as share of account"
+  accountLabel="Account size"
+  unitSuffix="k"
+  caption="Two independent dials. Account-risk sets the dollars you can lose (and your survival, via the ruin math). Stop distance then decides how big a position delivers exactly that risk: a tighter stop = a bigger position for the same dollars. Watch the position-as-share-of-account readout turn red when a tight stop pushes you past 100% (leverage)."
+/>
+
+<Callout variant="warning" title="A tight stop is not free risk reduction">
+It's tempting to think 'tighter stop = less risk.' But for a FIXED dollar risk budget, a tighter stop means a LARGER position — same dollars at risk, but you get stopped out far more often by normal volatility, bleeding your edge through whipsaws and costs. Stop placement is about giving the trade room to work, not about minimizing risk; the risk is set separately by your per-trade budget.
+</Callout>
+
+<MCQ
+  client:visible
+  question="Account of 200,000, risking 0.5% per trade, with a stop 5% from entry. What position size delivers exactly that risk?"
+  options={[
+    { text: '20,000 — since (200,000 × 0.005) / 0.05 = 1,000 / 0.05 = 20,000, putting exactly 1,000 at risk', correct: true },
+    { text: '1,000 — the dollars at risk are the position size' },
+    { text: '100,000 — half the account, ignoring the stop' },
+    { text: '40,000 — the account times the risk fraction' },
+  ]}
+  explanation="Position = (Account × Risk%) / Stop% = (200,000 × 0.005) / 0.05 = 1,000 / 0.05 = 20,000. Check: a 5% move against a 20,000 position loses 0.05 × 20,000 = 1,000 = 0.5% of the account. The dollars at risk (1,000) come from the risk budget; the stop distance converts that into the position size."
+/>
+
+## Bringing the whole topic together
+
+### The survival workflow
+1. **Confirm an edge** (positive expectancy, net of costs) — without it, no sizing saves you.
+2. **Choose a per-trade risk budget** small enough that the ruin curve (simulated for *your* return distribution) sits comfortably left of the knee — typically a fraction of Kelly.
+3. **Place stops** where the trade thesis is wrong, then **size from the identity** so each trade risks exactly the budget.
+4. **Stress everything** — pessimistic edge, correlated losing streaks, bad sequencing, fat-tailed gaps — because the real world is harsher than any clean model.
+
+### Pitfalls to retire
+- **Sizing on a single backtest** instead of a distribution — the drawdown and ruin tails won't be in one history.
+- **Treating a positive edge as safety** — the central paradox: edge plus over-betting still equals ruin.
+- **Confusing tighter stops with lower risk** — risk is the per-trade budget; the stop just sets position size.
+- **Ignoring correlation and gaps** — they shrink your effective units of capital exactly when you most need them.
+
+<Reveal client:visible>
+  <details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+    <summary className="cursor-pointer font-medium">How do gaps and slippage break the clean stop-loss math, and what do you do about it?</summary>
+
+    The position-sizing identity assumes you exit *at* your stop price, losing exactly your budgeted risk. Reality rarely cooperates. A **gap** — an overnight or news-driven jump that skips straight through your stop — fills you far below it, so a trade you budgeted as −1R can realize −3R or worse. (This is the jump-diffusion world: continuous models say price must pass through every level, but real prices leap.) **Slippage** does the same in miniature on every fill, especially in thin or fast markets. The consequences for ruin are serious: your *effective* units of capital are smaller than you think, because some '1R' losses are secretly multi-R, and a cluster of gaps during a crisis (when correlations also spike) can blow through several stops at once. Defenses: (1) size *as if* losses can exceed the stop — assume a worst-case multiple of R for sizing, not the nominal 1R; (2) reduce position size for instruments and times prone to gaps (earnings, illiquid names, overnight holds); (3) use options or hard hedges rather than stops when gap risk is severe, since a stop is only a *request* to sell, not a guarantee of price; (4) cap total correlated exposure so one bad gap can't hit every position at once. The deep lesson is that a stop-loss controls risk only in a continuous, liquid market; in the tails — exactly where ruin lives — it leaks, so prudent sizing budgets for the leak.
+  </details>
+</Reveal>
+
+<MCQ
+  client:visible
+  question="A trader sizes every position assuming each loss is exactly −1R (the stop), but the instrument frequently gaps through stops. What is the danger for risk of ruin?"
+  options={[
+    { text: 'Real losses can be several R, so the effective units of capital are smaller than assumed and true risk of ruin is higher than the sizing implies', correct: true },
+    { text: 'There is no danger — stops always execute at the exact stop price' },
+    { text: 'Gaps only ever help, filling better than the stop' },
+    { text: 'Ruin is unaffected because expectancy is still positive' },
+  ]}
+  explanation="A gap skips through the stop and fills worse, turning a budgeted −1R loss into −2R, −3R, or worse. That shrinks your true units of capital (N) below the nominal count, and since ruin is exponentially sensitive to N, real ruin exceeds what the clean math says. Size as if losses can exceed the stop, and cap correlated exposure so multiple gaps can't compound."
+/>
+
+## Putting it together
+
+When the clean formula's assumptions break, **Monte Carlo** estimates risk of ruin by brute force: model the per-trade outcome, set a sizing rule and a ruin barrier, simulate thousands of paths, and take the fraction that blow up — getting the whole drawdown and time-under-water distribution as a bonus, but only as honest as the return model you feed it. Plotting ruin against risk-per-trade gives the **ruin curve**, with its tell-tale **knee** where a small increase in bet size sends ruin soaring; sane sizing lives left of the knee, in the **fractional-Kelly band** where growth is near-optimal and ruin is low. Finally, the **stop-loss identity** — position size = (account × risk%) ÷ stop-distance% — turns a risk budget into an exact order, with risk-per-trade and stop placement as *independent* dials (a tighter stop buys a bigger position for the same dollar risk, not less risk). Mind the leaks: gaps, slippage, and correlation make real losses exceed −1R, shrinking your effective capital and pushing true ruin above the clean math — so size for the tails, because the tails are where ruin lives.
+
+<MindMap
+  client:visible
+  title="Monte Carlo ruin curves & stops — the whole picture"
+  caption="Simulate to estimate ruin, read the ruin curve to size left of the knee, and use the stop-loss identity to turn a risk budget into an exact position — budgeting for gaps and correlation."
+  root={{
+    label: 'Monte Carlo ruin & stops',
+    children: [
+      {
+        label: 'Estimating ruin by simulation',
+        children: [
+          { label: 'RoR ≈ ruined paths ÷ total paths' },
+          { label: 'Handles fat tails, correlation, complex sizing' },
+          { label: 'Only as good as the return model' },
+        ],
+      },
+      {
+        label: 'The ruin curve',
+        children: [
+          { label: 'Ruin vs risk-per-trade' },
+          { label: 'A knee where ruin shoots up' },
+          { label: 'Size left of the knee (fractional Kelly)' },
+        ],
+      },
+      {
+        label: 'Stop-loss math',
+        children: [
+          { label: 'Position = (account × risk%) ÷ stop%' },
+          { label: 'Risk budget and stop are independent dials' },
+          { label: 'Tighter stop → bigger position, same dollars' },
+        ],
+      },
+      {
+        label: 'The leaks',
+        children: [
+          { label: 'Gaps fill worse than the stop (multi-R losses)' },
+          { label: 'Correlation shrinks effective units of capital' },
+          { label: 'Size for the tails, where ruin lives' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Recap: Monte Carlo ruin curves & stops"
+  questions={[
+    {
+      question: 'A Monte Carlo of 8,000 paths of a winning system finds 240 breach the 50% ruin barrier. What is the estimated risk of ruin?',
+      options: [
+        { text: '3% — 240/8,000 = 0.03, the fraction of simulated futures that blew up', correct: true },
+        { text: '240% — the count of ruined paths' },
+        { text: '0.03% — the count divided by 800,000' },
+        { text: '50% — the ruin barrier level' },
+      ],
+      explanation: 'RoR ≈ ruined ÷ total = 240/8,000 = 0.03 = 3%. The barrier (50%) defines what counts as ruin; the estimate is just the share of paths that touched it. A winning system can still show a real ruin probability — here 3% — purely from bet size and unlucky sequences.',
+    },
+    {
+      question: 'What does the "knee" of a ruin curve represent?',
+      options: [
+        { text: 'The risk-per-trade beyond which ruin probability starts climbing steeply for a small increase in bet size', correct: true },
+        { text: 'The bet size that guarantees zero risk of ruin' },
+        { text: 'The point where the strategy stops having an edge' },
+        { text: 'The maximum number of trades before ruin is certain' },
+      ],
+      explanation: 'The ruin curve is flat-then-steep: at the knee, each extra bit of bet size buys a large jump in ruin with little extra growth. Prudent sizing stays left of the knee, in the fractional-Kelly band, where growth is near-optimal and ruin stays acceptably small.',
+    },
+    {
+      question: 'Account of 50,000, risking 2% per trade, stop 10% from entry. What is the correct position size?',
+      options: [
+        { text: '10,000 — (50,000 × 0.02) / 0.10 = 1,000 / 0.10 = 10,000, risking exactly 1,000', correct: true },
+        { text: '1,000 — the dollars at risk equal the position size' },
+        { text: '5,000 — half the risk fraction times the account' },
+        { text: '25,000 — half the account regardless of the stop' },
+      ],
+      explanation: 'Position = (Account × Risk%) / Stop% = (50,000 × 0.02) / 0.10 = 1,000 / 0.10 = 10,000. Check: a 10% adverse move on a 10,000 position loses 1,000 = 2% of the account. The risk budget (1,000) and the stop distance (10%) combine into the position size.',
+    },
+    {
+      question: 'Spot the trap. "I tightened my stop, so my trade is now much safer." When is this misleading?',
+      options: [
+        { text: 'If risk-per-trade is fixed, a tighter stop means a bigger position for the same dollar risk — and more frequent stop-outs from noise, not lower risk', correct: true },
+        { text: 'Never — a tighter stop always reduces risk' },
+        { text: 'Only if the account is very small' },
+        { text: 'A tighter stop always increases the dollars at risk' },
+      ],
+      explanation: 'Dollar risk is set by the per-trade budget, not the stop. With the budget fixed, a tighter stop forces a larger position to keep the same dollars at risk — and a tight stop is hit more often by ordinary volatility, bleeding the edge through whipsaws and costs. Stop placement controls position size and room-to-be-right, not the risk level.',
+    },
+  ]}
+/>
+
+That completes the survival toolkit. You can define a ruin barrier, compute and stress an edge, read the risk-of-ruin formula and its exponential payoff to capital, think in drawdown *distributions* rather than single numbers, respect sequencing risk wherever cashflows live, and turn a simulated ruin curve plus a stop into an exact, survivable position size. Next is the **final exam** — a graded run across the whole topic.

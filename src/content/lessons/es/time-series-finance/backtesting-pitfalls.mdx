@@ -1,0 +1,264 @@
+---
+title: "Trampas del backtesting"
+description: "Sesgo de anticipación, sobreajuste, contraste múltiple y data-snooping, dentro de muestra frente a fuera de muestra, y validación walk-forward — las trampas que hacen que una estrategia parezca brillante en la historia y fracase en real."
+topic: "es/time-series-finance"
+order: 6
+minutes: 12
+updated: 2026-06-07
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, MindMap, TsOverfitCurve } from '@/components/react';
+
+Ya sabes modelar la media (ARIMA) y la varianza (GARCH/EWMA) de una serie de rendimientos. El último paso, y el más peligroso, es *evaluar* una estrategia construida sobre esos modelos — porque es justo aquí donde la gente lista se engaña con mayor fiabilidad. Un **backtest** ejecuta una estrategia sobre datos históricos para estimar cómo habría rendido. Hecho con honestidad, es valiosísimo. Hecho con descuido, es una máquina de generar estrategias que parecen seguras, rentables y son completamente inservibles. Esta lección va de las tres trampas más mortíferas — **sesgo de anticipación, sobreajuste y data-snooping** — y de la disciplina que defiende contra ellas. La destreza aquí no es construir una estrategia; es *no creerte un backtest con buena pinta que no deberías creerte*.
+
+<MCQ
+  client:visible
+  pretest
+  question="Un quant te enseña una estrategia con un ratio de Sharpe en backtest de 4,0 y una curva de capital suave, casi recta hacia arriba, durante 15 años. ¿Cuál es tu PRIMERA reacción?"
+  options={[
+    { text: 'Sospecha profunda — un Sharpe tan alto con una curva tan limpia suele señalar sesgo de anticipación, sobreajuste o data-snooping, no una ventaja real; exige ver el fuera de muestra y la metodología', correct: true },
+    { text: 'Entusiasmo inmediato — financiarla al máximo apalancamiento ahora mismo' },
+    { text: 'Indiferencia — los ratios de Sharpe carecen de sentido y no te dicen nada' },
+    { text: 'Interés leve — un Sharpe de 4,0 es del todo típico en estrategias reales' },
+  ]}
+  explanation="Las estrategias reales y con capacidad significativa rara vez sostienen un Sharpe cercano a 4,0; un resultado así casi siempre significa un fallo (sesgo de anticipación), un modelo ajustado al ruido (sobreajuste) o el mejor de muchos probados (data-snooping). El instinto correcto es la sospecha y la exigencia de evidencia fuera de muestra honesta — el tema entero de esta lección."
+/>
+
+## Sesgo de anticipación: usar las noticias de mañana hoy
+
+**Analogía.** El sesgo de anticipación es apostar en una carrera de caballos después de ver la repetición. Por supuesto que ganas — usaste información que no estaba disponible en el momento de decidir. Un backtest con sesgo de anticipación hace lo mismo: deja que la estrategia "sepa" algo que no podía saber en el instante en que operó.
+
+**Definición.** El **sesgo de anticipación** (look-ahead bias) es cualquier uso de información en un backtest que no habría estado disponible en el momento de la decisión simulada. Infla el rendimiento en silencio y es el fallo de backtest más común — y más bochornoso.
+
+**Fuentes habituales:**
+
+- **Usar el cierre para operar en la apertura.** Decidir comprar "hoy" basándote en el precio de *cierre* de hoy, pero registrar la operación en la apertura de hoy — usaste un precio del futuro.
+- **Datos reexpresados / revisados.** Los fundamentales (beneficios, PIB) se revisan tras su primera publicación. Hacer backtest con las cifras *revisadas finales* usa números que no existían en la fecha original.
+- **Sesgo de supervivencia.** Probar los componentes actuales de un índice a lo largo de la historia excluye en silencio a las empresas que quebraron o fueron excluidas — solo te quedaste con las supervivientes, así que el backtest nunca "compra" a las perdedoras que de verdad existieron.
+- **Pertenencia al índice point-in-time.** Suponer que una acción estaba en el S&P 500 antes de que la añadieran de verdad.
+
+**Ejemplo resuelto — la trampa cierre-apertura.** Una regla de "momentum" compra cuando el rendimiento de hoy supera el +2 % y registras la entrada en la *apertura de hoy*. Pero solo *conoces* el rendimiento de hoy en el *cierre* de hoy. Así que has entrado antes de que existiera la señal — comprando en la apertura los días que ya sabes que cerraron con fuerte subida. Arréglalo: actúa en la *siguiente* apertura (o el siguiente cierre) tras completarse la señal. Bien hecho, la deslumbrante ventaja suele encogerse drásticamente — porque la "ventaja" original era solo anticipación.
+
+<Callout variant="warning" title="La regla del retardo de una barra">
+La defensa más simple: una señal calculada con datos hasta el instante $t$ incluido solo puede operarse en $t+1$ o después, a precios realizados *después* de que la señal sea plenamente conocida. Nunca dejes que una decisión toque un precio o dato de su propia barra o del futuro. La mayoría de los fallos de anticipación son una única marca de tiempo mal alineada.
+</Callout>
+
+## Sobreajuste: ajustar el ruido, no la señal
+
+**Analogía.** El sobreajuste es memorizar el solucionario en vez de aprender la materia. Un estudiante que memoriza el examen del año pasado borda *ese* examen y suspende el nuevo. Una estrategia sobreajustada "memoriza" las rarezas aleatorias de la muestra histórica — rarezas que no se repetirán — y por eso brilla en el backtest y se desploma en real.
+
+**Definición.** El **sobreajuste** (overfitting) es ajustar un modelo tan de cerca a los datos históricos que captura ruido (aleatoriedad idiosincrásica, no repetible) en lugar de señal (la estructura persistente y repetible). Cuantos más parámetros y más ajuste fino, más fácil es ajustar el ruido.
+
+**La firma.** A medida que añades complejidad — más parámetros, más reglas, más condiciones — el rendimiento **dentro de muestra** (backtest) no para de mejorar, pero el rendimiento **fuera de muestra** (en real / no visto) sube hasta un punto óptimo y luego *se degrada*. La brecha creciente entre ambos es el sobreajuste que estás pagando.
+
+<TsOverfitCurve
+  client:visible
+  title="La brecha del sobreajuste: el backtest se dispara, lo real se desploma"
+  complexityLabel="Complejidad del modelo / estrategias probadas"
+  inSampleLabel="Dentro de muestra (backtest)"
+  outSampleLabel="Fuera de muestra (en real)"
+  performanceLabel="Rendimiento aparente"
+  caption="Añade parámetros o prueba más variantes sobre la misma historia y la curva del backtest sigue subiendo — está memorizando ruido. La curva real sube hasta un punto óptimo y luego cae por un precipicio. La brecha entre ambas curvas es exactamente el sobreajuste que pagarás en producción."
+/>
+
+**Ejemplo resuelto — el indicio del número de parámetros.** La estrategia A tiene 2 parámetros y un Sharpe en backtest de 1,2. La estrategia B tiene 14 parámetros, tres filtros de régimen y un stop-loss específico por activo ajustado para cada nombre, con un Sharpe en backtest de 3,5. ¿De cuál te fías? **De A.** B tiene tantos grados de libertad que puede ajustar a la curva casi cualquier historia; es mucho más probable que su 3,5 sea ajuste de ruido que una ventaja real. La parsimonia — los menos parámetros que funcionen — es la mejor defensa, la misma lección que elegir el orden ARIMA por BIC.
+
+<MCQ
+  client:visible
+  question="A medida que añades más parámetros y reglas a una estrategia, el rendimiento en backtest dentro de muestra no para de subir mientras el de fuera de muestra alcanza un pico y luego cae. ¿Qué está pasando?"
+  options={[
+    { text: 'Sobreajuste — la complejidad extra está ajustando ruido no repetible de la muestra histórica, lo que impulsa el backtest pero perjudica el rendimiento en real; la brecha dentro/fuera de muestra es la alerta', correct: true },
+    { text: 'La estrategia está mejorando de verdad; añade siempre todos los parámetros posibles' },
+    { text: 'Un error de datos; el rendimiento fuera de muestra nunca puede diferir del de dentro' },
+    { text: 'Sesgo de anticipación, que solo afecta a los resultados fuera de muestra' },
+  ]}
+  explanation="Subida dentro de muestra con pico-y-luego-caída fuera de muestra es la firma de manual del sobreajuste. Pasado el punto óptimo, la complejidad añadida captura ruido que no se repetirá, así que el backtest mejora mientras el rendimiento en real se degrada. La brecha creciente entre las dos curvas es el diagnóstico."
+/>
+
+## Contraste múltiple y data-snooping: torturar los datos
+
+**Analogía.** Prueba 20 monedas inservibles para ver su "imparcialidad" al nivel de significación del 5 % y, de media, *una* parecerá significativamente sesgada — por puro azar. Reporta solo esa moneda y has "descubierto" un efecto falso. El data-snooping es exactamente esto: probar muchas estrategias sobre los mismos datos y reportar la ganadora como si fuera lo único que probaste.
+
+**Definición.** El **contraste múltiple** (alias **data-snooping** o **p-hacking**) es la inflación de falsos positivos que ocurre cuando evalúas muchas hipótesis contra el mismo conjunto de datos y seleccionas la mejor. Cuanto más pruebas, más probable es que la "mejor" sea solo la chiripa aleatoria más afortunada.
+
+**Las matemáticas del falso descubrimiento.** Si una sola estrategia inservible tiene un 5 % de probabilidad de parecer "significativa" por suerte, entonces probar $N$ estrategias inservibles independientes da una probabilidad de al menos un falso positivo de
+$$1 - (0.95)^{N}.$$
+
+**Ejemplo resuelto — la fábrica de backtests.** Un investigador prueba 100 variantes de estrategia sobre una historia de precios:
+$$1 - (0.95)^{100} = 1 - 0.0059 \approx 0.994.$$
+Un **99,4 %** de probabilidad de que al menos una variante parezca significativa al 5 % — *aunque todas y cada una sean inservibles*. Reporta solo a la ganadora y has fabricado un "descubrimiento" a partir de puro ruido. Prueba 1.000 variantes (trivial con una rejilla de parámetros) y tienes prácticamente *garantizados* varios backtests preciosos y sin sentido.
+
+**Defensas:**
+
+- **Desinfla según el número de pruebas.** Una corrección de Bonferroni divide tu umbral de significación por $N$; el **ratio de Sharpe desinflado** (deflated Sharpe) descuenta explícitamente un Sharpe según cuántas estrategias se probaron. Pregunta siempre: *¿cuántas probaste antes de enseñarme esta?*
+- **Preregistra la hipótesis.** Decide la estrategia *antes* de tocar los datos — razonamiento económico primero, prueba después.
+- **Exige un holdout limpio** que la estrategia nunca tocó durante el desarrollo.
+
+<Callout variant="warning" title="La pregunta letal: '¿Cuántas probaste?'">
+Un único Sharpe de backtest no significa nada sin el denominador. Un Sharpe de 2,0 a partir de una idea preespecificada es impresionante; ese mismo 2,0 seleccionado como el mejor de 5.000 combinaciones de parámetros es ruido esperable. El número de pruebas es el estadístico menos reportado y más importante de cualquier backtest. Si alguien no te lo sabe decir, supón lo peor.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Contraste múltiple y falso descubrimiento."
+  text="Si una estrategia inservible tiene un 5 % de probabilidad de parecer significativa por suerte, probar muchas estrategias sobre los mismos datos {{infla|elimina|arregla}} la probabilidad de un falso positivo. Con N intentos independientes la probabilidad de al menos un falso 'descubrimiento' es 1 − 0,95^N, que se acerca a {{la certeza|cero|0,05}} a medida que N crece. El número crucial e infrarreportado es {{cuántas estrategias se probaron|el rendimiento medio|la fecha de inicio}}."
+  explanation="Cada prueba lleva una probabilidad de falso positivo, así que probar muchas sobre los mismos datos hace casi inevitable una ganadora espuria: 1 − 0,95^N → 1. El estadístico más importante y más oculto es el número de pruebas tras la ganadora reportada — sin él, un Sharpe de backtest no se puede juzgar."
+/>
+
+## Dentro de muestra frente a fuera de muestra, y el walk-forward
+
+La defensa estructural contra el sobreajuste y el snooping es **nunca juzgar una estrategia con los datos usados para construirla.** Divide tu historia:
+
+- **Dentro de muestra (entrenamiento):** los datos que usas para diseñar, ajustar y afinar la estrategia.
+- **Fuera de muestra (prueba / holdout):** datos que la estrategia *nunca ha visto*, usados *una vez* para estimar el rendimiento honesto.
+
+El resultado fuera de muestra es tu estimación insesgada. El pecado capital es *espiar*: si pruebas en el holdout, ves un mal resultado, retocas la estrategia y vuelves a probar, el holdout ya está contaminado — lo has convertido en datos de dentro de muestra y has reintroducido el snooping.
+
+**El análisis walk-forward** es el patrón oro, sobre todo en series temporales donde los regímenes cambian. En lugar de una sola división fija, recorres el tiempo:
+
+1. Entrena sobre una ventana (digamos años 1–3), prueba sobre el período siguiente (año 4).
+2. Desliza la ventana hacia delante: entrena sobre años 2–4, prueba sobre el año 5.
+3. Repite por toda la historia, cosiendo los períodos de prueba fuera de muestra en un único historial continuo.
+
+Esto imita el trading en real — solo usas el pasado para predecir el futuro — y prueba la estrategia a lo largo de *muchos* regímenes de mercado, no de un único tramo afortunado. Además, expone estrategias que solo funcionaron en una sola época.
+
+**Ejemplo resuelto — anclado frente a deslizante.** Diez años de datos, walk-forward con 3 años de entrenamiento / 1 de prueba:
+
+- Entrena 2014–2016 → prueba 2017.
+- Entrena 2015–2017 → prueba 2018.
+- … → prueba 2023.
+
+Obtienes **siete** años fuera de muestra independientes cosidos juntos — una curva de capital mucho más honesta que un único backtest 2014–2023, y una que revela si la ventaja sobrevive a la corrección de 2018, al crash de 2020 y al mercado bajista de 2022, no solo a un cómodo mercado alcista.
+
+<MatchConcepts
+  client:visible
+  question="Asocia cada concepto de backtesting con su significado preciso."
+  pairs={[
+    { term: 'Sesgo de anticipación', definition: 'Usar información en el backtest que no estaba disponible en el momento de la decisión simulada' },
+    { term: 'Sobreajuste', definition: 'Ajustar un modelo tan estrechamente a la historia que captura ruido en lugar de señal repetible' },
+    { term: 'Data-snooping', definition: 'Probar muchas estrategias sobre los mismos datos y reportar la ganadora más afortunada como si fuera la única' },
+    { term: 'Fuera de muestra', definition: 'Datos que la estrategia nunca vio durante el desarrollo, usados una vez para una estimación honesta del rendimiento' },
+    { term: 'Walk-forward', definition: 'Ventanas de entrenamiento/prueba que ruedan por el tiempo, cosiendo los períodos fuera de muestra en un único historial' },
+  ]}
+  explanation="Anticipación = información del futuro que se cuela; sobreajuste = ajustar ruido vía exceso de complejidad; data-snooping = sesgo de selección por muchas pruebas; fuera de muestra = holdout intacto para una evaluación honesta; walk-forward = validación con ventana deslizante que imita el trading en real a través de regímenes."
+/>
+
+<Reveal client:visible>
+  <details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+    <summary className="cursor-pointer font-medium">Si incluso la prueba fuera de muestra puede manipularse retocando, ¿cómo se fía alguien alguna vez de un backtest?</summary>
+
+    Nunca te fías del todo de *un* backtest — construyes confianza a partir de evidencia convergente y un proceso disciplinado. Cinco hábitos separan la investigación honesta del autoengaño. Primero, **prioris económicas antes que datos**: una estrategia debe descansar sobre una razón plausible por la que *debería* funcionar (una prima de riesgo, una fricción estructural, un sesgo conductual) — no solo una curva que encajó. Un patrón snoopeado sin una historia detrás es casi con seguridad ruido. Segundo, **registra y desinfla según las pruebas**: anota cada variante que pruebas y descuenta los estadísticos de la ganadora en consecuencia (Sharpe desinflado, Bonferroni). Tercero, **un verdadero holdout de caja fuerte**: un trozo final de datos tocado exactamente una vez, después de congelar la estrategia — si espías, está quemado. Cuarto, **walk-forward a través de regímenes**, para que la ventaja deba sobrevivir a mercado alcista, bajista y crisis, no a una época afortunada. Quinto, **opera en papel en real** antes de arriesgar capital: datos futuros genuinamente fuera de muestra son la única prueba del todo no manipulable. Aun así dimensionas posiciones suponiendo que el Sharpe en real será una fracción del backtest — porque casi siempre lo es. La meta no es una prueba perfecta; es un proceso lo bastante honesto como para no ser tú la persona más fácil de engañar.
+  </details>
+</Reveal>
+
+<MCQ
+  client:visible
+  question="¿Por qué el análisis walk-forward suele preferirse a una única división fija dentro/fuera de muestra para evaluar una estrategia de trading?"
+  options={[
+    { text: 'Rueda ventanas de entrenamiento/prueba por el tiempo, imitando el trading en real y probando la estrategia a través de muchos regímenes de mercado en lugar de un único tramo afortunado, dando un historial fuera de muestra cosido más honesto', correct: true },
+    { text: 'Usa el conjunto de datos entero para entrenar, maximizando el ajuste dentro de muestra' },
+    { text: 'Elimina por completo la necesidad de datos fuera de muestra' },
+    { text: 'Garantiza que la estrategia será rentable en el futuro' },
+  ]}
+  explanation="El walk-forward entrena repetidamente sobre una ventana pasada y prueba sobre el período no visto siguiente, deslizándose por toda la historia. Esto siempre usa pasado-para-predecir-futuro (sin anticipación), prueba a través de múltiples regímenes (no una época) y cose muchos períodos fuera de muestra en una estimación de rendimiento mucho más honesta que una sola división."
+/>
+
+## Recapitulando
+
+Un backtest es tan fiable como la disciplina que hay detrás, y tres trampas hacen inservibles los resultados con buena pinta. El **sesgo de anticipación** filtra información del futuro a decisiones del pasado — vía desfase cierre-apertura, datos reexpresados, supervivencia o errores point-in-time — y la regla del retardo de una barra (operar solo con datos plenamente conocidos antes del precio al que transaccionas) es la defensa. El **sobreajuste** ajusta un modelo a ruido no repetible; su firma es un rendimiento dentro de muestra que sube con un fuera de muestra que hace pico y luego cae, y la parsimonia (los menos parámetros que funcionen) es la cura. El **data-snooping** infla los falsos positivos al probar muchas estrategias y reportar la más afortunada — con $1 - 0.95^N$ acercándose a la certeza según crecen las pruebas — así que debes registrar el número de pruebas, desinflar el Sharpe y preespecificar hipótesis. Las salvaguardas estructurales son un **holdout fuera de muestra** limpio juzgado exactamente una vez (nunca espiar-y-retocar) y el **análisis walk-forward** que rueda por el tiempo, imitando el trading en real a través de muchos regímenes. La lección más profunda: el trabajo de un backtest es *intentar matar* una estrategia, no adularla — y el trabajo del investigador es no ser la persona más fácil de engañar.
+
+<MindMap
+  client:visible
+  title="Trampas del backtesting — la imagen completa"
+  caption="La anticipación filtra el futuro; el sobreajuste ajusta ruido; el data-snooping reporta el más afortunado de muchos; fuera de muestra y walk-forward son las defensas."
+  root={{
+    label: 'Trampas del backtesting',
+    children: [
+      {
+        label: 'Sesgo de anticipación',
+        children: [
+          { label: 'Usar información no disponible al decidir' },
+          { label: 'Desfase cierre-apertura' },
+          { label: 'Datos reexpresados; sesgo de supervivencia' },
+          { label: 'Defensa: regla del retardo de una barra' },
+        ],
+      },
+      {
+        label: 'Sobreajuste',
+        children: [
+          { label: 'Ajustar ruido, no señal' },
+          { label: 'Dentro de muestra sube, fuera hace pico y cae' },
+          { label: 'Más parámetros → más ajuste a la curva' },
+          { label: 'Defensa: parsimonia (menos parámetros)' },
+        ],
+      },
+      {
+        label: 'Data-snooping',
+        children: [
+          { label: 'Muchas pruebas inflan los falsos positivos' },
+          { label: '1 − 0,95^N → certeza según crece N' },
+          { label: 'Reportar solo a la ganadora más afortunada' },
+          { label: 'Defensa: registrar pruebas, desinflar Sharpe, preregistrar' },
+        ],
+      },
+      {
+        label: 'Validación honesta',
+        children: [
+          { label: 'Dentro de muestra para construir, fuera para juzgar' },
+          { label: 'Nunca espiar-y-retocar el holdout' },
+          { label: 'Walk-forward: entrenamiento/prueba deslizante en el tiempo' },
+          { label: 'Sobrevivir a muchos regímenes; operar en papel en real' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Repaso: trampas del backtesting"
+  questions={[
+    {
+      question: 'Un backtest genera una señal de compra a partir del precio de cierre de hoy pero registra la operación en la apertura de hoy. ¿Qué error es este y cuál es el arreglo?',
+      options: [
+        { text: 'Sesgo de anticipación — usa el cierre (conocido solo al final del día) para operar en la apertura (antes); arréglalo operando al siguiente precio disponible tras conocerse plenamente la señal', correct: true },
+        { text: 'Sobreajuste — arréglalo añadiendo más parámetros' },
+        { text: 'Data-snooping — arréglalo probando más estrategias' },
+        { text: 'Ningún error — operar en la apertura con una señal de cierre es práctica estándar' },
+      ],
+      explanation: 'La señal depende del cierre, que no se conoce hasta el final del día, y sin embargo la operación se registra en la apertura anterior — usando información del futuro. Eso es sesgo de anticipación. El arreglo es la regla del retardo de una barra: transacciona solo a precios realizados tras ser la señal plenamente observable, p. ej. la siguiente apertura o cierre.',
+    },
+    {
+      question: 'Un investigador prueba 200 variantes de estrategia sobre los mismos datos y presenta con orgullo la única mejor. ¿Por qué es sospechoso su impresionante ratio de Sharpe?',
+      options: [
+        { text: 'Con 200 pruebas, la probabilidad de que al menos una estrategia inservible parezca significativa por suerte es enorme (1 − 0,95^200 ≈ 1) — la "ganadora" es probablemente la chiripa más afortunada, no una ventaja real', correct: true },
+        { text: 'Probar muchas variantes siempre reduce los falsos positivos, así que no es sospechoso en absoluto' },
+        { text: 'El ratio de Sharpe no puede calcularse a partir de un backtest' },
+        { text: 'El único problema es que 200 son demasiado pocas pruebas para ser fiable' },
+      ],
+      explanation: 'Esto es data-snooping. Cada prueba tiene una probabilidad de falso positivo, así que entre 200 pruebas una ganadora espuria está casi garantizada: 1 − 0,95^200 ≈ 1. Reportar solo a la mejor, sin revelar el número de pruebas ni desinflar por ellas, fabrica un descubrimiento falso a partir de ruido.',
+    },
+    {
+      question: '¿Qué patrón entre los resultados dentro y fuera de muestra es la marca distintiva del sobreajuste?',
+      options: [
+        { text: 'El rendimiento dentro de muestra no para de subir con la complejidad mientras el de fuera de muestra sube hasta un pico y luego declina, abriendo una brecha creciente', correct: true },
+        { text: 'Tanto el rendimiento dentro como fuera de muestra suben juntos sin límite' },
+        { text: 'El rendimiento fuera de muestra siempre supera al de dentro de muestra' },
+        { text: 'El rendimiento dentro y fuera de muestra son siempre idénticos' },
+      ],
+      explanation: 'El sobreajuste se muestra como una divergencia: la complejidad añadida sigue mejorando el ajuste dentro de muestra (entrenamiento) al capturar ruido, pero el rendimiento fuera de muestra (no visto) hace pico y luego cae porque ese ruido no se repite. La brecha creciente entre las dos curvas es el diagnóstico.',
+    },
+    {
+      question: 'Detecta la trampa. Un equipo obtiene un resultado flojo en su holdout fuera de muestra, retoca la estrategia, vuelve a probar en el mismo holdout y repite hasta que pinta bien. ¿Qué han hecho?',
+      options: [
+        { text: 'Contaminar el holdout — al probar y retocar repetidamente contra él, lo convirtieron en datos de dentro de muestra y reintrodujeron el data-snooping; el resultado "fuera de muestra" ya no es honesto', correct: true },
+        { text: 'Realizar un análisis walk-forward correcto' },
+        { text: 'Eliminar el sesgo de anticipación al usar el holdout repetidamente' },
+        { text: 'Nada mal — reutilizar el holdout hace la estimación más robusta' },
+      ],
+      explanation: 'Un holdout solo es válido si se juzga UNA vez. Espiar, retocar y volver a probar contra él filtra información del holdout de vuelta al diseño, convirtiéndolo de hecho en datos de entrenamiento — eso es data-snooping otra vez. Un holdout honesto debe tocarse exactamente una vez, tras congelar la estrategia.',
+    },
+  ]}
+/>
+
+Con eso se completa el instrumental — modelar la media, modelar la varianza y la disciplina para evaluarlo todo con honestidad. Lo siguiente es el **examen final**: una pasada con nota, a una sola oportunidad, por todo el tema, desde la estacionariedad y las raíces unitarias hasta la ACF/PACF, ARIMA, GARCH, EWMA y las trampas del backtesting. Sin pistas, sin marcha atrás — demuestra que la estructura se quedó.

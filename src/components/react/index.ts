@@ -382,3 +382,85 @@ export type { JumpDiffusionPathProps } from '@/components/react/JumpDiffusionPat
 
 export { ItoCorrectionChart, default as ItoCorrectionChartDefault } from '@/components/react/ItoCorrectionChart';
 export type { ItoCorrectionChartProps } from '@/components/react/ItoCorrectionChart';
+
+// Time-series finance islands
+export { TsAcfPlot, default as TsAcfPlotDefault } from '@/components/react/TsAcfPlot';
+export type { TsAcfPlotProps } from '@/components/react/TsAcfPlot';
+
+export { TsArSimulator, default as TsArSimulatorDefault } from '@/components/react/TsArSimulator';
+export type { TsArSimulatorProps } from '@/components/react/TsArSimulator';
+
+export { TsEwmaDecay, default as TsEwmaDecayDefault } from '@/components/react/TsEwmaDecay';
+export type { TsEwmaDecayProps } from '@/components/react/TsEwmaDecay';
+
+export { TsGarchVolPath, default as TsGarchVolPathDefault } from '@/components/react/TsGarchVolPath';
+export type { TsGarchVolPathProps } from '@/components/react/TsGarchVolPath';
+
+export { TsOverfitCurve, default as TsOverfitCurveDefault } from '@/components/react/TsOverfitCurve';
+export type { TsOverfitCurveProps } from '@/components/react/TsOverfitCurve';
+
+export { TsStationarityChart, default as TsStationarityChartDefault } from '@/components/react/TsStationarityChart';
+export type { TsStationarityChartProps } from '@/components/react/TsStationarityChart';
+
+// Risk-of-ruin islands
+export { RorDrawdownDist, default as RorDrawdownDistDefault } from '@/components/react/RorDrawdownDist';
+export type { RorDrawdownDistProps } from '@/components/react/RorDrawdownDist';
+
+export { RorExpectancyBars, default as RorExpectancyBarsDefault } from '@/components/react/RorExpectancyBars';
+export type { RorExpectancyBarsProps } from '@/components/react/RorExpectancyBars';
+
+export { RorMonteCarloRuin, default as RorMonteCarloRuinDefault } from '@/components/react/RorMonteCarloRuin';
+export type { RorMonteCarloRuinProps } from '@/components/react/RorMonteCarloRuin';
+
+export { RorRuinCurve, default as RorRuinCurveDefault } from '@/components/react/RorRuinCurve';
+export type { RorRuinCurveProps } from '@/components/react/RorRuinCurve';
+
+export { RorSequencePaths, default as RorSequencePathsDefault } from '@/components/react/RorSequencePaths';
+export type { RorSequencePathsProps } from '@/components/react/RorSequencePaths';
+
+export { RorStopLossSizer, default as RorStopLossSizerDefault } from '@/components/react/RorStopLossSizer';
+export type { RorStopLossSizerProps } from '@/components/react/RorStopLossSizer';
+
+// Portfolio-optimization islands
+export { PoCovHeatmap, default as PoCovHeatmapDefault } from '@/components/react/PoCovHeatmap';
+export type { PoCovHeatmapProps } from '@/components/react/PoCovHeatmap';
+
+export { PoEfficientCloud, default as PoEfficientCloudDefault } from '@/components/react/PoEfficientCloud';
+export type { PoEfficientCloudProps } from '@/components/react/PoEfficientCloud';
+
+export { PoEstimationErrorScatter, default as PoEstimationErrorScatterDefault } from '@/components/react/PoEstimationErrorScatter';
+export type { PoEstimationErrorScatterProps } from '@/components/react/PoEstimationErrorScatter';
+
+export { PoRiskParityWheel, default as PoRiskParityWheelDefault } from '@/components/react/PoRiskParityWheel';
+export type { PoRiskParityWheelProps } from '@/components/react/PoRiskParityWheel';
+
+export { PoShrinkageSlider, default as PoShrinkageSliderDefault } from '@/components/react/PoShrinkageSlider';
+export type { PoShrinkageSliderProps } from '@/components/react/PoShrinkageSlider';
+
+export { PoTurnoverCost, default as PoTurnoverCostDefault } from '@/components/react/PoTurnoverCost';
+export type { PoTurnoverCostProps } from '@/components/react/PoTurnoverCost';
+
+export { PoWeightsBar, default as PoWeightsBarDefault } from '@/components/react/PoWeightsBar';
+export type { PoWeightsBarProps } from '@/components/react/PoWeightsBar';
+
+// Extreme-value & tails islands
+export { EvBlockMaxima, default as EvBlockMaximaDefault } from '@/components/react/EvBlockMaxima';
+export type { EvBlockMaximaProps } from '@/components/react/EvBlockMaxima';
+
+export { EvCopulaScatter, default as EvCopulaScatterDefault } from '@/components/react/EvCopulaScatter';
+export type { EvCopulaScatterProps } from '@/components/react/EvCopulaScatter';
+
+export { EvEsVsVar, default as EvEsVsVarDefault } from '@/components/react/EvEsVsVar';
+export type { EvEsVsVarProps } from '@/components/react/EvEsVsVar';
+
+export { EvFatTailCompare, default as EvFatTailCompareDefault } from '@/components/react/EvFatTailCompare';
+export type { EvFatTailCompareProps } from '@/components/react/EvFatTailCompare';
+
+export { EvGpdThreshold, default as EvGpdThresholdDefault } from '@/components/react/EvGpdThreshold';
+export type { EvGpdThresholdProps } from '@/components/react/EvGpdThreshold';
+
+export { EvPowerLawPlot, default as EvPowerLawPlotDefault } from '@/components/react/EvPowerLawPlot';
+export type { EvPowerLawPlotProps } from '@/components/react/EvPowerLawPlot';
+
+export { EvStressBars, default as EvStressBarsDefault } from '@/components/react/EvStressBars';
+export type { EvStressBarsProps, EvStressScenario } from '@/components/react/EvStressBars';

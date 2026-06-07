@@ -116,16 +116,16 @@ quantitative relationship. Build after the learner has `investment-metrics`,
   martingales, Markov chains, Brownian motion & Itô's lemma intuition,
   mean-reversion (Ornstein–Uhlenbeck), jump-diffusion, what a stochastic
   differential equation says. _(deps: `monte-carlo-finance`)_
-- [ ] **time-series-finance** — modeling returns over time: stationarity,
+- [x] **time-series-finance** _(2026-06-07)_ — modeling returns over time: stationarity,
   autocorrelation, AR/MA/ARIMA, volatility clustering, GARCH, EWMA, backtesting
   pitfalls (look-ahead, overfitting, multiple testing). _(deps: `bayesian-finance`)_
 - [x] **factor-models** _(2026-06-06)_ — multi-factor investing: CAPM → Fama–French 3/5-factor,
   momentum, cross-sectional regression, factor risk decomposition, alpha vs
   factor exposure, smart beta. _(deps: `portfolio-theory`)_
-- [ ] **risk-of-ruin** — survival & position sizing: risk of ruin formula,
+- [x] **risk-of-ruin** _(2026-06-07)_ — survival & position sizing: risk of ruin formula,
   drawdown distributions, expectancy, sequencing risk, Monte Carlo ruin curves,
   stop-loss math. _(deps: `kelly-and-cagr`, `monte-carlo-finance`)_
-- [ ] **portfolio-optimization** — from theory to weights: mean-variance
+- [x] **portfolio-optimization** _(2026-06-07)_ — from theory to weights: mean-variance
   optimization mechanics, the covariance matrix, estimation error & instability,
   shrinkage estimators, risk parity, the maximum-Sharpe & minimum-variance
   portfolios, constraints & transaction costs. _(deps: `portfolio-theory`,
@@ -133,7 +133,7 @@ quantitative relationship. Build after the learner has `investment-metrics`,
 - [x] **greeks-and-hedging** _(2026-06-06)_ — managing an options book: delta/gamma/vega/theta/rho
   in depth, delta-neutral hedging, gamma scalping, the volatility surface, vega
   risk, P&L attribution. _(deps: `options-pricing`)_
-- [ ] **extreme-value-and-tails** — modeling the tail: fat tails vs Gaussian,
+- [x] **extreme-value-and-tails** _(2026-06-07)_ — modeling the tail: fat tails vs Gaussian,
   power laws, Extreme Value Theory, expected shortfall beyond VaR, copulas &
   tail dependence, stress testing. _(deps: `value-at-risk`, `monte-carlo-finance`)_
 - [x] **polymarket-prediction-markets** _(2026-06-07)_ — betting on real-world outcomes:
