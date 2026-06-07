@@ -112,7 +112,7 @@ quantitative relationship. Build after the learner has `investment-metrics`,
   Black–Litterman intuition, credible intervals vs confidence intervals, base
   rates & the prosecutor's fallacy in trading signals, MCMC at a glance. _(deps:
   `investment-metrics`; prior/posterior animation island)_
-- [ ] **stochastic-processes** — random processes for asset prices: random walks,
+- [x] **stochastic-processes** _(2026-06-07)_ — random processes for asset prices: random walks,
   martingales, Markov chains, Brownian motion & Itô's lemma intuition,
   mean-reversion (Ornstein–Uhlenbeck), jump-diffusion, what a stochastic
   differential equation says. _(deps: `monte-carlo-finance`)_

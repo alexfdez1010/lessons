@@ -367,3 +367,18 @@ export type { CalibrationCurveProps } from '@/components/react/CalibrationCurve'
 
 export { BinaryArbitrageBars, default as BinaryArbitrageBarsDefault } from '@/components/react/BinaryArbitrageBars';
 export type { BinaryArbitrageBarsProps } from '@/components/react/BinaryArbitrageBars';
+
+export { RandomWalkPaths, default as RandomWalkPathsDefault } from '@/components/react/RandomWalkPaths';
+export type { RandomWalkPathsProps } from '@/components/react/RandomWalkPaths';
+
+export { MarkovRegimeChain, default as MarkovRegimeChainDefault } from '@/components/react/MarkovRegimeChain';
+export type { MarkovRegimeChainProps } from '@/components/react/MarkovRegimeChain';
+
+export { MeanReversionPath, default as MeanReversionPathDefault } from '@/components/react/MeanReversionPath';
+export type { MeanReversionPathProps } from '@/components/react/MeanReversionPath';
+
+export { JumpDiffusionPath, default as JumpDiffusionPathDefault } from '@/components/react/JumpDiffusionPath';
+export type { JumpDiffusionPathProps } from '@/components/react/JumpDiffusionPath';
+
+export { ItoCorrectionChart, default as ItoCorrectionChartDefault } from '@/components/react/ItoCorrectionChart';
+export type { ItoCorrectionChartProps } from '@/components/react/ItoCorrectionChart';
