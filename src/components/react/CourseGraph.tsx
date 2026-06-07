@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { cx } from '@/components/react/cx';
 import { getFinishedCourses, onProgressChange } from '@/lib/progress';
 
@@ -70,8 +70,25 @@ export interface CourseGraphProps {
   caption?: string;
   /** Shown when `nodes` is empty. */
   emptyLabel?: string;
+  /** Label for the difficulty filter `<select>` (e.g. `'Level'`). */
+  levelLabel?: string;
+  /** Text for the "no filter" option (e.g. `'All levels'`). */
+  allLevelsLabel?: string;
   /** Extra classes merged onto the root element. */
   className?: string;
+}
+
+/** Difficulty filter value: a tier or the unfiltered sentinel. */
+type LevelFilter = Difficulty | 'all';
+
+/** The URL search-param key that persists the active difficulty filter. */
+const LEVEL_PARAM = 'level';
+
+const DIFFICULTY_VALUES: readonly Difficulty[] = ['beginner', 'intermediate', 'advanced', 'expert'];
+
+/** Parse a difficulty filter from a raw query-string value (`'all'` fallback). */
+function parseLevel(raw: string | null): LevelFilter {
+  return raw && (DIFFICULTY_VALUES as readonly string[]).includes(raw) ? (raw as Difficulty) : 'all';
 }
 
 /** A measured edge: a cubic-bezier path string from prerequisite → course. */
@@ -213,6 +230,8 @@ export function CourseGraph({
   finishedLabel = 'Finished',
   caption,
   emptyLabel = 'No courses yet — check back soon.',
+  levelLabel = 'Level',
+  allLevelsLabel = 'All levels',
   className,
 }: CourseGraphProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -230,12 +249,42 @@ export function CourseGraph({
     return onProgressChange(sync);
   }, []);
 
-  const layers = computeLayers(nodes);
-  const maxLayer = nodes.reduce((m, n) => Math.max(m, layers.get(n.slug) ?? 0), 0);
+  // Active difficulty filter, persisted in the URL (`?level=…`). Initialized to
+  // `'all'` so the first paint matches the server, then reconciled from the URL
+  // on mount — and kept in sync if the learner navigates back/forward.
+  const [level, setLevel] = useState<LevelFilter>('all');
+  useEffect(() => {
+    const fromUrl = () =>
+      setLevel(parseLevel(new URLSearchParams(window.location.search).get(LEVEL_PARAM)));
+    fromUrl();
+    window.addEventListener('popstate', fromUrl);
+    return () => window.removeEventListener('popstate', fromUrl);
+  }, []);
+
+  // Persist the chosen filter to the URL without growing history, so it survives
+  // refresh and is shareable. Dropping back to `'all'` removes the param entirely.
+  const changeLevel = useCallback((next: LevelFilter) => {
+    setLevel(next);
+    if (typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    if (next === 'all') url.searchParams.delete(LEVEL_PARAM);
+    else url.searchParams.set(LEVEL_PARAM, next);
+    window.history.replaceState({}, '', url);
+  }, []);
+
+  // Only the courses matching the active tier feed the layout. Edges to filtered
+  // -out prerequisites are simply skipped (measure() guards on the visible set).
+  const visibleNodes = useMemo(
+    () => (level === 'all' ? nodes : nodes.filter((n) => n.difficulty === level)),
+    [nodes, level],
+  );
+
+  const layers = computeLayers(visibleNodes);
+  const maxLayer = visibleNodes.reduce((m, n) => Math.max(m, layers.get(n.slug) ?? 0), 0);
   // Group nodes into rows by layer, preserving array order within each row.
   const rows: CourseNode[][] = Array.from({ length: maxLayer + 1 }, () => []);
-  for (const n of nodes) rows[layers.get(n.slug) ?? 0].push(n);
-  orderRowsToReduceCrossings(rows, nodes);
+  for (const n of visibleNodes) rows[layers.get(n.slug) ?? 0].push(n);
+  orderRowsToReduceCrossings(rows, visibleNodes);
 
   const measure = useCallback(() => {
     const container = containerRef.current;
@@ -251,8 +300,8 @@ export function CourseGraph({
     };
 
     const next: EdgePath[] = [];
-    const bySlug = new Set(nodes.map((n) => n.slug));
-    for (const n of nodes) {
+    const bySlug = new Set(visibleNodes.map((n) => n.slug));
+    for (const n of visibleNodes) {
       const toEl = cardRefs.current.get(n.slug);
       if (!toEl) continue;
       const to = centerOf(toEl);
@@ -275,7 +324,7 @@ export function CourseGraph({
     }
     setSize({ w: container.clientWidth, h: container.clientHeight });
     setEdges(next);
-  }, [nodes]);
+  }, [visibleNodes]);
 
   // Measure after layout and on every resize of the container.
   useLayoutEffect(() => {
@@ -300,6 +349,30 @@ export function CourseGraph({
 
   return (
     <figure className={cx('not-prose', className)}>
+      {/* Difficulty filter — persisted in the URL (?level=…), shareable + refresh-safe. */}
+      <div className="mb-10 flex flex-wrap items-center justify-end gap-2">
+        <label htmlFor="course-level-filter" className="text-sm font-medium text-ink-600">
+          {levelLabel}
+        </label>
+        <select
+          id="course-level-filter"
+          value={level}
+          onChange={(e) => changeLevel(e.target.value as LevelFilter)}
+          className="rounded-pill border border-ink-200 bg-surface px-4 py-1.5 text-sm font-medium text-ink-900 shadow-soft transition-colors hover:border-brand-300 focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-300"
+        >
+          <option value="all">{allLevelsLabel}</option>
+          {DIFFICULTY_VALUES.map((d) => (
+            <option key={d} value={d}>
+              {difficultyLabels[d]}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {visibleNodes.length === 0 ? (
+        <p className="py-12 text-center text-ink-500">{emptyLabel}</p>
+      ) : null}
+
       <div ref={containerRef} className="relative">
         {/* Edge overlay — measured from the cards, purely decorative. */}
         <svg
