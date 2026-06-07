@@ -169,6 +169,10 @@ export type { MoneyTimelineProps, MoneyTimelineEvent } from '@/components/react/
 
 export { PurchasingPowerDecay, default as PurchasingPowerDecayDefault } from '@/components/react/PurchasingPowerDecay';
 export type { PurchasingPowerDecayProps } from '@/components/react/PurchasingPowerDecay';
+export { SupplyDemandCurve, default as SupplyDemandCurveDefault } from '@/components/react/SupplyDemandCurve';
+export type { SupplyDemandCurveProps } from '@/components/react/SupplyDemandCurve';
+export { BusinessCycleWave, default as BusinessCycleWaveDefault } from '@/components/react/BusinessCycleWave';
+export type { BusinessCycleWaveProps } from '@/components/react/BusinessCycleWave';
 
 export { GoldPegDiagram, default as GoldPegDiagramDefault } from '@/components/react/GoldPegDiagram';
 export type { GoldPegDiagramProps } from '@/components/react/GoldPegDiagram';
