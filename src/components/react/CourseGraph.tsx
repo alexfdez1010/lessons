@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { cx } from '@/components/react/cx';
-import { getFinishedCourses, onProgressChange } from '@/lib/progress';
+import {
+  courseProgress,
+  getFinishedLessons,
+  getLegacyFinishedCourses,
+  migrateLegacyCourse,
+  onProgressChange,
+} from '@/lib/progress';
 
 /** The four demand tiers on the zero-to-expert finance path. */
 export type Difficulty = 'beginner' | 'intermediate' | 'advanced' | 'expert';
@@ -39,6 +45,11 @@ export interface CourseNode {
   href: string;
   /** Number of lessons inside the course. */
   lessons: number;
+  /**
+   * Bare lesson slugs of the course, in order. Drives the `X / Y` completion
+   * count (locale-agnostic — see `@/lib/progress`).
+   */
+  lessonSlugs: string[];
   /** Accent token suffix used for the node tint. */
   accent?: 'brand' | 'accent';
   /**
@@ -239,15 +250,22 @@ export function CourseGraph({
   const cardRefs = useRef(new Map<string, HTMLAnchorElement>());
   const [edges, setEdges] = useState<EdgePath[]>([]);
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
-  // Courses the learner marked finished (localStorage); empty during SSR so
-  // the first paint matches the server, then hydrated + kept in sync on mount.
-  const [finished, setFinished] = useState<Set<string>>(new Set());
+  // Per-lesson completion + the legacy whole-course flags (localStorage). Both
+  // empty during SSR so the first paint matches the server, then hydrated +
+  // kept in sync on mount. Per-course `X / Y` counts are derived from these.
+  const [finishedLessons, setFinishedLessons] = useState<Set<string>>(new Set());
+  const [legacyCourses, setLegacyCourses] = useState<Set<string>>(new Set());
 
   useEffect(() => {
-    const sync = () => setFinished(getFinishedCourses());
+    // Fold any legacy whole-course flags into per-lesson state, once.
+    for (const n of nodes) migrateLegacyCourse(n.slug, n.lessonSlugs);
+    const sync = () => {
+      setFinishedLessons(getFinishedLessons());
+      setLegacyCourses(getLegacyFinishedCourses());
+    };
     sync();
     return onProgressChange(sync);
-  }, []);
+  }, [nodes]);
 
   // Active difficulty filter, persisted in the URL (`?level=…`). Initialized to
   // `'all'` so the first paint matches the server, then reconciled from the URL
@@ -420,7 +438,8 @@ export function CourseGraph({
                   const edge = n.difficulty
                     ? DIFFICULTY_EDGE_CLASS[n.difficulty]
                     : 'border-l-4 border-l-ink-200 bg-surface';
-                  const isDone = finished.has(n.slug);
+                  const prog = courseProgress(n.slug, n.lessonSlugs, finishedLessons, legacyCourses);
+                  const isDone = prog.finished;
                   return (
                     <li key={n.slug} className="m-0 p-0">
                       <a
@@ -429,7 +448,7 @@ export function CourseGraph({
                           else cardRefs.current.delete(n.slug);
                         }}
                         href={n.href}
-                        title={`${n.title} · ${n.lessons} ${lessonsLabel}${isDone ? ` · ${finishedLabel}` : ''}`}
+                        title={`${n.title} · ${prog.completed}/${prog.total} ${lessonsLabel}${isDone ? ` · ${finishedLabel}` : ''}`}
                         className={cx(
                           'group relative flex h-full w-28 max-w-[40vw] flex-col rounded-card border border-ink-200 p-2.5 shadow-soft transition-all hover:-translate-y-1 hover:border-brand-300 hover:shadow-lift motion-reduce:transition-none motion-reduce:hover:translate-y-0 sm:w-44 sm:max-w-[80vw] sm:p-3',
                           edge,
@@ -475,8 +494,13 @@ export function CourseGraph({
                             {difficultyLabels[n.difficulty]}
                           </span>
                         ) : null}
-                        <p className="mt-1.5 text-xs font-medium text-ink-400">
-                          {n.lessons} {lessonsLabel}
+                        <p
+                          className={cx(
+                            'mt-1.5 text-xs font-medium',
+                            isDone ? 'text-brand-700' : 'text-ink-400',
+                          )}
+                        >
+                          {prog.completed}/{prog.total} {lessonsLabel}
                         </p>
                       </a>
                     </li>

@@ -65,6 +65,9 @@ export type { CourseGraphProps, CourseNode, Difficulty } from '@/components/reac
 export { CourseComplete, default as CourseCompleteDefault } from '@/components/react/CourseComplete';
 export type { CourseCompleteProps } from '@/components/react/CourseComplete';
 
+export { LessonComplete, default as LessonCompleteDefault } from '@/components/react/LessonComplete';
+export type { LessonCompleteProps } from '@/components/react/LessonComplete';
+
 export { BlockchainChain, default as BlockchainChainDefault } from '@/components/react/BlockchainChain';
 export type { BlockchainChainProps } from '@/components/react/BlockchainChain';
 
