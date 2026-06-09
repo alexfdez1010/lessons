@@ -64,6 +64,10 @@ export const ui = {
     'footer.built': 'Built with Astro.',
     'footer.license': 'MIT License.',
     'lang.switch': 'Language',
+    'roadmap.learningPaths': 'Learning Paths',
+    'roadmap.courses': 'courses',
+    'roadmap.backToCatalog': 'Back to catalog',
+    'roadmap.empty': 'No courses in this path yet — check back soon.',
   },
   es: {
     'brand.title': 'Lecciones de Finanzas',
@@ -114,6 +118,10 @@ export const ui = {
     'footer.built': 'Hecho con Astro.',
     'footer.license': 'Licencia MIT.',
     'lang.switch': 'Idioma',
+    'roadmap.learningPaths': 'Rutas de aprendizaje',
+    'roadmap.courses': 'cursos',
+    'roadmap.backToCatalog': 'Volver al catálogo',
+    'roadmap.empty': 'Aún no hay cursos en esta ruta — vuelve pronto.',
   },
 } as const;
 

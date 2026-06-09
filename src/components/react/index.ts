@@ -471,3 +471,37 @@ export type { EvPowerLawPlotProps } from '@/components/react/EvPowerLawPlot';
 
 export { EvStressBars, default as EvStressBarsDefault } from '@/components/react/EvStressBars';
 export type { EvStressBarsProps, EvStressScenario } from '@/components/react/EvStressBars';
+
+// Investment-psychology (behavioural finance) islands
+export { DualSystemPanel, default as DualSystemPanelDefault } from '@/components/react/DualSystemPanel';
+export type { DualSystemPanelProps, DualSystemScenario } from '@/components/react/DualSystemPanel';
+
+export { ValueFunctionCurve, default as ValueFunctionCurveDefault } from '@/components/react/ValueFunctionCurve';
+export type { ValueFunctionCurveProps } from '@/components/react/ValueFunctionCurve';
+
+export { ProbabilityWeighting, default as ProbabilityWeightingDefault } from '@/components/react/ProbabilityWeighting';
+export type { ProbabilityWeightingProps } from '@/components/react/ProbabilityWeighting';
+
+export { DispositionEffect, default as DispositionEffectDefault } from '@/components/react/DispositionEffect';
+export type { DispositionEffectProps, DispositionHolding } from '@/components/react/DispositionEffect';
+
+export { OverconfidenceCalibration, default as OverconfidenceCalibrationDefault } from '@/components/react/OverconfidenceCalibration';
+export type { OverconfidenceCalibrationProps, CalibrationPoint } from '@/components/react/OverconfidenceCalibration';
+
+export { AnchoringDial, default as AnchoringDialDefault } from '@/components/react/AnchoringDial';
+export type { AnchoringDialProps } from '@/components/react/AnchoringDial';
+
+export { RandomnessStreaks, default as RandomnessStreaksDefault } from '@/components/react/RandomnessStreaks';
+export type { RandomnessStreaksProps } from '@/components/react/RandomnessStreaks';
+
+export { ConfirmationFunnel, default as ConfirmationFunnelDefault } from '@/components/react/ConfirmationFunnel';
+export type { ConfirmationFunnelProps, ConfirmationItem } from '@/components/react/ConfirmationFunnel';
+
+export { BubbleAnatomy, default as BubbleAnatomyDefault } from '@/components/react/BubbleAnatomy';
+export type { BubbleAnatomyProps, BubblePhase } from '@/components/react/BubbleAnatomy';
+
+export { SurvivorshipFunnel, default as SurvivorshipFunnelDefault } from '@/components/react/SurvivorshipFunnel';
+export type { SurvivorshipFunnelProps } from '@/components/react/SurvivorshipFunnel';
+
+export { ProcessOutcomeMatrix, default as ProcessOutcomeMatrixDefault } from '@/components/react/ProcessOutcomeMatrix';
+export type { ProcessOutcomeMatrixProps, ProcessOutcomeCell } from '@/components/react/ProcessOutcomeMatrix';

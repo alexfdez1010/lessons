@@ -60,6 +60,7 @@ const topics = defineCollection({
      * MDX file with its `dependencies` array — no code changes.
      */
     dependencies: z.array(z.string()).default([]),
+    tags: z.array(z.string()).default([]),
     draft: z.boolean().default(false),
     seo,
   }),
