@@ -35,9 +35,19 @@ export const roadmaps: RoadmapMeta[] = [
     },
   },
   {
+    tag: 'stocks',
+    icon: '📈',
+    order: 1,
+    title: { en: 'Stocks & Company Analysis', es: 'Bolsa y Análisis de Empresas' },
+    description: {
+      en: 'How exchanges, funds, order books, and balance sheets really work — pick stocks with your eyes open.',
+      es: 'Cómo funcionan de verdad las bolsas, los fondos, los libros de órdenes y los balances — elige acciones con los ojos abiertos.',
+    },
+  },
+  {
     tag: 'crypto',
     icon: '₿',
-    order: 1,
+    order: 2,
     title: { en: 'Crypto', es: 'Cripto' },
     description: {
       en: 'Bitcoin, Ethereum, DeFi, and the mechanics of on-chain finance — from "magic internet money" to real understanding.',
@@ -47,7 +57,7 @@ export const roadmaps: RoadmapMeta[] = [
   {
     tag: 'quantitative-finance',
     icon: '📊',
-    order: 2,
+    order: 3,
     title: { en: 'Quantitative Finance', es: 'Finanzas Cuantitativas' },
     description: {
       en: 'Statistics, portfolio theory, risk models, Monte Carlo, stochastic processes, and Bayesian methods — the math that drives modern markets.',
@@ -57,17 +67,17 @@ export const roadmaps: RoadmapMeta[] = [
   {
     tag: 'derivatives',
     icon: '🎟️',
-    order: 3,
+    order: 4,
     title: { en: 'Derivatives', es: 'Derivados' },
     description: {
-      en: 'Options from first principles through pricing, Greeks, and hedging — the full toolkit for structured products and risk management.',
-      es: 'Opciones desde los primeros principios hasta precios, griegas y cobertura — el kit completo para productos estructurados y gestión de riesgo.',
+      en: 'Futures, forwards, and options from first principles through pricing, Greeks, hedging, and on-chain perps — the full toolkit for risk management.',
+      es: 'Futuros, forwards y opciones desde los primeros principios hasta precios, griegas, cobertura y perps on-chain — el kit completo de gestión de riesgo.',
     },
   },
   {
     tag: 'prediction-markets',
     icon: '🎲',
-    order: 4,
+    order: 5,
     title: { en: 'Prediction Markets', es: 'Mercados de Predicción' },
     description: {
       en: 'How Polymarket turns opinions into probabilities — order books, oracles, calibration, and sizing bets with Kelly.',
@@ -145,4 +155,31 @@ export async function getTopicsByTag(
     }),
   );
   return withCounts;
+}
+
+/**
+ * Prerequisite courses of a roadmap's members that live OUTSIDE the roadmap —
+ * the courses a learner must bring from another path before starting this one.
+ * Sorted easiest-first so they read as a pre-flight checklist.
+ */
+export async function getExternalPrereqs(lang: Lang, tag: string): Promise<TopicView[]> {
+  const allTopics = await getTopics(lang);
+  const bySlug = new Map(allTopics.map((t) => [t.slug, t]));
+  const inPath = new Set(
+    allTopics.filter((t) => t.entry.data.tags?.includes(tag)).map((t) => t.slug),
+  );
+  const external = new Map<string, TopicView>();
+  for (const topic of allTopics) {
+    if (!inPath.has(topic.slug)) continue;
+    for (const dep of topic.entry.data.dependencies ?? []) {
+      if (inPath.has(dep)) continue;
+      const depTopic = bySlug.get(dep);
+      if (depTopic) external.set(dep, depTopic);
+    }
+  }
+  return [...external.values()].sort(
+    (a, b) =>
+      rankOf(a.entry.data.difficulty) - rankOf(b.entry.data.difficulty) ||
+      (a.entry.data.order ?? 0) - (b.entry.data.order ?? 0),
+  );
 }
