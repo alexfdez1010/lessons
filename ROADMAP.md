@@ -29,13 +29,6 @@ _These plug the holes between difficulty tiers: today the catalog jumps from
 (`investment-metrics`, advanced), and two expert courses (`mev-and-ordering`,
 `polymarket-prediction-markets`) assume order-book knowledge nothing teaches._
 
-- [ ] **stock-markets-and-funds** ⬤⬤ ⭐ HIGH PRIORITY — how the stock market
-  actually works: exchanges & brokers, what happens when you place an order,
-  order types (market/limit/stop), bid–ask, indices (S&P 500, world indices),
-  ETFs vs mutual funds vs index funds, fees & expense ratios, dividends &
-  buybacks, stock splits, IPOs & listings. _(deps: `investing-basics`,
-  `economics-for-finance`; bridges beginner → `investment-metrics`; order-flow +
-  index-composition + fee-drag islands)_
 - [ ] **futures-and-forwards** ⬤⬤ — linear derivatives before options: what a
   forward is, payoff symmetry, futures vs forwards, margin & mark-to-market,
   basis, contango & backwardation, hedgers vs speculators, cost-of-carry

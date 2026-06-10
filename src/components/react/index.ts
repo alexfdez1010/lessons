@@ -505,3 +505,15 @@ export type { SurvivorshipFunnelProps } from '@/components/react/SurvivorshipFun
 
 export { ProcessOutcomeMatrix, default as ProcessOutcomeMatrixDefault } from '@/components/react/ProcessOutcomeMatrix';
 export type { ProcessOutcomeMatrixProps, ProcessOutcomeCell } from '@/components/react/ProcessOutcomeMatrix';
+
+export { OrderLifecycle, default as OrderLifecycleDefault } from '@/components/react/OrderLifecycle';
+export type { OrderLifecycleProps } from '@/components/react/OrderLifecycle';
+
+export { IndexWeights, default as IndexWeightsDefault } from '@/components/react/IndexWeights';
+export type { IndexWeightsProps, IndexCompany } from '@/components/react/IndexWeights';
+
+export { FeeDrag, default as FeeDragDefault } from '@/components/react/FeeDrag';
+export type { FeeDragProps } from '@/components/react/FeeDrag';
+
+export { ThinkReveal, default as ThinkRevealDefault } from '@/components/react/ThinkReveal';
+export type { ThinkRevealProps } from '@/components/react/ThinkReveal';
