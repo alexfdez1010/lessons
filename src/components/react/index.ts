@@ -517,3 +517,83 @@ export type { FeeDragProps } from '@/components/react/FeeDrag';
 
 export { ThinkReveal, default as ThinkRevealDefault } from '@/components/react/ThinkReveal';
 export type { ThinkRevealProps } from '@/components/react/ThinkReveal';
+
+// Futures & forwards islands
+export { ForwardPayoff, default as ForwardPayoffDefault } from '@/components/react/ForwardPayoff';
+export type { ForwardPayoffProps } from '@/components/react/ForwardPayoff';
+
+export { MarginLadder, default as MarginLadderDefault } from '@/components/react/MarginLadder';
+export type { MarginLadderProps } from '@/components/react/MarginLadder';
+
+export { FuturesCurve, default as FuturesCurveDefault } from '@/components/react/FuturesCurve';
+export type { FuturesCurveProps } from '@/components/react/FuturesCurve';
+
+export { CostOfCarryStack, default as CostOfCarryStackDefault } from '@/components/react/CostOfCarryStack';
+export type { CostOfCarryStackProps } from '@/components/react/CostOfCarryStack';
+
+export { HedgeLockChart, default as HedgeLockChartDefault } from '@/components/react/HedgeLockChart';
+export type { HedgeLockChartProps } from '@/components/react/HedgeLockChart';
+
+// Company financials & valuation islands
+export { ThreeStatementFlow, default as ThreeStatementFlowDefault } from '@/components/react/ThreeStatementFlow';
+export type { ThreeStatementFlowProps, StatementLink } from '@/components/react/ThreeStatementFlow';
+
+export { MarginWaterfall, default as MarginWaterfallDefault } from '@/components/react/MarginWaterfall';
+export type { MarginWaterfallProps, WaterfallStep } from '@/components/react/MarginWaterfall';
+
+export { DcfSensitivityExplorer, default as DcfSensitivityExplorerDefault } from '@/components/react/DcfSensitivityExplorer';
+export type { DcfSensitivityExplorerProps } from '@/components/react/DcfSensitivityExplorer';
+
+export { MultiplesCompare, default as MultiplesCompareDefault } from '@/components/react/MultiplesCompare';
+export type { MultiplesCompareProps, MultipleMetric, MultiplesCompany } from '@/components/react/MultiplesCompare';
+
+export { DupontBreakdown, default as DupontBreakdownDefault } from '@/components/react/DupontBreakdown';
+export type { DupontBreakdownProps, DupontFactor } from '@/components/react/DupontBreakdown';
+
+// Market-microstructure islands
+export { LiveOrderBook, default as LiveOrderBookDefault } from '@/components/react/LiveOrderBook';
+export type { LiveOrderBookProps } from '@/components/react/LiveOrderBook';
+
+export { SpreadDecomposition, default as SpreadDecompositionDefault } from '@/components/react/SpreadDecomposition';
+export type { SpreadDecompositionProps, SpreadComponentLabels } from '@/components/react/SpreadDecomposition';
+
+export { DepthLadder, default as DepthLadderDefault } from '@/components/react/DepthLadder';
+export type { DepthLadderProps } from '@/components/react/DepthLadder';
+
+export { InventoryDrift, default as InventoryDriftDefault } from '@/components/react/InventoryDrift';
+export type { InventoryDriftProps } from '@/components/react/InventoryDrift';
+
+export { AdverseSelectionFlow, default as AdverseSelectionFlowDefault } from '@/components/react/AdverseSelectionFlow';
+export type { AdverseSelectionFlowProps } from '@/components/react/AdverseSelectionFlow';
+
+// Fixed-income analytics islands
+export { BootstrapStepper, default as BootstrapStepperDefault } from '@/components/react/BootstrapStepper';
+export type { BootstrapStepperProps } from '@/components/react/BootstrapStepper';
+
+export { ForwardRateBridge, default as ForwardRateBridgeDefault } from '@/components/react/ForwardRateBridge';
+export type { ForwardRateBridgeProps } from '@/components/react/ForwardRateBridge';
+
+export { ImmunizationBalance, default as ImmunizationBalanceDefault } from '@/components/react/ImmunizationBalance';
+export type { ImmunizationBalanceProps } from '@/components/react/ImmunizationBalance';
+
+export { CreditSpreadDecomp, default as CreditSpreadDecompDefault } from '@/components/react/CreditSpreadDecomp';
+export type { CreditSpreadDecompProps } from '@/components/react/CreditSpreadDecomp';
+
+export { ShortRateMeanReversion, default as ShortRateMeanReversionDefault } from '@/components/react/ShortRateMeanReversion';
+export type { ShortRateMeanReversionProps } from '@/components/react/ShortRateMeanReversion';
+
+// DeFi derivatives & perps islands
+export { FundingRateConverge, default as FundingRateConvergeDefault } from '@/components/react/FundingRateConverge';
+export type { FundingRateConvergeProps } from '@/components/react/FundingRateConverge';
+
+export { LeverageLiquidationMeter, default as LeverageLiquidationMeterDefault } from '@/components/react/LeverageLiquidationMeter';
+export type { LeverageLiquidationMeterProps } from '@/components/react/LeverageLiquidationMeter';
+
+export { LiquidationCascade, default as LiquidationCascadeDefault } from '@/components/react/LiquidationCascade';
+export type { LiquidationCascadeProps } from '@/components/react/LiquidationCascade';
+
+export { PerpDexDesigns, default as PerpDexDesignsDefault } from '@/components/react/PerpDexDesigns';
+export type { PerpDexDesignsProps, PerpDexDesign } from '@/components/react/PerpDexDesigns';
+
+export { CashAndCarryFlow, default as CashAndCarryFlowDefault } from '@/components/react/CashAndCarryFlow';
+export type { CashAndCarryFlowProps } from '@/components/react/CashAndCarryFlow';

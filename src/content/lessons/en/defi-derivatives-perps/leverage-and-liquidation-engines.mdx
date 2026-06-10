@@ -1,0 +1,274 @@
+---
+title: "Leverage & Liquidation Engines"
+description: "How a small margin controls a large notional, the exact liquidation price that follows from initial and maintenance margin, isolated vs cross margin, and the keeper-driven liquidation engines — with the partial-vs-full and bankruptcy-price mechanics worked in full."
+topic: "en/defi-derivatives-perps"
+order: 3
+minutes: 14
+updated: 2026-06-08
+---
+
+import { Callout, MCQ, Quiz, FillBlank, MindMap, ThinkReveal, LeverageLiquidationMeter } from '@/components/react';
+
+We keep saying "leveraged" — now let's make it exact. Leverage is the lever that makes perps thrilling and lethal in equal measure, and it leads directly to the most important number a perp trader watches: the **liquidation price**, the level at which the engine forcibly closes you out. This lesson derives that price from first principles, distinguishes the two margin modes, and opens up the keeper-bot machinery that enforces it.
+
+<MCQ
+  client:visible
+  pretest
+  question="What does leverage actually mean for a perp position?"
+  options={[
+    { text: "You post a small amount of margin (collateral) to control a much larger notional position, so price moves are amplified relative to your collateral", correct: true },
+    { text: 'It guarantees your position cannot lose money' },
+    { text: 'It is a fee the exchange charges for borrowing the asset' },
+    { text: 'It is the funding rate paid between longs and shorts' },
+  ]}
+  explanation="Leverage = notional / margin. With $1,000 of margin at 10× you control $10,000 of notional, so a 1% price move is a 10% swing on your collateral. It amplifies both gains and losses — and sets up the liquidation price, where losses have eaten your margin to the maintenance minimum."
+/>
+
+## Leverage: a small lever moving a big weight
+
+**Analogy.** Leverage is a crowbar. A short crowbar (low leverage) moves a small rock with a forgiving margin for error. A long crowbar (high leverage) moves a boulder with the same effort — but the tip whips violently, and a tiny slip at your hand becomes a huge swing at the rock. The longer the lever, the more you move per unit of effort, and the less room you have before it slips out of control.
+
+**Definition.** **Leverage** is the ratio of your position's notional to the margin backing it:
+
+$$\text{leverage} = \frac{\text{notional}}{\text{margin}}.$$
+
+Equivalently, your margin is a fraction $1/\text{leverage}$ of the notional. At 10×, you back \$10,000 of exposure with \$1,000 of collateral; your margin is 10% of notional.
+
+**Why it cuts both ways.** Your PnL is measured on the *notional*, but your survival is measured on the *margin*. A 1% adverse move on a \$10,000 notional is a \$100 loss — which is **10%** of your \$1,000 margin. So a price move of $x\%$ becomes a margin move of $x\% \times \text{leverage}$. Crank leverage to 50× and a mere 2% adverse move wipes out your *entire* margin. This is the seed of the liquidation price.
+
+<MCQ
+  client:visible
+  question="You open a 20× long with $500 of margin. The price moves 1% in your favor. What is the gain on your margin?"
+  options={[
+    { text: "+20% on margin — a 1% move × 20× leverage, so +$100 on your $500 collateral", correct: true },
+    { text: '+1% on margin — a $5 gain' },
+    { text: '+0.05% on margin' },
+    { text: 'Nothing until you close the position' },
+  ]}
+  explanation="Notional = $500 × 20 = $10,000. A 1% favorable move = $100 = 20% of your $500 margin. Leverage multiplies the percentage price move by the leverage factor — gloriously on the way up, brutally on the way down. PnL marks continuously, so the gain is real before you close."
+/>
+
+## Initial margin, maintenance margin, and the liquidation price
+
+Two margin thresholds govern a position:
+
+- **Initial margin** — the collateral required to *open* the position. At 10× leverage, initial margin is 10% of notional. It sets your maximum leverage.
+- **Maintenance margin** — the *minimum* equity you must keep, as a fraction of notional, to keep the position open. It's smaller than initial margin (e.g. 0.5%). When your equity falls to the maintenance margin, you're liquidated.
+
+**The liquidation price, derived.** Your position equity is margin + unrealized PnL. For a long with entry price $P_0$, notional $N$ (in asset units $q$, so $N = q P_0$), and margin $M$, the equity at price $P$ is
+
+$$\text{equity} = M + q\,(P - P_0).$$
+
+Liquidation triggers when equity falls to the maintenance requirement $m \cdot q P$ (maintenance fraction $m$ of current notional). Setting equity equal to that and solving for the liquidation price $P_\text{liq}$:
+
+$$M + q(P_\text{liq} - P_0) = m\, q\, P_\text{liq}.$$
+
+For a quick, accurate-enough approximation, ignore the tiny $m P_\text{liq}$ term against $P_0$ and note $M = qP_0/\text{lev}$. The price has to fall by about
+
+$$\frac{P_0 - P_\text{liq}}{P_0} \approx \frac{1}{\text{lev}} - m$$
+
+before you're liquidated. **In words: a long is liquidated after an adverse move of roughly (1 ÷ leverage − maintenance fraction).** A short is the mirror image — liquidated after an adverse move *up* of the same size.
+
+<Callout variant="info" title="The headline rule of thumb">
+For a long: **liquidation move ≈ 1/leverage − maintenance margin.** At 10× with 0.5% maintenance, that's 1/10 − 0.005 = 9.5% — price can fall ~9.5% before you're closed. At 100× it's 1/100 − 0.005 = 0.5% — a half-percent wick ends you. Higher leverage doesn't just amplify PnL; it shrinks the survivable distance to nearly nothing.
+</Callout>
+
+<ThinkReveal
+  client:visible
+  eyebrow="Think first"
+  prompt="Two traders both go long BTC at $30,000. Alice uses 4× leverage, Bob uses 25×. Roughly how far can price fall before each is liquidated (ignore the small maintenance term)?"
+  hint="Liquidation move ≈ 1/leverage. Convert each to a percentage, then to a price."
+  buttonLabel="Reveal the answer"
+  text="Alice at 4×: ~1/4 = 25% buffer, so liquidation near $30,000 × (1 − 0.25) = $22,500. Bob at 25×: ~1/25 = 4% buffer, so liquidation near $30,000 × (1 − 0.04) = $28,800. Same entry, same direction — but Bob gets stopped out by a routine 4% dip while Alice survives a major 24% drawdown. Bob's position is six times more sensitive to being liquidated, which is the entire trade-off of cranking leverage."
+/>
+
+## Worked example: the full liquidation arithmetic
+
+Let's nail every digit. You go **long 1 BTC perp at \$30,000**, posting **\$3,000 margin** (so leverage = 30,000 / 3,000 = **10×**). Maintenance margin is **0.5%** of notional.
+
+**Step 1 — the survivable move.** Liquidation move ≈ 1/lev − m = 1/10 − 0.005 = 0.10 − 0.005 = **0.095 = 9.5%.**
+
+**Step 2 — the liquidation price.** Price must fall 9.5% from \$30,000:
+
+$$P_\text{liq} \approx 30{,}000 \times (1 - 0.095) = 30{,}000 \times 0.905 = \$27{,}150.$$
+
+So if BTC's mark touches roughly **\$27,150**, the engine liquidates the long.
+
+**Step 3 — sanity check via equity.** At \$27,150, the loss is 1 × (30,000 − 27,150) = \$2,850. Equity = margin − loss = 3,000 − 2,850 = \$150. Maintenance requirement = 0.5% × notional ≈ 0.005 × 27,150 ≈ \$136. Equity (\$150) has fallen to roughly the maintenance floor (\$136) — confirming the trigger is right around there.
+
+**Step 4 — the bankruptcy price.** Keep falling to where equity hits **zero**: that's the **bankruptcy price**, 30,000 − 3,000 = \$27,000. The gap between liquidation (\$27,150) and bankruptcy (\$27,000) is the engine's working room — the cushion it needs to actually close the position *before* equity goes negative. If it can't close in that window, the position goes bankrupt and the **insurance fund** (next lesson) eats the shortfall.
+
+Drag the meter below: set 10× and you'll see a liquidation around \$27,150 with a ~9.5% buffer; push leverage toward 100× and watch the buffer collapse to a fraction of a percent.
+
+<LeverageLiquidationMeter
+  client:visible
+  title="Liquidation price vs leverage — drag it"
+  caption="Entry $30,000, $1,000 margin, 0.5% maintenance. At low leverage the liquidation price sits far below entry and the survivable buffer is wide. Crank leverage up and the buffer — 1/leverage minus maintenance — collapses toward zero, so an ordinary wick liquidates you. Flip to short to mirror everything upward."
+/>
+
+<MCQ
+  client:visible
+  question="A long is opened at $30,000 with 10× leverage and 0.5% maintenance margin. The approximate liquidation price is:"
+  options={[
+    { text: "About $27,150 — price can fall ~9.5% (1/10 − 0.005) before the position is liquidated", correct: true },
+    { text: 'About $24,000 — a 20% drop' },
+    { text: 'About $29,850 — a 0.5% drop' },
+    { text: 'About $33,000 — liquidation is above entry for a long' },
+  ]}
+  explanation="Survivable move ≈ 1/leverage − maintenance = 1/10 − 0.005 = 9.5%. So P_liq ≈ 30,000 × (1 − 0.095) = $27,150. Liquidation is below entry for a long (you lose as price falls); a 0.5% drop would only be the move at ~200× leverage."
+/>
+
+<FillBlank
+  client:visible
+  question="Fill in the leverage and liquidation mechanics."
+  text="Leverage equals notional divided by {{margin|the index|the funding rate}}. A position's PnL is measured on the {{notional|margin|maintenance}}, so a 1% price move at 10× is a {{10%|1%|0.1%}} swing on collateral. A long is liquidated after an adverse move of roughly {{1/leverage − maintenance|leverage × maintenance|the funding rate}}, and the {{bankruptcy|index|mark}} price is where equity hits exactly zero — the engine must close the position in the gap between liquidation and that price."
+  explanation="Leverage = notional/margin; PnL is on notional so it is amplified by the leverage factor; the survivable move is ≈ 1/leverage − maintenance; and the bankruptcy price is where equity = 0, just below the liquidation price, giving the engine room to close before the loss turns negative."
+/>
+
+## Isolated vs cross margin: how far a loss can reach
+
+A crucial risk choice: which collateral backs the position?
+
+- **Isolated margin.** Only the margin you assigned to *this* position is at risk. If it's liquidated, you lose that margin and nothing else — the blast radius is contained. Great for ring-fencing a degenerate high-leverage punt.
+- **Cross margin.** Your *entire account balance* backs the position. That gives a much wider buffer (the liquidation price is far further away, because all your equity defends it), but a single bad position can drain your whole account. It's more capital-efficient and survives deeper drawdowns, at the cost of correlated blow-up risk.
+
+**Analogy.** Isolated margin is putting \$200 of chips on one table and leaving your wallet in the hotel safe — you can only lose the \$200. Cross margin is dumping your whole wallet on the table — you can ride out a bad streak that would have busted the \$200 stake, but a catastrophic hand can take everything.
+
+<Callout variant="warning" title="The cross-margin trap people learn the hard way">
+A common misconception: "cross margin is safer because the liquidation price is further away." The liquidation price *is* further away, yes — but only because your whole account is now on the line. The downside is that one position's liquidation can cascade into your other positions, since they all share the same collateral pool. Isolated caps the damage; cross maximizes survival *and* maximizes contagion. Neither is universally "safer" — they trade containment against buffer.
+</Callout>
+
+<MCQ
+  client:visible
+  question="A trader runs three positions under one cross-margin account. One position blows up badly. What is the distinctive risk of cross margin here?"
+  options={[
+    { text: "Because all positions share the account's collateral, the blow-up can drain the shared equity and drag the other positions toward liquidation too — contagion across the account", correct: true },
+    { text: 'Each position is fully ring-fenced, so the others are completely unaffected' },
+    { text: 'Cross margin guarantees none of the positions can ever be liquidated' },
+    { text: 'The exchange covers any losses on a cross-margin account' },
+  ]}
+  explanation="Cross margin pools all account equity to defend every position, which widens each liquidation price but couples their fates: a deep loss on one drains the shared collateral, pushing the others closer to their triggers. Isolated margin would ring-fence each one — containment vs buffer is the core trade-off."
+/>
+
+## The liquidation engine: keepers, partial liquidation, and the close
+
+When the mark price hits your liquidation level, *who* actually closes you, and how? In DeFi, there's no broker to call — the work is done by a **liquidation engine** plus a swarm of **keeper bots**.
+
+- **Keepers / liquidator bots.** Permissionless actors who monitor every open position. The instant a position's mark crosses its liquidation threshold, they race to submit the liquidation transaction. Their incentive is a **liquidation fee or penalty** carved out of the position's remaining margin (and on-chain, this is a flavor of the liquidation MEV you may have met in the MEV course — landing the liquidation first is worth money).
+- **Partial vs full liquidation.** A good engine doesn't always nuke the whole position. **Partial liquidation** closes just enough of the position to restore the maintenance buffer, leaving the trader with a smaller, healthy position rather than wiping them out — gentler, and it reduces market impact. **Full liquidation** closes everything, used when the position is too far gone or too small to partially unwind.
+- **The bankruptcy / insurance handoff.** The engine tries to close the position in the window between the liquidation price and the bankruptcy price. If the market is moving too fast (a gap or a thin book) and it closes *below* bankruptcy, the position has gone negative — and the shortfall is covered by the **insurance fund**, the subject of the next lesson.
+
+**Why the maintenance margin exists at all:** it's the engine's *head start*. By triggering liquidation while you still have a sliver of equity (not at zero), the engine gives keepers time and price room to actually execute the close before your loss becomes the protocol's loss. The maintenance margin is the buffer that protects *everyone else* from your blow-up.
+
+<MCQ
+  client:visible
+  question="Why do perp protocols trigger liquidation at the maintenance margin, while the trader still has a little equity left, instead of waiting until equity hits zero?"
+  options={[
+    { text: "To give the liquidation engine and keepers price room and time to actually close the position before the loss exceeds the margin and becomes the protocol's bad debt", correct: true },
+    { text: 'To maximize the funding the trader pays before closing' },
+    { text: 'Because the index price cannot be computed once equity is zero' },
+    { text: 'To force the trader to add margin three times a day' },
+  ]}
+  explanation="Maintenance margin is the engine's head start. Liquidating at a small positive equity leaves a cushion (the gap to the bankruptcy price) so keepers can execute the close in a moving market before the position goes negative. If it still closes below bankruptcy, the insurance fund — next lesson — absorbs the shortfall."
+/>
+
+<MindMap
+  client:visible
+  title="Leverage and liquidation — the whole mechanism"
+  caption="Margin controls notional; the survivable move ≈ 1/leverage − maintenance sets the liquidation price; isolated vs cross sets the blast radius; keepers and the engine enforce it before the loss becomes the protocol's."
+  root={{
+    label: 'Leverage & liquidation',
+    children: [
+      {
+        label: 'Leverage',
+        children: [
+          { label: 'leverage = notional / margin' },
+          { label: 'PnL on notional → amplified on margin' },
+          { label: 'High lev → tiny survivable move' },
+        ],
+      },
+      {
+        label: 'The liquidation price',
+        children: [
+          { label: 'Move ≈ 1/leverage − maintenance' },
+          { label: 'Maintenance < initial margin' },
+          { label: 'Bankruptcy price = equity hits 0' },
+        ],
+      },
+      {
+        label: 'Margin mode',
+        children: [
+          { label: 'Isolated → contained blast radius' },
+          { label: 'Cross → wider buffer, contagion risk' },
+        ],
+      },
+      {
+        label: 'The engine',
+        children: [
+          { label: 'Keeper bots race to liquidate' },
+          { label: 'Partial vs full liquidation' },
+          { label: 'Shortfall → insurance fund' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Recap: leverage and liquidation"
+  questions={[
+    {
+      question: 'Leverage is defined as:',
+      options: [
+        { text: 'Notional position size divided by the margin backing it', correct: true },
+        { text: 'Margin divided by notional' },
+        { text: 'The funding rate times the maintenance margin' },
+        { text: 'The index price divided by the mark price' },
+      ],
+      explanation: 'Leverage = notional / margin. At 10×, $1,000 of margin controls $10,000 of notional, so PnL on the notional is amplified 10× relative to the collateral.',
+    },
+    {
+      question: 'A long opens at $40,000 with 8× leverage and negligible maintenance margin. The approximate liquidation price is:',
+      options: [
+        { text: 'About $35,000 — a fall of ~1/8 = 12.5%, so 40,000 × (1 − 0.125)', correct: true },
+        { text: 'About $5,000' },
+        { text: 'About $45,000 — above entry' },
+        { text: 'About $39,500 — a 1.25% fall' },
+      ],
+      explanation: 'Survivable move ≈ 1/leverage = 1/8 = 12.5%. P_liq ≈ 40,000 × (1 − 0.125) = $35,000. For a long, liquidation is below entry; a 1.25% move would correspond to ~80× leverage.',
+    },
+    {
+      question: 'What is the bankruptcy price, and how does it relate to the liquidation price?',
+      options: [
+        { text: 'The price at which position equity hits exactly zero; it sits just beyond the liquidation price, leaving the engine a window to close the position before the loss goes negative', correct: true },
+        { text: 'The same thing as the liquidation price, just renamed' },
+        { text: 'The price at which the position becomes risk-free' },
+        { text: 'The index price at the moment the position was opened' },
+      ],
+      explanation: 'Liquidation triggers at the maintenance margin (small positive equity); bankruptcy is where equity = 0. The gap between them is the engine’s working room. Close below bankruptcy and the position is negative, so the insurance fund must cover the shortfall.',
+    },
+    {
+      question: 'Spot the trap. "I will use cross margin because the liquidation price is further away, so it is safer." What is the correction?',
+      options: [
+        { text: 'The liquidation price is further away only because your whole account now backs the position — so one blow-up can drain shared collateral and cascade into your other positions; cross trades a wider buffer for contagion risk', correct: true },
+        { text: 'Cross margin makes liquidation impossible, so it is strictly safer' },
+        { text: 'Cross margin and isolated margin behave identically' },
+        { text: 'The liquidation price is actually closer under cross margin' },
+      ],
+      explanation: 'Cross margin pools all equity to defend each position (wider buffer) but couples their fates: a deep loss drains the shared pool and pushes the others toward liquidation. Isolated caps the loss at the assigned margin. It is containment vs buffer, not safe vs unsafe.',
+    },
+    {
+      question: 'In a DeFi perp, who executes a liquidation when a position crosses its threshold, and what is their incentive?',
+      options: [
+        { text: 'Permissionless keeper/liquidator bots race to submit the liquidation transaction, earning a liquidation fee or penalty carved from the position’s margin (a form of on-chain liquidation MEV)', correct: true },
+        { text: 'A human broker phones the trader to ask permission first' },
+        { text: 'The exchange CEO manually approves each liquidation' },
+        { text: 'Nobody — liquidations happen automatically with no actor and no incentive' },
+      ],
+      explanation: 'There is no broker on-chain. Keeper bots monitor positions and compete to liquidate the instant the mark crosses the threshold, paid via a liquidation fee/penalty. Winning that race is worth money, which ties it directly to liquidation MEV. Partial liquidation may restore the buffer without closing the whole position.',
+    },
+  ]}
+/>
+
+You can now compute a liquidation price in your head and explain who pulls the trigger. But we left a dangling thread: what happens when the engine *can't* close in time and a position goes negative? That shortfall has to land somewhere. Next: the **insurance fund** that absorbs bad debt, and **auto-deleveraging (ADL)** — the last-resort mechanism that socializes losses onto the most-profitable traders when even the insurance fund runs dry.

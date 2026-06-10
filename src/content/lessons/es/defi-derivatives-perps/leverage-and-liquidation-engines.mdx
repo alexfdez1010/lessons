@@ -1,0 +1,334 @@
+---
+title: "Apalancamiento y motores de liquidación"
+description: "Cómo un margen pequeño controla un nocional grande, el precio de liquidación exacto que se deriva del margen inicial y de mantenimiento, margen aislado vs cruzado, y los motores de liquidación impulsados por keepers — con la mecánica de liquidación parcial-vs-total y el precio de bancarrota resueltos por completo."
+topic: "es/defi-derivatives-perps"
+order: 3
+minutes: 14
+updated: 2026-06-08
+---
+
+import { Callout, MCQ, Quiz, FillBlank, MindMap, ThinkReveal, LeverageLiquidationMeter } from '@/components/react';
+
+Seguimos diciendo "apalancado" — hagámoslo exacto. El apalancamiento es la palanca que hace a los perps emocionantes y letales a partes iguales, y lleva directamente al número más importante que vigila un trader de perps: el **precio de liquidación**, el nivel al que el motor os cierra a la fuerza. Esta lección deriva ese precio desde primeros principios, distingue los dos modos de margen, y abre la maquinaria de bots keeper que lo impone.
+
+<MCQ
+  client:visible
+  pretest
+  question="¿Qué significa realmente el apalancamiento para una posición de perp?"
+  pretestLabel="Antes de leer — arriésgate a adivinar"
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  options={[
+    { text: "Depositáis una pequeña cantidad de margen (colateral) para controlar una posición nocional mucho mayor, así que los movimientos de precio se amplifican respecto a vuestro colateral", correct: true },
+    { text: 'Garantiza que vuestra posición no puede perder dinero' },
+    { text: 'Es una comisión que el exchange cobra por prestar el activo' },
+    { text: 'Es la tasa de financiación pagada entre largos y cortos' },
+  ]}
+  explanation="Apalancamiento = nocional / margen. Con $1.000 de margen a 10× controláis $10.000 de nocional, así que un movimiento de precio del 1% es un giro del 10% sobre vuestro colateral. Amplifica tanto ganancias como pérdidas — y fija el precio de liquidación, donde las pérdidas han comido vuestro margen hasta el mínimo de mantenimiento."
+/>
+
+## Apalancamiento: una palanca pequeña moviendo un gran peso
+
+**Analogía.** El apalancamiento es una palanca. Una palanca corta (poco apalancamiento) mueve una piedra pequeña con un margen de error indulgente. Una palanca larga (mucho apalancamiento) mueve un peñasco con el mismo esfuerzo — pero la punta se sacude violentamente, y un pequeño resbalón en vuestra mano se convierte en un giro enorme en la piedra. Cuanto más larga la palanca, más movéis por unidad de esfuerzo, y menos margen tenéis antes de que se os escape de las manos.
+
+**Definición.** El **apalancamiento** es la razón entre el nocional de vuestra posición y el margen que lo respalda:
+
+$$\text{apalancamiento} = \frac{\text{nocional}}{\text{margen}}.$$
+
+Equivalentemente, vuestro margen es una fracción $1/\text{apalancamiento}$ del nocional. A 10×, respaldáis \$10.000 de exposición con \$1.000 de colateral; vuestro margen es el 10% del nocional.
+
+**Por qué corta por los dos lados.** Vuestro PnL se mide sobre el *nocional*, pero vuestra supervivencia se mide sobre el *margen*. Un movimiento adverso del 1% sobre un nocional de \$10.000 es una pérdida de \$100 — que es el **10%** de vuestro margen de \$1.000. Así que un movimiento de precio de $x\%$ se convierte en un movimiento de margen de $x\% \times \text{apalancamiento}$. Subid el apalancamiento a 50× y un mero movimiento adverso del 2% borra *todo* vuestro margen. Esta es la semilla del precio de liquidación.
+
+<MCQ
+  client:visible
+  question="Abrís un largo 20× con $500 de margen. El precio se mueve un 1% a vuestro favor. ¿Cuál es la ganancia sobre vuestro margen?"
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  options={[
+    { text: "+20% sobre el margen — un movimiento del 1% × 20× de apalancamiento, así que +$100 sobre vuestros $500 de colateral", correct: true },
+    { text: '+1% sobre el margen — una ganancia de $5' },
+    { text: '+0,05% sobre el margen' },
+    { text: 'Nada hasta que cerréis la posición' },
+  ]}
+  explanation="Nocional = $500 × 20 = $10.000. Un movimiento favorable del 1% = $100 = 20% de vuestros $500 de margen. El apalancamiento multiplica el movimiento de precio porcentual por el factor de apalancamiento — gloriosamente al subir, brutalmente al bajar. El PnL se marca de forma continua, así que la ganancia es real antes de cerrar."
+/>
+
+## Margen inicial, margen de mantenimiento y el precio de liquidación
+
+Dos umbrales de margen gobiernan una posición:
+
+- **Margen inicial** — el colateral requerido para *abrir* la posición. A 10× de apalancamiento, el margen inicial es el 10% del nocional. Fija vuestro apalancamiento máximo.
+- **Margen de mantenimiento** — el *mínimo* de equity que debéis mantener, como fracción del nocional, para mantener la posición abierta. Es menor que el margen inicial (p. ej. 0,5%). Cuando vuestro equity cae al margen de mantenimiento, os liquidan.
+
+**El precio de liquidación, derivado.** Vuestro equity de posición es margen + PnL no realizado. Para un largo con precio de entrada $P_0$, nocional $N$ (en unidades de activo $q$, así que $N = q P_0$), y margen $M$, el equity al precio $P$ es
+
+$$\text{equity} = M + q\,(P - P_0).$$
+
+La liquidación se dispara cuando el equity cae al requisito de mantenimiento $m \cdot q P$ (fracción de mantenimiento $m$ del nocional actual). Igualando el equity a eso y despejando el precio de liquidación $P_\text{liq}$:
+
+$$M + q(P_\text{liq} - P_0) = m\, q\, P_\text{liq}.$$
+
+Para una aproximación rápida y suficientemente exacta, ignorad el minúsculo término $m P_\text{liq}$ frente a $P_0$ y notad que $M = qP_0/\text{apal}$. El precio tiene que caer aproximadamente
+
+$$\frac{P_0 - P_\text{liq}}{P_0} \approx \frac{1}{\text{apal}} - m$$
+
+antes de que os liquiden. **En palabras: un largo se liquida tras un movimiento adverso de aproximadamente (1 ÷ apalancamiento − fracción de mantenimiento).** Un corto es la imagen espejo — liquidado tras un movimiento adverso *al alza* del mismo tamaño.
+
+<Callout variant="info" title="La regla de oro de cabecera">
+Para un largo: **movimiento de liquidación ≈ 1/apalancamiento − margen de mantenimiento.** A 10× con 0,5% de mantenimiento, eso es 1/10 − 0,005 = 9,5% — el precio puede caer ~9,5% antes de que os cierren. A 100× es 1/100 − 0,005 = 0,5% — una mecha de medio por ciento os acaba. Más apalancamiento no solo amplifica el PnL; encoge la distancia de supervivencia a casi nada.
+</Callout>
+
+<ThinkReveal
+  client:visible
+  eyebrow="Piensa primero"
+  prompt="Dos traders se ponen largos de BTC a $30.000. Alicia usa 4× de apalancamiento, Beto usa 25×. ¿Aproximadamente cuánto puede caer el precio antes de que liquiden a cada uno (ignorad el pequeño término de mantenimiento)?"
+  hint="Movimiento de liquidación ≈ 1/apalancamiento. Convertid cada uno a porcentaje, luego a precio."
+  buttonLabel="Revelar la respuesta"
+  hintLabel="Pista"
+  text="Alicia a 4×: ~1/4 = 25% de colchón, así que liquidación cerca de $30.000 × (1 − 0,25) = $22.500. Beto a 25×: ~1/25 = 4% de colchón, así que liquidación cerca de $30.000 × (1 − 0,04) = $28.800. Misma entrada, misma dirección — pero a Beto le saca una caída rutinaria del 4% mientras Alicia sobrevive a un drawdown mayor del 24%. La posición de Beto es seis veces más sensible a ser liquidada, que es todo el compromiso de subir el apalancamiento."
+/>
+
+## Ejemplo resuelto: la aritmética completa de liquidación
+
+Clavemos cada dígito. Os ponéis **largos 1 BTC perp a \$30.000**, depositando **\$3.000 de margen** (así que apalancamiento = 30.000 / 3.000 = **10×**). El margen de mantenimiento es **0,5%** del nocional.
+
+**Paso 1 — el movimiento de supervivencia.** Movimiento de liquidación ≈ 1/apal − m = 1/10 − 0,005 = 0,10 − 0,005 = **0,095 = 9,5%.**
+
+**Paso 2 — el precio de liquidación.** El precio debe caer un 9,5% desde \$30.000:
+
+$$P_\text{liq} \approx 30{,}000 \times (1 - 0{,}095) = 30{,}000 \times 0{,}905 = 27{,}150.$$
+
+Es decir, alrededor de \$27.150.
+
+Así que si el mark de BTC toca aproximadamente **\$27.150**, el motor liquida el largo.
+
+**Paso 3 — comprobación de cordura vía equity.** A \$27.150, la pérdida es 1 × (30.000 − 27.150) = \$2.850. Equity = margen − pérdida = 3.000 − 2.850 = \$150. Requisito de mantenimiento = 0,5% × nocional ≈ 0,005 × 27.150 ≈ \$136. El equity (\$150) ha caído aproximadamente al suelo de mantenimiento (\$136) — confirmando que el disparador está justo por ahí.
+
+**Paso 4 — el precio de bancarrota.** Seguid cayendo hasta donde el equity llega a **cero**: ese es el **precio de bancarrota**, 30.000 − 3.000 = \$27.000. El hueco entre liquidación (\$27.150) y bancarrota (\$27.000) es el margen de maniobra del motor — el colchón que necesita para cerrar de verdad la posición *antes* de que el equity se vuelva negativo. Si no puede cerrar en esa ventana, la posición quiebra y el **fondo de seguro** (próxima lección) se come el déficit.
+
+Arrastrad el medidor de abajo: poned 10× y veréis una liquidación alrededor de \$27.150 con un colchón de ~9,5%; subid el apalancamiento hacia 100× y ved cómo el colchón se desploma a una fracción de punto porcentual.
+
+<LeverageLiquidationMeter
+  client:visible
+  title="Precio de liquidación vs apalancamiento — arrástralo"
+  caption="Entrada $30.000, $1.000 de margen, 0,5% de mantenimiento. A poco apalancamiento el precio de liquidación está muy por debajo de la entrada y el colchón de supervivencia es amplio. Subid el apalancamiento y el colchón — 1/apalancamiento menos mantenimiento — se desploma hacia cero, así que una mecha ordinaria os liquida. Cambiad a corto para reflejarlo todo al alza."
+  leverageLabel="Apalancamiento"
+  longLabel="Largo"
+  shortLabel="Corto"
+  liqPriceLabel="Precio de liquidación"
+  bufferLabel="Movimiento hasta liquidación"
+  notionalLabel="Tamaño de posición"
+  dangerLabel="Colchón fino — una pequeña mecha liquida esta posición"
+  entryLabel="Entrada"
+/>
+
+<MCQ
+  client:visible
+  question="Un largo se abre a $30.000 con 10× de apalancamiento y 0,5% de margen de mantenimiento. El precio de liquidación aproximado es:"
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  options={[
+    { text: "Unos $27.150 — el precio puede caer ~9,5% (1/10 − 0,005) antes de que la posición se liquide", correct: true },
+    { text: 'Unos $24.000 — una caída del 20%' },
+    { text: 'Unos $29.850 — una caída del 0,5%' },
+    { text: 'Unos $33.000 — la liquidación está por encima de la entrada para un largo' },
+  ]}
+  explanation="Movimiento de supervivencia ≈ 1/apalancamiento − mantenimiento = 1/10 − 0,005 = 9,5%. Así que P_liq ≈ 30.000 × (1 − 0,095) = $27.150. La liquidación está por debajo de la entrada para un largo (perdéis al caer el precio); una caída del 0,5% solo sería el movimiento a ~200× de apalancamiento."
+/>
+
+<FillBlank
+  client:visible
+  question="Completa la mecánica de apalancamiento y liquidación."
+  checkLabel="Comprobar"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  explanationLabel="Explicación"
+  text="El apalancamiento es igual al nocional dividido por el {{margen|índice|tasa de financiación}}. El PnL de una posición se mide sobre el {{nocional|margen|mantenimiento}}, así que un movimiento de precio del 1% a 10× es un giro del {{10%|1%|0,1%}} sobre el colateral. Un largo se liquida tras un movimiento adverso de aproximadamente {{1/apalancamiento − mantenimiento|apalancamiento × mantenimiento|la tasa de financiación}}, y el precio de {{bancarrota|índice|mark}} es donde el equity llega exactamente a cero — el motor debe cerrar la posición en el hueco entre la liquidación y ese precio."
+  explanation="Apalancamiento = nocional/margen; el PnL es sobre el nocional así que se amplifica por el factor de apalancamiento; el movimiento de supervivencia es ≈ 1/apalancamiento − mantenimiento; y el precio de bancarrota es donde equity = 0, justo por debajo del precio de liquidación, dando al motor margen para cerrar antes de que la pérdida se vuelva negativa."
+/>
+
+## Margen aislado vs cruzado: hasta dónde puede llegar una pérdida
+
+Una elección de riesgo crucial: ¿qué colateral respalda la posición?
+
+- **Margen aislado.** Solo el margen que asignasteis a *esta* posición está en riesgo. Si se liquida, perdéis ese margen y nada más — el radio de explosión está contenido. Genial para acordonar una apuesta degenerada de alto apalancamiento.
+- **Margen cruzado.** Vuestro *saldo de cuenta entero* respalda la posición. Eso da un colchón mucho más amplio (el precio de liquidación está mucho más lejos, porque todo vuestro equity lo defiende), pero una sola posición mala puede vaciar toda vuestra cuenta. Es más eficiente en capital y sobrevive a drawdowns más profundos, a costa de riesgo de estallido correlacionado.
+
+**Analogía.** El margen aislado es poner \$200 de fichas en una mesa y dejar la cartera en la caja fuerte del hotel — solo podéis perder los \$200. El margen cruzado es volcar toda la cartera sobre la mesa — podéis aguantar una mala racha que habría reventado la apuesta de \$200, pero una mano catastrófica puede llevárselo todo.
+
+<Callout variant="warning" title="La trampa del margen cruzado que la gente aprende por las malas">
+Una idea errónea habitual: "el margen cruzado es más seguro porque el precio de liquidación está más lejos". El precio de liquidación *está* más lejos, sí — pero solo porque ahora toda vuestra cuenta está en juego. El inconveniente es que la liquidación de una posición puede caer en cascada sobre vuestras otras posiciones, ya que todas comparten el mismo pool de colateral. El aislado limita el daño; el cruzado maximiza la supervivencia *y* maximiza el contagio. Ninguno es universalmente "más seguro" — intercambian contención por colchón.
+</Callout>
+
+<MCQ
+  client:visible
+  question="Un trader corre tres posiciones bajo una cuenta de margen cruzado. Una posición estalla muy mal. ¿Cuál es el riesgo distintivo del margen cruzado aquí?"
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  options={[
+    { text: "Como todas las posiciones comparten el colateral de la cuenta, el estallido puede vaciar el equity compartido y arrastrar también a las otras posiciones hacia la liquidación — contagio a través de la cuenta", correct: true },
+    { text: 'Cada posición está totalmente acordonada, así que las otras no se ven afectadas en absoluto' },
+    { text: 'El margen cruzado garantiza que ninguna de las posiciones puede liquidarse jamás' },
+    { text: 'El exchange cubre cualquier pérdida en una cuenta de margen cruzado' },
+  ]}
+  explanation="El margen cruzado agrupa todo el equity de la cuenta para defender cada posición, lo que ensancha cada precio de liquidación pero acopla sus destinos: una pérdida profunda en una vacía el colateral compartido, empujando a las otras más cerca de sus disparadores. El margen aislado acordonaría cada una — contención vs colchón es el compromiso central."
+/>
+
+## El motor de liquidación: keepers, liquidación parcial y el cierre
+
+Cuando el precio mark alcanza vuestro nivel de liquidación, ¿*quién* os cierra de verdad, y cómo? En DeFi no hay un bróker al que llamar — el trabajo lo hace un **motor de liquidación** más un enjambre de **bots keeper**.
+
+- **Keepers / bots liquidadores.** Actores sin permiso que monitorizan cada posición abierta. En el instante en que el mark de una posición cruza su umbral de liquidación, corren a enviar la transacción de liquidación. Su incentivo es una **comisión o penalización de liquidación** tallada del margen restante de la posición (y on-chain, esto es un sabor del MEV de liquidación que quizá conocisteis en el curso de MEV — aterrizar la liquidación primero vale dinero).
+- **Liquidación parcial vs total.** Un buen motor no siempre arrasa con toda la posición. La **liquidación parcial** cierra justo lo suficiente de la posición para restaurar el colchón de mantenimiento, dejando al trader con una posición más pequeña y sana en vez de aniquilarlo — más suave, y reduce el impacto de mercado. La **liquidación total** cierra todo, usada cuando la posición está demasiado lejos o es demasiado pequeña para desenrollarse parcialmente.
+- **El traspaso a bancarrota / seguro.** El motor intenta cerrar la posición en la ventana entre el precio de liquidación y el precio de bancarrota. Si el mercado se mueve demasiado rápido (un gap o un libro fino) y cierra *por debajo* de bancarrota, la posición se ha vuelto negativa — y el déficit lo cubre el **fondo de seguro**, tema de la próxima lección.
+
+**Por qué existe el margen de mantenimiento:** es la *ventaja de salida* del motor. Al disparar la liquidación mientras aún tenéis una pizca de equity (no en cero), el motor da a los keepers tiempo y margen de precio para ejecutar de verdad el cierre antes de que vuestra pérdida se convierta en pérdida del protocolo. El margen de mantenimiento es el colchón que protege a *todos los demás* de vuestro estallido.
+
+<MCQ
+  client:visible
+  question="¿Por qué disparan los protocolos de perps la liquidación en el margen de mantenimiento, mientras el trader aún tiene un poco de equity, en vez de esperar a que el equity llegue a cero?"
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  options={[
+    { text: "Para dar al motor de liquidación y a los keepers margen de precio y tiempo para cerrar de verdad la posición antes de que la pérdida exceda el margen y se convierta en deuda incobrable del protocolo", correct: true },
+    { text: 'Para maximizar la financiación que el trader paga antes de cerrar' },
+    { text: 'Porque el precio índice no puede calcularse una vez que el equity es cero' },
+    { text: 'Para forzar al trader a añadir margen tres veces al día' },
+  ]}
+  explanation="El margen de mantenimiento es la ventaja de salida del motor. Liquidar con un pequeño equity positivo deja un colchón (el hueco hasta el precio de bancarrota) para que los keepers ejecuten el cierre en un mercado en movimiento antes de que la posición se vuelva negativa. Si aun así cierra por debajo de bancarrota, el fondo de seguro — próxima lección — absorbe el déficit."
+/>
+
+<MindMap
+  client:visible
+  title="Apalancamiento y liquidación — el mecanismo completo"
+  caption="El margen controla el nocional; el movimiento de supervivencia ≈ 1/apalancamiento − mantenimiento fija el precio de liquidación; aislado vs cruzado fija el radio de explosión; keepers y el motor lo imponen antes de que la pérdida sea del protocolo."
+  outlineLabel="Esquema en texto"
+  root={{
+    label: 'Apalancamiento y liquidación',
+    children: [
+      {
+        label: 'Apalancamiento',
+        children: [
+          { label: 'apalancamiento = nocional / margen' },
+          { label: 'PnL sobre nocional → amplificado sobre margen' },
+          { label: 'Apal. alto → movimiento de supervivencia diminuto' },
+        ],
+      },
+      {
+        label: 'El precio de liquidación',
+        children: [
+          { label: 'Movimiento ≈ 1/apalancamiento − mantenimiento' },
+          { label: 'Mantenimiento < margen inicial' },
+          { label: 'Precio de bancarrota = equity llega a 0' },
+        ],
+      },
+      {
+        label: 'Modo de margen',
+        children: [
+          { label: 'Aislado → radio de explosión contenido' },
+          { label: 'Cruzado → colchón más ancho, riesgo de contagio' },
+        ],
+      },
+      {
+        label: 'El motor',
+        children: [
+          { label: 'Bots keeper corren a liquidar' },
+          { label: 'Liquidación parcial vs total' },
+          { label: 'Déficit → fondo de seguro' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Repaso: apalancamiento y liquidación"
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  nextLabel="Siguiente"
+  seeResultsLabel="Ver resultados"
+  backLabel="Atrás"
+  restartLabel="Reiniciar"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  scoreLabel="Has acertado"
+  questions={[
+    {
+      question: 'El apalancamiento se define como:',
+      options: [
+        { text: 'El tamaño nocional de la posición dividido por el margen que lo respalda', correct: true },
+        { text: 'El margen dividido por el nocional' },
+        { text: 'La tasa de financiación por el margen de mantenimiento' },
+        { text: 'El precio índice dividido por el precio mark' },
+      ],
+      explanation: 'Apalancamiento = nocional / margen. A 10×, $1.000 de margen controlan $10.000 de nocional, así que el PnL sobre el nocional se amplifica 10× respecto al colateral.',
+    },
+    {
+      question: 'Un largo se abre a $40.000 con 8× de apalancamiento y margen de mantenimiento despreciable. El precio de liquidación aproximado es:',
+      options: [
+        { text: 'Unos $35.000 — una caída de ~1/8 = 12,5%, así que 40.000 × (1 − 0,125)', correct: true },
+        { text: 'Unos $5.000' },
+        { text: 'Unos $45.000 — por encima de la entrada' },
+        { text: 'Unos $39.500 — una caída del 1,25%' },
+      ],
+      explanation: 'Movimiento de supervivencia ≈ 1/apalancamiento = 1/8 = 12,5%. P_liq ≈ 40.000 × (1 − 0,125) = $35.000. Para un largo, la liquidación está por debajo de la entrada; un movimiento del 1,25% correspondería a ~80× de apalancamiento.',
+    },
+    {
+      question: '¿Qué es el precio de bancarrota, y cómo se relaciona con el precio de liquidación?',
+      options: [
+        { text: 'El precio al que el equity de la posición llega exactamente a cero; está justo más allá del precio de liquidación, dejando al motor una ventana para cerrar antes de que la pérdida se vuelva negativa', correct: true },
+        { text: 'Lo mismo que el precio de liquidación, solo renombrado' },
+        { text: 'El precio al que la posición se vuelve sin riesgo' },
+        { text: 'El precio índice en el momento en que se abrió la posición' },
+      ],
+      explanation: 'La liquidación se dispara en el margen de mantenimiento (pequeño equity positivo); la bancarrota es donde equity = 0. El hueco entre ellos es el margen de maniobra del motor. Cerrad por debajo de bancarrota y la posición es negativa, así que el fondo de seguro debe cubrir el déficit.',
+    },
+    {
+      question: 'Detecta la trampa. "Usaré margen cruzado porque el precio de liquidación está más lejos, así que es más seguro." ¿Cuál es la corrección?',
+      options: [
+        { text: 'El precio de liquidación está más lejos solo porque ahora toda vuestra cuenta respalda la posición — así que un estallido puede vaciar el colateral compartido y caer en cascada sobre vuestras otras posiciones; el cruzado intercambia un colchón más amplio por riesgo de contagio', correct: true },
+        { text: 'El margen cruzado hace la liquidación imposible, así que es estrictamente más seguro' },
+        { text: 'El margen cruzado y el aislado se comportan idénticamente' },
+        { text: 'El precio de liquidación está en realidad más cerca bajo margen cruzado' },
+      ],
+      explanation: 'El margen cruzado agrupa todo el equity para defender cada posición (colchón más amplio) pero acopla sus destinos: una pérdida profunda vacía el pool compartido y empuja a las otras hacia la liquidación. El aislado limita la pérdida al margen asignado. Es contención vs colchón, no seguro vs inseguro.',
+    },
+    {
+      question: 'En un perp DeFi, ¿quién ejecuta una liquidación cuando una posición cruza su umbral, y cuál es su incentivo?',
+      options: [
+        { text: 'Bots keeper/liquidadores sin permiso corren a enviar la liquidación, ganando una comisión o penalización de liquidación tallada del margen de la posición (una forma de MEV de liquidación on-chain)', correct: true },
+        { text: 'Un bróker humano telefonea al trader para pedir permiso primero' },
+        { text: 'El CEO del exchange aprueba manualmente cada liquidación' },
+        { text: 'Nadie — las liquidaciones ocurren automáticamente sin actor ni incentivo' },
+      ],
+      explanation: 'No hay bróker on-chain. Los bots keeper monitorizan posiciones y compiten por liquidar en el instante en que el mark cruza el umbral, pagados vía una comisión/penalización de liquidación. Ganar esa carrera vale dinero, lo que lo liga directamente al MEV de liquidación. La liquidación parcial puede restaurar el colchón sin cerrar toda la posición.',
+    },
+  ]}
+/>
+
+Ya podéis calcular un precio de liquidación de cabeza y explicar quién aprieta el gatillo. Pero dejamos un hilo suelto: ¿qué pasa cuando el motor *no puede* cerrar a tiempo y una posición se vuelve negativa? Ese déficit tiene que aterrizar en algún sitio. A continuación: el **fondo de seguro** que absorbe la deuda incobrable, y el **auto-desapalancamiento (ADL)** — el mecanismo de último recurso que socializa las pérdidas sobre los traders más rentables cuando incluso el fondo de seguro se queda seco.

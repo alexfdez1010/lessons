@@ -18,48 +18,44 @@ the next harder topics to keep the ramp going.
   (each one notch up) so the pipeline never empties. Also, follow an horizontal approach
 - Difficulty legend: ⬤ beginner · ⬤⬤ intermediate · ⬤⬤⬤ advanced · ⬤⬤⬤⬤ expert.
 
-_Stages −1 through 5 (34 topics, `money-and-value` → the Stage-5 quant deep
-dives) are all built and live in the catalog — see `src/content/topics/en/`._
+_Stages −1 through 6 (39 topics, `money-and-value` → the Stage-6 ladder
+bridges) are all built and live in the catalog — see `src/content/topics/en/`._
 
 ---
 
-## Stage 6 — Ladder bridges (⬤⬤ → ⬤⬤⬤⬤) — fill the transition gaps
-_These plug the holes between difficulty tiers: today the catalog jumps from
-"what a stock is" (`investing-basics`, beginner) straight to Sharpe ratios
-(`investment-metrics`, advanced), and two expert courses (`mev-and-ordering`,
-`polymarket-prediction-markets`) assume order-book knowledge nothing teaches._
+## Stage 7 — Markets breadth & practitioner desks (⬤⬤⬤ → ⬤⬤⬤⬤)
+_Horizontal expansion into asset classes and desk skills the catalog doesn't
+cover yet, then back to expert quant depth._
 
-- [ ] **futures-and-forwards** ⬤⬤ — linear derivatives before options: what a
-  forward is, payoff symmetry, futures vs forwards, margin & mark-to-market,
-  basis, contango & backwardation, hedgers vs speculators, cost-of-carry
-  pricing, rolling contracts. _(deps: `investing-basics`, `interest-and-yield`;
-  natural stepping stone into `options-basics`; payoff + carry + margin-call
-  islands)_
-- [ ] **company-financials-and-valuation** ⬤⬤⬤ — reading and pricing a
-  business: balance sheet, income statement, cash-flow statement, how the three
-  link, margins & ratios (ROE, debt/equity), earnings & EPS, multiples (P/E,
-  EV/EBITDA, P/B), DCF valuation step by step, growth vs value, common
-  accounting red flags. _(deps: `stock-markets-and-funds`, `money-time-value`;
-  fills the fundamental-analysis pillar `factor-models` silently assumes —
-  value factor, book-to-market; three-statement-link + DCF-sensitivity islands)_
-- [ ] **market-microstructure** ⬤⬤⬤ — how prices actually form: the limit
-  order book, bid–ask spread & why it exists, market vs limit orders revisited,
-  makers vs takers, liquidity & depth, slippage & price impact, tick sizes,
-  market makers & inventory risk, adverse selection, fragmentation & dark
-  pools at a glance. _(deps: `stock-markets-and-funds`; prerequisite knowledge
-  for `mev-and-ordering` and `polymarket-prediction-markets` (CLOB); live
-  order-book + spread-decomposition islands)_
-- [ ] **fixed-income-analytics** ⬤⬤⬤⬤ — bonds at practitioner depth: bond
-  pricing math, duration (Macaulay, modified, DV01), convexity, the yield curve
-  quantitatively (bootstrapping, spot vs forward rates), term-structure models
-  at a glance (Vasicek, CIR), credit spreads & default risk, immunization &
-  hedging a rate book. _(deps: `bonds-and-rates`, `statistics-for-finance`;
-  expert continuation of `bonds-and-rates`, bridges into
-  `stochastic-processes`; duration-lever + yield-curve-bootstrap islands)_
-- [ ] **defi-derivatives-perps** ⬤⬤⬤⬤ — derivatives on-chain: perpetual
-  futures & why they dominate crypto, the funding-rate mechanism, leverage &
-  liquidation engines, insurance funds & ADL, perp DEX designs (order-book vs
-  vAMM vs oracle-based), on-chain options & power perps, basis trades & cash
-  and carry. _(deps: `defi-amms`, `futures-and-forwards`, `options-pricing`;
-  connects the derivatives branch to the DeFi branch; funding-rate +
-  liquidation-cascade islands)_
+- [ ] **fx-and-currency-markets** ⬤⬤⬤ — the largest market on earth: currency
+  pairs & quoting conventions, spot vs forward FX, covered & uncovered interest
+  parity, carry trades, central banks & intervention, pegs and currency crises,
+  FX in a portfolio (hedged vs unhedged). _(deps: `economics-for-finance`,
+  `futures-and-forwards`; interest-parity + carry-trade-unwind islands)_
+- [ ] **commodities-and-real-assets** ⬤⬤⬤ — markets with storage costs:
+  commodity futures in practice, storage & convenience yield, seasonality,
+  roll yield & commodity indices, gold as a monetary asset, oil market
+  structure, real assets vs inflation. _(deps: `futures-and-forwards`;
+  roll-yield + seasonality islands)_
+- [ ] **swaps-and-rate-derivatives** ⬤⬤⬤⬤ — the biggest derivatives market:
+  interest-rate swaps from first principles, swap pricing as bond differences,
+  swap spreads, SOFR & the death of LIBOR, caps/floors/swaptions at a glance,
+  FRAs, asset swaps, using swaps to hedge a rate book. _(deps:
+  `fixed-income-analytics`, `futures-and-forwards`; swap-cashflow +
+  swap-curve islands)_
+- [ ] **volatility-trading** ⬤⬤⬤⬤ — vol as an asset class: realized vs
+  implied recap, variance swaps & vol swaps, the VIX and its term structure,
+  volatility risk premium, straddles/strangles as vol bets, dispersion
+  trading, tail hedging in practice. _(deps: `greeks-and-hedging`,
+  `time-series-finance`; vix-term-structure + vol-premium islands)_
+- [ ] **credit-derivatives-and-securitization** ⬤⬤⬤⬤ — trading default risk:
+  CDS mechanics & spreads, hazard-rate pricing intuition, CDS indices,
+  securitization (MBS/ABS), tranching & waterfalls, correlation and why 2008
+  happened, CLOs today. _(deps: `fixed-income-analytics`; tranche-waterfall +
+  cds-cashflow islands)_
+- [ ] **algorithmic-trading-and-execution** ⬤⬤⬤⬤ — how orders get worked:
+  execution algos (TWAP/VWAP/POV/IS), implementation shortfall, market-impact
+  models (square-root law), backtesting pitfalls (overfitting, survivorship,
+  look-ahead), alpha decay, transaction-cost analysis, HFT strategies at a
+  glance. _(deps: `market-microstructure`, `time-series-finance`;
+  impact-curve + execution-schedule islands)_

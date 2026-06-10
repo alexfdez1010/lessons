@@ -1,0 +1,265 @@
+---
+title: "On-Chain Options & Power Perps"
+description: "Adding curvature to DeFi: how options bring convex, non-linear payoffs on-chain, the AMM and vault designs that make them, and the exotic 'everlasting' power perpetuals that package pure convexity (gamma) into a never-expiring contract anchored by funding."
+topic: "en/defi-derivatives-perps"
+order: 6
+minutes: 14
+updated: 2026-06-08
+---
+
+import { Callout, MCQ, Quiz, FillBlank, MindMap, ThinkReveal, OptionPayoff, GreeksCurve } from '@/components/react';
+
+Everything so far has been **linear**: a perp's PnL is a straight line in the price — up 2%, you make 2% of notional; down 2%, you lose it. **Options** add the one thing a perp can't: *curvature*. An option's payoff bends, capping your loss while leaving your gain open, and that bend (convexity, a.k.a. gamma) is the whole reason options exist. This lesson brings options on-chain, then pushes to the frontier — **power perpetuals**, an exotic that packages pure convexity into an everlasting, funding-anchored contract. This is where the DeFi derivatives branch gets genuinely strange, and genuinely powerful.
+
+<MCQ
+  client:visible
+  pretest
+  question="What does an option's payoff have that a perpetual future's payoff fundamentally lacks?"
+  options={[
+    { text: "Curvature (convexity): the payoff bends, capping the loss at the premium while leaving upside open, instead of being a straight line in the price", correct: true },
+    { text: 'A funding rate' },
+    { text: 'The ability to be traded on-chain' },
+    { text: 'Exposure to the underlying asset price' },
+  ]}
+  explanation="A perp's PnL is linear — a straight line in price. An option's payoff is convex: it bends at the strike, so a long option's loss is capped at the premium paid while its gain stays open. That curvature, measured by gamma, is precisely what a linear instrument cannot offer and is the reason options exist."
+/>
+
+## A two-minute options refresher (the curvature you'll build on)
+
+You met options in the pricing course; here's the bend that matters. A **call** gives the right (not obligation) to *buy* at a strike $K$; a **put**, the right to *sell* at $K$. A long option's payoff at expiry is a hockey stick:
+
+- **Long call:** worthless below $K$, then rises 1-for-1 with the price above $K$. Payoff $= \max(S - K,\, 0)$.
+- **Long put:** worthless above $K$, then rises as the price falls below $K$. Payoff $= \max(K - S,\, 0)$.
+
+The kink at the strike *is* the curvature. Your loss is capped at the **premium** you paid, but your gain is open (a call) or large (a put). That asymmetry — limited loss, open gain — is impossible with a linear perp, where loss and gain are symmetric. Here's the long call's bent payoff:
+
+<OptionPayoff
+  client:visible
+  title="The curvature a perp can't give you: a long call"
+  legs={[{ type: 'call', position: 'long', strike: 30000, premium: 1500, quantity: 1, label: 'Long 30k call' }]}
+  spotMax={60000}
+  caption="Below the $30,000 strike the call expires worthless and you lose only the $1,500 premium — your loss is capped. Above the strike, profit rises one-for-one with the price, open-ended. That bent, asymmetric shape (limited loss, unlimited gain) is convexity, and no linear perp can replicate it."
+/>
+
+<Callout variant="info" title="Why curvature is worth paying for">
+A perp gives you leverage but symmetric risk: the same move up or down hits you equally, and a big adverse move can liquidate you. A long option gives you *convexity*: a known, capped cost (the premium) in exchange for a payoff that accelerates in your favor and can't blow past your premium against you. Traders pay for that bend to express views with defined risk, to hedge tails, or to harvest volatility — none of which a straight-line perp can do.
+</Callout>
+
+## Bringing options on-chain: AMMs and vaults
+
+A spot AMM prices a *token*; an options protocol has to price a *contract* whose value depends on strike, time to expiry, and volatility (the Black–Scholes inputs). On-chain, two designs dominate.
+
+**Design A — option AMMs / pricing curves.** Liquidity sits in a pool, and a pricing formula (often a Black–Scholes approximation or a bonding curve fed by an implied-volatility parameter) quotes a premium for each strike and expiry. Traders buy and sell options against the pool; the pool's LPs are the counterparty, much like the peer-to-pool perp design but pricing convex payoffs. The challenge is that option value is sensitive to volatility, so the protocol needs a volatility input (an oracle or a governance parameter) — get it wrong and LPs are systematically mispriced.
+
+**Design B — option vaults (DOVs).** A **DeFi Option Vault** lets depositors run a *systematic options-selling strategy*. The classic is a **covered-call vault**: depositors hold the asset, and each week the vault sells (writes) out-of-the-money call options on it, collecting premium as yield. Depositors earn the premium income but cap their upside (they've sold the calls). The mirror is a **put-selling vault** (cash-secured puts) that earns premium for taking on downside risk. DOVs (popularized by protocols like Ribbon/Aevo, Dopex, Thetanuts) turned options-writing into a one-click yield product.
+
+<MCQ
+  client:visible
+  question="A covered-call DeFi Option Vault (DOV) generates yield for depositors by:"
+  options={[
+    { text: "Selling (writing) out-of-the-money call options on the deposited asset each cycle and collecting the premium, in exchange for capping the upside", correct: true },
+    { text: 'Buying call options every week and hoping they expire in the money' },
+    { text: 'Lending the asset to borrowers at the funding rate' },
+    { text: 'Guaranteeing a fixed return with no risk to the depositor' },
+  ]}
+  explanation="A covered-call vault writes OTM calls against the deposited asset and pockets the premium as yield. The trade-off is real: if the asset rallies past the strike, the vault's upside is capped (the calls are exercised against it). It is premium income for sold upside — not free, risk-free yield."
+/>
+
+<ThinkReveal
+  client:visible
+  eyebrow="Think first"
+  prompt="A covered-call vault advertises a juicy weekly yield. In what market scenario does a depositor most regret being in it, and why?"
+  hint="The vault sold away one direction of the payoff. Which direction, and what happens if the market goes there hard?"
+  buttonLabel="Reveal the answer"
+  text="The vault sold OTM calls, so it sold away the upside above the strike. The depositor most regrets it in a sharp rally: the asset rips past the strike, the sold calls are exercised, and the vault must deliver the asset (or its value) at the strike — so the depositor keeps the small premium but misses the big gain. They effectively swapped a large, uncertain upside for a small, certain premium. The premium looks like 'yield', but it is really the price of the upside they gave up; in a roaring bull market that is a terrible trade, while in a flat or choppy market it is a great one."
+/>
+
+## Gamma: the curvature, made into a Greek
+
+The single most important second-order quantity for an option is **gamma** — the *curvature* of the payoff, formally the rate of change of delta (price sensitivity) as the underlying moves. High gamma means your exposure flips fast as the price moves: a long option gains delta as it goes in your favor and sheds delta as it goes against you, which is exactly the "accelerate into gains, decelerate into losses" property convexity gives you.
+
+The curve below shows how an option's value bends around the strike — that bend is gamma. A linear perp would be a straight line here; the option's curve is the convexity you're paying the premium to own.
+
+<GreeksCurve
+  client:visible
+  caption="The option value bends around the strike — that curvature is gamma. Delta (the slope) changes as the price moves, so a long option speeds up into your gains and slows into your losses. A perp's value would be a straight line with constant slope and zero gamma; convexity is exactly what the option adds."
+/>
+
+The catch with classic options: gamma is **tangled up with time and a fixed expiry.** An option's convexity decays as expiry approaches (theta), and you must keep rolling to fixed dates to maintain exposure — the same calendar hassle that made dated futures annoying. Which raises a beautiful question, the same one that birthed the perp: *can we strip out the expiry and own pure convexity forever?*
+
+<MCQ
+  client:visible
+  question="Gamma measures, for an option:"
+  options={[
+    { text: "The curvature of the payoff — how fast the option's delta (price sensitivity) changes as the underlying moves", correct: true },
+    { text: 'The funding rate paid between option buyers and sellers' },
+    { text: 'The fixed premium paid at purchase' },
+    { text: 'The number of days until expiry' },
+  ]}
+  explanation="Gamma is the second derivative of value with respect to price — the curvature. It is the rate of change of delta, so high gamma means exposure flips quickly as price moves. That convexity is what a long option owns and a linear perp (zero gamma) cannot provide."
+/>
+
+## Power perpetuals: convexity with the calendar torn off
+
+Here's the frontier. A **power perpetual** (the canonical example is **Squeeth**, "squared ETH", from Opyn) is a perpetual contract on a *power* of the price — most famously the **square** of the price, $S^2$. Because the payoff is $S^2$ rather than $S$, it's **convex by construction**: its value curves with the price, giving the holder gamma exposure — and, like a perp, it **never expires**.
+
+**Analogy.** A regular perp tracks your altitude. A power perp tracks your altitude *squared*: climb a little and your reading rises a little; climb a lot and it rises explosively. That accelerating response is convexity — the same bend an option gives you — but baked into a contract you can hold indefinitely, with no strike to choose and no expiry to roll.
+
+**The mechanics, by analogy to the plain perp:**
+
+- A long power perp (long $S^2$) holds **positive gamma** — convex, accelerating exposure to big moves in *either* direction (since $S^2$ rises whether $S$ jumps up or, in relative terms, swings hard). It behaves like being long a strip of options' convexity, continuously.
+- That convexity isn't free. Just as a long option pays **theta** (time decay) for its gamma, a long power perp pays a **funding rate** to the short side. The funding is the everlasting, continuous price you pay to keep owning gamma — the direct analog of an option's theta, but with no expiry.
+- The short side **receives** that funding for supplying the convexity (and must hedge their negative gamma), exactly as an option *seller* collects premium/theta for being short gamma.
+
+So a power perp is, in spirit, **"an option's convexity, made perpetual, with funding standing in for theta and the calendar."** It's the same trick that turned a dated future into a perp — remove the expiry, anchor it with funding — applied to the *non-linear* payoff of an option.
+
+<Callout variant="warning" title="Misconception: 'a power perp is just a high-leverage perp'">
+A 2× leveraged perp and a power perp both amplify moves, but they are not the same animal. The leveraged perp is still *linear* — its PnL is a straight line, just steeper, and it can be liquidated when the line crosses your margin. A power perp is *convex*: its sensitivity (delta) itself grows as the price moves in your favor and shrinks as it moves against you, so it has genuine gamma. You pay for that gamma continuously via funding (the theta analog), not by choosing leverage. Convexity, not steepness, is the distinction.
+</Callout>
+
+<MCQ
+  client:visible
+  question="In a power perpetual (e.g. squared-price 'Squeeth'), what plays the role that theta (time decay) plays for a normal option?"
+  options={[
+    { text: "A funding rate paid by the long (convexity buyer) to the short (convexity seller) — the continuous, never-expiring price of holding gamma", correct: true },
+    { text: 'The strike price, chosen at purchase' },
+    { text: 'A fixed expiry date the position rolls to' },
+    { text: 'Nothing — power perps have no cost of carry' },
+  ]}
+  explanation="A long option pays theta to own gamma until expiry. A power perp has no expiry, so a continuous funding payment from the long to the short stands in for theta: it is the everlasting cost of holding convexity. The short collects it for supplying the gamma, mirroring an option seller collecting premium/theta."
+/>
+
+<FillBlank
+  client:visible
+  question="Fill in the convexity story."
+  text="A perp's payoff is {{linear|convex|flat}} in price, while an option's payoff is {{convex|linear|random}}, with the curvature measured by {{gamma|delta|the funding rate}}. A covered-call {{vault|oracle|order book}} earns premium by selling away upside. A {{power perpetual|stablecoin|index fund}} packages that curvature into a never-expiring contract, where a {{funding rate|strike|coupon}} paid by the long to the short replaces an option's theta as the continuous cost of holding {{gamma|leverage|collateral}}."
+  explanation="Perp = linear; option = convex with curvature = gamma. Covered-call vaults sell upside for premium. A power perpetual makes convexity everlasting, with funding (long → short) standing in for theta as the ongoing cost of gamma."
+/>
+
+## When to reach for each instrument
+
+A quick practitioner's map of the whole non-linear toolkit:
+
+| You want… | Reach for | Why |
+|---|---|---|
+| Cheap, simple leveraged direction | **Perp** | Linear, deep, one contract, funding-anchored |
+| Defined-risk directional bet | **Long option** | Loss capped at premium; convex upside |
+| Premium income, willing to cap upside | **Covered-call DOV** | Systematic call-writing yield |
+| Pure, everlasting convexity (long gamma) | **Power perp** | Gamma with no expiry; funding = theta |
+| Convexity income (short gamma) | **Short power perp / option seller** | Collect funding/premium for supplying gamma |
+
+The throughline: **perps give you direction, options and power perps give you curvature**, and on-chain the same funding-rate trick that made futures perpetual makes *convexity* perpetual too. Once you see funding as "the everlasting cost of carry for any non-spot exposure," the whole zoo — perps, power perps, even the vaults' implied financing — falls into one frame.
+
+<MCQ
+  client:visible
+  question="A trader wants long-gamma (convex) exposure to volatility but is tired of rolling fixed-expiry options. Which on-chain instrument fits best, and what is the recurring cost?"
+  options={[
+    { text: "A long power perpetual — it gives everlasting convexity with no expiry to roll, and the recurring cost is the funding it pays to the short side (the theta analog)", correct: true },
+    { text: 'A leveraged linear perp — it has the same gamma as an option with no funding cost' },
+    { text: 'A covered-call vault — it gives the buyer long gamma for free' },
+    { text: 'A spot position — it has the most gamma of any instrument' },
+  ]}
+  explanation="A power perp delivers convex (long-gamma) exposure without an expiry to manage, solving the rolling problem. The price is a continuous funding payment to the short side, which stands in for an option's theta. A linear perp has zero gamma; spot has none; a covered-call vault is short gamma, not long."
+/>
+
+<MindMap
+  client:visible
+  title="On-chain options and power perps — adding curvature"
+  caption="Options bring convex payoffs on-chain via AMMs and vaults; gamma is the curvature; power perps make that convexity everlasting with funding standing in for theta."
+  root={{
+    label: 'Curvature on-chain',
+    children: [
+      {
+        label: 'Options = convexity',
+        children: [
+          { label: 'Payoff bends at the strike' },
+          { label: 'Long: loss capped at premium, gain open' },
+          { label: 'Perp is linear; option is convex' },
+        ],
+      },
+      {
+        label: 'On-chain designs',
+        children: [
+          { label: 'Option AMMs / pricing curves' },
+          { label: 'DOVs: covered-call & put-selling vaults' },
+          { label: 'Need a volatility input → oracle risk' },
+        ],
+      },
+      {
+        label: 'Gamma',
+        children: [
+          { label: 'Curvature = rate of change of delta' },
+          { label: 'Long option = long gamma' },
+          { label: 'Tangled with expiry / theta' },
+        ],
+      },
+      {
+        label: 'Power perpetuals',
+        children: [
+          { label: 'Perp on a power of price (e.g. S²)' },
+          { label: 'Convex by construction, never expires' },
+          { label: 'Funding (long→short) replaces theta' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Recap: on-chain options and power perps"
+  questions={[
+    {
+      question: 'The defining difference between an option payoff and a perp payoff is:',
+      options: [
+        { text: 'The option is convex (it bends at the strike, capping loss at the premium), while the perp is linear (a straight line in price)', correct: true },
+        { text: 'The option has a funding rate and the perp does not' },
+        { text: 'The perp can be traded on-chain but the option cannot' },
+        { text: 'They are identical in every respect' },
+      ],
+      explanation: 'Curvature is the whole point. A long option caps its loss at the premium and bends into open-ended gains; a perp is symmetric and linear. That convexity, measured by gamma, is what a linear instrument cannot replicate.',
+    },
+    {
+      question: 'A put-selling DeFi Option Vault earns yield by:',
+      options: [
+        { text: 'Writing cash-secured put options and collecting the premium, in exchange for taking on the downside risk if the asset falls below the strike', correct: true },
+        { text: 'Buying puts and profiting when the market rises' },
+        { text: 'Lending stablecoins at the funding rate' },
+        { text: 'Guaranteeing principal with zero risk' },
+      ],
+      explanation: 'A put-selling vault writes puts and pockets the premium, but it is obligated to buy the asset at the strike if price drops below it — so the depositor earns premium for bearing downside. It is income for sold protection, not free yield.',
+    },
+    {
+      question: 'Gamma is best described as:',
+      options: [
+        { text: 'The curvature of an option’s payoff — the rate at which its delta changes as the underlying moves', correct: true },
+        { text: 'The fixed premium paid up front' },
+        { text: 'The funding rate on a perpetual' },
+        { text: 'The number of contracts in a position' },
+      ],
+      explanation: 'Gamma is the second-order price sensitivity — how fast delta moves. High gamma means exposure flips quickly with the price. Long options have positive gamma; linear perps have zero gamma.',
+    },
+    {
+      question: 'A power perpetual on the squared price (S²) is convex because:',
+      options: [
+        { text: 'Its payoff tracks S², which curves with the price, so the holder has positive gamma — accelerating exposure to large moves — with no expiry', correct: true },
+        { text: 'It uses extra leverage on a linear payoff' },
+        { text: 'It pays a fixed coupon every quarter' },
+        { text: 'It is pegged exactly to the index price at all times' },
+      ],
+      explanation: 'Because value follows S² rather than S, the payoff bends — that curvature is gamma. The holder owns convexity continuously, unlike a fixed-expiry option, with funding standing in for theta as the cost of carry.',
+    },
+    {
+      question: 'Spot the trap. "A power perp is just a perp with more leverage." What is the correction?',
+      options: [
+        { text: 'A leveraged perp is still linear (a steeper straight line, liquidatable when it crosses margin); a power perp is convex, with genuine gamma whose cost is paid continuously via funding (the theta analog) — convexity, not steepness, is the difference', correct: true },
+        { text: 'They are the same; leverage and convexity are identical' },
+        { text: 'A power perp has less risk than any perp' },
+        { text: 'A power perp has no funding cost at all' },
+      ],
+      explanation: 'Leverage makes a linear payoff steeper; convexity makes the slope itself change with price. A power perp has real gamma you pay for continuously through funding, whereas a leveraged perp has zero gamma and a fixed, chosen leverage. The distinction is curvature versus steepness.',
+    },
+  ]}
+/>
+
+You've now added curvature to your on-chain toolkit — options for defined-risk convexity, DOVs for premium income, and power perps for everlasting gamma, all anchored by the same funding logic. One thread has run through every lesson: the **basis**, the gap between a derivative and spot, monetized by funding. The final lesson ties it all together into the dominant institutional crypto trade — **cash-and-carry**, which turns that funding premium into market-neutral yield.

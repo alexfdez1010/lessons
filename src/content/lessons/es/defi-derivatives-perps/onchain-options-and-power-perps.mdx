@@ -1,0 +1,342 @@
+---
+title: "Opciones on-chain y perpetuos de potencia"
+description: "Añadir curvatura a DeFi: cómo las opciones traen pagos convexos no lineales on-chain, los diseños de AMM y bóveda que los crean, y los exóticos perpetuos de potencia 'eternos' que empaquetan convexidad pura (gamma) en un contrato sin vencimiento anclado por la financiación."
+topic: "es/defi-derivatives-perps"
+order: 6
+minutes: 14
+updated: 2026-06-08
+---
+
+import { Callout, MCQ, Quiz, FillBlank, MindMap, ThinkReveal, OptionPayoff, GreeksCurve } from '@/components/react';
+
+Todo hasta ahora ha sido **lineal**: el PnL de un perp es una línea recta en el precio — sube un 2%, ganáis el 2% del nocional; baja un 2%, lo perdéis. Las **opciones** añaden lo único que un perp no puede: *curvatura*. El pago de una opción se dobla, limitando vuestra pérdida mientras deja vuestra ganancia abierta, y ese doblez (convexidad, alias gamma) es toda la razón de existir de las opciones. Esta lección trae las opciones on-chain, luego empuja hasta la frontera — los **perpetuos de potencia**, un exótico que empaqueta convexidad pura en un contrato eterno anclado por la financiación. Aquí es donde la rama de derivados DeFi se vuelve genuinamente extraña, y genuinamente poderosa.
+
+<MCQ
+  client:visible
+  pretest
+  question="¿Qué tiene el pago de una opción que el pago de un futuro perpetuo fundamentalmente no tiene?"
+  pretestLabel="Antes de leer — arriésgate a adivinar"
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  options={[
+    { text: "Curvatura (convexidad): el pago se dobla, limitando la pérdida a la prima mientras deja la ganancia abierta, en vez de ser una línea recta en el precio", correct: true },
+    { text: 'Una tasa de financiación' },
+    { text: 'La capacidad de operarse on-chain' },
+    { text: 'Exposición al precio del activo subyacente' },
+  ]}
+  explanation="El PnL de un perp es lineal — una línea recta en el precio. El pago de una opción es convexo: se dobla en el strike, así que la pérdida de una opción larga se limita a la prima pagada mientras su ganancia queda abierta. Esa curvatura, medida por gamma, es precisamente lo que un instrumento lineal no puede ofrecer y la razón de existir de las opciones."
+/>
+
+## Un repaso de opciones en dos minutos (la curvatura sobre la que construir)
+
+Conocisteis las opciones en el curso de valoración; aquí está el doblez que importa. Una **call** da el derecho (no la obligación) a *comprar* a un strike $K$; una **put**, el derecho a *vender* a $K$. El pago al vencimiento de una opción larga es un palo de hockey:
+
+- **Call larga:** sin valor por debajo de $K$, luego sube 1 a 1 con el precio por encima de $K$. Pago $= \max(S - K,\, 0)$.
+- **Put larga:** sin valor por encima de $K$, luego sube al caer el precio por debajo de $K$. Pago $= \max(K - S,\, 0)$.
+
+El codo en el strike *es* la curvatura. Vuestra pérdida se limita a la **prima** que pagasteis, pero vuestra ganancia es abierta (una call) o grande (una put). Esa asimetría — pérdida limitada, ganancia abierta — es imposible con un perp lineal, donde pérdida y ganancia son simétricas. Aquí está el pago doblado de la call larga:
+
+<OptionPayoff
+  client:visible
+  title="La curvatura que un perp no puede daros: una call larga"
+  legs={[{ type: 'call', position: 'long', strike: 30000, premium: 1500, quantity: 1, label: 'Call 30k larga' }]}
+  spotMax={60000}
+  spotLabel="Precio del subyacente al vencimiento"
+  resultLabel="Beneficio / pérdida por unidad"
+  payoffToggleLabel="Pago"
+  profitToggleLabel="Beneficio"
+  breakevenLabel="Punto de equilibrio"
+  maxGainLabel="Ganancia máx."
+  maxLossLabel="Pérdida máx."
+  unlimitedLabel="Ilimitada"
+  caption="Por debajo del strike de $30.000 la call vence sin valor y solo perdéis la prima de $1.500 — vuestra pérdida está limitada. Por encima del strike, el beneficio sube uno a uno con el precio, sin techo. Esa forma doblada y asimétrica (pérdida limitada, ganancia ilimitada) es la convexidad, y ningún perp lineal puede replicarla."
+/>
+
+<Callout variant="info" title="Por qué la curvatura vale lo que cuesta">
+Un perp os da apalancamiento pero riesgo simétrico: el mismo movimiento arriba o abajo os golpea igual, y un gran movimiento adverso puede liquidaros. Una opción larga os da *convexidad*: un coste conocido y limitado (la prima) a cambio de un pago que acelera a vuestro favor y no puede pasarse de vuestra prima en vuestra contra. Los traders pagan por ese doblez para expresar visiones con riesgo definido, para cubrir colas, o para cosechar volatilidad — nada de lo cual puede hacer un perp de línea recta.
+</Callout>
+
+## Traer las opciones on-chain: AMM y bóvedas
+
+Un AMM spot valora un *token*; un protocolo de opciones tiene que valorar un *contrato* cuyo valor depende del strike, el tiempo a vencimiento y la volatilidad (las entradas de Black–Scholes). On-chain, dominan dos diseños.
+
+**Diseño A — AMM de opciones / curvas de valoración.** La liquidez se sienta en un pool, y una fórmula de valoración (a menudo una aproximación de Black–Scholes o una curva de bonding alimentada por un parámetro de volatilidad implícita) cita una prima para cada strike y vencimiento. Los traders compran y venden opciones contra el pool; los LP del pool son la contraparte, muy parecido al diseño de perp peer-to-pool pero valorando pagos convexos. El reto es que el valor de la opción es sensible a la volatilidad, así que el protocolo necesita una entrada de volatilidad (un oráculo o un parámetro de gobernanza) — si lo erráis, los LP quedan sistemáticamente mal valorados.
+
+**Diseño B — bóvedas de opciones (DOV).** Una **DeFi Option Vault** permite a los depositantes correr una *estrategia sistemática de venta de opciones*. La clásica es una **bóveda de call cubierta**: los depositantes mantienen el activo, y cada semana la bóveda vende (escribe) call out-of-the-money sobre él, cobrando la prima como rendimiento. Los depositantes ganan los ingresos de prima pero limitan su potencial alcista (han vendido las call). El espejo es una **bóveda de venta de put** (put aseguradas con efectivo) que gana prima por asumir riesgo bajista. Las DOV (popularizadas por protocolos como Ribbon/Aevo, Dopex, Thetanuts) convirtieron la escritura de opciones en un producto de rendimiento de un clic.
+
+<MCQ
+  client:visible
+  question="Una DeFi Option Vault (DOV) de call cubierta genera rendimiento para los depositantes:"
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  options={[
+    { text: "Vendiendo (escribiendo) call out-of-the-money sobre el activo depositado cada ciclo y cobrando la prima, a cambio de limitar el potencial alcista", correct: true },
+    { text: 'Comprando call cada semana y esperando que venzan in the money' },
+    { text: 'Prestando el activo a prestatarios a la tasa de financiación' },
+    { text: 'Garantizando un rendimiento fijo sin riesgo para el depositante' },
+  ]}
+  explanation="Una bóveda de call cubierta escribe call OTM contra el activo depositado y se embolsa la prima como rendimiento. El compromiso es real: si el activo sube por encima del strike, el potencial alcista de la bóveda se limita (las call se ejercen contra ella). Es ingreso de prima por potencial alcista vendido — no rendimiento gratis y sin riesgo."
+/>
+
+<ThinkReveal
+  client:visible
+  eyebrow="Piensa primero"
+  prompt="Una bóveda de call cubierta anuncia un jugoso rendimiento semanal. ¿En qué escenario de mercado se arrepiente más un depositante de estar en ella, y por qué?"
+  hint="La bóveda vendió una dirección del pago. ¿Cuál, y qué pasa si el mercado va ahí con fuerza?"
+  buttonLabel="Revelar la respuesta"
+  hintLabel="Pista"
+  text="La bóveda vendió call OTM, así que vendió el potencial alcista por encima del strike. El depositante se arrepiente más en un rally brusco: el activo se dispara por encima del strike, las call vendidas se ejercen, y la bóveda debe entregar el activo (o su valor) al strike — así que el depositante se queda la pequeña prima pero se pierde la gran ganancia. En efecto cambiaron un potencial alcista grande e incierto por una prima pequeña y cierta. La prima parece 'rendimiento', pero en realidad es el precio del potencial alcista que cedieron; en un mercado alcista rugiente es una operación terrible, mientras que en un mercado plano o lateral es estupenda."
+/>
+
+## Gamma: la curvatura, convertida en una griega
+
+La cantidad de segundo orden más importante para una opción es **gamma** — la *curvatura* del pago, formalmente la tasa de cambio de delta (sensibilidad al precio) a medida que se mueve el subyacente. Gamma alta significa que vuestra exposición cambia rápido al moverse el precio: una opción larga gana delta a medida que va a vuestro favor y suelta delta a medida que va en vuestra contra, que es exactamente la propiedad de "acelerar hacia las ganancias, desacelerar hacia las pérdidas" que da la convexidad.
+
+La curva de abajo muestra cómo se dobla el valor de una opción alrededor del strike — ese doblez es gamma. Un perp lineal sería una línea recta aquí; la curva de la opción es la convexidad por la que pagáis la prima.
+
+<GreeksCurve
+  client:visible
+  greek="gamma"
+  type="call"
+  strike={100}
+  vol={0.25}
+  time={0.5}
+  rate={0.03}
+  spot={100}
+  title="Gamma según el precio del subyacente"
+  deltaLabel="Delta"
+  gammaLabel="Gamma"
+  thetaLabel="Theta"
+  vegaLabel="Vega"
+  callLabel="Call"
+  putLabel="Put"
+  spotLabel="Precio del subyacente"
+  volLabel="Volatilidad σ"
+  timeLabel="Tiempo a vencimiento (años)"
+  valueLabel="Valor de la griega aquí"
+  strikeMarkerLabel="Strike"
+  caption="El valor de la opción se dobla alrededor del strike — esa curvatura es gamma. Delta (la pendiente) cambia al moverse el precio, así que una opción larga acelera hacia vuestras ganancias y frena hacia vuestras pérdidas. El valor de un perp sería una línea recta con pendiente constante y gamma cero; la convexidad es justo lo que la opción añade."
+/>
+
+La pega de las opciones clásicas: la gamma está **enredada con el tiempo y un vencimiento fijo.** La convexidad de una opción decae a medida que se acerca el vencimiento (theta), y debéis seguir rolando a fechas fijas para mantener la exposición — el mismo engorro de calendario que hacía molestos a los futuros con vencimiento. Lo que plantea una pregunta bonita, la misma que parió al perp: *¿podemos quitar el vencimiento y poseer convexidad pura para siempre?*
+
+<MCQ
+  client:visible
+  question="Gamma mide, para una opción:"
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  options={[
+    { text: "La curvatura del pago — cómo de rápido cambia la delta (sensibilidad al precio) de la opción al moverse el subyacente", correct: true },
+    { text: 'La tasa de financiación pagada entre compradores y vendedores de opciones' },
+    { text: 'La prima fija pagada en la compra' },
+    { text: 'El número de días hasta el vencimiento' },
+  ]}
+  explanation="Gamma es la segunda derivada del valor respecto al precio — la curvatura. Es la tasa de cambio de delta, así que gamma alta significa que la exposición cambia rápido al moverse el precio. Esa convexidad es lo que posee una opción larga y un perp lineal (gamma cero) no puede ofrecer."
+/>
+
+## Perpetuos de potencia: convexidad con el calendario arrancado
+
+Aquí está la frontera. Un **perpetuo de potencia** (el ejemplo canónico es **Squeeth**, "ETH al cuadrado", de Opyn) es un contrato perpetuo sobre una *potencia* del precio — el más famoso, el **cuadrado** del precio, $S^2$. Como el pago es $S^2$ en vez de $S$, es **convexo por construcción**: su valor se curva con el precio, dando al titular exposición a gamma — y, como un perp, **nunca vence**.
+
+**Analogía.** Un perp normal sigue vuestra altitud. Un perp de potencia sigue vuestra altitud *al cuadrado*: subid un poco y vuestra lectura sube un poco; subid mucho y sube de forma explosiva. Esa respuesta que acelera es la convexidad — el mismo doblez que os da una opción — pero horneada en un contrato que podéis mantener indefinidamente, sin strike que elegir ni vencimiento que rolar.
+
+**La mecánica, por analogía con el perp normal:**
+
+- Un perp de potencia largo (largo $S^2$) tiene **gamma positiva** — exposición convexa que acelera a grandes movimientos en *cualquier* dirección (ya que $S^2$ sube tanto si $S$ salta arriba como si, en términos relativos, oscila con fuerza). Se comporta como estar largo de la convexidad de una tira de opciones, de forma continua.
+- Esa convexidad no es gratis. Igual que una opción larga paga **theta** (decaimiento temporal) por su gamma, un perp de potencia largo paga una **tasa de financiación** al lado corto. La financiación es el precio eterno y continuo que pagáis por seguir poseyendo gamma — el análogo directo de la theta de una opción, pero sin vencimiento.
+- El lado corto **recibe** esa financiación por suministrar la convexidad (y debe cubrir su gamma negativa), exactamente como un *vendedor* de opciones cobra prima/theta por estar corto de gamma.
+
+Así que un perp de potencia es, en espíritu, **"la convexidad de una opción, hecha perpetua, con la financiación sustituyendo a la theta y al calendario."** Es el mismo truco que convirtió un futuro con vencimiento en un perp — quitar el vencimiento, anclarlo con financiación — aplicado al pago *no lineal* de una opción.
+
+<Callout variant="warning" title="Idea errónea: 'un perp de potencia es solo un perp de alto apalancamiento'">
+Un perp apalancado 2× y un perp de potencia ambos amplifican movimientos, pero no son el mismo animal. El perp apalancado sigue siendo *lineal* — su PnL es una línea recta, solo más empinada, y puede liquidarse cuando la línea cruza vuestro margen. Un perp de potencia es *convexo*: su sensibilidad (delta) misma crece al moverse el precio a vuestro favor y se encoge al moverse en vuestra contra, así que tiene gamma genuina. Pagáis por esa gamma de forma continua vía financiación (el análogo de theta), no eligiendo apalancamiento. Convexidad, no inclinación, es la distinción.
+</Callout>
+
+<MCQ
+  client:visible
+  question="En un perpetuo de potencia (p. ej. 'Squeeth' de precio al cuadrado), ¿qué hace el papel que la theta (decaimiento temporal) hace para una opción normal?"
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  options={[
+    { text: "Una tasa de financiación pagada por el largo (comprador de convexidad) al corto (vendedor de convexidad) — el precio continuo y eterno de mantener gamma", correct: true },
+    { text: 'El precio strike, elegido en la compra' },
+    { text: 'Una fecha de vencimiento fija a la que rola la posición' },
+    { text: 'Nada — los perps de potencia no tienen coste de acarreo' },
+  ]}
+  explanation="Una opción larga paga theta por poseer gamma hasta el vencimiento. Un perp de potencia no tiene vencimiento, así que un pago de financiación continuo del largo al corto sustituye a la theta: es el coste eterno de mantener convexidad. El corto la cobra por suministrar la gamma, reflejando a un vendedor de opciones cobrando prima/theta."
+/>
+
+<FillBlank
+  client:visible
+  question="Completa la historia de la convexidad."
+  checkLabel="Comprobar"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  explanationLabel="Explicación"
+  text="El pago de un perp es {{lineal|convexo|plano}} en el precio, mientras que el pago de una opción es {{convexo|lineal|aleatorio}}, con la curvatura medida por {{gamma|delta|la tasa de financiación}}. Una {{bóveda|oráculo|libro de órdenes}} de call cubierta gana prima vendiendo el potencial alcista. Un {{perpetuo de potencia|stablecoin|fondo indexado}} empaqueta esa curvatura en un contrato eterno, donde una {{tasa de financiación|strike|cupón}} pagada por el largo al corto sustituye a la theta de una opción como coste continuo de mantener {{gamma|apalancamiento|colateral}}."
+  explanation="Perp = lineal; opción = convexa con curvatura = gamma. Las bóvedas de call cubierta venden potencial alcista por prima. Un perpetuo de potencia hace la convexidad eterna, con la financiación (largo → corto) sustituyendo a la theta como coste continuo de la gamma."
+/>
+
+## Cuándo recurrir a cada instrumento
+
+Un mapa rápido de profesional de todo el kit no lineal:
+
+| Si queréis… | Recurrid a | Por qué |
+|---|---|---|
+| Dirección apalancada barata y sencilla | **Perp** | Lineal, profundo, un contrato, anclado por financiación |
+| Apuesta direccional de riesgo definido | **Opción larga** | Pérdida limitada a la prima; potencial convexo |
+| Ingreso de prima, dispuestos a limitar el alza | **DOV de call cubierta** | Rendimiento sistemático de escritura de call |
+| Convexidad pura y eterna (largo de gamma) | **Perp de potencia** | Gamma sin vencimiento; financiación = theta |
+| Ingreso de convexidad (corto de gamma) | **Perp de potencia corto / vendedor de opciones** | Cobrar financiación/prima por suministrar gamma |
+
+El hilo conductor: **los perps os dan dirección, las opciones y los perps de potencia os dan curvatura**, y on-chain el mismo truco de la tasa de financiación que hizo perpetuos a los futuros hace perpetua también la *convexidad*. En cuanto veis la financiación como "el coste eterno de acarreo para cualquier exposición que no sea spot", todo el zoo — perps, perps de potencia, incluso la financiación implícita de las bóvedas — cae en un solo marco.
+
+<MCQ
+  client:visible
+  question="Un trader quiere exposición de gamma larga (convexa) a la volatilidad pero está cansado de rolar opciones de vencimiento fijo. ¿Qué instrumento on-chain encaja mejor, y cuál es el coste recurrente?"
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  options={[
+    { text: "Un perpetuo de potencia largo — da convexidad eterna sin vencimiento que rolar, y el coste recurrente es la financiación que paga al lado corto (el análogo de theta)", correct: true },
+    { text: 'Un perp lineal apalancado — tiene la misma gamma que una opción sin coste de financiación' },
+    { text: 'Una bóveda de call cubierta — da al comprador gamma larga gratis' },
+    { text: 'Una posición spot — tiene la mayor gamma de cualquier instrumento' },
+  ]}
+  explanation="Un perp de potencia entrega exposición convexa (de gamma larga) sin vencimiento que gestionar, resolviendo el problema del rolo. El precio es un pago de financiación continuo al lado corto, que sustituye a la theta de una opción. Un perp lineal tiene gamma cero; el spot no tiene; una bóveda de call cubierta está corta de gamma, no larga."
+/>
+
+<MindMap
+  client:visible
+  title="Opciones on-chain y perps de potencia — añadir curvatura"
+  caption="Las opciones traen pagos convexos on-chain vía AMM y bóvedas; gamma es la curvatura; los perps de potencia hacen esa convexidad eterna con la financiación sustituyendo a la theta."
+  outlineLabel="Esquema en texto"
+  root={{
+    label: 'Curvatura on-chain',
+    children: [
+      {
+        label: 'Opciones = convexidad',
+        children: [
+          { label: 'El pago se dobla en el strike' },
+          { label: 'Larga: pérdida limitada a la prima, ganancia abierta' },
+          { label: 'El perp es lineal; la opción es convexa' },
+        ],
+      },
+      {
+        label: 'Diseños on-chain',
+        children: [
+          { label: 'AMM de opciones / curvas de valoración' },
+          { label: 'DOV: bóvedas de call cubierta y venta de put' },
+          { label: 'Necesitan una entrada de volatilidad → riesgo de oráculo' },
+        ],
+      },
+      {
+        label: 'Gamma',
+        children: [
+          { label: 'Curvatura = tasa de cambio de delta' },
+          { label: 'Opción larga = gamma larga' },
+          { label: 'Enredada con vencimiento / theta' },
+        ],
+      },
+      {
+        label: 'Perpetuos de potencia',
+        children: [
+          { label: 'Perp sobre una potencia del precio (p. ej. S²)' },
+          { label: 'Convexo por construcción, nunca vence' },
+          { label: 'La financiación (largo→corto) sustituye a la theta' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Repaso: opciones on-chain y perps de potencia"
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  nextLabel="Siguiente"
+  seeResultsLabel="Ver resultados"
+  backLabel="Atrás"
+  restartLabel="Reiniciar"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  scoreLabel="Has acertado"
+  questions={[
+    {
+      question: 'La diferencia definitoria entre el pago de una opción y el de un perp es:',
+      options: [
+        { text: 'La opción es convexa (se dobla en el strike, limitando la pérdida a la prima), mientras que el perp es lineal (una línea recta en el precio)', correct: true },
+        { text: 'La opción tiene una tasa de financiación y el perp no' },
+        { text: 'El perp puede operarse on-chain pero la opción no' },
+        { text: 'Son idénticos en todo' },
+      ],
+      explanation: 'La curvatura es todo el sentido. Una opción larga limita su pérdida a la prima y se dobla hacia ganancias sin techo; un perp es simétrico y lineal. Esa convexidad, medida por gamma, es lo que un instrumento lineal no puede replicar.',
+    },
+    {
+      question: 'Una DeFi Option Vault de venta de put gana rendimiento:',
+      options: [
+        { text: 'Escribiendo opciones put aseguradas con efectivo y cobrando la prima, a cambio de asumir el riesgo bajista si el activo cae por debajo del strike', correct: true },
+        { text: 'Comprando put y beneficiándose cuando el mercado sube' },
+        { text: 'Prestando stablecoins a la tasa de financiación' },
+        { text: 'Garantizando el principal con cero riesgo' },
+      ],
+      explanation: 'Una bóveda de venta de put escribe put y se embolsa la prima, pero está obligada a comprar el activo al strike si el precio cae por debajo — así que el depositante gana prima por soportar el riesgo bajista. Es ingreso por protección vendida, no rendimiento gratis.',
+    },
+    {
+      question: 'Gamma se describe mejor como:',
+      options: [
+        { text: 'La curvatura del pago de una opción — la tasa a la que cambia su delta al moverse el subyacente', correct: true },
+        { text: 'La prima fija pagada por adelantado' },
+        { text: 'La tasa de financiación de un perpetuo' },
+        { text: 'El número de contratos en una posición' },
+      ],
+      explanation: 'Gamma es la sensibilidad de precio de segundo orden — cómo de rápido se mueve la delta. Gamma alta significa que la exposición cambia rápido con el precio. Las opciones largas tienen gamma positiva; los perps lineales tienen gamma cero.',
+    },
+    {
+      question: 'Un perpetuo de potencia sobre el precio al cuadrado (S²) es convexo porque:',
+      options: [
+        { text: 'Su pago sigue a S², que se curva con el precio, así que el titular tiene gamma positiva — exposición que acelera a grandes movimientos — sin vencimiento', correct: true },
+        { text: 'Usa apalancamiento extra sobre un pago lineal' },
+        { text: 'Paga un cupón fijo cada trimestre' },
+        { text: 'Está clavado exactamente al precio índice en todo momento' },
+      ],
+      explanation: 'Como el valor sigue a S² en vez de a S, el pago se dobla — esa curvatura es gamma. El titular posee convexidad de forma continua, a diferencia de una opción de vencimiento fijo, con la financiación sustituyendo a la theta como coste de acarreo.',
+    },
+    {
+      question: 'Detecta la trampa. "Un perp de potencia es solo un perp con más apalancamiento." ¿Cuál es la corrección?',
+      options: [
+        { text: 'Un perp apalancado sigue siendo lineal (una línea recta más empinada, liquidable cuando cruza el margen); un perp de potencia es convexo, con gamma genuina cuyo coste se paga continuamente vía financiación (el análogo de theta) — convexidad, no inclinación, es la diferencia', correct: true },
+        { text: 'Son lo mismo; apalancamiento y convexidad son idénticos' },
+        { text: 'Un perp de potencia tiene menos riesgo que cualquier perp' },
+        { text: 'Un perp de potencia no tiene coste de financiación alguno' },
+      ],
+      explanation: 'El apalancamiento hace un pago lineal más empinado; la convexidad hace que la pendiente misma cambie con el precio. Un perp de potencia tiene gamma real por la que pagáis continuamente a través de la financiación, mientras que un perp apalancado tiene gamma cero y un apalancamiento fijo y elegido. La distinción es curvatura frente a inclinación.',
+    },
+  ]}
+/>
+
+Ya habéis añadido curvatura a vuestro kit on-chain — opciones para convexidad de riesgo definido, DOV para ingreso de prima, y perps de potencia para gamma eterna, todo anclado por la misma lógica de financiación. Un hilo ha recorrido cada lección: la **base**, el hueco entre un derivado y el spot, monetizado por la financiación. La lección final lo ata todo en la operación cripto institucional dominante — el **cash-and-carry**, que convierte esa prima de financiación en rendimiento neutral al mercado.

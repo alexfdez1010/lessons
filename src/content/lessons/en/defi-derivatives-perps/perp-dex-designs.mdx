@@ -1,0 +1,251 @@
+---
+title: "Perp DEX Designs"
+description: "The three architectures that answer 'where does the perp price come from?': on-chain central limit order books, virtual AMMs (vAMMs), and oracle/pool-based designs. Their counterparty models, liquidity sources, oracle dependence, and the decentralization-vs-capital-efficiency-vs-oracle-risk trade-offs, with real examples."
+topic: "en/defi-derivatives-perps"
+order: 5
+minutes: 13
+updated: 2026-06-08
+---
+
+import { Callout, MCQ, Quiz, FillBlank, MindMap, ThinkReveal, PerpDexDesigns } from '@/components/react';
+
+We've treated "the perp exchange" as a black box that has a mark price, runs funding, and liquidates positions. Now we open the box. The hard engineering question for *any* perp DEX is deceptively simple: **where does the price come from, and who is on the other side of your trade?** There are three dominant answers, and each makes a different bet on the eternal DeFi triangle of decentralization, capital efficiency, and oracle risk. Master these three and you can read any perp DEX on the market.
+
+<MCQ
+  client:visible
+  pretest
+  question="What is the single hardest design question every perpetual DEX must answer?"
+  options={[
+    { text: "Where the trade's price comes from and who acts as the counterparty", correct: true },
+    { text: 'Which programming language to write the smart contract in' },
+    { text: 'What color scheme to use in the trading interface' },
+    { text: 'How many social-media followers the protocol has' },
+  ]}
+  explanation="A perp needs a price for the contract (the mark) and a counterparty for every trade. The three major architectures — order book, vAMM, and oracle/pool — are precisely three different answers to that question, each trading off decentralization, capital efficiency, and oracle risk differently."
+/>
+
+## Design 1: the on-chain order book (CLOB)
+
+**Analogy.** An order book is a public bulletin board of standing offers: a column of "I'll sell at \$30,010" notes above a column of "I'll buy at \$29,990" notes. To trade, you pair with whoever posted the best matching note. It's the same machine a stock exchange or a centralized crypto exchange uses — just put (partly) on-chain.
+
+**Definition.** A **central limit order book (CLOB)** perp DEX matches buyers and sellers via resting limit orders. Professional **market makers** post bids and asks; a **matching engine** pairs incoming orders against the best resting price. The price is *discovered* in the book itself — the best ask is the price to buy.
+
+**Properties:**
+
+- **Counterparty:** another trader, on the opposite side of the book.
+- **Liquidity:** comes from active market makers continuously quoting. Deep, tight markets when makers are present; **thin and gappy** when they're not (the classic problem for long-tail assets).
+- **Oracle dependence:** *low* for price discovery — the book makes its own price. (An index oracle is still used for funding and to compute the mark robustly, but the trading price is endogenous.)
+- **Main weakness:** needs sophisticated makers and fast infrastructure. A pure on-chain book is bandwidth-heavy (every order and cancel is a transaction), so most "on-chain order book" perps run the matching off-chain or on a dedicated chain/app-chain and settle on-chain.
+
+**Real examples:** **dYdX** (moved to its own app-chain for order-book performance) and **Hyperliquid** (a purpose-built L1 with an on-chain order book). These dominate professional, high-volume perp trading precisely because order books give the tightest spreads when makers show up.
+
+<MCQ
+  client:visible
+  question="In an order-book perp DEX, where does the trading price come from and who is your counterparty?"
+  options={[
+    { text: "The price is the best resting limit order in the book; your counterparty is another trader who posted the opposite order", correct: true },
+    { text: 'The price comes from an external oracle; the counterparty is a shared liquidity pool' },
+    { text: 'The price comes from a constant-product formula; the counterparty is the protocol' },
+    { text: 'There is no price and no counterparty; trades settle at random' },
+  ]}
+  explanation="A CLOB discovers price endogenously — the best ask/bid in the book is the price — and pairs you with another trader on the opposite side. That makes it low on oracle dependence for price discovery but reliant on active market makers; thin books are its weakness."
+/>
+
+## Design 2: the virtual AMM (vAMM)
+
+The AMM you know from spot DEXs prices trades with a constant-product curve $x \cdot y = k$ against *real* pooled reserves. A **virtual AMM** borrows the *math* but throws away the *reserves*.
+
+**Analogy.** A vAMM is a price-setting *abacus* with no money in the drawers. The beads (the $x$ and $y$ values) move along the same $x \cdot y = k$ rails as a real AMM, producing a price for each trade — but there's no actual pile of tokens behind them. The curve is pure bookkeeping: it tells you what price a trade fills at and how the "virtual reserves" shift, while the real collateral lives in a separate vault that just tracks PnL.
+
+**Definition.** A **virtual AMM (vAMM)** uses a constant-product (or similar) formula on **virtual reserves** — numbers that exist only to compute prices and slippage — with no real liquidity deposited into the curve. Traders' actual collateral sits in a separate margin vault; the vAMM only determines the price at which positions open and close.
+
+**Properties:**
+
+- **Counterparty:** the protocol / the virtual pool itself (the vAMM is the house).
+- **Liquidity:** *synthetic* — there are no LPs depositing into the curve. The "depth" is set by the chosen $k$ parameter, not by real capital.
+- **Oracle dependence:** *medium* — the vAMM sets its own trading price, but it needs an index/mark oracle to run funding and keep the virtual price anchored to spot.
+- **Main weakness:** because there's no real liquidity and no arbitrageurs holding inventory, the virtual price can **drift** from the true price, and a poorly-tuned $k$ makes the curve either too shallow (huge slippage) or too easy to push around (manipulation and bad-debt risk). Early vAMMs suffered exactly this and several have been redesigned or retired.
+
+**Real examples:** **Perpetual Protocol v1** (the canonical vAMM) and early versions of **Drift**. The vAMM was an elegant idea — a fully on-chain perp needing no order book and no LPs — but the drift and manipulation problems pushed much of the market toward the next design.
+
+<ThinkReveal
+  client:visible
+  eyebrow="Think first"
+  prompt="A vAMM uses the same x·y=k math as a spot AMM but with 'virtual' reserves and no real liquidity. What problem does the absence of real reserves and real arbitrageurs create?"
+  hint="In a real AMM, who keeps the pool price honest when it drifts from the true price?"
+  buttonLabel="Reveal the answer"
+  text="In a real spot AMM, when the pool price drifts from the true market price, arbitrageurs trade against the real reserves to pull it back — and crucially they can extract the real tokens, so the correction is profitable and self-enforcing. A vAMM has no real reserves to arbitrage against and no inventory to take, so the price-correcting force is weaker: the funding rate and an oracle have to do the anchoring instead. If k is set too small the virtual price is easy to shove around, opening the door to manipulation and bad debt, because there is no deep pool of real capital resisting the push. That fragility is why pure vAMMs largely gave way to oracle/pool designs."
+/>
+
+## Design 3: oracle / pool-based ("peer-to-pool")
+
+The third design takes the most radical step: **stop discovering price on-chain entirely, and import it from an oracle.** Trades fill at the external oracle price, and a single shared **liquidity-provider (LP) pool** is the universal counterparty to every trader.
+
+**Analogy.** This is the *house* at a casino. You don't bet against another gambler — you bet against the house, which quotes a price from an external scoreboard (the oracle) and takes the other side of every wager. The house's bankroll is a pool that many backers (LPs) have funded; collectively they're short whatever the gamblers are long, and they earn the fees and funding for providing that service.
+
+**Definition.** An **oracle/pool-based** (or "peer-to-pool") perp DEX fills trades at an **external oracle price** against a **shared LP vault** that acts as the counterparty to all traders. LPs deposit into one pool; that pool is automatically net-short trader profit and net-long trader loss.
+
+**Properties:**
+
+- **Counterparty:** the LP pool — the house against every trader at once.
+- **Liquidity:** LPs deposit into a single counterparty vault; no order book, no makers needed, and you get **zero price-impact slippage** at the oracle price (huge for large trades).
+- **Oracle dependence:** *high* — the oracle **is** the price. A wrong, stale, or manipulated oracle directly produces wrong fills and can drain the LP pool. This is the dominant risk.
+- **Main weakness:** LPs are structurally **short the traders' aggregate PnL** — if traders win, LPs lose — and the whole system is only as safe as its oracle. Oracle latency or manipulation is the classic attack surface (several exploits have targeted exactly this).
+
+**Real examples:** **GMX** (trade against the GLP/GM liquidity pool at Chainlink oracle prices) and **Gains Network / gTrade** (trade against a DAI vault at oracle prices, extending even to synthetic forex and stocks). Their selling point: dead-simple UX, no slippage, and deep effective liquidity from one pool — at the cost of total dependence on the oracle and LPs bearing trader PnL.
+
+<MCQ
+  client:visible
+  question="In an oracle/pool-based perp DEX like GMX, what is the dominant risk, and why?"
+  options={[
+    { text: "Oracle risk — because trades fill at the external oracle price, a stale or manipulated oracle directly produces bad fills that can drain the shared LP pool", correct: true },
+    { text: 'Order-book spoofing, because the price comes from resting limit orders' },
+    { text: 'That there is never enough leverage available' },
+    { text: 'That LPs always profit no matter what traders do' },
+  ]}
+  explanation="The oracle IS the price in a peer-to-pool design, so its integrity is everything: a manipulated or laggy feed lets traders fill at off-market prices and bleed the LP vault. And LPs are net-short trader PnL, so they lose when traders win. Zero slippage and simple UX are the upside; total oracle dependence is the downside."
+/>
+
+## The three side by side
+
+The whole point is the *trade-off*. No design wins on every axis — each sacrifices something to gain something. Use the comparison below to see all three lined up across the dimensions that matter.
+
+<PerpDexDesigns client:visible />
+
+<FillBlank
+  client:visible
+  question="Fill in the three perp-DEX designs."
+  text="An {{order book|insurance fund|index}} DEX discovers price from resting limit orders and needs active market makers, with {{low|high}} oracle dependence. A {{vAMM|order book|pool}} uses x·y=k math on virtual reserves with no real liquidity, so its price can {{drift|never move|double}}. An {{oracle/pool|order book|vAMM}} design fills at an external oracle price against a shared LP vault, giving zero slippage but making {{oracle risk|gas|spread}} the dominant danger and leaving LPs net-{{short|long}} trader profit."
+  explanation="Order book → endogenous price, needs makers, low oracle dependence. vAMM → virtual reserves, no real liquidity, price can drift. Oracle/pool → external oracle price, shared LP counterparty, zero slippage but high oracle risk and LPs short trader PnL."
+/>
+
+## Reading the trade-off triangle
+
+Every choice here is a position on three competing goals:
+
+- **Decentralization / on-chain purity.** A pure on-chain order book is bandwidth-hungry, so order-book DEXs often move matching off-chain or onto an app-chain (a decentralization compromise). vAMMs and oracle/pool designs are more fully on-chain — but lean on oracles.
+- **Capital efficiency & liquidity.** Order books fragment liquidity across price levels and need makers; oracle/pool designs concentrate all liquidity into one vault with zero slippage; vAMMs need no deposited liquidity at all (synthetic), but that "free" liquidity is also fragile.
+- **Oracle risk.** Inverse to price-discovery autonomy. Order books discover their own price (low oracle risk for trading); vAMMs need an oracle to anchor (medium); oracle/pool designs *are* the oracle (high). The more you outsource price discovery, the simpler the UX and the deeper the effective liquidity — and the more an oracle failure can ruin you.
+
+**The market's verdict (so far):** professional, high-volume flow gravitates to **order books** (dYdX, Hyperliquid) for tight spreads and price discovery; simple, slippage-free, long-tail and retail flow gravitates to **oracle/pool** designs (GMX, gTrade); pure **vAMMs** largely served as an influential stepping stone that exposed the drift/manipulation problem the other two manage better.
+
+<Callout variant="warning" title="Misconception: 'zero slippage means oracle/pool DEXs are strictly better'">
+Zero price-impact slippage at the oracle price is genuinely great for large trades — but it isn't free. You've simply *moved* the risk from price impact to the oracle and to the LP pool. If the oracle lags a fast move, traders can systematically pick off the LPs at stale prices; if it's manipulated, the pool can be drained outright. And LPs, who provide that lovely deep liquidity, are short the traders' aggregate PnL — they can have long losing stretches when traders are net-right. "No slippage" describes the fill, not the risk; the risk just relocated.
+</Callout>
+
+<MCQ
+  client:visible
+  question="Cause and effect: an order-book perp DEX moves its matching engine off-chain (or to a dedicated app-chain). What is it trading away, and what does it gain?"
+  options={[
+    { text: "It trades away some on-chain decentralization/purity to gain the throughput needed for fast, tight order-book matching that a pure on-chain book can't sustain", correct: true },
+    { text: 'It trades away all liquidity to gain a higher token price' },
+    { text: 'It gains oracle independence by becoming more centralized' },
+    { text: 'It trades away nothing — off-chain matching is identical to on-chain in every respect' },
+  ]}
+  explanation="Every order and cancel is a transaction, so a pure on-chain CLOB chokes on bandwidth. Moving matching off-chain or onto an app-chain buys the throughput for tight, fast markets — at the cost of some decentralization, since users now trust that matching layer. It is a deliberate point on the trade-off triangle, not a free win."
+/>
+
+<MindMap
+  client:visible
+  title="Perp DEX designs — three answers to 'where's the price?'"
+  caption="Order book discovers price from resting orders; vAMM synthesizes it from a formula on virtual reserves; oracle/pool imports it from an external feed against a shared LP vault. Each trades decentralization, capital efficiency, and oracle risk differently."
+  root={{
+    label: 'Perp DEX designs',
+    children: [
+      {
+        label: 'Order book (CLOB)',
+        children: [
+          { label: 'Price = best resting order' },
+          { label: 'Counterparty = another trader' },
+          { label: 'Low oracle risk; needs makers' },
+          { label: 'dYdX, Hyperliquid' },
+        ],
+      },
+      {
+        label: 'vAMM',
+        children: [
+          { label: 'x·y=k on virtual reserves' },
+          { label: 'Counterparty = the protocol' },
+          { label: 'No real liquidity → price can drift' },
+          { label: 'Perpetual Protocol v1, early Drift' },
+        ],
+      },
+      {
+        label: 'Oracle / pool',
+        children: [
+          { label: 'Fill at external oracle price' },
+          { label: 'Counterparty = shared LP vault' },
+          { label: 'Zero slippage; high oracle risk' },
+          { label: 'GMX, Gains Network' },
+        ],
+      },
+      {
+        label: 'The trade-off triangle',
+        children: [
+          { label: 'Decentralization vs throughput' },
+          { label: 'Capital efficiency / liquidity' },
+          { label: 'Oracle risk ∝ outsourced price discovery' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Recap: perp DEX designs"
+  questions={[
+    {
+      question: 'Which perp-DEX design discovers price endogenously, with another trader as your counterparty?',
+      options: [
+        { text: 'The on-chain order book (CLOB) — the best resting limit order sets the price', correct: true },
+        { text: 'The vAMM — a formula on virtual reserves' },
+        { text: 'The oracle/pool design — an external feed against an LP vault' },
+        { text: 'None of them have a counterparty' },
+      ],
+      explanation: 'A CLOB matches your order against another trader’s resting order, so the price is discovered in the book itself — low oracle dependence for trading, but reliant on active market makers. dYdX and Hyperliquid are the leading examples.',
+    },
+    {
+      question: 'What makes a vAMM "virtual"?',
+      options: [
+        { text: 'It uses constant-product math on reserves that exist only as numbers to compute price and slippage — no real liquidity is deposited into the curve', correct: true },
+        { text: 'It only trades virtual (fake) assets that have no value' },
+        { text: 'It is a hologram with no smart contract behind it' },
+        { text: 'It matches real orders from a real order book' },
+      ],
+      explanation: 'A vAMM borrows x·y=k but the reserves are virtual bookkeeping — collateral lives in a separate vault. With no real reserves or arbitrage inventory, the price can drift and a mis-set k invites manipulation, which is why pure vAMMs largely gave way to other designs.',
+    },
+    {
+      question: 'In an oracle/pool ("peer-to-pool") design, the liquidity providers are best described as:',
+      options: [
+        { text: 'The shared counterparty to all traders — structurally net-short the traders’ aggregate PnL, earning fees and funding for it', correct: true },
+        { text: 'Market makers posting individual limit orders in a book' },
+        { text: 'Bots that liquidate underwater positions' },
+        { text: 'Traders who only ever go long' },
+      ],
+      explanation: 'The LP vault is the house: it takes the other side of every trade at the oracle price, so collectively LPs are short whatever traders are net-long. They earn fees/funding for providing slippage-free liquidity but lose when traders win — and the whole thing depends on the oracle’s integrity.',
+    },
+    {
+      question: 'Match the weakness to the design: "price can drift from the true market because there is no real liquidity or arbitrage inventory to anchor it" describes:',
+      options: [
+        { text: 'The vAMM', correct: true },
+        { text: 'The order book' },
+        { text: 'The oracle/pool design' },
+        { text: 'The insurance fund' },
+      ],
+      explanation: 'Drift from missing real reserves is the signature vAMM weakness. The order book’s weakness is needing active makers (thin books otherwise); the oracle/pool’s weakness is total oracle dependence and LPs bearing trader PnL.',
+    },
+    {
+      question: 'Spot the trap. "Oracle/pool DEXs have zero slippage, so they are strictly better than order books." What is the precise correction?',
+      options: [
+        { text: 'Zero slippage just relocates the risk: trades fill at the oracle, so a stale or manipulated oracle yields bad fills that drain the LP pool, and LPs are short trader PnL — the fill is clean, the risk is not gone', correct: true },
+        { text: 'It is correct — zero slippage means zero risk of any kind' },
+        { text: 'Order books also have zero slippage, so there is no difference' },
+        { text: 'Oracle/pool DEXs actually have the worst slippage of all designs' },
+      ],
+      explanation: 'No price-impact slippage at the oracle price is great for big trades, but the risk moved from price impact to the oracle and the LP vault: lagging or manipulated oracles let traders pick off LPs, and LPs carry the traders’ aggregate PnL. "No slippage" describes the fill, not the risk.',
+    },
+  ]}
+/>
+
+You can now classify any perp DEX by its answer to "where's the price?" — order book, vAMM, or oracle/pool — and reason about what each one is risking. We've covered linear payoffs exhaustively; next we add *curvature*. On-chain **options** bring convex, non-linear payoffs to DeFi, and the exotic **power perpetuals** package pure gamma into an everlasting contract — the frontier where the derivatives branch gets genuinely strange.

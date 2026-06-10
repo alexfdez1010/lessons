@@ -1,0 +1,306 @@
+---
+title: "The Limit Order Book"
+description: "The machine that turns a stream of buy and sell orders into a price: the two-sided ledger of resting limit orders, best bid and best ask, how a match actually happens under price–time priority, the queue you stand in, market orders as takers that walk the book, and how cancellations make the book a living thing — with a live animated book, worked queue examples, and the depth-vs-time-priority trade-offs."
+topic: "en/market-microstructure"
+order: 1
+minutes: 18
+updated: 2026-06-10
+---
+
+import { Callout, MCQ, Quiz, ThinkReveal, MatchConcepts, FillBlank, Categorize, MindMap, LiveOrderBook } from '@/components/react';
+
+You've placed orders. You know "market" means *fill me now* and "limit" means *this price or better*. But where do those orders actually **go**, and how does a tap on your phone collide with a stranger's tap on the other side of the planet to produce a *price*? The answer is one elegant data structure that sits at the heart of nearly every modern exchange — stocks, futures, crypto, even prediction markets: the **limit order book**. Understand it and the entire rest of this course falls into place, because every other idea — spreads, slippage, makers, adverse selection — is just something that happens *to* this book.
+
+<MCQ
+  client:visible
+  pretest
+  question="Pretest your instincts. A limit order book has buyers stacked on one side and sellers on the other, with a gap in the middle. Why does that gap — where no orders sit — exist at all?"
+  options={[
+    { text: 'Because the best buyer is bidding less than the best seller is asking — if they overlapped, they would have already traded and vanished', correct: true },
+    { text: 'Because the exchange charges a fee that physically occupies that price range' },
+    { text: 'Because regulators require a minimum empty zone around the "true" price' },
+    { text: 'Because the most recent trade price is parked there and blocks new orders' },
+  ]}
+  explanation="The gap is the bid–ask spread, and it exists precisely because the highest bid is below the lowest ask. The instant a buyer is willing to pay what a seller wants, they match and both orders leave the book — so what remains is always a standing disagreement. By the end of this lesson you'll see the whole mechanism that keeps that gap alive."
+/>
+
+## What a limit order book actually is
+
+**Analogy.** Picture a second-hand ticket exchange for a sold-out concert, run as two public noticeboards side by side. On the left board, hopeful buyers pin notes: "I'll pay up to \$80." On the right board, sellers pin notes: "I'll let mine go for \$90 or more." Anyone can walk up, read every note, and pin their own. A deal happens the moment someone's "willing to pay" meets someone's "willing to accept." The two boards, with all their pinned notes sorted by price, **are** the order book.
+
+**Definition.** A **limit order book** (often just *the book*, or **LOB**) is the complete, continuously-updated list of all resting **limit orders** for an asset, organized into two sides:
+
+- The **bid side** — buy orders, each saying "I'll buy up to *N* shares at price *P* or lower," sorted with the **highest** price on top.
+- The **ask side** (or *offer* side) — sell orders, each saying "I'll sell up to *N* shares at price *P* or higher," sorted with the **lowest** price on top.
+
+The single best price on each side has special names: the **best bid** (highest buy price) and the **best ask** (lowest sell price). Together they're the **top of book** or **inside market**, and the gap between them is the **bid–ask spread**. Everything below the best bid and above the best ask is **depth** — orders waiting their turn at worse prices.
+
+Here is a live one. Hit **Start feed** to watch resting orders pulse as liquidity is posted and cancelled, then fire a market buy or sell and watch it reach across the spread and consume resting orders.
+
+<LiveOrderBook client:visible title="A live limit order book" />
+
+Notice three things the simulator makes obvious. First, **the book has two sides and a gap** — buyers below, sellers above, spread in the middle. Second, **it's alive**: sizes flicker constantly as traders post and cancel orders, even when no trade happens. Third, **a market order doesn't join the book** — it reaches *across* the spread and eats resting orders until it's filled. Hold those three facts; the rest is detail.
+
+## Maker orders rest; taker orders cross
+
+**Analogy.** Back at the ticket boards: pinning a note and waiting is **making** a market — you're providing an option for others. Walking up and immediately taking someone's existing note is **taking** liquidity — you consume what others provided. Same person can do either on different days; the *action* is what counts, not the identity.
+
+**Definition.** Every order is one of two roles the instant it hits the book:
+
+- A **maker** (or *passive*, *liquidity-providing*) order rests in the book because it's priced where it **can't** trade immediately — a buy below the best ask, a sell above the best bid. It *adds* a resting order and waits.
+- A **taker** (or *aggressive*, *liquidity-removing*) order is priced to trade **right now** — it crosses the spread and matches against resting orders, *removing* them. A market order is always a taker. A *marketable* limit order (a buy priced at or above the best ask) is also a taker.
+
+This is the single most important reframing in the whole course: **a limit order isn't automatically a maker.** If you place a limit buy *above* the current ask, it crosses and takes liquidity just like a market order would. Maker-vs-taker is about *where you price it relative to the book*, not about which button you pressed.
+
+<Categorize
+  client:visible
+  question="Sort each order by the role it plays the instant it reaches the book. (Best bid is $50.00, best ask is $50.05.)"
+  buckets={['Maker (rests, adds liquidity)', 'Taker (crosses, removes liquidity)']}
+  items={[
+    { text: 'Limit buy at $49.90', bucket: 'Maker (rests, adds liquidity)' },
+    { text: 'Limit sell at $50.20', bucket: 'Maker (rests, adds liquidity)' },
+    { text: 'Market buy for 100 shares', bucket: 'Taker (crosses, removes liquidity)' },
+    { text: 'Limit buy at $50.10 (above the ask)', bucket: 'Taker (crosses, removes liquidity)' },
+    { text: 'Limit sell at $49.95 (below the bid)', bucket: 'Taker (crosses, removes liquidity)' },
+    { text: 'Limit buy at exactly $50.00 (joins the best bid)', bucket: 'Maker (rests, adds liquidity)' },
+  ]}
+  explanation="The test is simple: can the order trade immediately against what's resting? A buy at or below the best bid, or a sell at or above the best ask, rests — it's a maker. A buy priced at or above the best ask (or a sell at or below the best bid) crosses the spread and trades now — it's a taker, regardless of being labelled 'limit'. The $50.00 buy can't reach the $50.05 ask, so it rests."
+/>
+
+## How a match actually happens: price–time priority
+
+So you've fired a marketable order. Which resting orders does it trade against, and in what order? Exchanges answer with a strict rule called **price–time priority** (also *price–time-FIFO*), and it has two tiers.
+
+**Definition.**
+
+1. **Price priority comes first.** A buy taker matches the **lowest** asks first; a sell taker matches the **highest** bids first. You always get the best available price before any worse one — non-negotiable.
+2. **Time priority breaks ties.** Among multiple resting orders at the *same* price, the one that arrived **earliest** fills first. It's a literal first-in, first-out queue at each price level. Being early in line at a price is a real, valuable asset — it's why traders fight over microseconds.
+
+**Analogy.** It's a bakery with numbered tickets, but sorted by *how little you'll accept*, then by *who got there first*. The baker (an incoming buyer) serves the cheapest loaf first; if two sellers both ask the same lowest price, the one who showed up earlier gets the sale. Show up late at a popular price and you wait behind everyone who beat you there.
+
+### Worked example — walking the queue
+
+A market buy for **400 shares** arrives. The ask side looks like this (best ask on top), and within the \$100.10 level two makers are queued by arrival time:
+
+| Ask level | Price | Resting size | Queue note |
+|---|---|---|---|
+| Best ask | \$100.10 | 250 | Maker A (arrived 9:30:01.2), then Maker B (arrived 9:30:04.8) |
+| Next | \$100.20 | 500 | Maker C |
+
+Price priority sends the order to \$100.10 first. Within that level, **Maker A is first in line**, so:
+
+- Maker A's full 250 shares fill at \$100.10 (A was earliest).
+- 150 shares still needed. The \$100.10 level is now exhausted, so we climb to \$100.20.
+- 150 of Maker C's 500 fill at \$100.20; C's remaining 350 keep resting.
+
+Total: 250 × \$100.10 + 150 × \$100.20 = \$25,025 + \$15,030 = **\$40,055 for 400 shares → average fill \$100.1375**. Notice Maker B at \$100.10 got **nothing** — A's queue priority consumed the whole level. That's time priority in cold numbers: same price, but being 3.6 seconds earlier was the difference between a full fill and zero.
+
+<ThinkReveal
+  client:visible
+  prompt="Same book, but now Maker B at $100.10 had arrived BEFORE Maker A. The 400-share market buy comes in. Who fills, and what changes about the average price?"
+  hint="Price priority is unchanged ($100.10 before $100.20). Only the within-level queue order flipped."
+  text="The average fill price is identical — $100.1375 — because price priority is untouched: 250 shares clear at $100.10 and 150 at $100.20 either way. What changes is WHO earns the fill at $100.10: now B's order fills first and A gets whatever is left of the 250 (here, all of it goes to B's portion up to its size, then A). Time priority never changes the taker's average price; it only decides which makers at a given level get paid. That's why makers obsess over queue position even though it doesn't move the headline price."
+/>
+
+<Callout variant="warning" title="Misconception: 'the order book shows the price of the stock'">
+There is no single price in the book — there's a best bid, a best ask, a spread between them, and a stack of depth on each side. The number on your trading app's headline is usually the *last trade*, a historical fact. The book shows the *prices you could actually transact at right now*, which are two different numbers, not one.
+</Callout>
+
+## The book is alive: cancellations and the illusion of depth
+
+Here's what surprises people most: **the vast majority of orders in a modern book never trade — they're cancelled.** On many liquid markets, well over 90% of submitted limit orders are cancelled before any fill. Makers constantly post, reprice, and pull quotes as conditions shift — that's the flickering you saw in the live book even when no trade printed.
+
+**Why cancel so much?** A maker quoting both sides wants to stay near the action without getting picked off. As the fair price drifts, they cancel stale quotes and repost at new levels — thousands of times a second for automated makers. Resting an order is making a *promise* to trade; cancelling is withdrawing that promise before someone holds you to it at a bad moment.
+
+This has a sharp consequence: **displayed depth can be ephemeral.** A book that looks 10,000 shares deep can thin out in milliseconds if makers yank quotes the instant a large order appears. "There was plenty of liquidity" and "I got filled at a great price" are not the same statement — the depth you saw may evaporate exactly when you try to use it. This is also the seed of practices like *spoofing* (posting orders you intend to cancel, to fake demand) — illegal market manipulation, and a reminder that the book is a strategic arena, not a static price list.
+
+<MCQ
+  client:visible
+  question="On a busy liquid market, roughly what fraction of submitted limit orders end up cancelled rather than filled, and why does it matter?"
+  options={[
+    { text: 'The large majority are cancelled — so displayed depth can vanish in milliseconds exactly when you try to trade against it', correct: true },
+    { text: 'Almost none — once posted, an order is legally locked in until it fills' },
+    { text: 'About half, but it doesn’t matter because cancelled orders still count as liquidity' },
+    { text: 'Roughly a third, and the rest are converted to market orders automatically' },
+  ]}
+  explanation="Cancellation rates north of 90% are normal in fast markets. Makers post and pull quotes constantly to avoid being picked off as the fair price moves. The practical lesson: the depth on your screen is a snapshot of intentions, not a guarantee — it can melt away the moment a big order shows up."
+/>
+
+## Reading the book: bid, ask, spread, depth
+
+Let's make the vocabulary muscle-memory, because the next six lessons lean on it constantly.
+
+| Term | What it is | Where it sits |
+|---|---|---|
+| **Best bid** | Highest price a buyer will pay now | Top of the bid side |
+| **Best ask** | Lowest price a seller will accept now | Top of the ask side |
+| **Bid–ask spread** | Best ask − best bid | The gap in the middle |
+| **Mid price** | (Best bid + best ask) / 2 | A reference "fair" point in the gap |
+| **Depth** | Resting size available at each price level | Stacked below/above the top of book |
+| **Top of book** | The best bid and best ask together | The inside market |
+
+### Worked example — reading a snapshot
+
+The book shows: best bid \$49.98 (size 800), best ask \$50.02 (size 600), with another 1,500 shares bid at \$49.96 and 2,000 offered at \$50.04.
+
+- **Spread** = \$50.02 − \$49.98 = **\$0.04**.
+- **Mid price** = (\$49.98 + \$50.02) / 2 = **\$50.00**.
+- A market buy for **600 shares** fills entirely at the best ask, \$50.02 — it fits within top-of-book size, so no walking, no extra slippage.
+- A market buy for **900 shares** takes all 600 at \$50.02, then 300 at \$50.04: average = (600 × \$50.02 + 300 × \$50.04) / 900 ≈ **\$50.0267**. The extra 300 shares cost you the climb to the next level.
+
+That climb — paying worse prices as your order outgrows the top level — is **slippage**, and we'll dissect it in its own lesson. For now, the point is that you can *read it off the book in advance*: depth tells you how big a trade the top can absorb before the price moves.
+
+<FillBlank
+  client:visible
+  question="Lock in the anatomy — one choice per blank."
+  text="The highest resting buy price is the {{best bid|best ask|mid price}}, and the lowest resting sell price is the {{best ask|best bid|last trade}}. Their difference is the {{spread|depth|tick}}, and their average is the {{mid price|best bid|volume}}. Orders waiting at worse prices below and above the top of book are the market's {{depth|spread|tick}}."
+  explanation="Best bid (top of buyers) and best ask (top of sellers) bracket the spread; their midpoint is the mid price; the stacked resting size beyond the top of book is depth. Five words, and you can now read any order book on Earth."
+/>
+
+<MatchConcepts
+  client:visible
+  question="Match each order-book term to its precise meaning."
+  pairs={[
+    { term: 'Maker order', definition: 'Rests in the book at a price that cannot trade yet — adds liquidity' },
+    { term: 'Taker order', definition: 'Crosses the spread to trade immediately — removes liquidity' },
+    { term: 'Price priority', definition: 'Best prices fill before worse ones, always' },
+    { term: 'Time priority', definition: 'Among equal prices, the earliest-arriving order fills first' },
+    { term: 'Depth', definition: 'Resting size available beyond the top of book' },
+  ]}
+  explanation="Makers add and wait, takers cross and consume; price priority picks the level, time priority picks who at that level gets paid, and depth is the cushion of size waiting at worse prices. This is the entire grammar of the book."
+/>
+
+## A common trap: limit ≠ maker, market ≠ the only taker
+
+Two misconceptions worth killing outright:
+
+- **"Limit orders always rest."** False. A *marketable* limit order — a buy priced at or above the ask, a sell at or below the bid — crosses immediately and is a taker. The limit price just caps how far it'll chase. You can take liquidity with a limit order on purpose; it's the sane way to cross a spread with a safety rail (you met it as the "marketable limit" last course).
+- **"Market orders see the screen price."** They see the *book*. A market buy starts at the best ask and walks up through the levels if it's bigger than the top, exactly as the worked examples showed. The headline last-trade price is irrelevant to the fill.
+
+<MCQ
+  client:visible
+  allowMultiple
+  question="Best bid is $20.00, best ask is $20.04. Select every statement that is true."
+  options={[
+    { text: 'A limit buy at $20.06 is a taker — it crosses and trades against the $20.04 asks immediately', correct: true },
+    { text: 'A limit sell at $20.10 rests as a maker until a buyer climbs to it', correct: true },
+    { text: 'A market buy fills starting at $20.04 and walks up if it exceeds the top-of-book size', correct: true },
+    { text: 'A limit buy at $20.00 is a taker because it matches the current best bid' },
+    { text: 'The spread here is $0.40' },
+  ]}
+  explanation="A $20.06 limit buy crosses the $20.04 ask — taker. A $20.10 limit sell can't trade yet — maker. A market buy starts at the ask and walks. But a limit buy at $20.00 just JOINS the best bid; it can't trade against other buyers, so it rests (maker). And the spread is $20.04 − $20.00 = $0.04, not $0.40."
+/>
+
+## Putting it together
+
+The limit order book is the beating heart of modern markets: two sorted sides of resting limit orders, a best bid and best ask bracketing a spread, and depth stacked behind them. Makers post and wait; takers cross and consume. Matches obey price priority first (best prices win) and time priority second (earliest in the queue wins at a given price). And the whole thing is alive — most orders are cancelled, not filled, so displayed depth is a snapshot of intentions, not a promise. Every concept in the rest of this course is something that happens to this structure.
+
+<MindMap
+  client:visible
+  title="The limit order book — the whole machine"
+  caption="Two sorted sides bracket a spread; makers rest and takers cross; price–time priority decides matches; cancellations keep the book alive."
+  root={{
+    label: 'Limit order book',
+    children: [
+      {
+        label: 'Two sides',
+        children: [
+          { label: 'Bid side: buyers, highest on top' },
+          { label: 'Ask side: sellers, lowest on top' },
+          { label: 'Top of book = best bid + best ask' },
+          { label: 'Spread = ask − bid; mid = average' },
+        ],
+      },
+      {
+        label: 'Two roles',
+        children: [
+          { label: 'Maker: rests, adds liquidity' },
+          { label: 'Taker: crosses, removes liquidity' },
+          { label: 'Marketable limit = taker, not maker' },
+        ],
+      },
+      {
+        label: 'Matching rules',
+        children: [
+          { label: 'Price priority: best price first' },
+          { label: 'Time priority: earliest at a price first' },
+          { label: 'Queue position is a real asset' },
+        ],
+      },
+      {
+        label: 'A living book',
+        children: [
+          { label: 'Most orders cancelled, not filled' },
+          { label: 'Displayed depth can vanish' },
+          { label: 'Spoofing fakes depth (illegal)' },
+        ],
+      },
+      {
+        label: 'Depth',
+        children: [
+          { label: 'Resting size beyond the top' },
+          { label: 'Tells you how big a trade the top absorbs' },
+          { label: 'Walking it = slippage (next lessons)' },
+        ],
+      },
+    ],
+  }}
+/>
+
+One mixed recap before you move on:
+
+<Quiz
+  client:visible
+  questions={[
+    {
+      question: 'Best bid $30.00 (size 500), best ask $30.06 (size 400, two makers: P earliest then Q). A market buy for 250 shares arrives. Who fills it?',
+      options: [
+        { text: 'Maker P fills 250 at $30.06 — price priority sends it to the best ask, time priority gives the whole fill to the earliest maker there', correct: true },
+        { text: 'It splits evenly: 125 to P and 125 to Q' },
+        { text: 'Maker Q fills it, since later orders get priority' },
+        { text: 'It fills against the $30.00 bid' },
+      ],
+      explanation: 'Price priority routes the buy to the best ask, $30.06. Within that level, time priority pays the earliest maker first — P. Since 250 ≤ P’s available size, P fills the whole thing and Q gets nothing on this trade. A buy never matches the bid side; that’s where other buyers sit.',
+    },
+    {
+      question: 'Which order is a TAKER the instant it arrives, given best bid $99.90 / best ask $100.00?',
+      options: [
+        { text: 'A limit sell at $99.85 — it’s below the best bid, so it crosses and trades immediately', correct: true },
+        { text: 'A limit buy at $99.80' },
+        { text: 'A limit sell at $100.50' },
+        { text: 'A limit buy at $99.90 that joins the best bid' },
+      ],
+      explanation: 'A sell priced at or below the best bid crosses the spread and hits resting buyers right away — a taker. The $99.80 buy and $100.50 sell both rest (makers), and a buy joining the $99.90 bid just queues there. Taker-ness is about price relative to the opposite side, not the word "limit".',
+    },
+    {
+      question: 'Your trading app shows displayed depth of 50,000 shares on the ask side, yet a modest 5,000-share market buy moves the price more than you expected. What’s the most likely explanation?',
+      options: [
+        { text: 'Makers cancelled quotes the instant the order appeared — displayed depth is intentions, not a guarantee, and it thinned out as you traded', correct: true },
+        { text: 'The exchange added a hidden fee to the price' },
+        { text: 'Depth shown on screen is always exactly the depth you’ll receive' },
+        { text: 'Market orders are legally required to overpay' },
+      ],
+      explanation: 'Most resting orders are cancelled, not filled, and fast makers pull quotes the moment a large order threatens to pick them off. The 50,000 you saw was a snapshot of promises that evaporated. This gap between displayed and realized depth is one of microstructure’s most practical lessons.',
+    },
+    {
+      question: 'Why is queue position (time priority) valuable to a market maker even though it never changes the taker’s average fill price?',
+      options: [
+        { text: 'At a given price level, the earliest maker gets filled first — so good queue position is the difference between earning the spread and missing the trade entirely', correct: true },
+        { text: 'Because earlier orders are charged lower fees by law' },
+        { text: 'Because being early lets the maker set the spread for everyone' },
+        { text: 'It isn’t valuable; makers are indifferent to queue position' },
+      ],
+      explanation: 'Time priority decides WHO among equal-priced makers actually trades. The taker’s average price is set by price priority and is the same regardless, but for the maker, being first in line means earning the spread instead of watching a rival fill. That’s why microseconds of queue position are fought over.',
+    },
+  ]}
+/>
+
+## Key Takeaways
+
+<Callout variant="success" title="What to remember">
+- **The book has two sorted sides and a gap.** Bids (buyers) with the highest on top, asks (sellers) with the lowest on top, and the bid–ask spread between the best of each.
+- **Maker vs taker is about price, not the button.** Makers rest and add liquidity; takers cross the spread and remove it. A marketable limit order is a taker; a limit order is not automatically a maker.
+- **Matches obey price–time priority.** Best price fills first (price priority); among equal prices, the earliest-arriving order fills first (time priority). Queue position is a genuine asset.
+- **The book is alive.** Most submitted orders are cancelled, not filled, so displayed depth is a snapshot of intentions that can vanish in milliseconds — "there was liquidity" and "I got a great fill" are different claims.
+- **You read the book, not the headline.** Best bid, best ask, spread, mid, and depth are all visible; the last-trade price on your app is history. Your fill comes from the live book.
+</Callout>
