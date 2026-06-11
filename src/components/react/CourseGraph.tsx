@@ -1,5 +1,16 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { cx } from '@/components/react/cx';
+import {
+  applyFiltersToUrl,
+  DIFFICULTY_VALUES,
+  LEVEL_PARAM,
+  matchesFilters,
+  parseLevels,
+  parseTags,
+  TAG_PARAM,
+  toggleValue,
+  type Difficulty,
+} from '@/lib/catalog-filter';
 import {
   courseProgress,
   getFinishedLessons,
@@ -8,8 +19,7 @@ import {
   onProgressChange,
 } from '@/lib/progress';
 
-/** The four demand tiers on the zero-to-expert finance path. */
-export type Difficulty = 'beginner' | 'intermediate' | 'advanced' | 'expert';
+export type { Difficulty };
 
 /** Maps a difficulty to its semantic badge class (defined in global.css). */
 const DIFFICULTY_CLASS: Record<Difficulty, string> = {
@@ -62,6 +72,18 @@ export interface CourseNode {
    * slugs are ignored so a half-built dependency list never breaks the graph.
    */
   dependencies?: string[];
+  /** Roadmap tags the course carries — drives the tag filter. */
+  tags?: string[];
+}
+
+/** One selectable roadmap tag in the filter bar. */
+export interface TagOption {
+  /** Tag slug — matches `CourseNode.tags` entries and the `?tag=` URL value. */
+  tag: string;
+  /** Localized roadmap name. */
+  label: string;
+  /** Emoji shown on the chip. */
+  icon?: string;
 }
 
 /** Props for the {@link CourseGraph} component. */
@@ -81,25 +103,22 @@ export interface CourseGraphProps {
   caption?: string;
   /** Shown when `nodes` is empty. */
   emptyLabel?: string;
-  /** Label for the difficulty filter `<select>` (e.g. `'Level'`). */
+  /** Label for the difficulty filter group (e.g. `'Level'`). */
   levelLabel?: string;
-  /** Text for the "no filter" option (e.g. `'All levels'`). */
+  /** Text for the levels "no filter" chip (e.g. `'All levels'`). */
   allLevelsLabel?: string;
+  /**
+   * Roadmap tags offered in the tag filter, in display order. Omit (or pass
+   * empty) to hide the tag filter entirely — e.g. on roadmap pages that are
+   * already scoped to one tag.
+   */
+  tagOptions?: TagOption[];
+  /** Label for the tag filter group (e.g. `'Paths'`). */
+  tagsLabel?: string;
+  /** Text for the tags "no filter" chip (e.g. `'All paths'`). */
+  allTagsLabel?: string;
   /** Extra classes merged onto the root element. */
   className?: string;
-}
-
-/** Difficulty filter value: a tier or the unfiltered sentinel. */
-type LevelFilter = Difficulty | 'all';
-
-/** The URL search-param key that persists the active difficulty filter. */
-const LEVEL_PARAM = 'level';
-
-const DIFFICULTY_VALUES: readonly Difficulty[] = ['beginner', 'intermediate', 'advanced', 'expert'];
-
-/** Parse a difficulty filter from a raw query-string value (`'all'` fallback). */
-function parseLevel(raw: string | null): LevelFilter {
-  return raw && (DIFFICULTY_VALUES as readonly string[]).includes(raw) ? (raw as Difficulty) : 'all';
 }
 
 /** A measured edge: a cubic-bezier path string from prerequisite → course. */
@@ -234,6 +253,67 @@ const DEFAULT_DIFFICULTY_LABELS: Record<Difficulty, string> = {
   expert: 'Expert',
 };
 
+/** Tier dot color for inactive level chips (static literals for Tailwind). */
+const DIFFICULTY_DOT_CLASS: Record<Difficulty, string> = {
+  beginner: 'bg-emerald-500',
+  intermediate: 'bg-amber-500',
+  advanced: 'bg-rose-500',
+  expert: 'bg-violet-500',
+};
+
+/** Active (selected) chip skin per tier — badge tint + matching border. */
+const DIFFICULTY_CHIP_ACTIVE_CLASS: Record<Difficulty, string> = {
+  beginner: 'difficulty-beginner border-emerald-300',
+  intermediate: 'difficulty-intermediate border-amber-300',
+  advanced: 'difficulty-advanced border-rose-300',
+  expert: 'difficulty-expert border-violet-300',
+};
+
+/** Shared pill-button props for one toggle chip in the filter bar. */
+interface FilterChipProps {
+  active: boolean;
+  onClick: () => void;
+  /** Skin when active; defaults to a solid brand fill. */
+  activeClass?: string;
+  children: ReactNode;
+}
+
+/**
+ * One toggleable filter chip. A real `<button>` with `aria-pressed`, so the
+ * multi-select state is keyboard- and screen-reader-native.
+ */
+function FilterChip({ active, onClick, activeClass, children }: FilterChipProps) {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      onClick={onClick}
+      className={cx(
+        'inline-flex items-center gap-1.5 rounded-pill border px-3 py-1.5 text-sm font-medium shadow-soft transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-300 motion-reduce:transition-none motion-reduce:hover:translate-y-0',
+        active
+          ? (activeClass ?? 'border-brand-500 bg-brand-600 text-white')
+          : 'border-ink-200 bg-surface text-ink-600 hover:-translate-y-px hover:border-brand-300 hover:text-brand-700',
+      )}
+    >
+      {active ? (
+        <svg
+          viewBox="0 0 20 20"
+          className="h-3.5 w-3.5 shrink-0"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={3}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M5 10.5l3.2 3.2L15 7" />
+        </svg>
+      ) : null}
+      {children}
+    </button>
+  );
+}
+
 export function CourseGraph({
   nodes,
   lessonsLabel = 'lessons',
@@ -243,6 +323,9 @@ export function CourseGraph({
   emptyLabel = 'No courses yet — check back soon.',
   levelLabel = 'Level',
   allLevelsLabel = 'All levels',
+  tagOptions = [],
+  tagsLabel = 'Paths',
+  allTagsLabel = 'All paths',
   className,
 }: CourseGraphProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -267,34 +350,52 @@ export function CourseGraph({
     return onProgressChange(sync);
   }, [nodes]);
 
-  // Active difficulty filter, persisted in the URL (`?level=…`). Initialized to
-  // `'all'` so the first paint matches the server, then reconciled from the URL
-  // on mount — and kept in sync if the learner navigates back/forward.
-  const [level, setLevel] = useState<LevelFilter>('all');
+  // Active multi-select filters, persisted in the URL (`?level=a,b&tag=x,y`).
+  // Both start empty ("no filter") so the first paint matches the server, then
+  // reconcile from the URL on mount — and stay in sync on back/forward.
+  const [levels, setLevels] = useState<Difficulty[]>([]);
+  const [tags, setTags] = useState<string[]>([]);
+  const validTags = useMemo(() => tagOptions.map((o) => o.tag), [tagOptions]);
   useEffect(() => {
-    const fromUrl = () =>
-      setLevel(parseLevel(new URLSearchParams(window.location.search).get(LEVEL_PARAM)));
+    const fromUrl = () => {
+      const params = new URLSearchParams(window.location.search);
+      setLevels(parseLevels(params.get(LEVEL_PARAM)));
+      setTags(parseTags(params.get(TAG_PARAM), validTags));
+    };
     fromUrl();
     window.addEventListener('popstate', fromUrl);
     return () => window.removeEventListener('popstate', fromUrl);
-  }, []);
+  }, [validTags]);
 
-  // Persist the chosen filter to the URL without growing history, so it survives
-  // refresh and is shareable. Dropping back to `'all'` removes the param entirely.
-  const changeLevel = useCallback((next: LevelFilter) => {
-    setLevel(next);
+  // Persist both selections to the URL without growing history, so the view
+  // survives refresh and is shareable. Empty selections drop their param.
+  const persistFilters = useCallback((nextLevels: Difficulty[], nextTags: string[]) => {
+    setLevels(nextLevels);
+    setTags(nextTags);
     if (typeof window === 'undefined') return;
-    const url = new URL(window.location.href);
-    if (next === 'all') url.searchParams.delete(LEVEL_PARAM);
-    else url.searchParams.set(LEVEL_PARAM, next);
+    const url = applyFiltersToUrl(new URL(window.location.href), nextLevels, nextTags);
     window.history.replaceState({}, '', url);
   }, []);
 
-  // Only the courses matching the active tier feed the layout. Edges to filtered
+  const toggleLevel = useCallback(
+    (d: Difficulty) => {
+      // Normalize through the parser so "all four picked" collapses to "no filter".
+      persistFilters(parseLevels(toggleValue(levels, d).join(',')), tags);
+    },
+    [levels, tags, persistFilters],
+  );
+  const toggleTag = useCallback(
+    (tag: string) => {
+      persistFilters(levels, parseTags(toggleValue(tags, tag).join(','), validTags));
+    },
+    [levels, tags, validTags, persistFilters],
+  );
+
+  // Only the courses surviving both filters feed the layout. Edges to filtered
   // -out prerequisites are simply skipped (measure() guards on the visible set).
   const visibleNodes = useMemo(
-    () => (level === 'all' ? nodes : nodes.filter((n) => n.difficulty === level)),
-    [nodes, level],
+    () => nodes.filter((n) => matchesFilters(n, levels, tags)),
+    [nodes, levels, tags],
   );
 
   const layers = computeLayers(visibleNodes);
@@ -367,24 +468,48 @@ export function CourseGraph({
 
   return (
     <figure className={cx('not-prose', className)}>
-      {/* Difficulty filter — persisted in the URL (?level=…), shareable + refresh-safe. */}
-      <div className="mb-10 flex flex-wrap items-center justify-end gap-2">
-        <label htmlFor="course-level-filter" className="text-sm font-medium text-ink-600">
-          {levelLabel}
-        </label>
-        <select
-          id="course-level-filter"
-          value={level}
-          onChange={(e) => changeLevel(e.target.value as LevelFilter)}
-          className="rounded-pill border border-ink-200 bg-surface px-4 py-1.5 text-sm font-medium text-ink-900 shadow-soft transition-colors hover:border-brand-300 focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-300"
-        >
-          <option value="all">{allLevelsLabel}</option>
+      {/* Filter bar — multi-select level + roadmap-tag chips, persisted in the
+          URL (?level=a,b&tag=x,y) so any filtered view is shareable as a link. */}
+      <div className="mb-10 flex flex-col gap-3 rounded-card border border-ink-100 bg-surface p-4 shadow-soft sm:p-5">
+        <div role="group" aria-label={levelLabel} className="flex flex-wrap items-center gap-2">
+          <span className="mr-1 min-w-14 text-xs font-semibold uppercase tracking-wider text-ink-400">
+            {levelLabel}
+          </span>
+          <FilterChip active={levels.length === 0} onClick={() => persistFilters([], tags)}>
+            {allLevelsLabel}
+          </FilterChip>
           {DIFFICULTY_VALUES.map((d) => (
-            <option key={d} value={d}>
+            <FilterChip
+              key={d}
+              active={levels.includes(d)}
+              onClick={() => toggleLevel(d)}
+              activeClass={DIFFICULTY_CHIP_ACTIVE_CLASS[d]}
+            >
+              <span
+                aria-hidden="true"
+                className={cx('h-2 w-2 shrink-0 rounded-pill', DIFFICULTY_DOT_CLASS[d])}
+              />
               {difficultyLabels[d]}
-            </option>
+            </FilterChip>
           ))}
-        </select>
+        </div>
+
+        {tagOptions.length > 0 ? (
+          <div role="group" aria-label={tagsLabel} className="flex flex-wrap items-center gap-2">
+            <span className="mr-1 min-w-14 text-xs font-semibold uppercase tracking-wider text-ink-400">
+              {tagsLabel}
+            </span>
+            <FilterChip active={tags.length === 0} onClick={() => persistFilters(levels, [])}>
+              {allTagsLabel}
+            </FilterChip>
+            {tagOptions.map((o) => (
+              <FilterChip key={o.tag} active={tags.includes(o.tag)} onClick={() => toggleTag(o.tag)}>
+                {o.icon ? <span aria-hidden="true">{o.icon}</span> : null}
+                {o.label}
+              </FilterChip>
+            ))}
+          </div>
+        ) : null}
       </div>
 
       {visibleNodes.length === 0 ? (
