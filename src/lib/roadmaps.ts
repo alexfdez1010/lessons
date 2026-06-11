@@ -84,6 +84,56 @@ export const roadmaps: RoadmapMeta[] = [
       es: 'Cómo Polymarket convierte opiniones en probabilidades — libros de órdenes, oráculos, calibración y dimensionar apuestas con Kelly.',
     },
   },
+  {
+    tag: 'defi',
+    icon: '🔁',
+    order: 6,
+    title: { en: 'DeFi', es: 'DeFi' },
+    description: {
+      en: 'Finance rebuilt on-chain — Ethereum, stablecoins, AMMs, lending, perps, and the MEV games underneath it all.',
+      es: 'Las finanzas reconstruidas on-chain — Ethereum, stablecoins, AMMs, préstamos, perps y los juegos de MEV que hay debajo.',
+    },
+  },
+  {
+    tag: 'trading-and-markets',
+    icon: '⚖️',
+    order: 7,
+    title: { en: 'Trading & Market Mechanics', es: 'Trading y Mecánica de Mercados' },
+    description: {
+      en: 'How orders actually become trades — exchanges, order books, futures, FX, and the psychology that wrecks traders.',
+      es: 'Cómo las órdenes se convierten en operaciones — bolsas, libros de órdenes, futuros, divisas y la psicología que arruina a los traders.',
+    },
+  },
+  {
+    tag: 'fixed-income',
+    icon: '💵',
+    order: 8,
+    title: { en: 'Fixed Income & Rates', es: 'Renta Fija y Tipos' },
+    description: {
+      en: 'Everything interest rates — from compound interest and mortgages to bonds, duration, convexity, and the yield curve.',
+      es: 'Todo sobre los tipos de interés — del interés compuesto y las hipotecas a los bonos, la duración, la convexidad y la curva de tipos.',
+    },
+  },
+  {
+    tag: 'risk-management',
+    icon: '🛡️',
+    order: 9,
+    title: { en: 'Risk Management', es: 'Gestión de Riesgos' },
+    description: {
+      en: 'Measure what can go wrong before it does — VaR, expected shortfall, tail risk, Monte Carlo, hedging, and ruin.',
+      es: 'Mide lo que puede salir mal antes de que pase — VaR, expected shortfall, riesgo de cola, Monte Carlo, cobertura y ruina.',
+    },
+  },
+  {
+    tag: 'macro-and-currencies',
+    icon: '🌍',
+    order: 10,
+    title: { en: 'Macro & Currencies', es: 'Macro y Divisas' },
+    description: {
+      en: 'The big picture — money, inflation, GDP, central banks, bond markets, and how currencies trade against each other.',
+      es: 'La visión global — dinero, inflación, PIB, bancos centrales, mercados de bonos y cómo se negocian las divisas entre sí.',
+    },
+  },
 ];
 
 /** Quick lookup by tag. */
