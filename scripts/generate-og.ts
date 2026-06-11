@@ -17,7 +17,7 @@
  * than imported) because this script lives outside src/ and the `@` alias /
  * astro:content imports are unavailable to plain bun.
  */
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import { chromium } from 'playwright';
 import { readdirSync, statSync, mkdirSync, existsSync } from 'node:fs';
 import { join, relative } from 'node:path';
@@ -45,6 +45,117 @@ function ogSlug(pathname: string): string {
   const clean = pathname.replace(/^\/+|\/+$/g, '');
   if (clean === '') return 'default';
   return clean.replace(/\//g, '-').toLowerCase();
+}
+
+/* ---- incremental selection ----------------------------------------------
+ *
+ * Usage:
+ *   bun run scripts/generate-og.ts                     # full regen (all routes)
+ *   bun run scripts/generate-og.ts --changed           # only routes touched per git status
+ *   bun run scripts/generate-og.ts /catalog /es/defi   # explicit routes
+ *   bun run scripts/generate-og.ts src/content/lessons/en/defi/amms.mdx  # file paths OK too
+ *
+ * `--changed` maps every dirty/untracked file (staged or not) to the routes it
+ * affects. Routes whose PNG is missing are always added. If a render-affecting
+ * file outside the mappable set changed (layouts, components, styles, lib,
+ * i18n, astro.config), it falls back to a FULL regen — correctness over speed.
+ */
+
+/** Map a repo-relative source file to the route(s) whose screenshot it affects.
+ *  Returns null when the file cannot affect any page render. */
+function routesForFile(file: string): string[] | 'all' | null {
+  const f = file.split('\\').join('/');
+
+  // Lesson MDX → its page + the topic landing (lesson list) + catalog/home (stats).
+  let m = f.match(/^src\/content\/lessons\/(en|es)\/([^/]+)\/([^/]+)\.mdx$/);
+  if (m) {
+    const prefix = m[1] === 'es' ? '/es' : '';
+    return [`${prefix}/${m[2]}/${m[3]}`, `${prefix}/${m[2]}`, `${prefix}/catalog`, prefix || '/'];
+  }
+
+  // Topic MDX → its landing + catalog graph + home stats.
+  m = f.match(/^src\/content\/topics\/(en|es)\/([^/]+)\.mdx$/);
+  if (m) {
+    const prefix = m[1] === 'es' ? '/es' : '';
+    return [`${prefix}/${m[2]}`, `${prefix}/catalog`, prefix || '/'];
+  }
+
+  // Static page files → their route. OG card routes are never screenshot.
+  m = f.match(/^src\/pages\/(.+)\.(astro|mdx|md)$/);
+  if (m) {
+    if (m[1] === 'og' || m[1].startsWith('og/')) return null;
+    // Dynamic routes ([topic].astro …) affect an unknown set of pages → full.
+    if (m[1].includes('[')) return 'all';
+    const route = `/${m[1]}`.replace(/\/index$/, '') || '/';
+    return [route];
+  }
+
+  // Anything else under src/ or the astro config can restyle every page.
+  if (f.startsWith('src/') || f === 'astro.config.mjs') return 'all';
+
+  // scripts/, public/, docs, lockfiles, package.json … — no visual impact.
+  return null;
+}
+
+/** Repo-relative paths of all changed files (staged + unstaged + untracked). */
+function gitChangedFiles(): string[] {
+  const out = execFileSync('git', ['status', '--porcelain'], { cwd: ROOT, encoding: 'utf8' });
+  const files: string[] = [];
+  for (const line of out.split('\n')) {
+    if (!line.trim()) continue;
+    let path = line.slice(3);
+    const arrow = path.indexOf(' -> '); // rename: keep the new path
+    if (arrow !== -1) path = path.slice(arrow + 4);
+    files.push(path.replace(/^"|"$/g, ''));
+  }
+  return files;
+}
+
+/** Normalize a CLI arg (route or file path) to routes. */
+function routesForArg(arg: string): string[] | 'all' {
+  if (arg.startsWith('/')) return [arg.replace(/\/+$/, '') || '/'];
+  const mapped = routesForFile(arg);
+  if (mapped === null) {
+    console.warn(`⚠ ${arg} maps to no route; ignoring.`);
+    return [];
+  }
+  return mapped;
+}
+
+/**
+ * Decide which of the built routes to capture.
+ * Returns the full list, or the subset selected by --changed / explicit args
+ * (always topped up with routes whose PNG is missing on disk).
+ */
+function selectRoutes(allRoutes: string[], argv: string[]): string[] {
+  const changedMode = argv.includes('--changed');
+  const explicit = argv.filter((a) => a !== '--changed');
+
+  if (!changedMode && explicit.length === 0) return allRoutes; // full regen
+
+  const wanted = new Set<string>();
+  const sources = changedMode ? gitChangedFiles().map(routesForFile) : [];
+  for (const arg of explicit) sources.push(routesForArg(arg));
+
+  for (const routes of sources) {
+    if (routes === null) continue;
+    if (routes === 'all') {
+      console.log('▸ A render-affecting shared file changed → full OG regen.');
+      return allRoutes;
+    }
+    for (const r of routes) wanted.add(r);
+  }
+
+  // Safety net: any built route missing its PNG gets (re)captured.
+  for (const route of allRoutes) {
+    if (!existsSync(join(OUT_DIR, `${ogSlug(route)}.png`))) wanted.add(route);
+  }
+
+  const selected = allRoutes.filter((r) => wanted.has(r));
+  const stale = [...wanted].filter((r) => !allRoutes.includes(r));
+  for (const r of stale) console.warn(`⚠ ${r} is not a built route; skipping.`);
+  console.log(`▸ Incremental mode: ${selected.length}/${allRoutes.length} route(s) selected.`);
+  return selected;
 }
 
 /* ---- helpers ------------------------------------------------------------ */
@@ -97,11 +208,16 @@ async function main() {
 
   // Enumerate real page routes, dropping any leftover og routes and 404.
   const allRoutes = collectRoutes(DIST);
-  const pageRoutes = allRoutes.filter(
+  const builtRoutes = allRoutes.filter(
     (r) => !r.startsWith('/og') && r !== '/404' && !r.endsWith('/404'),
   );
+  const pageRoutes = selectRoutes(builtRoutes, process.argv.slice(2));
 
   if (pageRoutes.length === 0) {
+    if (builtRoutes.length > 0) {
+      console.log('▸ No routes affected by the selection. Nothing to screenshot.');
+      return;
+    }
     console.warn('⚠ No page routes found in dist/. Nothing to screenshot.');
     return;
   }

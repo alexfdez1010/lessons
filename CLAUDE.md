@@ -200,7 +200,8 @@ block and documented in **DESIGN.md**. Use Tailwind utilities; do not hardcode h
 | `bun run preview` | Preview the build |
 | `bun run check` | `check:latex` + `astro check` + `tsc --noEmit` |
 | `bun run check:latex` | Render every `$…$`/`$$…$$` through KaTeX; fail on parse errors (catches `\$` inside math) |
-| `bun run og:generate` / `og:build` | Generate OG images |
+| `bun run og:generate` / `og:build` | Generate OG images (all routes; also accepts explicit routes/file paths as args) |
+| `bun run og:changed` | Generate OG images only for routes affected by git-changed files (what `pre-commit` runs) |
 | `bun run audit` / `audit:fix` | Vuln report / `bun update` + report |
 | `bun run pre-commit` | `audit:fix` + `check` + build + regenerate OG (run manually) |
 
