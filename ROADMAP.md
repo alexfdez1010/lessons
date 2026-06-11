@@ -27,10 +27,10 @@ bridges) are all built and live in the catalog — see `src/content/topics/en/`.
 _Horizontal expansion into asset classes and desk skills the catalog doesn't
 cover yet, then back to expert quant depth._
 
-- [ ] **fx-and-currency-markets** ⬤⬤⬤ — the largest market on earth: currency
-  pairs & quoting conventions, spot vs forward FX, covered & uncovered interest
-  parity, carry trades, central banks & intervention, pegs and currency crises,
-  FX in a portfolio (hedged vs unhedged). _(deps: `economics-for-finance`,
+- [x] **fx-and-currency-markets** ⬤⬤⬤ — ✅ 2026-06-11 — the largest market on earth:
+  currency pairs & quoting conventions, spot vs forward FX, covered & uncovered
+  interest parity, carry trades, central banks & intervention, pegs and currency
+  crises, FX in a portfolio (hedged vs unhedged). _(deps: `economics-for-finance`,
   `futures-and-forwards`; interest-parity + carry-trade-unwind islands)_
 - [ ] **commodities-and-real-assets** ⬤⬤⬤ — markets with storage costs:
   commodity futures in practice, storage & convenience yield, seasonality,

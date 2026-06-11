@@ -528,6 +528,12 @@ export type { MarginLadderProps } from '@/components/react/MarginLadder';
 export { FuturesCurve, default as FuturesCurveDefault } from '@/components/react/FuturesCurve';
 export type { FuturesCurveProps } from '@/components/react/FuturesCurve';
 
+export { InterestParity, default as InterestParityDefault } from '@/components/react/InterestParity';
+export type { InterestParityProps } from '@/components/react/InterestParity';
+
+export { CarryTradeUnwind, default as CarryTradeUnwindDefault } from '@/components/react/CarryTradeUnwind';
+export type { CarryTradeUnwindProps } from '@/components/react/CarryTradeUnwind';
+
 export { CostOfCarryStack, default as CostOfCarryStackDefault } from '@/components/react/CostOfCarryStack';
 export type { CostOfCarryStackProps } from '@/components/react/CostOfCarryStack';
 
