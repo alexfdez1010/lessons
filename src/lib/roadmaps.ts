@@ -1,148 +1,23 @@
 /**
- * Roadmaps registry — maps a tag to its metadata and helpers.
- * A roadmap is a curated learning path (a subset of the catalog) with a
- * bilingual title, description, and icon. The tag itself lives on each
- * topic's frontmatter (`tags:`), so adding a course to a roadmap is just
- * editing its MDX file — no code changes here.
+ * Roadmaps — content-aware helpers over the pure tag registry in
+ * `roadmap-meta.ts`. A roadmap is a curated learning path (a subset of the
+ * catalog); since the catalog filters by tag via URL params
+ * (`/catalog?tag=defi`), a roadmap needs no dedicated page — just a link.
  */
 
-import { getTopics, getLessons, type TopicView } from '@/lib/content';
-import type { Lang } from '@/i18n/utils';
+import { getTopics } from '@/lib/content';
+import { roadmaps, type RoadmapMeta } from '@/lib/roadmap-meta';
+import { localizePath, type Lang } from '@/i18n/utils';
 
-export interface RoadmapMeta {
-  /** Tag slug — matches the `tags:` value in topic MDX frontmatter. */
-  tag: string;
-  /** Emoji / icon for the roadmap card. */
-  icon: string;
-  /** Bilingual title. */
-  title: { en: string; es: string };
-  /** Bilingual one-line description. */
-  description: { en: string; es: string };
-  /** Display order on the home page (lower = earlier). */
-  order: number;
+export { roadmaps, roadmapByTag, roadmapTags, type RoadmapMeta } from '@/lib/roadmap-meta';
+
+/**
+ * Canonical link to a roadmap: the catalog pre-filtered to its tag.
+ * Single source of truth for every "open this path" link on the site.
+ */
+export function roadmapHref(tag: string, lang: Lang): string {
+  return `${localizePath('/catalog', lang)}?tag=${tag}`;
 }
-
-/** All defined roadmaps, in display order. */
-export const roadmaps: RoadmapMeta[] = [
-  {
-    tag: 'investing-basics',
-    icon: '🌱',
-    order: 0,
-    title: { en: 'Investing Basics', es: 'Fundamentos de Inversión' },
-    description: {
-      en: 'From what money is to how bonds work — the absolute zero-to-investor path. No jargon assumed.',
-      es: 'Desde qué es el dinero hasta cómo funcionan los bonos — el camino de cero a inversor. Sin tecnicismos.',
-    },
-  },
-  {
-    tag: 'stocks',
-    icon: '📈',
-    order: 1,
-    title: { en: 'Stocks & Company Analysis', es: 'Bolsa y Análisis de Empresas' },
-    description: {
-      en: 'How exchanges, funds, order books, and balance sheets really work — pick stocks with your eyes open.',
-      es: 'Cómo funcionan de verdad las bolsas, los fondos, los libros de órdenes y los balances — elige acciones con los ojos abiertos.',
-    },
-  },
-  {
-    tag: 'crypto',
-    icon: '₿',
-    order: 2,
-    title: { en: 'Crypto', es: 'Cripto' },
-    description: {
-      en: 'Bitcoin, Ethereum, DeFi, and the mechanics of on-chain finance — from "magic internet money" to real understanding.',
-      es: 'Bitcoin, Ethereum, DeFi y la mecánica de las finanzas on-chain — de "dinero mágico de internet" a entenderlo de verdad.',
-    },
-  },
-  {
-    tag: 'quantitative-finance',
-    icon: '📊',
-    order: 3,
-    title: { en: 'Quantitative Finance', es: 'Finanzas Cuantitativas' },
-    description: {
-      en: 'Statistics, portfolio theory, risk models, Monte Carlo, stochastic processes, and Bayesian methods — the math that drives modern markets.',
-      es: 'Estadística, teoría de carteras, modelos de riesgo, Monte Carlo, procesos estocásticos y métodos bayesianos — la matemática que mueve los mercados modernos.',
-    },
-  },
-  {
-    tag: 'derivatives',
-    icon: '🎟️',
-    order: 4,
-    title: { en: 'Derivatives', es: 'Derivados' },
-    description: {
-      en: 'Futures, forwards, and options from first principles through pricing, Greeks, hedging, and on-chain perps — the full toolkit for risk management.',
-      es: 'Futuros, forwards y opciones desde los primeros principios hasta precios, griegas, cobertura y perps on-chain — el kit completo de gestión de riesgo.',
-    },
-  },
-  {
-    tag: 'prediction-markets',
-    icon: '🎲',
-    order: 5,
-    title: { en: 'Prediction Markets', es: 'Mercados de Predicción' },
-    description: {
-      en: 'How Polymarket turns opinions into probabilities — order books, oracles, calibration, and sizing bets with Kelly.',
-      es: 'Cómo Polymarket convierte opiniones en probabilidades — libros de órdenes, oráculos, calibración y dimensionar apuestas con Kelly.',
-    },
-  },
-  {
-    tag: 'defi',
-    icon: '🔁',
-    order: 6,
-    title: { en: 'DeFi', es: 'DeFi' },
-    description: {
-      en: 'Finance rebuilt on-chain — Ethereum, stablecoins, AMMs, lending, perps, and the MEV games underneath it all.',
-      es: 'Las finanzas reconstruidas on-chain — Ethereum, stablecoins, AMMs, préstamos, perps y los juegos de MEV que hay debajo.',
-    },
-  },
-  {
-    tag: 'trading-and-markets',
-    icon: '⚖️',
-    order: 7,
-    title: { en: 'Trading & Market Mechanics', es: 'Trading y Mecánica de Mercados' },
-    description: {
-      en: 'How orders actually become trades — exchanges, order books, futures, FX, and the psychology that wrecks traders.',
-      es: 'Cómo las órdenes se convierten en operaciones — bolsas, libros de órdenes, futuros, divisas y la psicología que arruina a los traders.',
-    },
-  },
-  {
-    tag: 'fixed-income',
-    icon: '💵',
-    order: 8,
-    title: { en: 'Fixed Income & Rates', es: 'Renta Fija y Tipos' },
-    description: {
-      en: 'Everything interest rates — from compound interest and mortgages to bonds, duration, convexity, and the yield curve.',
-      es: 'Todo sobre los tipos de interés — del interés compuesto y las hipotecas a los bonos, la duración, la convexidad y la curva de tipos.',
-    },
-  },
-  {
-    tag: 'risk-management',
-    icon: '🛡️',
-    order: 9,
-    title: { en: 'Risk Management', es: 'Gestión de Riesgos' },
-    description: {
-      en: 'Measure what can go wrong before it does — VaR, expected shortfall, tail risk, Monte Carlo, hedging, and ruin.',
-      es: 'Mide lo que puede salir mal antes de que pase — VaR, expected shortfall, riesgo de cola, Monte Carlo, cobertura y ruina.',
-    },
-  },
-  {
-    tag: 'macro-and-currencies',
-    icon: '🌍',
-    order: 10,
-    title: { en: 'Macro & Currencies', es: 'Macro y Divisas' },
-    description: {
-      en: 'The big picture — money, inflation, GDP, central banks, bond markets, and how currencies trade against each other.',
-      es: 'La visión global — dinero, inflación, PIB, bancos centrales, mercados de bonos y cómo se negocian las divisas entre sí.',
-    },
-  },
-];
-
-/** Quick lookup by tag. */
-export const roadmapByTag = new Map<string, RoadmapMeta>(
-  roadmaps.map((r) => [r.tag, r]),
-);
-
-/** All tag slugs in order. */
-export const roadmapTags: string[] = roadmaps.map((r) => r.tag);
 
 /**
  * Summary of a roadmap for a given locale — includes live course count and
@@ -186,50 +61,4 @@ export async function getRoadmapSummaries(lang: Lang): Promise<RoadmapSummary[]>
       maxDifficulty: difficulties[difficulties.length - 1] ?? 'beginner',
     };
   });
-}
-
-/**
- * Topics that carry a given tag, sorted by the catalog order (difficulty
- * then manual order), with lesson counts.
- */
-export async function getTopicsByTag(
-  lang: Lang,
-  tag: string,
-): Promise<{ topic: TopicView; lessons: number; lessonSlugs: string[] }[]> {
-  const allTopics = await getTopics(lang);
-  const filtered = allTopics.filter((t) => t.entry.data.tags?.includes(tag));
-  const withCounts = await Promise.all(
-    filtered.map(async (topic) => {
-      const lessons = await getLessons(lang, topic.slug);
-      return { topic, lessons: lessons.length, lessonSlugs: lessons.map((l) => l.lessonSlug) };
-    }),
-  );
-  return withCounts;
-}
-
-/**
- * Prerequisite courses of a roadmap's members that live OUTSIDE the roadmap —
- * the courses a learner must bring from another path before starting this one.
- * Sorted easiest-first so they read as a pre-flight checklist.
- */
-export async function getExternalPrereqs(lang: Lang, tag: string): Promise<TopicView[]> {
-  const allTopics = await getTopics(lang);
-  const bySlug = new Map(allTopics.map((t) => [t.slug, t]));
-  const inPath = new Set(
-    allTopics.filter((t) => t.entry.data.tags?.includes(tag)).map((t) => t.slug),
-  );
-  const external = new Map<string, TopicView>();
-  for (const topic of allTopics) {
-    if (!inPath.has(topic.slug)) continue;
-    for (const dep of topic.entry.data.dependencies ?? []) {
-      if (inPath.has(dep)) continue;
-      const depTopic = bySlug.get(dep);
-      if (depTopic) external.set(dep, depTopic);
-    }
-  }
-  return [...external.values()].sort(
-    (a, b) =>
-      rankOf(a.entry.data.difficulty) - rankOf(b.entry.data.difficulty) ||
-      (a.entry.data.order ?? 0) - (b.entry.data.order ?? 0),
-  );
 }

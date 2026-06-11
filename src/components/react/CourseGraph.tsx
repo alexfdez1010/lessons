@@ -109,8 +109,8 @@ export interface CourseGraphProps {
   allLevelsLabel?: string;
   /**
    * Roadmap tags offered in the tag filter, in display order. Omit (or pass
-   * empty) to hide the tag filter entirely — e.g. on roadmap pages that are
-   * already scoped to one tag.
+   * empty) to hide the tag filter entirely. Learning-path links are just
+   * `/catalog?tag=<tag>` — the filter reads the URL on mount.
    */
   tagOptions?: TagOption[];
   /** Label for the tag filter group (e.g. `'Paths'`). */

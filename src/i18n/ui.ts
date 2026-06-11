@@ -68,9 +68,6 @@ export const ui = {
     'lang.switch': 'Language',
     'roadmap.learningPaths': 'Learning Paths',
     'roadmap.courses': 'courses',
-    'roadmap.backToCatalog': 'Back to catalog',
-    'roadmap.empty': 'No courses in this path yet — check back soon.',
-    'roadmap.externalPrereqs': 'Before you start, from other paths:',
   },
   es: {
     'brand.title': 'Lecciones de Finanzas',
@@ -125,9 +122,6 @@ export const ui = {
     'lang.switch': 'Idioma',
     'roadmap.learningPaths': 'Rutas de aprendizaje',
     'roadmap.courses': 'cursos',
-    'roadmap.backToCatalog': 'Volver al catálogo',
-    'roadmap.empty': 'Aún no hay cursos en esta ruta — vuelve pronto.',
-    'roadmap.externalPrereqs': 'Antes de empezar, de otras rutas:',
   },
 } as const;
 
