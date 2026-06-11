@@ -32,7 +32,7 @@ cover yet, then back to expert quant depth._
   interest parity, carry trades, central banks & intervention, pegs and currency
   crises, FX in a portfolio (hedged vs unhedged). _(deps: `economics-for-finance`,
   `futures-and-forwards`; interest-parity + carry-trade-unwind islands)_
-- [ ] **commodities-and-real-assets** ⬤⬤⬤ — markets with storage costs:
+- [x] **commodities-and-real-assets** ⬤⬤⬤ — ✅ 2026-06-11 — markets with storage costs:
   commodity futures in practice, storage & convenience yield, seasonality,
   roll yield & commodity indices, gold as a monetary asset, oil market
   structure, real assets vs inflation. _(deps: `futures-and-forwards`;

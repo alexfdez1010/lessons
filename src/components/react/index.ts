@@ -603,3 +603,12 @@ export type { PerpDexDesignsProps, PerpDexDesign } from '@/components/react/Perp
 
 export { CashAndCarryFlow, default as CashAndCarryFlowDefault } from '@/components/react/CashAndCarryFlow';
 export type { CashAndCarryFlowProps } from '@/components/react/CashAndCarryFlow';
+
+export { RollYieldLadder, default as RollYieldLadderDefault } from '@/components/react/RollYieldLadder';
+export type { RollYieldLadderProps } from '@/components/react/RollYieldLadder';
+
+export { SeasonalityWave, default as SeasonalityWaveDefault } from '@/components/react/SeasonalityWave';
+export type { SeasonalityWaveProps, SeasonalityCommodity } from '@/components/react/SeasonalityWave';
+
+export { InflationHedgeBars, default as InflationHedgeBarsDefault } from '@/components/react/InflationHedgeBars';
+export type { InflationHedgeBarsProps, InflationAsset } from '@/components/react/InflationHedgeBars';
