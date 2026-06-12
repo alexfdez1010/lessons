@@ -612,3 +612,16 @@ export type { SeasonalityWaveProps, SeasonalityCommodity } from '@/components/re
 
 export { InflationHedgeBars, default as InflationHedgeBarsDefault } from '@/components/react/InflationHedgeBars';
 export type { InflationHedgeBarsProps, InflationAsset } from '@/components/react/InflationHedgeBars';
+
+// Swaps & rate-derivatives islands
+export { SwapCashflow, default as SwapCashflowDefault } from '@/components/react/SwapCashflow';
+export type { SwapCashflowProps } from '@/components/react/SwapCashflow';
+
+export { SwapCurve, default as SwapCurveDefault } from '@/components/react/SwapCurve';
+export type { SwapCurveProps } from '@/components/react/SwapCurve';
+
+export { SwapValueBridge, default as SwapValueBridgeDefault } from '@/components/react/SwapValueBridge';
+export type { SwapValueBridgeProps } from '@/components/react/SwapValueBridge';
+
+export { SwapSpreadChart, default as SwapSpreadChartDefault } from '@/components/react/SwapSpreadChart';
+export type { SwapSpreadChartProps } from '@/components/react/SwapSpreadChart';

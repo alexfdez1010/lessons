@@ -37,7 +37,7 @@ cover yet, then back to expert quant depth._
   roll yield & commodity indices, gold as a monetary asset, oil market
   structure, real assets vs inflation. _(deps: `futures-and-forwards`;
   roll-yield + seasonality islands)_
-- [ ] **swaps-and-rate-derivatives** ⬤⬤⬤⬤ — the biggest derivatives market:
+- [x] **swaps-and-rate-derivatives** ⬤⬤⬤⬤ — ✅ 2026-06-12 — the biggest derivatives market:
   interest-rate swaps from first principles, swap pricing as bond differences,
   swap spreads, SOFR & the death of LIBOR, caps/floors/swaptions at a glance,
   FRAs, asset swaps, using swaps to hedge a rate book. _(deps:
