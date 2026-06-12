@@ -1,0 +1,372 @@
+---
+title: "Realized vs Implied Volatility"
+description: "Measure realized vol as annualized stdev of log returns, see what implied vol backs out of option prices via vega, and learn the gap vol traders actually trade."
+topic: "en/volatility-trading"
+order: 1
+minutes: 14
+updated: 2026-06-12
+---
+
+import { Callout, MCQ, Quiz, FillBlank, MatchConcepts, Categorize, MindMap, ThinkReveal, TsGarchVolPath, VolSmile, GbmPaths } from '@/components/react';
+
+You already speak options. You know a call from a put, you can recite the Greeks in your sleep, you delta-hedge without flinching, and you accept that returns are basically a random walk with attitude. So here's the uncomfortable question that separates option *users* from volatility *traders*: when someone quotes you "the vol is 20," **which** vol do they mean? Because the single word "volatility" is hiding two completely different numbers — one that already happened and one that hasn't happened yet — and the entire business of volatility trading lives in the gap between them. This lesson nails down both, shows you the arithmetic, and tees up the trade.
+
+<MCQ
+  client:visible
+  pretest
+  question="A trader says 'realized came in at 14 but the options are pricing 20.' Before reading on — what are those two numbers, respectively?"
+  options={[
+    { text: 'What the stock actually did (measured from history) vs what the option market is forecasting for the future', correct: true },
+    { text: 'Two estimates of the same past volatility, computed with different windows' },
+    { text: 'The call’s vol and the put’s vol on the same strike' },
+    { text: 'The bid and the ask on a single option' },
+  ]}
+  explanation="Realized (14) is backward-looking — the volatility the stock actually delivered, measured from its returns. Implied (20) is forward-looking — the volatility baked into option prices, i.e. the market's forecast. The whole lesson is about telling these two apart and trading the difference."
+/>
+
+## Two volatilities, one number that isn't enough
+
+**Analogy.** Picture driving a long road trip. **Realized volatility** is the speedometer reading you wrote down every minute and averaged afterward — it's a *record of how erratically you actually drove*. **Implied volatility** is the speed limit the highway sign is quoting for the stretch *ahead* — a forward statement about how fast things are expected to get. They're both "speed," both in the same units, and yet they answer opposite-facing questions: one looks in the rearview mirror, one looks through the windshield. Confusing them is how you crash.
+
+**The definitions.**
+
+- **Realized volatility (RV)**, also called *historical* or *actual* volatility, is computed *from the asset's own past returns*. It is purely backward-looking and entirely model-free: you take what happened and measure its dispersion. No option prices needed.
+- **Implied volatility (IV)** is *extracted from option prices*. It is the volatility number that, fed into an option-pricing model, reproduces the price the market is actually charging. It is forward-looking and is, in effect, the market's **forecast** of realized volatility over the option's remaining life.
+
+Both are conventionally quoted as an **annualized standard deviation of returns, in percent** — so a "20 vol" stock and a "20" implied both mean roughly a one-standard-deviation move of 20% over a year. Because they share units, you can put them side by side and subtract, which is exactly what a vol trader does all day.
+
+Volatility — realized or implied — is fundamentally about the *spread of outcomes*, not the direction. A stock that drifts steadily up 1% a day is barely volatile; one that lurches ±5% in random directions is extremely volatile even if it ends flat. The animation below makes that visceral: identical drift, different vols, wildly different fans of where the price could land.
+
+<GbmPaths
+  client:visible
+  title="Same drift, different volatility — the fan of outcomes"
+  caption="Each line is one random price path. Crank the volatility and the cone of possible endpoints widens: volatility is the WIDTH of the distribution of outcomes, not its direction. Realized vol measures this width after the fact; implied vol prices it in advance."
+/>
+
+<Callout variant="info" title="Vol is direction-agnostic">
+Neither realized nor implied volatility says a thing about whether the price will go up or down — only about *how far it's likely to wander either way*. A long straddle and a short straddle disagree violently about volatility while being perfectly indifferent to direction. Keep "how big" and "which way" in separate mental boxes for the rest of this course.
+</Callout>
+
+<MatchConcepts
+  client:visible
+  question="Match each flavor of volatility to what defines it."
+  pairs={[
+    { term: 'Realized volatility', definition: 'Measured from the asset’s own past returns; backward-looking' },
+    { term: 'Implied volatility', definition: 'Backed out of option prices; the market’s forward forecast' },
+    { term: 'Both, in common', definition: 'Annualized standard deviation of returns, quoted in percent' },
+    { term: 'What volatility measures', definition: 'The spread of outcomes, not the direction of the move' },
+  ]}
+  explanation="Realized is model-free and computed from history; implied is extracted from prices and is forward-looking; both are annualized stdevs in % so they're directly comparable; and either way, vol is about dispersion, not direction."
+/>
+
+## Measuring realized volatility
+
+<MCQ
+  client:visible
+  pretest
+  question="A stock's daily log returns have a standard deviation of 1.25%. Guess: roughly what's its annualized volatility?"
+  options={[
+    { text: 'About 20% — you scale the daily figure up by √252', correct: true },
+    { text: 'Still 1.25% — volatility doesn’t depend on the horizon' },
+    { text: 'About 315% — you multiply by the 252 trading days' },
+    { text: 'About 4.6% — you multiply by √(1.25)' },
+  ]}
+  explanation="Volatility scales with the SQUARE ROOT of time, and there are ~252 trading days a year, so annual vol ≈ daily vol × √252 ≈ 1.25% × 15.87 ≈ 19.8%. Multiplying by 252 (not its root) is the classic blunder; doing nothing ignores the horizon entirely."
+/>
+
+**The recipe.** Realized volatility is just a standard deviation, dressed up with two conventions: we measure it on **log returns**, and we **annualize** it. Step by step:
+
+1. Take a series of prices $P_0, P_1, \dots, P_n$ (say, daily closes).
+2. Compute each period's **log return** $r_t = \ln(P_t / P_{t-1})$. Logs are used because they're additive across time and symmetric (a $+10\%$ then $-10\%$ round-trip behaves sensibly), which is exactly the well-behaved-noise assumption underneath option models.
+3. Take the **standard deviation** of those returns — that's the per-period (e.g. daily) volatility:
+
+$$\sigma_{\text{daily}} = \sqrt{\frac{1}{n-1}\sum_{t=1}^{n}\left(r_t - \bar{r}\right)^2}$$
+
+4. **Annualize** by scaling up to a one-year horizon:
+
+$$\sigma_{\text{annual}} = \sigma_{\text{daily}}\,\sqrt{252}$$
+
+**Why √time and not time?** Because for independent returns, **variance** (vol *squared*) is what adds up linearly over time, not volatility itself. Stack $T$ independent days and the variances sum: $\sigma_T^2 = T\,\sigma_{\text{daily}}^2$. Take the square root of both sides and you get $\sigma_T = \sigma_{\text{daily}}\sqrt{T}$. So volatility grows with the **square root** of the horizon. This is the single most-used identity in the whole field — the "square-root-of-time rule."
+
+**Why 252?** That's the approximate number of *trading* days in a year (markets are shut on weekends and holidays). Volatility is generated by trading activity, so we count trading days, not the 365 calendar days. Some desks use 250 or 260; the difference is small. $\sqrt{252} \approx 15.87$.
+
+**Worked example.** Suppose you've measured a stock's daily log-return standard deviation at $1.25\%$. Annualize it:
+
+$$\sigma_{\text{annual}} = 1.25\% \times \sqrt{252} \approx 1.25\% \times 15.87 \approx 19.8\%$$
+
+So this stock has a **realized volatility of about $19.8\%$** — a one-standard-deviation annual move of roughly a fifth of its price. Run it the other way to sanity-check IV quotes: a stock the options market is pricing at $32\%$ implied is being forecast to print a daily standard deviation of $32\% / 15.87 \approx 2.0\%$ per day. That little division is how traders translate an annualized quote into "how much should this thing move *tomorrow*."
+
+| Daily return stdev | × √252 (≈15.87) | Annualized vol | Implied daily move |
+|---|---|---|---|
+| $0.50\%$ | × 15.87 | $\approx 7.9\%$ | $\approx 0.5\%$/day |
+| $1.25\%$ | × 15.87 | $\approx 19.8\%$ | $\approx 1.25\%$/day |
+| $2.00\%$ | × 15.87 | $\approx 31.7\%$ | $\approx 2.0\%$/day |
+| $4.00\%$ | × 15.87 | $\approx 63.5\%$ | $\approx 4.0\%$/day |
+
+Notice the round trip: annualize by ×15.87, de-annualize by ÷15.87. The two columns of daily moves match the inputs exactly, which is the point — annualizing and de-annualizing are inverses.
+
+<Callout variant="warning" title="Realized vol is not one number either">
+The figure you compute depends entirely on the **window** and **sampling** you choose: a 10-day realized vol reacts fast and whips around; a 252-day realized vol is smooth and slow. And realized vol *itself moves over time* — it isn't a constant. Markets have calm stretches and panicky stretches, and high-vol days cluster together (a feature called **volatility clustering**). So "the realized vol" is always shorthand for "realized vol, measured over *this* window, ending *now*."
+</Callout>
+
+The chart below shows exactly that time-varying, clustering behavior — realized vol is a process, not a constant, and it tends to *mean-revert* (spikes calm down, lulls eventually wake up). This is precisely why a single backward number is a shaky forecast, and why the market needs a forward one.
+
+<TsGarchVolPath
+  client:visible
+  title="Realized volatility clusters and mean-reverts"
+  caption="Volatility comes in regimes: calm begets calm, and a shock kicks off a cluster of stormy days that gradually settles back toward a long-run average. Because realized vol is this moving target, any single historical number is a fragile forecast of what comes next."
+/>
+
+**Beyond close-to-close.** The simplest RV estimator uses only **closing** prices (close-to-close), which is easy but throws away the day's *range*. Smarter estimators squeeze more information from each bar: the **Parkinson** estimator uses the high–low range, and the **Garman–Klass** estimator uses open, high, low, and close together — both are far more *efficient* (lower estimation error for the same sample) than close-to-close because intraday extremes carry real signal about how much the asset actually swung. The trade-off: range-based estimators can be biased by overnight gaps and microstructure noise, so close-to-close remains the honest default for a first pass.
+
+<FillBlank
+  client:visible
+  question="Fill in the mechanics of realized volatility."
+  text="Realized vol is the annualized standard deviation of {{log returns|raw prices|trading volumes}}. To annualize a daily figure you multiply by {{√252|252|√365}}, because over independent periods it is {{variance|skewness|the mean}} that scales linearly with time. Compared with close-to-close, the {{Garman–Klass|Black–Scholes|Sharpe}} estimator also uses the open, high, and low to estimate the same vol more efficiently."
+  explanation="RV = annualized stdev of LOG returns; annualize by ×√252 (≈15.87) because variance — not vol — adds linearly over time, so vol scales with √time; and Garman–Klass squeezes extra efficiency from OHLC bars versus close-only."
+/>
+
+## Implied volatility: the market's forecast, backed out of prices
+
+<MCQ
+  client:visible
+  pretest
+  question="Two identical options (same strike, same expiry, same underlying) trade — one priced at $3.00, the other quoted at $4.20. Guess what that tells you about their implied vols."
+  options={[
+    { text: 'The $4.20 option carries a higher implied volatility — a richer price means more vol is being priced in', correct: true },
+    { text: 'They must have the same implied vol, since strike and expiry are identical' },
+    { text: 'The $4.20 option has a lower implied vol; expensive options imply calmer markets' },
+    { text: 'Implied vol can’t be compared from price alone without the stock’s past returns' },
+  ]}
+  explanation="Hold strike, expiry, and spot fixed and the only free knob left in the pricing model is σ. A higher price can only be explained by a higher σ, so $4.20 implies more vol than $3.00. Implied vol is literally the σ that reproduces the quoted price — no historical data required."
+/>
+
+**The core idea.** Black–Scholes (and every option model) takes a handful of *observable* inputs — spot price, strike, time to expiry, the risk-free rate — plus one input you *can't* observe directly: the future **volatility** $\sigma$. Feed in a $\sigma$ and the model spits out a price. **Implied volatility runs that machine backward**: you take the *market price* of the option as given and solve for the $\sigma$ that makes the model reproduce it.
+
+$$\text{Model Price}(\sigma_{\text{implied}}) = \text{Observed Market Price}$$
+
+There's no closed-form solution for $\sigma_{\text{implied}}$ — you find it numerically (iterate until the model price matches). But conceptually it's clean: **implied vol is the volatility the option's price *implies*.** It is the market's collective, **risk-neutral forecast** of how volatile the underlying will be *over the option's remaining life*. Buy a 30-day option and its IV is the market's vol forecast for the next 30 days.
+
+**Vega is the bridge.** How do you turn a *price* into a *vol*, or a vol view into a price? Through **vega** — the option's sensitivity to volatility:
+
+$$\nu = \frac{\partial(\text{Option Price})}{\partial \sigma}$$
+
+Vega tells you how many dollars the option's price moves per one-percentage-point change in implied vol. It's strictly positive for both calls and puts (more vol = more chance of a big favorable move = more valuable optionality), largest for **at-the-money** options with **plenty of time** left, and it shrinks toward expiry. Vega is the reason IV is *recoverable*: because price rises monotonically with σ, there's exactly one σ that fits any given price, and vega is the slope of that price-vs-σ curve you climb to find it.
+
+**Worked intuition.** Take an at-the-money option with a **vega of \$0.18** (i.e. the price changes about \$0.18 per 1 vol point) currently priced at **\$3.00**, consistent with an implied vol of **$20\%$**. Now suppose demand surges and the option's market price jumps to **\$3.72**. The price rose by \$0.72; at \$0.18 per vol point, that's about $0.72 / 0.18 = 4$ extra vol points. So the implied vol just repriced from $20\%$ up to roughly **$24\%$** — *without the stock itself moving at all*. Nothing happened to realized vol; the market simply raised its forecast and paid up for the options.
+
+| Option market price | Δ price vs \$3.00 | ÷ vega (\$0.18) | Implied vol |
+|---|---|---|---|
+| \$2.64 | −\$0.36 | $-2$ vol pts | $\approx 18\%$ |
+| \$3.00 | — | — | $20\%$ |
+| \$3.72 | +\$0.72 | $+4$ vol pts | $\approx 24\%$ |
+| \$4.08 | +\$1.08 | $+6$ vol pts | $\approx 26\%$ |
+
+That linear-via-vega approximation only holds for small moves (vega itself changes as σ moves), but it captures the mechanism: **price and implied vol move in lockstep, and vega is the exchange rate between them.** And crucially, IV comes out **annualized in percent** — the same units as the realized vol you computed above — which is what lets you finally compare the two.
+
+<ThinkReveal
+  client:visible
+  prompt="An option is quoted at $5.00 with vega ≈ $0.25, implying 22% vol. A wave of hedging demand lifts its price to $6.50 with no move in the underlying. Roughly what's the new implied vol — and did anything happen to realized vol?"
+  hint="Δprice ÷ vega ≈ change in vol points. Realized vol is measured from the stock's returns, which didn't move."
+  text="Δprice = $6.50 − $5.00 = $1.50. At $0.25 per vol point, that's $1.50 / $0.25 = 6 extra vol points, so implied vol jumps from 22% to about 28%. Realized vol, meanwhile, didn't budge — the stock never moved, so its return-based dispersion is unchanged. The options simply got more expensive because the market raised its forward forecast. This divergence — IV leaping while RV sits still — is exactly the kind of gap a vol trader pounces on."
+  buttonLabel="Reveal the new IV"
+/>
+
+## The volatility smile and surface
+
+<MCQ
+  client:visible
+  pretest
+  question="Guess: on an equity index, how does implied vol typically compare across strikes for the SAME expiry?"
+  options={[
+    { text: 'Lower-strike (downside) puts trade at higher implied vol than higher-strike calls — a downward-sloping skew', correct: true },
+    { text: 'It’s flat — Black–Scholes assumes one σ, so every strike shows the same IV' },
+    { text: 'Higher-strike calls always carry the highest implied vol' },
+    { text: 'Implied vol only varies by expiry, never by strike' },
+  ]}
+  explanation="Equity indices show a downward-sloping skew: out-of-the-money puts (downside protection) are bid up and carry higher IV than out-of-the-money calls. Crashes are sharper and more feared than melt-ups, so the market pays more for left-tail insurance. IV is emphatically NOT one flat number across strikes."
+/>
+
+Black–Scholes pretends a single $\sigma$ describes the underlying. The market disagrees, and it tells you so through the *prices it sets*. When you back out implied vol from every option on the same underlying, you don't get one number — you get a whole landscape.
+
+- **Across strikes (the smile / skew).** Plot implied vol against strike for a fixed expiry and it isn't flat. In FX it often curves up at both wings — the classic **smile**. In equity indices it slopes *down* — out-of-the-money **puts** carry markedly higher IV than out-of-the-money **calls**. This is the **skew** (or "smirk"), and it exists because the market fears a sharp crash more than a sharp rally, so it pays up for downside puts. That extra demand bids their prices — and therefore their implied vols — higher.
+- **Across maturities (the term structure).** Plot ATM implied vol against time to expiry and you get the **term structure** of volatility — usually upward-sloping in calm markets (more uncertainty further out) and *inverted* (short-dated IV above long-dated) during a panic, when near-term fear spikes.
+- **Both at once (the surface).** Stack the smile across every expiry and you get the **implied volatility surface** — IV as a function of *both* strike and maturity, a 3-D sheet that the whole options market is constantly repricing.
+
+The chart below shows the strike dimension — the smile/skew — for a single expiry. We're just previewing it here; later lessons in this course dissect the skew, the term structure, and how to trade the surface's shape directly.
+
+<VolSmile
+  client:visible
+  title="The implied-volatility smile across strikes"
+  caption="Implied vol plotted against strike for one expiry. Far from a flat line, it curves — and on equity indices it tilts so downside puts carry higher IV than upside calls. A single 'the vol is 20' hides this entire shape."
+/>
+
+<Categorize
+  client:visible
+  question="Sort each statement by whether it describes variation across STRIKES or across MATURITIES."
+  buckets={['Across strikes', 'Across maturities']}
+  items={[
+    { text: 'The volatility smile', bucket: 'Across strikes' },
+    { text: 'Equity-index downside skew (puts richer than calls)', bucket: 'Across strikes' },
+    { text: 'The term structure of implied vol', bucket: 'Across maturities' },
+    { text: 'Short-dated IV spiking above long-dated in a panic (inversion)', bucket: 'Across maturities' },
+  ]}
+  explanation="The smile and the equity skew describe how IV varies by STRIKE at a fixed expiry. The term structure and its panic-driven inversion describe how IV varies by MATURITY. Stack both dimensions together and you get the full implied-vol surface."
+/>
+
+## The gap is the trade
+
+<MCQ
+  client:visible
+  pretest
+  question="You're convinced a stock will be calmer over the next month than its options are pricing — realized will land BELOW implied. Guess the trade."
+  options={[
+    { text: 'Sell volatility — sell the option (e.g. a straddle) and delta-hedge, collecting the premium if realized comes in low', correct: true },
+    { text: 'Buy volatility — go long the straddle and delta-hedge' },
+    { text: 'Buy the stock outright, since lower vol means it’ll go up' },
+    { text: 'Do nothing — realized vs implied has no tradeable expression' },
+  ]}
+  explanation="If you expect realized < implied, options are 'overpriced' relative to what the stock will actually deliver, so you SELL vol (short the straddle) and delta-hedge to strip out direction. You profit if the gap closes your way. Expecting realized > implied flips it: you BUY vol."
+/>
+
+Here's the payoff for all that setup. Realized and implied are the *same units* measuring the *same thing* (volatility), but one is a fact and the other is a forecast. Subtract them and you get the number vol traders actually bet on:
+
+$$\text{The vol-trader's edge} = \sigma_{\text{implied}} - \sigma_{\text{realized}}$$
+
+- If you think **realized will come in *below* implied** — the stock will be calmer than the options are pricing — then options are *expensive* relative to what they'll deliver. You **SELL volatility** (short a straddle, sell variance) and pocket the difference.
+- If you think **realized will *exceed* implied** — the stock will be wilder than priced — options are *cheap*. You **BUY volatility** (long a straddle, buy variance).
+
+But raw options carry **direction** (delta) you don't want — you have a view on *how much it moves*, not *which way*. This is where your delta-hedging muscle pays off: **delta-hedging continuously strips out the directional exposure**, leaving a position whose P&L depends almost entirely on the difference between realized and implied vol. A delta-hedged short option *bleeds* if the stock thrashes around (realized high) and *earns* its time-decay premium if the stock sits still (realized low). That's the cleanest expression of the bet there is — an option, hedged, is a pure wager on $\sigma_{\text{implied}} - \sigma_{\text{realized}}$.
+
+| Your view | RV vs IV | Trade | You win if |
+|---|---|---|---|
+| Stock will be calmer than priced | Realized $<$ implied | **Sell vol** (short straddle, delta-hedge) | Realized lands low; option decays cheaply |
+| Stock will be wilder than priced | Realized $>$ implied | **Buy vol** (long straddle, delta-hedge) | Realized comes in high; hedging gains beat decay |
+| No edge on the gap | Realized $\approx$ implied | Stand aside | — |
+
+<Callout variant="tip" title="Why implied usually sits above realized">
+Across most assets and most of the time, implied vol trades *above* subsequent realized vol — a persistent wedge called the **volatility risk premium**. Option *sellers* are providing insurance against big moves, and like any insurer they charge more than the expected payout to compensate for bearing tail risk. That's why "sell vol and delta-hedge" is a famously profitable strategy that *occasionally blows up spectacularly* when a crash makes realized scream past implied. The rest of this course — variance swaps, the VIX, the risk premium, straddles — is essentially a deep tour of this one gap and how to trade it without getting carried out.
+</Callout>
+
+<MCQ
+  client:visible
+  question="Which statements about trading the realized–implied gap are correct?"
+  allowMultiple
+  options={[
+    { text: 'Expecting realized below implied argues for selling volatility', correct: true },
+    { text: 'Delta-hedging removes most of the directional exposure, isolating the vol bet', correct: true },
+    { text: 'Implied typically trades above subsequent realized — the volatility risk premium', correct: true },
+    { text: 'Buying a straddle is a directional bet that the stock will rise' },
+    { text: 'Realized and implied are in different units, so they can’t be compared' },
+  ]}
+  explanation="Realized < implied → sell vol; delta-hedging strips direction to isolate the vol P&L; and IV sits above realized on average (the vol risk premium). A straddle is direction-NEUTRAL (it bets on size, not sign), and both vols are annualized %, so they're directly comparable — those last two are the traps."
+/>
+
+## Putting it together
+
+"Volatility" is two numbers wearing one name. **Realized volatility** is the annualized standard deviation of an asset's past **log returns** — multiply the daily figure by $\sqrt{252}$ because variance, not vol, scales with time — and it's a moving, clustering, mean-reverting process, not a constant. **Implied volatility** is the $\sigma$ you back out of an option's market price; it's the market's forward, risk-neutral *forecast* of vol over the option's life, recovered through **vega**, the price–vol exchange rate. Neither is a single number: across strikes you get the **smile/skew**, across maturities the **term structure**, and together the **implied-vol surface**. And the punchline — the thing that makes this a *trade* — is the **gap**: sell vol when you expect realized to undershoot implied, buy it when you expect the reverse, and **delta-hedge** to turn a messy option into a clean wager on $\sigma_{\text{implied}} - \sigma_{\text{realized}}$. Implied usually wins that bet by a margin (the volatility risk premium), which is the engine the rest of this course takes apart.
+
+<MindMap
+  client:visible
+  title="Realized vs implied volatility"
+  caption="One word, two numbers: realized is measured from past returns, implied is forecast from option prices, both show a smile/surface, and the gap between them is what vol traders actually trade."
+  root={{
+    label: 'Volatility: realized vs implied',
+    children: [
+      {
+        label: 'Realized (RV)',
+        children: [
+          { label: 'Annualized stdev of log returns' },
+          { label: 'Annualize: ×√252 (variance scales with time)' },
+          { label: 'Backward-looking, model-free' },
+          { label: 'Clusters & mean-reverts; window-dependent' },
+        ],
+      },
+      {
+        label: 'Implied (IV)',
+        children: [
+          { label: 'σ backed out of the option’s market price' },
+          { label: 'Market’s forward, risk-neutral forecast' },
+          { label: 'Vega = price↔vol exchange rate' },
+          { label: 'Quoted annualized %, comparable to RV' },
+        ],
+      },
+      {
+        label: 'Smile & surface',
+        children: [
+          { label: 'Across strikes → smile / equity skew' },
+          { label: 'Across maturities → term structure' },
+          { label: 'Both together → the vol surface' },
+        ],
+      },
+      {
+        label: 'The gap = the trade',
+        children: [
+          { label: 'Realized < implied → sell vol' },
+          { label: 'Realized > implied → buy vol' },
+          { label: 'Delta-hedge → isolate the vol bet' },
+          { label: 'IV > RV on average = vol risk premium' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Recap: realized vs implied volatility"
+  questions={[
+    {
+      question: 'A stock’s daily log returns have a standard deviation of 2%. Its annualized realized volatility is approximately:',
+      options: [
+        { text: 'About 32% — multiply 2% by √252 ≈ 15.87', correct: true },
+        { text: 'About 504% — multiply 2% by the 252 trading days' },
+        { text: 'Still 2% — annualizing doesn’t change the figure' },
+        { text: 'About 2.8% — multiply 2% by √2' },
+      ],
+      explanation: '2% × √252 ≈ 2% × 15.87 ≈ 31.7%. You scale by the SQUARE ROOT of trading days because variance (not vol) adds linearly over time. Multiplying by 252 itself, or doing nothing, are the standard mistakes.',
+    },
+    {
+      question: 'Which best describes what implied volatility actually is?',
+      options: [
+        { text: 'The σ that, fed into an option model, reproduces the option’s observed market price', correct: true },
+        { text: 'The standard deviation of the stock’s realized returns over the past year' },
+        { text: 'The option’s sensitivity to a one-point change in volatility' },
+        { text: 'The difference between the call price and the put price' },
+      ],
+      explanation: 'Implied vol is the volatility input that makes the model price match the market price — the market’s forward forecast. The second option is realized vol; the third is vega; the fourth is unrelated. Don’t confuse the forecast with the history that measures it.',
+    },
+    {
+      question: 'An option priced at $4.00 with vega ≈ $0.20 implies 25% vol. Its price rises to $5.00 with the underlying unchanged. The implied vol is now closest to:',
+      options: [
+        { text: '30% — the $1.00 rise ÷ $0.20 vega ≈ 5 extra vol points', correct: true },
+        { text: '20% — the price rise means vol fell by 5 points' },
+        { text: '25% — implied vol can’t move unless the stock moves' },
+        { text: '45% — add the dollar move directly to the vol' },
+      ],
+      explanation: 'Δprice $1.00 ÷ vega $0.20 ≈ 5 vol points, so IV climbs 25% → 30% even though the stock never moved. Vega is the exchange rate between price and vol; IV reprices on demand alone. Adding dollars directly to a percentage is nonsense units.',
+    },
+    {
+      question: 'On an equity index, out-of-the-money puts versus out-of-the-money calls of the same expiry tend to show:',
+      options: [
+        { text: 'Higher implied vol on the puts — a downward-sloping skew driven by crash fear', correct: true },
+        { text: 'Identical implied vol, exactly as Black–Scholes assumes' },
+        { text: 'Higher implied vol on the calls, because upside is unlimited' },
+        { text: 'Implied vol that varies only with expiry, never with strike' },
+      ],
+      explanation: 'Equity indices skew: downside puts carry richer IV because the market fears sharp crashes and bids up left-tail insurance. A flat line is the Black–Scholes fantasy the market visibly rejects; calls don’t carry the premium; and IV plainly varies by strike, giving the smile/skew.',
+    },
+    {
+      question: 'You believe a name will be far calmer next month than its options are pricing. The cleanest expression of that view is to:',
+      options: [
+        { text: 'Sell a straddle and delta-hedge it, profiting if realized lands below implied', correct: true },
+        { text: 'Buy a straddle and delta-hedge it, profiting if realized lands below implied' },
+        { text: 'Short the stock, since lower volatility implies it will fall' },
+        { text: 'Buy out-of-the-money puts as crash insurance' },
+      ],
+      explanation: 'Realized < implied means options are expensive versus what they’ll deliver, so you SELL vol; delta-hedging strips direction so the P&L tracks the realized–implied gap. Buying vol is the opposite bet, shorting the stock confuses vol with direction, and buying puts is a long-vol/insurance trade.',
+    },
+  ]}
+/>
+
+Next — we put a real instrument on this gap: the **variance swap**, which lets you trade realized variance against a strike with no delta-hedging messiness at all, and the **VIX**, the market's headline number for 30-day implied vol.

@@ -625,3 +625,22 @@ export type { SwapValueBridgeProps } from '@/components/react/SwapValueBridge';
 
 export { SwapSpreadChart, default as SwapSpreadChartDefault } from '@/components/react/SwapSpreadChart';
 export type { SwapSpreadChartProps } from '@/components/react/SwapSpreadChart';
+
+// Volatility-trading islands
+export { VixTermStructure, default as VixTermStructureDefault } from '@/components/react/VixTermStructure';
+export type { VixTermStructureProps } from '@/components/react/VixTermStructure';
+
+export { VolRiskPremium, default as VolRiskPremiumDefault } from '@/components/react/VolRiskPremium';
+export type { VolRiskPremiumProps } from '@/components/react/VolRiskPremium';
+
+export { StraddlePayoff, default as StraddlePayoffDefault } from '@/components/react/StraddlePayoff';
+export type { StraddlePayoffProps } from '@/components/react/StraddlePayoff';
+
+export { VarianceSwapConvexity, default as VarianceSwapConvexityDefault } from '@/components/react/VarianceSwapConvexity';
+export type { VarianceSwapConvexityProps } from '@/components/react/VarianceSwapConvexity';
+
+export { DispersionBars, default as DispersionBarsDefault } from '@/components/react/DispersionBars';
+export type { DispersionBarsProps } from '@/components/react/DispersionBars';
+
+export { TailHedgeConvexity, default as TailHedgeConvexityDefault } from '@/components/react/TailHedgeConvexity';
+export type { TailHedgeConvexityProps } from '@/components/react/TailHedgeConvexity';
