@@ -124,9 +124,19 @@ export const roadmaps: RoadmapMeta[] = [
     },
   },
   {
+    tag: 'behavioral-finance',
+    icon: '🧠',
+    order: 10,
+    title: { en: 'Behavioral Finance', es: 'Finanzas del Comportamiento' },
+    description: {
+      en: 'Why real investors are not rational — biases, heuristics, overconfidence, calibration, and being fooled by randomness.',
+      es: 'Por qué los inversores reales no son racionales — sesgos, heurísticos, exceso de confianza, calibración y dejarse engañar por el azar.',
+    },
+  },
+  {
     tag: 'macro-and-currencies',
     icon: '🌍',
-    order: 10,
+    order: 11,
     title: { en: 'Macro & Currencies', es: 'Macro y Divisas' },
     description: {
       en: 'The big picture — money, inflation, GDP, central banks, bond markets, and how currencies trade against each other.',
