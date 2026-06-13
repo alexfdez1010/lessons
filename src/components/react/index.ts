@@ -644,3 +644,25 @@ export type { DispersionBarsProps } from '@/components/react/DispersionBars';
 
 export { TailHedgeConvexity, default as TailHedgeConvexityDefault } from '@/components/react/TailHedgeConvexity';
 export type { TailHedgeConvexityProps } from '@/components/react/TailHedgeConvexity';
+
+// Credit-derivatives & securitization islands
+export { CdsCashflow, default as CdsCashflowDefault } from '@/components/react/CdsCashflow';
+export type { CdsCashflowProps } from '@/components/react/CdsCashflow';
+
+export { CreditTriangle, default as CreditTriangleDefault } from '@/components/react/CreditTriangle';
+export type { CreditTriangleProps } from '@/components/react/CreditTriangle';
+
+export { CdsIndexBasis, default as CdsIndexBasisDefault } from '@/components/react/CdsIndexBasis';
+export type { CdsIndexBasisProps } from '@/components/react/CdsIndexBasis';
+
+export { SecuritizationFlow, default as SecuritizationFlowDefault } from '@/components/react/SecuritizationFlow';
+export type { SecuritizationFlowProps, SecuritizationTranche } from '@/components/react/SecuritizationFlow';
+
+export { TrancheWaterfall, default as TrancheWaterfallDefault } from '@/components/react/TrancheWaterfall';
+export type { TrancheWaterfallProps, TrancheBand } from '@/components/react/TrancheWaterfall';
+
+export { CorrelationTrancheLoss, default as CorrelationTrancheLossDefault } from '@/components/react/CorrelationTrancheLoss';
+export type { CorrelationTrancheLossProps } from '@/components/react/CorrelationTrancheLoss';
+
+export { CloOcIcTest, default as CloOcIcTestDefault } from '@/components/react/CloOcIcTest';
+export type { CloOcIcTestProps } from '@/components/react/CloOcIcTest';

@@ -1,0 +1,354 @@
+---
+title: "CDS Spreads & Hazard Rates"
+description: "Turn a CDS spread into a probability of default: hazard rates, the exponential survival curve, the credit triangle (spread ≈ hazard × loss-given-default), the risky annuity, and marking a CDS to market."
+topic: "en/credit-derivatives-and-securitization"
+order: 2
+minutes: 16
+updated: 2026-06-13
+---
+
+import { Callout, MCQ, Quiz, FillBlank, MatchConcepts, Categorize, MindMap, ThinkReveal, CreditTriangle } from '@/components/react';
+
+You already know what a credit default swap *is*: a contract where the protection buyer pays a steady premium — the **spread** — and the seller makes them whole if a named borrower defaults. So far, so much insurance. But here's the thing nobody tells you on day one: that spread is not just a *price*. It is an **opinion about the odds of default**, encoded in basis points, and with a little arithmetic you can pull those odds right back out. A CDS quoted at 200bp is the market whispering "this name defaults roughly 3% a year." This lesson is about doing that decode — turning a spread into a **probability of default**, a **survival curve**, and ultimately a number you can trade against. The machinery is the **hazard rate**, the **credit triangle**, and the **risky annuity**, and by the end you'll mark a CDS to market the way a desk does.
+
+<MCQ
+  client:visible
+  pretest
+  question="A 5-year CDS on Acme Corp is quoted at 200bp. Your gut reaction should be that this spread is, above all,…"
+  options={[
+    { text: "An implied statement about Acme's default odds — you can back out a probability of default from it", correct: true },
+    { text: 'Simply the dealer commission for arranging the trade' },
+    { text: 'The amount Acme itself must pay to borrow' },
+    { text: 'A number with no probabilistic meaning until a rating agency assigns one' },
+  ]}
+  explanation="A CDS spread is the market's price for bearing Acme's default risk, and that price embeds a probability. Roughly, annual spread ≈ probability of default × loss given default — so a spread is a default-odds quote in disguise. The whole lesson is about inverting that relationship cleanly. It isn't a commission, it isn't Acme's own borrowing rate, and it carries probabilistic meaning the instant it's quoted."
+/>
+
+## A spread is the price of default risk
+
+Start with the intuition, because the formula falls right out of it. If you **sell** protection on Acme, every year you collect the spread, and in exchange you're on the hook for a payout *if* Acme defaults. For that to be a fair trade, the premium you pocket each year should roughly equal the **loss you expect to pay out** each year. And your expected annual payout is just two things multiplied together: how *likely* default is, and how *much* you lose when it happens.
+
+That "how much you lose" piece has a name. When a borrower defaults, bondholders don't usually lose everything — they recover some fraction of face value through the bankruptcy process, salvaged assets, restructuring. Call that fraction the **recovery rate** $R$. What you actually *lose* is the rest: the **loss given default**, $\text{LGD} = 1 - R$. If recovery is 40 cents on the dollar, your loss given default is 60%.
+
+So, in words:
+
+$$\text{annual spread} \;\approx\; (\text{annual default probability}) \times (1 - R)$$
+
+Rearrange and you've got an implied default probability straight from the quote:
+
+$$\text{annual default probability} \;\approx\; \frac{\text{spread}}{1 - R}$$
+
+Let's run real numbers. You sell protection on **\$10M** of Acme at a spread of **200bp** (2.00%), with the market-standard recovery assumption of **40%**, so $1 - R = 0.60$.
+
+| Quantity | Value | Arithmetic |
+|---|---|---|
+| Notional | \$10,000,000 | given |
+| Spread | 200bp = 2.00% | given |
+| Annual premium collected | \$200,000 | $0.0200 \times 10{,}000{,}000$ |
+| Recovery $R$ | 40% | market standard |
+| Loss given default $1-R$ | 60% | $1 - 0.40$ |
+| Loss if Acme defaults | \$6,000,000 | $0.60 \times 10{,}000{,}000$ |
+| Implied annual default prob | ≈ 3.33% | $0.0200 / 0.60$ |
+
+Read that bottom row out loud: the \$200,000 a year you collect is the fair price for insuring against a 60%-of-notional loss that arrives with roughly **3.33% probability** each year. The spread *was* a default-odds quote all along; we just divided by the loss given default to reveal it.
+
+<Callout variant="tip" title="Why 40% recovery keeps showing up">
+You'll see **R = 40%** everywhere in single-name corporate CDS. It's the conventional default assumption baked into standardized pricing (the so-called ISDA Standard Model) for senior unsecured corporate debt. It's not a law of nature — actual recoveries swing wildly by sector, seniority and cycle — but everyone agrees to *quote* against 40% so spreads are comparable. Keep it in your back pocket; we'll lean on it all lesson.
+</Callout>
+
+<MCQ
+  client:visible
+  question="You sell protection on $20M of a name at 300bp, assuming 40% recovery. Roughly what annual default probability does that imply, and what's your annual premium?"
+  options={[
+    { text: 'About 5% default probability; \$600,000 premium', correct: true },
+    { text: 'About 3% default probability; \$600,000 premium' },
+    { text: 'About 5% default probability; \$300,000 premium' },
+    { text: 'About 7.5% default probability; \$300,000 premium' },
+  ]}
+  explanation="Premium = 3.00% × $20M = $600,000. Implied default prob ≈ spread / (1−R) = 0.0300 / 0.60 = 0.05 = 5%. The trap answers either forget to divide by the 0.60 loss-given-default (giving 3%) or misread the premium. Spread divided by loss-given-default is the move."
+/>
+
+## Hazard rates and the survival curve
+
+The "3.33% per year" we just computed is a fine back-of-envelope number, but it's secretly sloppy: it treats default probability as if it ticked up in equal slabs year after year. Real survival doesn't work that way, and to price multi-year CDS properly we need a cleaner object — the **hazard rate**.
+
+**Analogy.** Think of a lightbulb that can burn out at any instant. The **hazard rate** $\lambda$ is the bulb's *instantaneous failure intensity*: given that it's still glowing right now, $\lambda$ is the rate at which it's about to die in the next sliver of time. For a credit, $\lambda$ is the **instantaneous conditional default intensity** — *given the name has survived this far*, the rate at which it defaults in the next instant. It's a "per year" rate, but applied continuously, like continuously compounded interest applied to dying.
+
+**Precise definition.** If the hazard rate is a constant $\lambda$, the probability of surviving (no default) all the way to time $t$ is the **survival probability**:
+
+$$Q(t) = e^{-\lambda t}$$
+
+and therefore the cumulative probability of having defaulted by horizon $t$ is
+
+$$\text{PD}(t) = 1 - e^{-\lambda t}.$$
+
+That $e^{-\lambda t}$ is the **survival curve**: it starts at 100% (everyone's alive at $t=0$) and decays exponentially. It's the exact same shape as radioactive decay or a discount factor — survival *compounds*, it doesn't subtract in straight lines.
+
+Let's tabulate it for $\lambda = 3.33\%$ (the hazard implied by our 200bp / 40%-recovery name):
+
+| Horizon $t$ | Survival $e^{-\lambda t}$ | Cumulative default $1 - e^{-\lambda t}$ |
+|---|---|---|
+| 1 year | $e^{-0.0333} \approx 96.7\%$ | ≈ 3.3% |
+| 3 years | $e^{-0.100} \approx 90.5\%$ | ≈ 9.5% |
+| 5 years | $e^{-0.167} \approx 84.6\%$ | ≈ 15.4% |
+| 10 years | $e^{-0.333} \approx 71.7\%$ | ≈ 28.3% |
+
+<Callout variant="warning" title="Pitfall: default probability is NOT linear in time">
+The naïve instinct says "3.3% a year for 5 years = 16.5% by year 5." Close, but wrong — and the error *grows* with horizon. By year 10 the linear guess gives 33.3%, but the true cumulative default probability is only **28.3%**. Why the gap? Because to default *in* year 10 you first have to *survive* the previous nine, and that survival shrinks the base each year. Survival decays **geometrically** (multiply by a factor each year), not arithmetically (subtract a fixed slab). Over short horizons the two nearly agree; over long ones the straight-line approximation overstates default.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Fill in the survival-curve logic for a constant hazard rate λ."
+  text="Under a constant hazard λ, the probability of surviving to time t is {{exp(−λt)|1 − λt|λ·t}}, so the cumulative probability of default by t is {{1 − exp(−λt)|exp(−λt)|λ·t exactly}}. Because survival {{compounds geometrically|adds in equal slabs|stays constant}}, the straight-line guess of 'λ per year, times the number of years' {{overstates|understates|exactly matches}} the true cumulative default probability at long horizons."
+  explanation="Q(t) = exp(−λt) is survival; 1 − exp(−λt) is cumulative default. Survival compounds (you must survive each prior year to be at risk in the next), so default decays geometrically — and the linear λ·t guess overstates true cumulative default as the horizon lengthens. At λ=3.33% over 10y, linear says 33.3% but the real number is 28.3%."
+/>
+
+### When to use it
+
+Reach for the hazard-rate / survival-curve machinery whenever the **horizon matters** — pricing a 5-year vs a 10-year CDS, computing the present value of premium payments that only happen *if the name survives*, or comparing default odds across maturities. The one-line "spread / (1−R)" shortcut is great for a quick implied-PD sanity check; the survival curve is what you actually integrate when money changes hands over time.
+
+## The credit triangle
+
+Now we tie the two ideas together into the single most useful relationship in credit. We said the fair spread compensates for the expected annual loss, $\lambda \times (1-R)$. That's the **credit triangle**:
+
+$$\boxed{\;\text{spread} \;\approx\; \lambda \,(1 - R)\;}$$
+
+It's called a *triangle* because three quantities — **spread**, **hazard rate** $\lambda$, and **recovery** $R$ — are locked together, and knowing any two pins down the third. (The "≈" is because the clean equality holds exactly in the idealized continuous, flat-hazard limit; for ordinary spreads it's an excellent approximation, and it's *exact* under continuous flat-hazard pricing.) Rearrange it three ways depending on what you're solving for:
+
+- **Solve for hazard** (the usual move — you see a spread, you want default odds): $\quad\lambda \approx \dfrac{\text{spread}}{1 - R}$
+- **Solve for implied recovery** (you have spread and a hazard view): $\quad R \approx 1 - \dfrac{\text{spread}}{\lambda}$
+- **Solve for spread** (you have a default-intensity model, you want the quote): $\quad\text{spread} \approx \lambda\,(1 - R)$
+
+Three worked cases, all in basis points and percent, with the standard $R$ unless noted:
+
+| Spread | Recovery $R$ | $1 - R$ | Implied hazard $\lambda = \text{spread}/(1-R)$ |
+|---|---|---|---|
+| 200bp | 40% | 0.60 | $0.0200 / 0.60 \approx 3.33\%$ |
+| 600bp | 40% | 0.60 | $0.0600 / 0.60 = 10.0\%$ |
+| 200bp | 20% | 0.80 | $0.0200 / 0.80 = 2.50\%$ |
+
+Look at rows one and three: **same 200bp spread, different recovery, different implied hazard.** Lower recovery means each default costs *more*, so a given spread can be "paid for" by *fewer* defaults — the implied hazard drops from 3.33% to 2.50%. That's the whole subtlety in one comparison.
+
+<Callout variant="warning" title="Pitfall: a spread alone doesn't pin down a default probability">
+You cannot convert a spread into a default probability without **also assuming a recovery rate** — the credit triangle has two unknowns on the right-hand side. The same 200bp implies 3.33% hazard at 40% recovery but 2.50% at 20% recovery. This is exactly *why* the market standardized on R = 40%: so that everyone backs out the *same* implied default odds from the same quote. Quote a spread without stating the recovery convention and your "probability of default" is undefined.
+</Callout>
+
+The interactive below *is* the credit triangle, alive. Drag the **CDS spread** slider (25–800bp) and the **recovery** slider; it computes $\lambda = (\text{spread}/10000)/(1-R)$ and draws the survival curve $e^{-\lambda t}$ across ten years, shading the cumulative-default region and marking the 5-year point. Try this: push the **spread up** *or* drag **recovery down**, and watch the survival curve bend downward faster — both mean "more default," so the curve falls away from 100% more steeply and the shaded default region swells.
+
+<CreditTriangle
+  client:visible
+  title="The credit triangle and the survival curve"
+/>
+
+<MatchConcepts
+  client:visible
+  question="Match each piece of the credit triangle to what it means."
+  pairs={[
+    { term: 'Hazard rate λ', definition: 'Instantaneous conditional default intensity — the rate of defaulting next instant, given survival so far' },
+    { term: 'Recovery rate R', definition: 'Fraction of notional creditors get back after a default' },
+    { term: 'Loss given default (1 − R)', definition: 'Fraction of notional actually lost in a default' },
+    { term: 'Survival probability Q(t)', definition: 'exp(−λt) — chance of no default before time t' },
+    { term: 'Credit triangle', definition: 'spread ≈ λ × (1 − R), linking spread, hazard and recovery' },
+    { term: 'Implied hazard from a quote', definition: 'λ ≈ spread / (1 − R)' },
+  ]}
+  explanation="λ is the instantaneous conditional default intensity; R is what creditors recover and (1−R) is what they lose; survival Q(t)=exp(−λt). The credit triangle spread ≈ λ(1−R) ties them together, and inverting it gives the implied hazard λ ≈ spread/(1−R)."
+/>
+
+## The risky annuity (RPV01) and marking a CDS to market
+
+So far we've priced the *protection* side. But a CDS has two legs, and to value a real position you need both — and the survival curve is what makes the premium leg honest.
+
+The **premium leg** is the stream of spread payments the buyer makes. Here's the catch: those payments **stop the instant the name defaults**. So when you present-value them, you can't just discount each coupon by the risk-free factor — you must *also* multiply by the probability the name is **still alive** to pay it. Discount by the risk-free rate **and** by survival.
+
+That survival-weighted present value of a *1-unit-per-year* premium stream has a name: the **risky annuity**, or **RPV01** (risky PV of a basis point). Formally, it's the PV of receiving 1 unit of premium per year for the life of the swap, where each coupon is discounted by *both* the risk-free discount factor *and* the survival probability $Q(t)$ — plus a small **accrual-on-default** term for the fraction of a coupon owed if default lands mid-period.
+
+$$\text{Premium-leg PV} = \text{spread} \times \text{RPV01}, \qquad \text{Protection-leg PV} \approx (1-R) \times (\text{PV of default})$$
+
+The **fair spread** is the one that makes those two legs equal — the spread at which the swap is worth zero at inception. That's just the credit triangle again, now written with proper discounting.
+
+**Why RPV01 is the key to mark-to-market.** Since the Big Bang, single-name CDS trade with **standardized fixed coupons** (e.g. 100bp or 500bp) and an **upfront** payment to settle the difference between that fixed coupon and the *current fair spread*. The mark-to-market of a position is, to an excellent approximation:
+
+$$\text{Upfront} \;\approx\; (\text{spread} - \text{coupon}) \times \text{RPV01}$$
+
+and the **gain on a position** when spreads move is the change in spread times RPV01 times notional. Buy protection at a tight spread, watch it widen, and you profit — because you're paying a coupon that's now cheap relative to the protection's current value.
+
+**Worked mark-to-market.** You **bought protection** on a name with a standardized **100bp coupon**. Months later the name has deteriorated and the market fair spread is now **250bp**. The 5-year RPV01 is about **4.3**, and your notional is **\$10M**. Your position has gained:
+
+| Quantity | Value | Arithmetic |
+|---|---|---|
+| Spread now | 250bp = 0.0250 | given |
+| Coupon paid | 100bp = 0.0100 | standardized |
+| Spread − coupon | 150bp = 0.0150 | $0.0250 - 0.0100$ |
+| RPV01 | 4.3 | survival-weighted annuity |
+| Notional | \$10,000,000 | given |
+| **Mark-to-market gain** | **≈ \$645,000** | $0.0150 \times 4.3 \times 10{,}000{,}000$ |
+
+You bought cheap protection (paying only 100bp) on a name that now *deserves* 250bp of protection — and the RPV01 of 4.3 tells you each basis point of that 150bp edge is worth about 4.3 years of survival-discounted annuity. Multiply through and the position is up roughly **\$645,000**. Mark a CDS to market and that's the calculation, every time.
+
+<Callout variant="info" title="RPV01 shrinks as credit worsens — a subtle feedback">
+Here's a wrinkle that bites people: RPV01 isn't a constant. As a name's hazard rate rises, its survival curve falls faster, so future premium payments are *less likely to be made* — and the survival-weighted annuity **shrinks**. That means as spreads blow out toward distress, each extra basis point of widening is worth *fewer* dollars of mark-to-market than the same widening was at tight levels. The linear "(spread − coupon) × RPV01" is a snapshot; for big moves you re-strike RPV01 at the new, lower survival curve.
+</Callout>
+
+<ThinkReveal
+  client:visible
+  prompt="You SOLD protection at a 500bp standardized coupon. The market fair spread for the name is now 300bp (it improved). With RPV01 ≈ 4.0 and notional $10M, are you up or down, and by how much?"
+  hint="For the seller, gains come when the spread falls below the coupon. Mark ≈ (coupon − spread) × RPV01 × notional from the seller's perspective. Use 500 − 300 = 200bp."
+  text="You're UP. As the protection seller you collect the 500bp coupon, and the name now only warrants 300bp of protection — you're earning 200bp more than the risk deserves. Mark ≈ (0.0500 − 0.0300) × 4.0 × $10M = 0.0200 × 4.0 × $10M = $800,000 gain. (Equivalently, from the buyer's (spread − coupon) view it's (300 − 500)bp × 4.0 × $10M = −$800,000 — the buyer's loss is the seller's gain.) Sellers profit when spreads tighten; buyers profit when they widen."
+  buttonLabel="Reveal the seller's mark"
+/>
+
+## Bootstrapping the hazard curve
+
+One last upgrade. A single CDS quote and a single recovery give you *one* hazard number — a flat curve. But real names trade a **strip** of CDS at 1, 3, 5, 7 and 10 years, and those spreads usually *aren't* equal. To honor every quote at once you build a **term structure of hazard rates**, exactly the way you bootstrapped a zero-coupon yield curve from a strip of bonds.
+
+**The procedure, step by step:**
+
+1. Take the **1-year** CDS quote. Solve for the constant hazard $\lambda_1$ that re-prices it. That fixes survival out to year 1.
+2. Take the **3-year** quote. Holding $\lambda_1$ fixed for the first year, solve for the *forward* hazard $\lambda_{1\to3}$ over years 1–3 that makes the 3-year CDS fair. That extends the survival curve to year 3.
+3. Take the **5-year** quote, hold everything earlier fixed, peel off the next forward hazard $\lambda_{3\to5}$. Repeat for 7y, 10y.
+
+The result is a **piecewise-constant hazard curve**: a different (constant) forward default intensity in each maturity bucket, stitched together so the survival curve simultaneously re-prices *every* CDS in the strip. It's the credit twin of zero-curve bootstrapping — instead of peeling off forward *interest* rates, you peel off forward *default* intensities.
+
+**The intuition for the slope.** An **upward-sloping** CDS curve (longer maturities quoted wider) implies **rising forward hazards** — the market thinks near-term default is unlikely but the danger *grows* with time (typical of a currently-healthy name with long-run uncertainty). An **inverted** (downward-sloping) curve implies the opposite: high near-term forward hazard that's expected to *fall* if the name survives the immediate scare — the classic signature of a name in acute distress, where the market is pricing "blow up soon, or be fine."
+
+| CDS curve shape | Implied forward hazards | Typical story |
+|---|---|---|
+| Upward-sloping | Rising with maturity | Healthy now, long-run uncertainty |
+| Flat | Constant hazard | Stable, no term view |
+| Inverted (downward) | High near-term, falling | Acute near-term distress |
+
+<Categorize
+  client:visible
+  question="Sort each statement by whether it's true of bootstrapping a hazard curve from a CDS strip."
+  buckets={['True of the bootstrap', 'False / not part of it']}
+  items={[
+    { text: 'Use the 1y quote first to solve the first hazard, then extend with 3y, 5y, …', bucket: 'True of the bootstrap' },
+    { text: 'Produces a piecewise-constant forward hazard curve', bucket: 'True of the bootstrap' },
+    { text: 'Each longer maturity adds the next forward hazard, holding earlier ones fixed', bucket: 'True of the bootstrap' },
+    { text: 'Upward-sloping spreads imply rising forward hazards', bucket: 'True of the bootstrap' },
+    { text: 'It is the credit analogue of zero-curve bootstrapping', bucket: 'True of the bootstrap' },
+    { text: 'Forces a single flat hazard to fit every maturity at once', bucket: 'False / not part of it' },
+    { text: 'Ignores the shorter-maturity quotes and uses only the 10y', bucket: 'False / not part of it' },
+    { text: 'Requires no recovery assumption at all', bucket: 'False / not part of it' },
+  ]}
+  explanation="Bootstrapping peels forward hazards one maturity at a time (1y → 3y → 5y → …), holding earlier buckets fixed, to fit the WHOLE strip — yielding a piecewise-constant forward hazard curve, just like a zero curve. Upward-sloping spreads mean rising forward hazards. It does NOT force one flat hazard, does NOT discard the short quotes, and still needs a recovery assumption (the triangle has two unknowns)."
+/>
+
+## Putting it together
+
+A CDS **spread** is an opinion about default odds wearing a basis-point costume. Strip away the costume with the **credit triangle**, $\text{spread} \approx \lambda\,(1-R)$, and you recover the **hazard rate** $\lambda$ — the instantaneous conditional default intensity — via $\lambda \approx \text{spread}/(1-R)$, where $1-R$ is the **loss given default**. Compound that hazard and you get the **survival curve** $Q(t) = e^{-\lambda t}$, with cumulative default $1 - e^{-\lambda t}$ — a curve that decays *geometrically*, not in straight-line slabs, so the naïve "$\lambda$ per year" guess overstates long-horizon default. Pricing the premium leg honestly means discounting each coupon by *both* the risk-free factor *and* survival, giving the **risky annuity RPV01**; the fair spread equates premium and protection legs. From RPV01 falls the desk's everyday move — **mark-to-market** $\approx (\text{spread} - \text{coupon}) \times \text{RPV01} \times \text{notional}$ — so 150bp of widening on a 4.3-RPV01, \$10M position is worth about \$645,000. And to honor a whole **strip** of maturities you **bootstrap** a piecewise-constant forward hazard curve, the credit twin of zero-curve bootstrapping. Get all that, and a wall of CDS quotes becomes a clean, tradeable picture of who defaults, when, and what it's worth.
+
+<MindMap
+  client:visible
+  title="CDS spreads & hazard rates"
+  caption="From a basis-point quote to a tradeable default-odds picture: the credit triangle backs out a hazard rate, the survival curve compounds it, RPV01 prices the premium leg and marks a CDS to market, and a CDS strip bootstraps a forward hazard curve."
+  root={{
+    label: 'CDS Spreads & Hazard Rates',
+    children: [
+      {
+        label: 'Spread = price of default risk',
+        children: [
+          { label: 'Annual spread ≈ default prob × (1 − R)' },
+          { label: 'Loss given default = 1 − R' },
+          { label: '200bp / 0.60 ≈ 3.3% implied PD' },
+        ],
+      },
+      {
+        label: 'Hazard rate & survival',
+        children: [
+          { label: 'λ = instantaneous conditional default intensity' },
+          { label: 'Survival Q(t) = exp(−λt)' },
+          { label: 'Cumulative default = 1 − exp(−λt)' },
+          { label: 'Decays geometrically, not linearly' },
+        ],
+      },
+      {
+        label: 'The credit triangle',
+        children: [
+          { label: 'spread ≈ λ × (1 − R)' },
+          { label: 'λ ≈ spread / (1 − R)' },
+          { label: 'Need a recovery assumption (standard 40%)' },
+          { label: 'Lower R → fewer defaults pay for same spread' },
+        ],
+      },
+      {
+        label: 'Risky annuity & mark-to-market',
+        children: [
+          { label: 'RPV01 = survival-weighted PV of premiums' },
+          { label: 'Premium-leg PV = spread × RPV01' },
+          { label: 'Fair spread equates the two legs' },
+          { label: 'Upfront ≈ (spread − coupon) × RPV01' },
+        ],
+      },
+      {
+        label: 'Bootstrapping the hazard curve',
+        children: [
+          { label: 'Peel forward hazards 1y → 3y → 5y → …' },
+          { label: 'Piecewise-constant forward hazards' },
+          { label: 'Like zero-curve bootstrapping' },
+          { label: 'Upward-sloping spreads → rising hazards' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Recap: CDS spreads & hazard rates"
+  questions={[
+    {
+      question: 'A 5-year CDS is quoted at 240bp assuming 40% recovery. Using the credit triangle, what annual hazard rate does it imply?',
+      options: [
+        { text: 'About 4.0% per year', correct: true },
+        { text: 'About 2.4% per year' },
+        { text: 'About 6.0% per year' },
+        { text: 'About 1.4% per year' },
+      ],
+      explanation: 'λ ≈ spread / (1 − R) = 0.0240 / 0.60 = 0.04 = 4.0% per year. The 2.4% trap forgets to divide by the 0.60 loss-given-default; the 6.0% trap divides by 0.40 (recovery) instead of (1 − recovery).',
+    },
+    {
+      question: 'For a constant hazard rate of 5%, the cumulative probability of default by year 10 is closest to:',
+      options: [
+        { text: '39% — because survival is exp(−0.05 × 10) ≈ 61%, so default ≈ 1 − 0.61', correct: true },
+        { text: '50% — just 5% per year times 10 years' },
+        { text: '61% — equal to the survival probability' },
+        { text: '5% — the hazard rate itself' },
+      ],
+      explanation: 'Survival = exp(−λt) = exp(−0.5) ≈ 0.607, so cumulative default ≈ 1 − 0.607 = 0.393 ≈ 39%. The linear "5% × 10 = 50%" guess overstates it because survival decays geometrically — you must survive each prior year to be at risk in the next.',
+    },
+    {
+      question: 'Two CDS quote at the same 300bp spread, but name A assumes 40% recovery and name B assumes 20% recovery. Which has the LOWER implied hazard rate?',
+      options: [
+        { text: 'Name B — lower recovery means each default costs more, so fewer defaults pay for the same spread', correct: true },
+        { text: 'Name A — higher recovery always means higher hazard' },
+        { text: 'They are identical — recovery does not affect implied hazard' },
+        { text: 'Impossible to tell without the maturities' },
+      ],
+      explanation: 'λ ≈ spread/(1−R). For B, 1−R = 0.80, so λ ≈ 0.0300/0.80 = 3.75%. For A, 1−R = 0.60, so λ ≈ 0.0300/0.60 = 5.0%. Lower recovery → larger loss per default → fewer defaults needed to justify the same spread → lower implied hazard. This is exactly why you can\'t read a default probability off a spread without fixing recovery.',
+    },
+    {
+      question: 'You bought protection at a 100bp standardized coupon; the market fair spread is now 350bp. With RPV01 ≈ 4.0 and \$10M notional, your mark-to-market is about:',
+      options: [
+        { text: '+\$1,000,000 — (350 − 100)bp × 4.0 × \$10M', correct: true },
+        { text: '+\$250,000 — just (350 − 100)bp × \$10M, ignoring RPV01' },
+        { text: '−\$1,000,000 — widening hurts the protection buyer' },
+        { text: '+\$140,000 — using (350 − 100)bp × \$10M × 0.56' },
+      ],
+      explanation: 'Upfront/MtM ≈ (spread − coupon) × RPV01 × notional = 0.0250 × 4.0 × \$10M = \$1,000,000, a GAIN — you hold cheap protection (100bp coupon) on a name now worth 350bp. Forgetting the RPV01 factor gives the \$250k trap; widening helps, not hurts, the buyer.',
+    },
+    {
+      question: 'A name\'s CDS curve is upward-sloping (10y wider than 1y). Bootstrapping it implies:',
+      options: [
+        { text: 'Rising forward hazard rates — low near-term default intensity that grows with maturity', correct: true },
+        { text: 'A single flat hazard applied to every maturity' },
+        { text: 'Falling forward hazards, signalling acute near-term distress' },
+        { text: 'That recovery must be assumed to be zero' },
+      ],
+      explanation: 'Bootstrapping peels off piecewise-constant forward hazards maturity by maturity. An upward-sloping spread curve means each later bucket needs a HIGHER forward hazard to fit — rising forward default intensity (healthy now, more uncertainty later). An inverted curve would imply falling forward hazards (near-term distress). Recovery is still assumed (usually 40%), not zero.',
+    },
+  ]}
+/>
+
+Next up — **CDS indices**: we'll take the single-name machinery you just built and bundle dozens of names into **CDX** and **iTraxx**, read the **index basis** that opens up between the index and its constituents, and see why the whole can trade at a different spread than the sum of its parts.
