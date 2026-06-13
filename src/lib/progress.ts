@@ -167,6 +167,93 @@ export function migrateLegacyCourse(topicSlug: string, lessonSlugs: string[]): v
   notify();
 }
 
+/** Schema version stamped on an export; bump only on a breaking shape change. */
+const EXPORT_VERSION = 1;
+/** Marker proving a file is ours before we trust its contents. */
+const EXPORT_APP = 'lessons';
+
+/** A portable snapshot of all learning progress — the shape of the export file. */
+export interface ProgressExport {
+  /** Always `"lessons"` — identifies the file as a Lessons progress export. */
+  app: typeof EXPORT_APP;
+  /** Export schema version (see {@link EXPORT_VERSION}). */
+  version: number;
+  /** ISO timestamp the snapshot was taken. */
+  exportedAt: string;
+  /** Finished `"topic/lesson"` keys. */
+  lessons: string[];
+  /** Legacy finished whole-course slugs (carried for back-compat). */
+  legacyCourses: string[];
+}
+
+/** Build a portable snapshot of every finished lesson on this device. */
+export function exportProgress(): ProgressExport {
+  return {
+    app: EXPORT_APP,
+    version: EXPORT_VERSION,
+    exportedAt: new Date().toISOString(),
+    lessons: [...getFinishedLessons()].sort(),
+    legacyCourses: [...getLegacyFinishedCourses()].sort(),
+  };
+}
+
+/** Serialize {@link exportProgress} to a pretty JSON string ready for download. */
+export function serializeProgress(): string {
+  return JSON.stringify(exportProgress(), null, 2);
+}
+
+/** Outcome of an {@link importProgress} merge. */
+export interface ImportResult {
+  /** Lessons newly marked finished (ones not already complete here). */
+  added: number;
+  /** Total finished lessons after the merge. */
+  total: number;
+}
+
+/**
+ * Merge a previously exported snapshot into this device's progress. Parsing is
+ * defensive: a non-object or wrong-`app` payload throws so the caller can show
+ * an error. The merge is a **union** — it only ever adds finished lessons,
+ * never unmarks one — so importing from another device can't lose progress.
+ */
+export function importProgress(data: unknown): ImportResult {
+  if (typeof window === 'undefined') return { added: 0, total: 0 };
+  if (!data || typeof data !== 'object') throw new Error('Not a progress file.');
+  const payload = data as Partial<ProgressExport>;
+  if (payload.app !== EXPORT_APP) throw new Error('Not a Lessons progress file.');
+
+  const incoming = Array.isArray(payload.lessons)
+    ? payload.lessons.filter((s): s is string => typeof s === 'string')
+    : [];
+  const incomingLegacy = Array.isArray(payload.legacyCourses)
+    ? payload.legacyCourses.filter((s): s is string => typeof s === 'string')
+    : [];
+
+  const set = getFinishedLessons();
+  const before = set.size;
+  for (const k of incoming) set.add(k);
+  writeSet(LESSONS_KEY, set);
+
+  if (incomingLegacy.length > 0) {
+    const legacy = getLegacyFinishedCourses();
+    for (const c of incomingLegacy) legacy.add(c);
+    writeSet(LEGACY_COURSES_KEY, legacy);
+  }
+  notify();
+  return { added: set.size - before, total: set.size };
+}
+
+/** Parse a JSON string and {@link importProgress} it; throws on bad JSON/shape. */
+export function importProgressJson(json: string): ImportResult {
+  let data: unknown;
+  try {
+    data = JSON.parse(json);
+  } catch {
+    throw new Error('That file isn’t valid JSON.');
+  }
+  return importProgress(data);
+}
+
 /**
  * Subscribe to any change in completion state (this tab or another). Returns an
  * unsubscribe function. The callback fires on:

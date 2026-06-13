@@ -65,6 +65,9 @@ export type { CourseGraphProps, CourseNode, Difficulty, TagOption } from '@/comp
 export { CourseComplete, default as CourseCompleteDefault } from '@/components/react/CourseComplete';
 export type { CourseCompleteProps } from '@/components/react/CourseComplete';
 
+export { ProgressTransfer, default as ProgressTransferDefault } from '@/components/react/ProgressTransfer';
+export type { ProgressTransferProps } from '@/components/react/ProgressTransfer';
+
 export { LessonComplete, default as LessonCompleteDefault } from '@/components/react/LessonComplete';
 export type { LessonCompleteProps } from '@/components/react/LessonComplete';
 
