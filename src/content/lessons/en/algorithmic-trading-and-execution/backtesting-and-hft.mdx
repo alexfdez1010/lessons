@@ -1,0 +1,250 @@
+---
+title: "Execution-Aware Backtesting & HFT"
+description: "Why transaction-cost-naive backtests lie, how capacity and alpha decay kill crowded edges, and a tour of the high-frequency strategies — market making, latency and statistical arbitrage — on the other side of your order."
+topic: "en/algorithmic-trading-and-execution"
+order: 7
+minutes: 13
+updated: 2026-06-13
+---
+
+import { Callout, MCQ, Quiz, FillBlank, MatchConcepts, MindMap, FactorDecayChart } from '@/components/react';
+
+Somewhere out there is a strategy with a glorious backtest: a 3.0 Sharpe, a smooth equity curve, drawdowns you could sleep through. It trades 40 times a day. It fills every order at the mid, in any size, instantly, for free. It is also, almost certainly, a fiction — because the moment you route those orders into a real market, the high-frequency machines on the other side, the spread you have to cross, and the price you push against yourself collect their toll on *every single trade*. This lesson is about closing the gap between the backtest and the broker statement: pricing execution into your simulation, knowing how much capital your alpha can actually hold, and understanding who you're really trading against when your child orders hit the book.
+
+<MCQ
+  client:visible
+  pretest
+  question="A backtest shows a high-turnover strategy earning a strong, smooth profit. What single assumption most often turns that profit into a loss in live trading?"
+  options={[
+    { text: "That every order fills at the mid-price with no spread, impact, or slippage", correct: true },
+    { text: "That the risk-free rate stays constant over the test window" },
+    { text: "That dividends are reinvested at the closing price" },
+    { text: "That the strategy is rebalanced monthly rather than daily" },
+  ]}
+  explanation="A transaction-cost-naive fill model is the deadliest execution mistake. The more often a strategy trades, the more each unmodeled basis point of cost compounds — frictionless fills can flatter a high-turnover loser into a champion."
+/>
+
+## The transaction-cost-naive backtest
+
+**Analogy.** Imagine timing a road trip assuming every traffic light is green, you never stop for gas, and the speed limit is infinite. Your estimate will be beautiful and useless. A transaction-cost-naive backtest is exactly that drive: it fills you at the mid, in unlimited size, with zero impact, every time. The real road has tolls (spread), traffic you create (impact), and lights that turn red as you arrive (slippage).
+
+**Definition.** A *transaction-cost-naive backtest* is a simulation that assumes perfect, costless, infinitely-liquid execution — typically filling at the mid-price or the close with no spread paid, no market impact, and no slippage. Real execution costs are the sum of three things: the **half-spread** you cross, the **market impact** your own order creates, and the **slippage** between your decision price and your fill. Net edge is simply gross edge minus those costs:
+
+$$
+\text{net edge} = \text{gross edge} - \text{round-trip cost}
+$$
+
+**Worked example.** Suppose a signal has a *gross* edge of **12 bps per trade** and the round-trip execution cost (spread + impact + slippage, in and out) is **8 bps**. Net per trade is `12 − 8 = 4 bps` — still positive, but you just gave away two-thirds of the alpha. Now watch what turnover does. Annual return is roughly `net per trade × trades per year`:
+
+| Variant | Gross/trade | Round-trip cost | Net/trade | Trades/yr | Net annual |
+|---|---|---|---|---|---|
+| Baseline | 12 bps | 8 bps | 4 bps | 500 | +200 bps |
+| 2× turnover (same signal) | 12 bps | 8 bps | 4 bps | 1,000 | +400 bps |
+| 2× turnover, weaker signal | 9 bps | 8 bps | 1 bps | 1,000 | +100 bps |
+| 2× turnover, cost-heavy name | 12 bps | 14 bps | −2 bps | 1,000 | −200 bps |
+
+The arithmetic to internalize: **a strategy that trades twice as often must clear twice the cost.** Doubling turnover doubles the cost bill, so a gross edge that barely beat costs once gets *halved* in margin and can flip negative. The naive backtest hid all of this by setting the cost column to zero.
+
+<Callout variant="warning" title="The number that lies: gross Sharpe">
+Reporting a **gross Sharpe** — computed before transaction costs — is the cardinal sin of strategy evaluation. It rewards turnover for free: the more you churn, the better the gross number looks, even as the *net* result bleeds out. Always quote Sharpe **net of modeled spread, impact, and slippage**. If someone shows you a Sharpe without telling you the assumed cost per trade, assume it's gross and discount it hard.
+</Callout>
+
+Note that this lesson's prerequisite, *Time-Series Finance*, already armed you against look-ahead bias, overfitting, and data-snooping — the statistical ways a backtest lies. Here the lie is physical: **execution and cost realism**, not whether the signal was real to begin with.
+
+### When to worry most
+
+Cost realism matters in proportion to **turnover × order size relative to liquidity**. A monthly, low-size rebalance can survive a sloppy fill model; a daily, large-size, illiquid-universe strategy lives or dies by it. Build the cost model *before* you fall in love with the equity curve.
+
+<FillBlank
+  client:visible
+  question="Fill in the relationship that turnover imposes on a strategy."
+  text="If a strategy doubles how often it trades, it must clear {{twice|half|the same|one-quarter}} the total transaction cost, because cost scales with the number of trades."
+  explanation="Cost is paid per round trip. Double the trades, double the cost bill — so the gross edge per trade must stay well above cost, or higher turnover quietly converts a winner into a loser."
+/>
+
+## Capacity & alpha decay
+
+**Analogy.** A small spring feeds a stream just fine, but try to run a city off it and you'll pump it dry. An alpha is that spring: it can water a modest book, but past some size your own buying moves the price so much that the impact swallows the edge. And springs run dry over time, too — once everyone knows where the water is, the line at the pump gets long and the flow slows for each of you.
+
+**Definition — capacity.** *Capacity* is the maximum capital a strategy can deploy before market impact erodes its alpha to zero. The **square-root law** from the market-impact lesson is the governing constraint: impact scales roughly with the square root of order size relative to volume, so doubling your size doesn't double your cost — it raises it by about √2 ≈ 1.41× *per unit*, and total impact cost climbs as size^1.5. Beyond capacity, every extra dollar deployed costs more in impact than it earns in signal.
+
+**Definition — alpha decay.** *Alpha decay* is the erosion of a signal's premium after it's discovered. Two forces drive it: the **world changes** (the structural reason the edge existed weakens or disappears), and **others trade it away** (a published or crowded signal gets arbitraged until the premium compresses toward zero). An edge that looked like 60 bps/year in-sample can fade to a teen-digit residual once it's public.
+
+<FactorDecayChart
+  client:visible
+  title="Alpha decays after it's discovered"
+  series={[{ label: "Signal premium (bps/yr)", points: [{t:-3,value:60},{t:-2,value:58},{t:-1,value:61},{t:0,value:42},{t:1,value:28},{t:2,value:20},{t:3,value:16},{t:4,value:14},{t:5,value:13}] }]}
+  caption="Years relative to discovery: t<0 is the in-sample period (premium ~60 bps/yr), t=0 is publication/crowding, and the premium decays toward a small residual as the world changes and competitors arbitrage it away."
+/>
+
+**Worked example — capacity bite.** Say a signal earns a gross **30 bps** per trade at small size, and impact at your current \$50M size costs **6 bps**, leaving 24 bps net. Under the square-root law, scaling to \$200M (4× size) raises impact by roughly √4 = 2×, to **12 bps**; scaling to \$450M (9× size) raises it by √9 = 3×, to **18 bps**:
+
+| Deployed capital | Size multiple | Impact cost (≈ √size) | Net edge |
+|---|---|---|---|
+| \$50M | 1× | 6 bps | 24 bps |
+| \$200M | 4× | 12 bps | 18 bps |
+| \$450M | 9× | 18 bps | 12 bps |
+| \$1.25B | 25× | 30 bps | ~0 bps |
+
+At 25× size the impact (30 bps) exactly eats the gross edge — that's the **capacity wall**. The spring is pumped dry.
+
+<Callout variant="warning" title="The long-history trap">
+A favorite self-deception: backtest a signal on 20 years of data, report the full-sample Sharpe, and ignore that **the edge only existed in the first eight years** before it was discovered and crowded out. The early period props up a dead recent one. Always check whether the alpha *survives out-of-sample and post-discovery* — a flat or decaying recent sub-period is the tell.
+</Callout>
+
+### When to use it
+
+Run a capacity estimate *before* sizing a strategy, and re-estimate alpha decay on a rolling window in production. If the recent realized edge is drifting toward your cost floor, the signal is decaying — scale down or retire it rather than averaging it back to life with stale history.
+
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Why does a *published* academic factor tend to decay even if the underlying economic story stays true?</summary>
+
+Publication is an invitation. Once a signal is in the open, capital floods toward it: buyers bid up the cheap leg and short the expensive leg until the spread that *was* the premium compresses. Even if the original economic rationale (say, a risk premium) is intact, the **price of that risk** gets bid down as more competitors crowd in. So you get decay from crowding on top of any genuine structural change — which is why post-publication returns for famous factors routinely run a third or more below their in-sample levels.
+
+</details>
+
+## HFT at a glance
+
+**Analogy.** In high-frequency trading, the speed of light stopped being a physics trivia answer and became a budget line item. Firms lay microwave links across Illinois because microwaves through air beat fiber-optic glass by milliseconds, and a millisecond is an eternity. It's a race where the finish line moves every time someone builds a faster route — and the prize is being first to react to the same public information everyone else also sees.
+
+**Definition.** *High-frequency trading (HFT)* is automated trading characterized by **extremely short holding periods** (seconds to microseconds), **very high order-to-trade ratios**, **flat overnight positions**, and a relentless **latency arms race**: **colocation** (renting rack space inside the exchange's data center so your server sits feet from the matching engine), **microwave and laser links** between venues, and hardware (FPGAs) that processes market data in nanoseconds. HFTs are the dominant **liquidity providers and takers** in modern markets — which means they are, quite literally, the counterparties on the other side of your algorithm's child orders.
+
+**Why it matters to you.** When your VWAP algo posts a passive limit order or crosses the spread to take one, the resting quote it interacts with was very likely placed by an HFT, and the order that fills (or fades away from) yours is reacting faster than you can. You are not trading against a sleepy human — you're trading against the fastest, best-informed participant in the room.
+
+<MCQ
+  client:visible
+  question="Which feature is the defining hallmark of high-frequency trading rather than ordinary algorithmic trading?"
+  options={[
+    { text: "Extremely short holding periods plus a latency arms race (colocation, microwave links)", correct: true },
+    { text: "Holding diversified positions for several quarters to capture risk premia" },
+    { text: "Trading exclusively on fundamental valuation models" },
+    { text: "Rebalancing a portfolio once per month to track an index" },
+  ]}
+  explanation="HFT is defined by speed and horizon: sub-second holds, flat overnight, enormous order-to-trade ratios, and infrastructure (colocation, microwave/laser, FPGAs) built to win the latency race. Long-horizon, fundamental, or monthly strategies are not HFT regardless of how they execute."
+/>
+
+## HFT strategies & adverse selection
+
+**Analogy.** Picture a market maker as a shopkeeper who'll buy or sell at posted prices all day, earning the markup (the spread). Most customers are noise — they buy and sell for reasons unrelated to where the price is going. But every so often a customer walks in who *knows* the warehouse next door just burned down: they'll only buy from you right before the price jumps. That informed customer is **adverse selection**, and the shopkeeper's whole job is to earn enough from the noise traders to survive the informed ones.
+
+**Definition.** The major HFT strategy families:
+
+- **Electronic market making.** Continuously quote both a bid and an ask, earning the **spread** when both sides trade. The two risks are **inventory risk** (you accumulate a position you didn't want and must hedge or unwind) and **adverse selection** (your quote gets *picked off* by a faster, better-informed trader right before the price moves against you).
+- **Latency arbitrage.** Detect a price change on one venue (or in a related instrument, like a future) and trade the slower-to-update venue *before* it reprices — profiting from being microseconds ahead of participants reading stale quotes.
+- **High-frequency statistical arbitrage / order anticipation.** Exploit fleeting statistical relationships (a pair, an index-vs-constituents basis) or infer and front-run the predictable footprints of large, slow institutional orders.
+
+<MatchConcepts
+  client:visible
+  question="Match each high-frequency strategy to what it actually does."
+  pairs={[
+    { term: "Electronic market making", definition: "Quote both sides continuously to earn the spread, while managing inventory and the risk of being picked off by informed flow." },
+    { term: "Latency arbitrage", definition: "React to a price change on one venue (or a related instrument) before slower participants update their stale quotes." },
+    { term: "High-frequency statistical arbitrage", definition: "Exploit short-lived statistical relationships or the predictable footprints of large institutional orders." },
+    { term: "Adverse selection", definition: "The market maker's curse: your resting quote fills precisely when an informed trader knows the price is about to move against it." },
+  ]}
+  explanation="Market making earns the spread but bleeds to informed flow; latency arbitrage monetizes being first; HF stat-arb hunts fleeting relationships and order footprints; adverse selection is the cost that makes passive market-making genuinely risky."
+/>
+
+**Worked example — adverse selection on your resting limit order.** You post a passive buy limit at the bid, \$100.00, hoping to save the half-spread. Consider the two ways it can fill:
+
+| Scenario | Why your bid fills | Where the price goes next | Your outcome |
+|---|---|---|---|
+| Noise seller | A liquidity-motivated seller hits your bid | Stays near \$100.00 | You saved the half-spread — clean win |
+| Informed seller | A faster trader, seeing the price about to drop, dumps into your bid | Falls to \$99.90 | You bought at \$100.00, now worth \$99.90 — 10 bps underwater |
+
+Here's the cruel asymmetry: when the market is about to rise, the HFT *pulls* the offer and your bid sits **unfilled** (you miss the good case); when the market is about to fall, your bid gets **filled** by informed flow (you catch the bad case). So your *realized* fills are selected toward the moments the trade was wrong. **That is why taking liquidity sometimes beats posting it:** crossing the spread costs a known half-spread, but posting passively can cost you the (larger, hidden) adverse-selection tax of only filling when you'd rather not have.
+
+<Callout variant="tip" title="Post vs. take, decided by adverse selection">
+The passive-vs-aggressive choice isn't "save the spread, obviously." It's a trade-off: **posting** saves the half-spread but exposes you to adverse selection and non-fill risk; **taking** pays the spread but guarantees the fill and dodges the picked-off scenario. When alpha is short-lived or the name is fast, the certainty of taking often wins — the spread you pay is cheaper than the fills you'd only get when you're wrong.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Complete the description of the market maker's core risk."
+  text="A resting limit order suffers {{adverse selection|inventory hedging|opportunity gain|positive slippage}} because it tends to fill exactly when a faster, better-informed trader knows the price is about to move against it."
+  explanation="Adverse selection is the market maker's curse: passive fills are selected toward the moments the trade goes against you, because informed flow only crosses your quote when it's profitable for them to do so."
+/>
+
+## Putting it together
+
+A backtest is a hypothesis about the world *and* a hypothesis about execution. The statistical hygiene from time-series finance keeps the signal honest; this lesson keeps the *fills* honest. Price in the spread, model impact with the square-root law, cap your size at capacity, watch for alpha decay, and never forget that the counterparty to your every child order is a high-frequency machine that may be picking off your passive quotes faster than you can blink.
+
+<MindMap
+  client:visible
+  title="Execution-aware backtesting & HFT"
+  caption="From honest fills to the high-frequency world on the other side of your order."
+  root={{
+    label: 'Backtesting & HFT',
+    children: [
+      { label: 'Cost-naive backtest', children: [
+        { label: 'net = gross − cost' },
+        { label: '2× turnover → 2× cost' },
+        { label: 'never quote gross Sharpe' },
+      ]},
+      { label: 'Capacity & decay', children: [
+        { label: 'square-root law caps size' },
+        { label: 'alpha decays post-discovery' },
+        { label: 'beware long-history trap' },
+      ]},
+      { label: 'HFT', children: [
+        { label: 'colocation + microwave' },
+        { label: 'speed of light as a constraint' },
+        { label: 'your counterparty' },
+      ]},
+      { label: 'Strategies & adverse selection', children: [
+        { label: 'market making earns spread' },
+        { label: 'latency arb = be first' },
+        { label: 'posting risks getting picked off' },
+      ]},
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Execution-aware backtesting check"
+  questions={[
+    {
+      question: "A strategy backtests at +6 bps gross per trade. You model a realistic round-trip cost of 8 bps. What's the net edge, and what should you do?",
+      options: [
+        { text: "Net −2 bps per trade — the 'edge' is a cost-naive illusion; don't trade it", correct: true },
+        { text: "Net +14 bps — costs add to the gross edge" },
+        { text: "Net +6 bps — costs only apply to the closing trade, not the opening one" },
+        { text: "Net +8 bps — costs improve the fill price" },
+      ],
+      explanation: "Net = gross − round-trip cost = 6 − 8 = −2 bps. A positive gross edge smaller than realistic costs is a loser; the cost-naive backtest hid it.",
+    },
+    {
+      question: "Two strategies share the same signal and the same 4 bps net edge per trade, but one trades 250 times a year and the other 1,000 times. Before costs were modeled, which looked more attractive on a gross-Sharpe basis?",
+      options: [
+        { text: "The 1,000-trades version — higher turnover inflates gross Sharpe for free", correct: true },
+        { text: "The 250-trades version — fewer trades always means lower risk" },
+        { text: "Neither — gross Sharpe ignores turnover entirely" },
+        { text: "They are identical on gross Sharpe regardless of turnover" },
+      ],
+      explanation: "Gross Sharpe rewards churn because it omits the cost that high turnover incurs. That's exactly why it's a misleading number — the high-turnover variant must clear 4× the total cost to deliver the same net.",
+    },
+    {
+      question: "An academic factor earned ~60 bps/yr for years, then dropped sharply toward a low-teens residual right after it was widely published. What best explains the post-publication fade?",
+      options: [
+        { text: "Crowding: competitors arbitraged the premium away once the signal was public", correct: true },
+        { text: "The risk-free rate rose, so all factor premia must fall one-for-one" },
+        { text: "Survivorship bias was retroactively added to the future data" },
+        { text: "The factor's volatility increased, mechanically lowering its mean return" },
+      ],
+      explanation: "Alpha decay after discovery is driven by crowding (and structural change). Capital floods the trade, compressing the very spread that was the premium — the hallmark fade the FactorDecayChart shows at t≥0.",
+    },
+    {
+      question: "Your passive buy limit at the bid keeps filling — but the price tends to drop right after each fill, while it stays unfilled whenever the price is about to rise. What's happening, and what's the fix?",
+      options: [
+        { text: "Adverse selection — your fills are selected toward losing moments; consider crossing the spread to take liquidity instead", correct: true },
+        { text: "Positive slippage — you're getting better prices, so post even more aggressively" },
+        { text: "Inventory risk — the solution is to widen your quote and never trade" },
+        { text: "Latency arbitrage in your favor — keep posting and ignore the drift" },
+      ],
+      explanation: "This is textbook adverse selection on a resting order: informed flow fills you only when the trade is wrong. When alpha is short-lived or the name is fast, paying the spread to take liquidity can beat the hidden adverse-selection tax of posting.",
+    },
+  ]}
+/>
+
+You now have the full execution toolkit: you know the taxonomy of costs, how to schedule and minimize them, how to measure them after the fact with implementation shortfall, and — as of this lesson — how to keep a backtest from lying to you about all of it, plus who's waiting on the other side of every order. The pieces are on the table. Next is the **final exam**: a single graded run across the whole course, one locked-in answer at a time, to prove you can put execution-aware reasoning together under pressure. Bring the cost model with you.

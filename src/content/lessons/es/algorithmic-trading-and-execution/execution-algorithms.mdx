@@ -1,0 +1,261 @@
+---
+title: "Algoritmos de ejecución: TWAP, VWAP y POV"
+description: "Los algoritmos de ejecución por calendario más usados — TWAP por el reloj, VWAP por la curva de volumen, POV por tasa de participación, y los algoritmos de precio de llegada / implementation shortfall que cargan al principio para batir al mercado."
+topic: "es/algorithmic-trading-and-execution"
+order: 4
+minutes: 13
+updated: 2026-06-13
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, MindMap, ExecutionSchedule } from '@/components/react';
+
+Tenéis una orden de compra de 130.000 acciones. *No podéis* lanzarla entera al mercado de golpe — sería como verter un cubo de agua en una taza de té y sorprenderos cuando se desborda. El precio se os escapa, vuestra ejecución es pésima y la ventaja que tardasteis meses en investigar se evapora en noventa segundos de impacto.
+
+Así que, en su lugar, **troceáis** la orden madre en cientos de órdenes hijas pequeñas y las vais soltando al mercado a lo largo de la jornada. La pregunta que responde todo algoritmo de ejecución es la misma: *¿con qué forma liberáis las porciones?* ¿Por el reloj? ¿Por dónde está el volumen? ¿Por una fracción fija de lo que se negocia? Cada respuesta es un algoritmo con nombre propio, con su benchmark, sus fortalezas y su forma particular de costaros dinero sin que os deis cuenta.
+
+<MCQ
+  client:visible
+  pretest
+  question="Antes de empezar: debéis comprar hoy 130.000 acciones y la dividís en 13 porciones iguales de 10.000 acciones, una cada media hora, pase lo que pase en el mercado. ¿Qué algoritmo es ese?"
+  options={[
+    { text: "TWAP — precio medio ponderado por tiempo", correct: true },
+    { text: "VWAP — precio medio ponderado por volumen" },
+    { text: "POV — porcentaje del volumen" },
+    { text: "Implementation shortfall" },
+  ]}
+  explanation="Porciones iguales en un calendario de reloj fijo, ignorando el volumen, es el TWAP de manual. VWAP doblaría las porciones a la curva de volumen; POV reaccionaría al volumen en tiempo real; IS cargaría al principio frente al precio de llegada."
+/>
+
+## TWAP — precio medio ponderado por tiempo
+
+**Analogía.** TWAP es promediar el coste en euros con un cronómetro. Sois el inversor que compra exactamente 500 € de un fondo indexado el día 1 de cada mes, le pese al mercado lo que le pese — salvo que vuestro "mes" es media hora y vuestro objetivo es el *precio medio de la sesión*, no el del calendario.
+
+**Definición.** TWAP trocea la orden madre en **porciones iguales por el reloj**. Elegís $N$ intervalos de tiempo; negociáis $\tfrac{1}{N}$ de la orden en cada uno. El benchmark al que apunta es la media temporal simple del precio a lo largo de la ventana:
+$$\text{TWAP}=\frac{1}{N}\sum_{i=1}^{N} p_i$$
+donde $p_i$ es el precio en el intervalo $i$. Fijaos en que el volumen nunca aparece — cada intervalo recibe el mismo número de acciones.
+
+**Ejemplo resuelto.** 130.000 acciones, sesión regular 09:30–16:00, troceada en 13 intervalos de media hora:
+
+| Intervalos $N$ | Acciones por intervalo | Calendario |
+|---|---|---|
+| 13 | 130.000 / 13 = **10.000** | 10.000 cada 30 min, 09:30 → 16:00 |
+
+Plano como la superficie de una mesa: 10.000 acciones a las 09:30, 10.000 a las 10:00, y así hasta las 16:00. Sin previsión, sin reaccionar — solo aritmética y un reloj.
+
+<Callout variant="warning" title="La trampa: TWAP pelea contra la liquidez, no con ella">
+El volumen intradía real tiene **forma de U** — una inundación en la apertura y el cierre, un desierto a mediodía. TWAP ignora esto por completo. Mete las *mismas* 10.000 acciones en el valle delgado de mediodía (donde ese tamaño es una fracción grande del volumen → **más impacto**) que en la apertura profunda (donde 10.000 es un error de redondeo). Sobre-opera cuando el mercado es somero e infra-opera cuando es profundo — justo al revés.
+</Callout>
+
+### Cuándo usarlo
+
+Cuando **no tenéis una previsión de volumen fiable**, cuando el activo es ilíquido o su perfil de volumen es errático (de modo que cualquier previsión es ruido), o cuando queréis un calendario sencillo, predecible y **difícil de cuestionar por su tamaño**. La contracara de predecible es *detectable*: un calendario de relojería puede ser olfateado por otros participantes, así que TWAP suele añadir una pequeña aleatorización al momento y tamaño de las porciones.
+
+<FillBlank
+  client:visible
+  question="Completad la debilidad central de TWAP."
+  text="Como TWAP pondera cada intervalo {{por igual|por volumen|por precio}}, opera demasiado {{mucho|poco}} durante el valle de bajo volumen de mediodía y demasiado poco durante la apertura y el cierre profundos."
+  explanation="TWAP pondera los intervalos por igual según el tiempo. Eso significa que una porción fija se mete en el valle delgado (demasiado para esa liquidez → impacto) y la misma porción es trivial en la apertura/cierre profundos (demasiado poco)."
+/>
+
+## VWAP — precio medio ponderado por volumen
+
+**Analogía.** VWAP es el invitado educado a la fiesta que habla alto cuando la sala está ruidosa y se calla cuando está en silencio. Operad *más* cuando el mercado es profundo y bullicioso (apertura, cierre), *menos* cuando es un almuerzo soñoliento — para que cada una de vuestras porciones sea un pez pequeño en un estanque grande y apenas levante una onda.
+
+**Definición.** VWAP da forma a las órdenes hijas según la **curva (prevista) de volumen intradía**. Negociad una fracción de la orden en cada intervalo proporcional al volumen de mercado *esperado* en ese intervalo. El benchmark — el número que intentáis batir o igualar — es el precio medio ponderado por volumen del mercado a lo largo de la ventana:
+$$\text{VWAP}=\frac{\sum_i p_i\,q_i}{\sum_i q_i}$$
+donde $p_i$ y $q_i$ son el precio y el volumen negociado del print $i$. Batid el VWAP en una compra (pagad *menos* que la media ponderada por volumen del día) y vuestra mesa queda bien.
+
+**Ejemplo resuelto — calcular el benchmark VWAP.** Cuatro prints a lo largo de una porción del día:
+
+| Print | Precio (\$) | Volumen (acc.) | $p_i \times q_i$ |
+|---|---|---|---|
+| 1 | 50,00 | 2.000 | 100.000 |
+| 2 | 50,20 | 5.000 | 251.000 |
+| 3 | 49,90 | 1.000 | 49.900 |
+| 4 | 50,10 | 2.000 | 100.200 |
+| **Total** | — | **10.000** | **501.100** |
+
+$$\text{VWAP}=\frac{501{,}100}{10{,}000}=\$50,11$$
+
+Comparadlo con el precio medio *simple* (50,00 + 50,20 + 49,90 + 50,10) / 4 = \$50,05. El VWAP es más alto porque el **gran print de 5.000 acciones a \$50,20** tira hacia arriba del número ponderado por volumen — exactamente lo que el TWAP de tiempo igual habría pasado por alto. Esa brecha es justo el quid: VWAP está anclado a donde las acciones se negociaron de verdad.
+
+<Callout variant="info" title="Perseguir el volumen puede significar perseguir el precio">
+VWAP compra *más* cuando sube el volumen. Si llega un movimiento genuino — pongamos un rally impulsado por compradores con mucho volumen — VWAP rampa obedientemente vuestras compras hacia los precios más altos. Minimiza vuestra *huella* respecto al día, pero no os protege de la *tendencia*. Si tenéis alfa que dice "el precio está a punto de dispararse", un VWAP paciente puede ser la herramienta equivocada.
+</Callout>
+
+### Cuándo usarlo
+
+Cuando **existe una previsión de volumen decente** (un valor líquido con un perfil estable en forma de U), cuando un cliente o mandato os mide *contra* el VWAP, y cuando minimizar la huella de mercado a lo largo de toda la sesión importa más que correr tras una señal efímera. Su debilidad es su dependencia: una mala previsión de volumen (día de resultados, recomposición de índice, una noticia sorpresa) rompe la forma sobre la que fue construido.
+
+<ExecutionSchedule
+  client:visible
+  title="Calendarios de ejecución: TWAP vs VWAP vs POV"
+  twapLabel="TWAP"
+  vwapLabel="VWAP"
+  povLabel="POV"
+  volumeLabel="Volumen de mercado"
+  childLabel="Órdenes hijas"
+  timeLabel="Jornada (apertura → cierre)"
+  twapExplanation="TWAP divide la orden madre en porciones iguales por el reloj — el mismo tamaño cada intervalo, sin importar dónde está la liquidez. Sencillo y predecible, pero sobre-opera el valle de mediodía (pagando más impacto) e infra-opera la apertura y el cierre, que son profundos."
+  vwapExplanation="VWAP da forma a las porciones según la curva histórica de volumen: opera mucho cuando el mercado es profundo (apertura y cierre) y poco en el valle de mediodía. Casar el perfil de volumen minimiza la huella y sigue el benchmark VWAP — la opción por defecto de la ejecución por agencia."
+  povExplanation="POV (porcentaje del volumen) fija una tasa de participación — digamos el 10 % de lo que realmente se negocie — así que el calendario reacciona al volumen en tiempo real en vez de a una previsión. Sigue de forma natural la misma forma de U, pero su hora de fin es incierta: un día tranquilo estira la orden."
+  caption="La misma orden madre, tres calendarios. TWAP ignora la curva de volumen (barras planas); VWAP y POV se pliegan a ella, operando donde está la liquidez para que cada porción deje menos huella. El área tenue es el propio perfil de volumen en U del mercado."
+/>
+
+## POV — porcentaje del volumen (participación)
+
+**Analogía.** POV es el bailarín que se acompasa a la multitud en *tiempo real*. Sin coreografía decidida de antemano — simplemente os comprometéis a ser, pongamos, el 10 % de lo que esté ocurriendo en la pista ahora mismo. La multitud se anima, os movéis más; la multitud se diluye, aflojáis. Sois **reactivos**, no programados.
+
+**Definición.** POV (también llamado *tasa de participación*) negocia una **fracción fija del volumen que realmente se imprime** en tiempo real, en vez de una previsión. Elegid una tasa $\rho$ (p. ej. 10 %); en cada ventana corta, si el mercado negoció $V$ acciones, vuestro objetivo es hacer $\rho \cdot V$. El contraste con VWAP es nítido: VWAP se compromete con una *forma* por adelantado y carga con el error de previsión; POV se compromete con una *tasa* y deja que el volumen realizado decida la forma y la hora de finalización.
+
+**Ejemplo resuelto.** Tenéis 120.000 acciones que comprar a $\rho = 10\%$. Suponed que el valor negocia **1,5 M de acciones** ese día:
+
+| Magnitud | Valor |
+|---|---|
+| Tasa de participación $\rho$ | 10 % |
+| Volumen de mercado del día | 1.500.000 |
+| Acciones que ejecutáis (10 % de 1,5 M) | **150.000 de capacidad** |
+| Vuestra orden | 120.000 |
+
+El 10 % de 1,5 M es 150.000 — cómodamente más que vuestras 120.000, así que **termináis pronto**, con margen de sobra. Pero dad la vuelta al día: si el mercado solo negocia **900.000**, vuestro 10 % da 90.000 de capacidad — *no podéis* terminar vuestras 120.000 a esa tasa y o bien os estiráis hasta el cierre, aceptáis quedaros sin terminar, o empujáis vuestra participación por encima del 10 % (y aceptáis el impacto extra).
+
+<Callout variant="warning" title="La trampa: la hora de finalización es incierta, y compráis en la fuerza">
+El coste que define a POV es la **incertidumbre de finalización**. Un día tranquilo estira vuestra orden (más exposición al riesgo overnight y a la deriva del precio); un día ajetreado la termina pronto. Y como VWAP, POV es mecánicamente **procíclico**: compra *más* justo cuando se dispara el volumen — que suele ser cuando el precio se mueve en vuestra contra. Podéis poner un tope a la tasa, pero un tope demasiado ajustado arriesga no terminar nunca.
+</Callout>
+
+### Cuándo usarlo
+
+Cuando queréis una ejecución que **escale con el día real** en lugar de con una conjetura — útil cuando el volumen es difícil de prever o cuando de verdad no os importa una hora de finalización flexible. Es la elección natural para una orden que debe "seguir siendo una fracción constante y discreta de la cinta". Evitadlo cuando tenéis una **fecha límite estricta** (el cierre, un vencimiento, una cobertura que debe estar puesta a las 16:00) — POV no puede prometer estar terminado.
+
+<MatchConcepts
+  client:visible
+  question="Emparejad cada algoritmo de ejecución con la regla que define su calendario."
+  pairs={[
+    { term: "TWAP", definition: "Porciones iguales en un reloj fijo — las mismas acciones cada intervalo, volumen ignorado." },
+    { term: "VWAP", definition: "Porciones con la forma de la curva de volumen intradía prevista — más acciones donde el mercado es profundo." },
+    { term: "POV", definition: "Una fracción fija del volumen que realmente se imprime en tiempo real — reactivo, con un final incierto." },
+    { term: "Implementation shortfall", definition: "Cargado al principio frente al precio de llegada, equilibrando el impacto contra el riesgo de que el precio se aleje." },
+  ]}
+  explanation="TWAP = reloj; VWAP = curva de volumen prevista; POV = volumen realizado en tiempo real; IS = benchmark de precio de llegada con un dial de urgencia."
+/>
+
+## Algoritmos de precio de llegada / implementation shortfall
+
+**Analogía.** Imaginad que el precio del instante en que *decidisteis* operar es una puerta que se cierra. Cuanto más esperéis para cruzarla, más puede cerrarse del todo (el precio se aleja y vuestro alfa se decae). Pero cruzarla a la carrera la golpea — chocáis contra el mercado y pagáis un impacto enorme. Un algoritmo de **implementation shortfall (IS)** es el operador que enhebra esa puerta: lo bastante rápido para batir la deriva, lo bastante suave para no golpearla.
+
+**Definición.** Los algoritmos IS (también llamados de precio de llegada) toman como benchmark el **precio de llegada** — el punto medio de la horquilla en el momento en que la orden llega a la mesa — y equilibran explícitamente dos costes:
+
+- **Impacto de mercado** — el precio que empujáis al operar rápido. Cae cuando vais más despacio.
+- **Riesgo de tiempo** — la probabilidad de que el precio (y vuestro alfa) se escape mientras os demoráis. Cae cuando vais más rápido.
+
+Como el impacto os quiere lentos y el riesgo de tiempo os quiere rápidos, los algoritmos IS suelen **cargar al principio**: operan más al inicio (cuando el precio de llegada está más fresco y vuestra ventaja más intacta), y luego reducen. Un parámetro de **urgencia** (o agresividad) regula todo el conjunto: urgencia baja se comporta como un VWAP paciente; urgencia alta colapsa hacia una ejecución casi inmediata. Este es el "dilema del operador" formal, y elegir la carga inicial de forma óptima es justo lo que la próxima lección, sobre ejecución óptima y la frontera de Almgren–Chriss, vuelve riguroso.
+
+<Callout variant="tip" title="El benchmark os dice el objetivo">
+VWAP pregunta *"¿operasteis cerca de donde operó el día?"* — os perdona un mal día siempre que todos tuvieran un mal día. IS pregunta *"¿preservasteis el precio que existía cuando decidisteis?"* — un listón mucho más duro y consciente del alfa. Si tenéis una señal real con un reloj de decaimiento, IS (o el precio de llegada) suele ser el benchmark honesto; VWAP puede dejar que una ejecución lenta se esconda detrás de la multitud.
+</Callout>
+
+### Cuándo usarlo
+
+Cuando la orden lleva **alfa que se decae** (una señal que vale menos cada minuto) o se enfrenta a un riesgo de precio real a corto plazo — el coste de *no* operar es alto, así que cargar al principio compensa. Subid la urgencia para señales de decaimiento rápido y bajadla para flujo paciente y de baja convicción.
+
+## La comparación, lado a lado
+
+| Algoritmo | Benchmark al que apunta | Base del calendario | Hora de finalización | Mejor cuando |
+|---|---|---|---|---|
+| **TWAP** | Precio medio temporal | Porciones iguales por el reloj | Fija (conocida) | Sin previsión de volumen; valores ilíquidos/erráticos; queréis algo simple y predecible |
+| **VWAP** | Precio medio ponderado por volumen del día | Curva de volumen intradía prevista | Fija (conocida) | Buena previsión de volumen; medidos contra VWAP; minimizar la huella |
+| **POV** | (Sigue al VWAP realizado, más o menos) | % fijo del volumen *realizado* | **Incierta** | Queréis escalar con el día real; fecha límite flexible |
+| **IS / precio de llegada** | Precio de llegada (de decisión) | Cargado al principio, regulado por urgencia | Ajustable vía urgencia | Alfa que se decae; alto riesgo de tiempo; sin benchmark blando tras el que esconderse |
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Dos algoritmos aquí son "procíclicos" — compran más cuando se dispara el volumen. ¿Cuáles dos, y por qué es eso un coste oculto?</summary>
+
+**VWAP y POV.** VWAP rampa vuestras compras hacia los intervalos de alto volumen por diseño; POV lo hace reaccionando al volumen realizado. El coste oculto es que los picos de volumen suelen coincidir con que el precio se *mueve* — con frecuencia en vuestra contra en una compra. Ambos algoritmos minimizan vuestra huella respecto a la cinta, pero ninguno os protege de comprar *más* acciones justo cuando el precio sube. TWAP (ignora el volumen) y un IS de urgencia baja (carga al principio frente a la llegada, luego reduce) no comparten ese reflejo.
+
+</details>
+</Reveal>
+
+## Juntándolo todo
+
+Tres de estos algoritmos responden a "¿qué forma?" con un *calendario* (TWAP por el reloj, VWAP por la curva prevista, POV por la cinta en vivo), mientras que el cuarto — IS — lo responde con un *objetivo*: preservar el precio de llegada equilibrando el impacto contra el riesgo de tiempo. Todo lo que habéis visto aquí es la rampa de acceso a la **ejecución óptima**, donde ese compromiso impacto-frente-a-riesgo se vuelve una optimización precisa.
+
+<MindMap
+  client:visible
+  title="Los cuatro algoritmos de ejecución de cabecera"
+  caption="Basados en calendario (TWAP, VWAP, POV) frente a basados en objetivo (IS), y el benchmark al que responde cada uno."
+  root={{
+    label: 'Algoritmos de ejecución',
+    children: [
+      { label: 'TWAP — por el reloj', children: [
+        { label: 'Porciones iguales por intervalo' },
+        { label: 'Benchmark: precio medio temporal' },
+        { label: 'Final fijo; no necesita previsión' },
+      ]},
+      { label: 'VWAP — por la curva de volumen', children: [
+        { label: 'Porciones ∝ volumen previsto' },
+        { label: 'Benchmark: VWAP del día = Σp·q / Σq' },
+        { label: 'Minimiza la huella; necesita previsión' },
+      ]},
+      { label: 'POV — por la cinta en vivo', children: [
+        { label: '% fijo del volumen realizado' },
+        { label: 'Reactivo; final incierto' },
+        { label: 'Procíclico — compra en los picos' },
+      ]},
+      { label: 'IS / precio de llegada — por objetivo', children: [
+        { label: 'Benchmark: precio de decisión' },
+        { label: 'Cargado al principio; dial de urgencia' },
+        { label: 'Equilibra impacto vs. riesgo de tiempo' },
+      ]},
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Punto de control de algoritmos de ejecución"
+  questions={[
+    {
+      question: "Prints en una ventana: 2.000 @ \$50,00, 5.000 @ \$50,20, 1.000 @ \$49,90, 2.000 @ \$50,10. ¿Cuál es el VWAP?",
+      options: [
+        { text: "\$50,11", correct: true },
+        { text: "\$50,05" },
+        { text: "\$50,20" },
+        { text: "\$50,00" },
+      ],
+      explanation: "Σp·q = 100.000 + 251.000 + 49.900 + 100.200 = 501.100. Σq = 10.000. 501.100 / 10.000 = \$50,11. La media simple (\$50,05) ignora que el gran print de 5.000 acciones estaba a \$50,20.",
+    },
+    {
+      question: "Un gestor de carteras dispara una señal de decaimiento rápido: la ventaja vale mucho menos dentro de una hora. ¿Qué algoritmo encaja mejor con la orden?",
+      options: [
+        { text: "Un algoritmo de implementation shortfall / precio de llegada de urgencia alta", correct: true },
+        { text: "Un VWAP paciente a lo largo de toda la sesión" },
+        { text: "Un POV de tasa baja que se estira hasta el cierre" },
+        { text: "Un TWAP de 13 intervalos" },
+      ],
+      explanation: "El alfa que se decae significa que el coste de esperar es alto, así que cargáis al principio. IS toma como benchmark el precio de llegada (de decisión) y sube la urgencia para batir la deriva, aceptando más impacto para capturar la ventaja antes de que se desvanezca.",
+    },
+    {
+      question: "¿Qué afirmación sobre POV (porcentaje del volumen) es VERDADERA?",
+      options: [
+        { text: "Su hora de finalización es incierta — un día tranquilo estira la orden, un día ajetreado la termina pronto", correct: true },
+        { text: "Garantiza que terminéis exactamente en el cierre" },
+        { text: "Negocia las mismas acciones cada media hora sin importar el volumen" },
+        { text: "Requiere una previsión de volumen intradía precisa por adelantado" },
+      ],
+      explanation: "POV se ancla a una fracción fija del volumen *realizado*, así que la actividad real del día fija la hora de finalización — desconocida por adelantado. Porciones iguales de media hora es TWAP; necesitar una previsión es VWAP.",
+    },
+    {
+      question: "¿Por qué un TWAP simple suele crear MÁS impacto de mercado a mediodía que un VWAP para la misma orden?",
+      options: [
+        { text: "Mete la misma porción fija en el valle delgado de mediodía, donde ese tamaño es una fracción grande del volumen disponible", correct: true },
+        { text: "Negocia menos acciones a mediodía de las que negociaría VWAP" },
+        { text: "Apunta al precio de llegada en lugar de a la curva de volumen" },
+        { text: "Aleatoriza el momento de las porciones, lo que siempre aumenta el impacto" },
+      ],
+      explanation: "TWAP es plano por el reloj, así que la porción de mediodía es idéntica a la de la apertura. Pero el volumen de mediodía es bajo (el valle de la forma de U), de modo que esa porción fija es un trozo grande de lo que se negocia → más impacto. VWAP encoge la porción de mediodía para casar con la liquidez delgada.",
+    },
+  ]}
+/>
+
+**Lo siguiente:** estos algoritmos *describen* calendarios; la próxima lección, **Ejecución óptima**, *deriva* el mejor — formalizando el compromiso impacto-frente-a-riesgo-de-tiempo que hay detrás de IS en la frontera eficiente de Almgren–Chriss, donde elegís vuestra carga inicial según vuestra tolerancia al riesgo.

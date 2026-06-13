@@ -1,0 +1,256 @@
+---
+title: "Análisis de costes de transacción (TCA)"
+description: "Mide la calidad de ejecución con honestidad: benchmarks de precio de llegada, VWAP y cierre, slippage con signo en puntos básicos, atribución del slippage, TCA pretrade frente a posttrade, y cómo cerrar el bucle de retroalimentación sobre la ejecución."
+topic: "es/algorithmic-trading-and-execution"
+order: 6
+minutes: 12
+updated: 2026-06-13
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, MindMap } from '@/components/react';
+
+Habéis trabajado una orden. Llegaron las ejecuciones, la posición está puesta, la mesa pasa al siguiente ticket. Pregunta: ¿fue esa una *buena* operación o una *mala*? "Gané dinero" no es una respuesta — podríais haber ganado dinero y aun así haber sangrado 40 puntos básicos por culpa de un algoritmo chapucero que os habríais ahorrado enrutando a otro sitio. La única forma de saberlo es puntuar la ejecución contra un patrón de medida, anotarlo y compararlo con la siguiente.
+
+Esa disciplina es el **análisis de costes de transacción (TCA)** — el bucle de retroalimentación que convierte una operación puntual en un *proceso* en mejora continua. Es además el rastro documental que exigen los reguladores: bajo MiFID II en Europa y las obligaciones de mejor ejecución de la SEC en EE. UU., "lo hicimos lo mejor posible" no es defensa salvo que podáis *demostrarlo*, orden por orden. Esta lección va de medir la ejecución sin mentiros a vosotros mismos.
+
+<MCQ
+  client:visible
+  pretest
+  question="Un trader presume: 'Mi algoritmo batió al VWAP por 5 pb en cada orden este mes.' ¿Por qué debería el responsable de la mesa dudar de que esto pruebe una gran ejecución?"
+  options={[
+    { text: "El VWAP puede igualarse casi mecánicamente con un algoritmo pasivo que simplemente siga el volumen, así que batirlo ligeramente puede premiar la pereza en lugar de la destreza", correct: true },
+    { text: "El VWAP es ilegal como benchmark bajo MiFID II" },
+    { text: "Batir cualquier benchmark es imposible, así que el trader miente" },
+    { text: "El VWAP ya incluye las comisiones, así que los 5 pb se cuentan dos veces" },
+  ]}
+  explanation="El VWAP del intervalo es manipulable: un algoritmo que participe en línea con el volumen aterrizará cerca del VWAP casi por construcción. 'Batir al VWAP por un pelo' puede significar que el algoritmo no hizo nada ingenioso — y calla sobre si el precio en el *momento de decidir ejecutar* se alejó a la deriva. Justo por eso las mesas serias se anclan también en el precio de llegada."
+/>
+
+## Por qué medir la ejecución siquiera
+
+**Analogía.** El TCA es un pulsómetro para la mesa de trading. Sin él, "creo que me estoy poniendo en forma" es una sensación; con él, tenéis frecuencia cardíaca en reposo, ritmo y carga semanal — números que os dicen qué funciona y qué cambiar. Una mesa sin TCA es un corredor que nunca cronometra una sola vuelta y aun así insiste en que mejora.
+
+**Definición.** El TCA es la medición sistemática del coste de ejecución contra uno o más precios de referencia (benchmarks), reportado en una unidad comparable (puntos básicos del nominal), de modo que operaciones, algoritmos, brókers y centros de negociación puedan ordenarse y los peores corregirse o despedirse. Viene en dos sabores que enmarcan la operación:
+
+- **TCA pretrade** — *antes* de operar. Un modelo de costes pronostica el slippage esperado dados el tamaño de la orden, el spread, la volatilidad y el ADV, y ayuda a elegir el algoritmo y el horizonte. ("Esta orden del 12 % del ADV costará ~22 pb si se trabaja a lo largo del día; ~40 pb si la apresuro.")
+- **TCA posttrade** — *después* de que aterrizan las ejecuciones. Puntuáis lo que de verdad ocurrió contra los benchmarks y realimentáis el veredicto al modelo pretrade de mañana y a las reglas de enrutamiento.
+
+El bucle es la clave: el pretrade fija un presupuesto, el posttrade comprueba la factura y la diferencia actualiza el modelo. Saltaos la mitad posttrade y vuestros pronósticos pretrade nunca aprenden.
+
+<Callout variant="info" title="Por qué puntos básicos, no euros">
+Un fallo de 12 céntimos en una acción de \$40 y un fallo de 12 céntimos en una de \$400 son tremendamente distintos en términos relativos. El TCA reporta todo en **puntos básicos** (1 pb = 0,01 %) del benchmark, así una operación de \$2M y otra de \$200M caen sobre el mismo eje y pueden promediarse a través de la cartera.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Completa la mitad del bucle que aprende de la realidad."
+  text="Un pronóstico de coste que selecciona el algoritmo antes de operar es el TCA {{pretrade|posttrade|del intervalo}}, mientras que puntuar las ejecuciones realizadas contra los benchmarks después es el TCA {{posttrade|pretrade|de llegada}} — y el segundo realimenta para mejorar el primero."
+  explanation="El pretrade pronostica y elige; el posttrade puntúa y corrige. La retroalimentación del posttrade es lo que mantiene honesto al modelo pretrade con el tiempo."
+/>
+
+## Los benchmarks
+
+**Analogía.** Preguntar "¿fue un buen precio?" es como preguntar "¿fue un tiempo rápido?" — carece de sentido hasta que dices *rápido comparado con qué*. ¿Comparado con el pistoletazo de salida (llegada)? ¿Con el corredor medio de la carrera (VWAP)? ¿Con la photo finish (cierre)? Cada benchmark responde a una pregunta distinta, y cada uno puede manipularse si optimizas hacia él a ciegas.
+
+**Definición.** Para cada benchmark, el slippage es la diferencia con signo entre vuestra ejecución media y esa referencia, escalada a puntos básicos. Defínelo una vez, con signo de modo que **positivo = peor para una compra** (pagasteis de más):
+
+$$
+\text{slippage (pb)} = \frac{\bar{P}_{\text{fill}} - P_{\text{benchmark}}}{P_{\text{benchmark}}}\times 10000
+$$
+
+Para una **venta**, invierte el signo (vender por debajo del benchmark es el coste). Estos son los benchmarks de batalla y lo que mide realmente cada uno:
+
+- **Precio de llegada** — el punto medio (o el último) precio *en el instante en que la orden llegó a la mesa*. Es el benchmark de implementation shortfall (déficit de implementación). Es el número único más honesto porque captura *tanto* el impacto de mercado (tu propia huella) *como* el timing (el mercado yéndose a la deriva mientras esperabas). No puede manipularse simplemente operando despacio, porque operar lento deja que el precio se aleje y esa pérdida aterriza justo en el slippage.
+- **VWAP del intervalo** — el precio medio ponderado por volumen a lo largo de tu ventana de negociación. Responde a "¿batí al trader medio que estuvo activo mientras yo lo estaba?". Útil, intuitivo y *manipulable*: un algoritmo que participa en línea con el volumen de mercado sigue al VWAP casi por construcción, así que batirlo por una pizca puede significar que el algoritmo no hizo nada ingenioso.
+- **Cierre / TWAP / PWP** — el precio de cierre del día (para flujo que sigue índices o sensible al NAV), el precio medio ponderado por *tiempo* (cuando quieres un ritmo uniforme al margen de los estallidos de volumen) y el precio ponderado por *participación*, PWP-n %, el VWAP sobre la ventana que habría costado operar al n % del volumen (un patrón más justo de "¿podría haberlo hecho mejor a la agresividad que elegí?").
+
+| Benchmark | A qué responde | Fortaleza | Debilidad / riesgo de manipulación |
+|---|---|---|---|
+| Precio de llegada | "¿Cuánto me alejé del precio cuando me comprometí?" | Todo incluido: captura impacto **y** timing; difícil de manipular | Ruidoso en una sola orden; necesita muchas operaciones para ser estable |
+| VWAP del intervalo | "¿Batí a la operación media de mi ventana?" | Intuitivo, fácil de calcular, comparable entre pares | Manipulable — sigue el volumen y lo igualas; ignora la deriva pretrade |
+| TWAP | "¿Batí a un reloj de ritmo uniforme?" | Simple, ignora picos de volumen que no son tuyos | No presta atención a la liquidez; puede operar en momentos finos |
+| Cierre / PWP | "¿Batí al cierre / a un precio de ritmo justo?" | Encaja con mandatos de índice y NAV; el PWP premia un ritmo realista | El cierre es la suerte de la subasta; el PWP necesita una tasa de participación elegida |
+
+<Callout variant="warning" title="Un solo benchmark nunca basta">
+Reporta al menos llegada **y** VWAP en cada orden. La llegada mantiene honesto al algoritmo sobre la deriva; el VWAP lo mantiene honesto sobre trabajar *dentro* de la ventana. Una operación puede halagar a uno y condenar al otro — y la diferencia entre ambos es en sí misma una señal (mira la atribución más abajo).
+</Callout>
+
+<MatchConcepts
+  client:visible
+  question="Asocia cada benchmark de ejecución con la pregunta que de verdad responde."
+  pairs={[
+    { term: "Precio de llegada", definition: "¿Cuánto se alejaron mis ejecuciones del precio en el momento en que me comprometí a operar?" },
+    { term: "VWAP del intervalo", definition: "¿Batí a la media ponderada por volumen de todos los que operaron durante mi ventana?" },
+    { term: "TWAP", definition: "¿Batí a un reloj de ritmo uniforme que ignora los estallidos de volumen?" },
+    { term: "PWP-n %", definition: "¿Podría haberlo hecho mejor dado el ritmo realista que implica la tasa de participación que elegí?" },
+  ]}
+  explanation="La llegada captura impacto + timing y es la más difícil de manipular; el VWAP y el TWAP son relativos a la ventana; el PWP corrige el mayor defecto del VWAP fijando un ritmo realista antes de puntuar."
+/>
+
+## Un ejemplo de TCA totalmente resuelto
+
+**Analogía.** Misma carrera, tres cronómetros, tres veredictos. El corredor que parece lento contra el pistoletazo puede parecer un campeón contra la media del pelotón. Elige el cronómetro y eliges la historia — y por eso justamente debes leerlos todos.
+
+**Planteamiento.** Compráis **200 000 acciones**. Los precios de referencia:
+
+| Cantidad | Valor |
+|---|---|
+| Lado | Compra |
+| Acciones | 200 000 |
+| Precio de llegada (la orden llegó a la mesa) | \$40,00 |
+| Ejecución media lograda | \$40,12 |
+| VWAP del intervalo (tu ventana) | \$40,15 |
+| Cierre | \$40,30 |
+
+**Calcula el slippage en pb contra cada benchmark** usando la fórmula con signo de compra (positivo = pagar de más = peor):
+
+| Benchmark | Precio | Fill − benchmark | ÷ benchmark | × 10000 | Slippage (pb) | Veredicto |
+|---|---|---|---|---|---|---|
+| Llegada | \$40,00 | +\$0,12 | 0,0030000 | — | **+30,0 pb** | Malo — pagaste de más vs precio de compromiso |
+| VWAP del intervalo | \$40,15 | −\$0,03 | −0,0007472 | — | **−7,5 pb** | Bueno — batiste a la media de la ventana |
+| Cierre | \$40,30 | −\$0,18 | −0,0044665 | — | **−44,7 pb** | Genial — compraste muy por debajo del cierre |
+
+La aritmética, paso a paso:
+
+- **Llegada:** (40,12 − 40,00) / 40,00 = 0,12 / 40,00 = 0,0030 → ×10000 = **+30,0 pb**.
+- **VWAP:** (40,12 − 40,15) / 40,15 = −0,03 / 40,15 = −0,00074720 → ×10000 = **−7,47 ≈ −7,5 pb**.
+- **Cierre:** (40,12 − 40,30) / 40,30 = −0,18 / 40,30 = −0,00446650 → ×10000 = **−44,7 pb**.
+
+**Lee los veredictos.** Las mismas ejecuciones, tres historias radicalmente distintas. Contra la llegada la ejecución parece *mala* — pagasteis 30 pb sobre el precio al que os comprometisteis, porque la acción subió \$0,30 a lo largo del día y vuestras compras persiguieron parte de eso. Contra el VWAP parece levemente *buena* (−7,5 pb): batisteis a la operación media de vuestra ventana. Contra el cierre parece *fantástica* (−44,7 pb) — pero solo porque todo el mercado se revalorizó, lo cual no tuvo nada que ver con vuestra destreza.
+
+<Callout variant="tip" title="La lectura honesta">
+Áncorate en la **llegada** (+30 pb): la orden llegó, el precio corrió 75 pb hasta el cierre y capturaste parte de ese movimiento a un coste. Las cifras del VWAP y del cierre reflejan en su mayoría la deriva del mercado, no tu ingenio. El benchmark que elijas puede halagar o condenar la *misma* ejecución — así que reporta el estricto primero.
+</Callout>
+
+<MCQ
+  client:visible
+  question="Dado el ejemplo resuelto (compra, llegada $40,00, fill $40,12, VWAP $40,15, cierre $40,30), ¿qué afirmación es la conclusión de TCA más defendible?"
+  options={[
+    { text: "La ejecución fue excelente — batió al cierre por 44,7 pb", },
+    { text: "La ejecución costó unos 30 pb frente a la llegada; las cifras favorables de VWAP y cierre reflejan en su mayoría la deriva alcista del día, no la destreza", correct: true },
+    { text: "La ejecución fue impecable porque batió tanto al VWAP como al cierre" },
+    { text: "La operación es inmedible porque los benchmarks discrepan" },
+  ]}
+  explanation="La llegada es el ancla honesta: +30 pb de coste real. Los −7,5 vs VWAP y −44,7 vs cierre son en gran medida artefactos de un mercado al alza, no evidencia de que el algoritmo fuera bueno. La discrepancia entre benchmarks es informativa, no un motivo para tirar la toalla."
+/>
+
+## Atribución del slippage y cierre del bucle
+
+**Analogía.** "Perdimos 30 pb" es la factura total; la atribución es el recibo desglosado. No puedes arreglar una cuenta de restaurante que solo conoces como un único número — necesitas ver que fueron \$2 de spread, \$5 de retraso y \$12 de impacto-por-comprar-demasiado-rápido antes de saber qué palanca tocar.
+
+**Definición.** Descompón el slippage realizado (vs llegada) en las piezas que una mesa puede gestionar de verdad:
+
+- **Coste del spread** — el medio spread que cruzas cuando tomas liquidez en lugar de colocar. Palanca: coloca más, cruza menos.
+- **Impacto de mercado** — cuánto empujó el precio *tu propia* operativa. Palanca: opera más despacio, en lotes más pequeños, más centros de negociación.
+- **Timing / retraso** — cuánto se movió el precio entre la decisión, la llegada de la orden y las ejecuciones, por motivos ajenos a ti. Palanca: acorta la latencia decisión-a-enrutamiento; opera con urgencia cuando el alfa decae rápido.
+
+| Cubo de slippage | pb del ejemplo resuelto (vs llegada = 30) | Qué te dice | La palanca |
+|---|---|---|---|
+| Spread | 4 | Cruzaste el spread con demasiada frecuencia | Añade colocación pasiva / liquidez en el punto medio |
+| Impacto | 14 | Tu huella movió el precio | Frena, órdenes hijas más pequeñas, más centros |
+| Timing / retraso | 12 | El precio derivó mientras trabajabas | Aprieta la latencia de enrutamiento; sube la urgencia si el alfa es rápido |
+| **Total** | **30** | El coste completo de precio de llegada | — |
+
+Ahora podéis *actuar*: tabula estos cubos por algoritmo, por bróker y por centro de negociación, y los peores infractores se delatan solos. Si el impacto del Bróker A corre a 14 pb y el del Bróker B a 6 pb en órdenes comparables, enrutas más flujo a B el próximo trimestre. Esa decisión de enrutamiento, alimentada por números posttrade, *es* el bucle cerrado.
+
+<Callout variant="warning" title="Dos formas en que el TCA miente en voz baja">
+**1) Optimizar hacia un benchmark manipulable.** Premiar a los traders por batir al VWAP les enseña a seguir el volumen y dejarse llevar — y a no medir nunca la deriva pretrade que el VWAP ignora. Puntúa contra la **llegada** para los incentivos. **2) Supervivencia.** Si solo puntúas las órdenes *completadas*, borras toda orden que se canceló porque el precio se escapó — el coste de oportunidad. Una mesa que "nunca tiene mal TCA" puede estar simplemente eliminando sus peores operaciones de la muestra.
+</Callout>
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">¿Por qué puntuar solo las órdenes ejecutadas halaga el TCA de una mesa — y cuál es el arreglo?</summary>
+
+Las órdenes no ejecutadas suelen ser aquellas en las que el precio se escapó más rápido de lo que el algoritmo podía perseguir, así que cancelar fija un *coste de oportunidad* que nunca aparece en el slippage basado en ejecuciones. Elimínalas y te quedas solo con las operaciones que se portaron bien. El arreglo es medir contra el **implementation shortfall** (déficit de implementación), que carga las acciones no ejecutadas al precio de fin de horizonte, de modo que una orden que "se escapó" cuenta como el coste que realmente fue en lugar de borrarse en silencio.
+
+</details>
+</Reveal>
+
+<FillBlank
+  client:visible
+  question="Completa el benchmark al que una mesa debería atar los incentivos."
+  text="Para evitar premiar una ejecución perezosa que sigue el volumen, una mesa debería anclar su métrica de incentivos en el precio de {{llegada|VWAP|cierre}}, porque es el benchmark más difícil de manipular y captura tanto el impacto como el timing."
+  explanation="El precio de llegada (implementation shortfall) castiga tanto la huella como la deriva, así que no puedes batirlo simplemente igualando el volumen de forma pasiva como sí puedes con el VWAP."
+/>
+
+## Juntándolo todo
+
+El TCA es la disciplina que cierra el bucle: el pretrade pronostica el coste y elige la herramienta, la orden se trabaja, el posttrade puntúa las ejecuciones contra *varios* benchmarks (la llegada primero, porque es honesta), la atribución reparte el coste en spread, impacto y timing, y el veredicto reenruta el flujo de mañana. Las trampas son elegir un patrón manipulable y eliminar en silencio las órdenes que se escaparon.
+
+<MindMap
+  client:visible
+  title="El bucle de retroalimentación del TCA"
+  caption="Del pronóstico de coste a la decisión de enrutamiento — y de vuelta otra vez."
+  root={{
+    label: 'TCA',
+    children: [
+      { label: 'Pretrade', children: [
+        { label: 'Pronóstico de coste' },
+        { label: 'Elección de algoritmo y horizonte' },
+      ]},
+      { label: 'Benchmarks', children: [
+        { label: 'Llegada (honesta, difícil de manipular)' },
+        { label: 'VWAP del intervalo (manipulable)' },
+        { label: 'Cierre / TWAP / PWP' },
+      ]},
+      { label: 'Posttrade', children: [
+        { label: 'Slippage con signo en pb' },
+        { label: 'Atribución: spread / impacto / timing' },
+      ]},
+      { label: 'Cerrar el bucle', children: [
+        { label: 'Ordenar algoritmos / brókers / centros' },
+        { label: 'Reenrutar la siguiente orden' },
+        { label: 'Prueba de mejor ejecución (MiFID II / SEC)' },
+      ]},
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Punto de control de TCA"
+  questions={[
+    {
+      question: "Una orden de venta logra una ejecución media de $25,05 frente a un precio de llegada de $25,00. Usando el convenio compra-positivo (positivo = peor), ¿cuál es el slippage frente a la llegada para esta venta?",
+      options: [
+        { text: "+20 pb (peor) — vendiste por debajo de la llegada" },
+        { text: "−20 pb (favorable) — vendiste por encima de la llegada", correct: true },
+        { text: "+20 pb (favorable)" },
+        { text: "0 pb — las ventas no tienen slippage" },
+      ],
+      explanation: "(25,05 − 25,00)/25,00 ×10000 = +20 pb, pero para una VENTA inviertes el signo: vender POR ENCIMA de la llegada es bueno, así que el coste es −20 pb (favorable). Vender caro bate al precio de compromiso.",
+    },
+    {
+      question: "¿Por qué se describe el VWAP del intervalo como 'manipulable' en tanto que benchmark de TCA?",
+      options: [
+        { text: "Porque a los mercados se les permite manipular el VWAP publicado" },
+        { text: "Porque un algoritmo que participa en línea con el volumen de mercado seguirá al VWAP casi mecánicamente, así que batirlo ligeramente no tiene por qué reflejar destreza", correct: true },
+        { text: "Porque el VWAP incluye en secreto las comisiones" },
+        { text: "Porque el VWAP solo puede calcularse tras el cierre" },
+      ],
+      explanation: "Iguala el perfil de volumen e igualas el VWAP por construcción. Por eso un titular de 'batí al VWAP por unos pb' puede esconder un algoritmo que no hizo nada ingenioso e ignoró del todo la deriva pretrade.",
+    },
+    {
+      question: "La atribución posttrade muestra una compra que cuesta 30 pb vs llegada, repartidos como 4 spread / 14 impacto / 12 timing. ¿Qué acción correctiva apunta al cubo individual más grande?",
+      options: [
+        { text: "Cruzar el spread de forma más agresiva para ejecutar más rápido" },
+        { text: "Frenar el calendario, recortar el tamaño de las órdenes hijas y repartir entre más centros para reducir la huella", correct: true },
+        { text: "Cambiar el benchmark de llegada a cierre para que el número parezca más pequeño" },
+        { text: "Dejar de medir el timing porque está fuera del control del trader" },
+      ],
+      explanation: "El impacto (14 pb) es el cubo más grande y es la parte impulsada por tu propia huella — la palanca es operar más despacio, en lotes más pequeños, a través de más liquidez. Cambiar el benchmark no reduce el coste real; solo lo esconde.",
+    },
+    {
+      question: "Una mesa reporta un TCA estelar cada mes pero solo puntúa las órdenes que se completaron del todo. ¿Qué coste oculto es lo más probable que esté enmascarando?",
+      options: [
+        { text: "Rebajas del mercado que olvidó reclamar" },
+        { text: "El coste de oportunidad de las órdenes canceladas porque el precio se escapó, que nunca entran en la muestra basada en ejecuciones", correct: true },
+        { text: "Sobrecargos de comisión del bróker" },
+        { text: "Nada — el TCA de órdenes completadas es el método más riguroso" },
+      ],
+      explanation: "Supervivencia: las órdenes que se escaparon son justo las peores, y eliminarlas halaga la media. El implementation shortfall lo arregla cargando las acciones no ejecutadas al precio de fin de horizonte.",
+    },
+  ]}
+/>
+
+Ya sabéis puntuar una ejecución con honestidad, elegir el benchmark que informa en lugar de halagar, y convertir el veredicto en una decisión de enrutamiento. A continuación, en **Backtesting y HFT**, llevamos esta disciplina de medición al extremo — simulando estrategias sobre datos históricos sin engañarnos, y empujando la ejecución al régimen de los microsegundos donde los costes de spread, impacto y timing que acabáis de aprender a atribuir se ganan o se pierden en la cola.

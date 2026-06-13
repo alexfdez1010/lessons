@@ -8,6 +8,18 @@
 
 export { cx } from '@/components/react/cx';
 
+export { MarketImpactCurve, default as MarketImpactCurveDefault } from '@/components/react/MarketImpactCurve';
+export type { MarketImpactCurveProps } from '@/components/react/MarketImpactCurve';
+
+export { ExecutionSchedule, default as ExecutionScheduleDefault } from '@/components/react/ExecutionSchedule';
+export type { ExecutionScheduleProps } from '@/components/react/ExecutionSchedule';
+
+export { IsWaterfall, default as IsWaterfallDefault } from '@/components/react/IsWaterfall';
+export type { IsWaterfallProps } from '@/components/react/IsWaterfall';
+
+export { ExecutionFrontier, default as ExecutionFrontierDefault } from '@/components/react/ExecutionFrontier';
+export type { ExecutionFrontierProps } from '@/components/react/ExecutionFrontier';
+
 export { MCQ, default as MCQDefault } from '@/components/react/MCQ';
 export type { MCQProps, MCQOption } from '@/components/react/MCQ';
 

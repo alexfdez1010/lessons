@@ -1,0 +1,260 @@
+---
+title: "Implementation Shortfall"
+description: "Implementation shortfall is the master execution benchmark: the paper return you decided on minus what you actually realized, decomposed into delay, spread, impact, timing, and opportunity cost."
+topic: "en/algorithmic-trading-and-execution"
+order: 2
+minutes: 12
+updated: 2026-06-13
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, MindMap, IsWaterfall } from '@/components/react';
+
+You spot a mispricing, you hit "buy," and twenty minutes later the position is on. Did you make money? Your P&L says yes. But the price you *decided* at and the price you *got* are two different numbers — and the gap between them is where alpha quietly leaks out, drip by drip, into the pockets of market makers, faster traders, and your own footprint.
+
+That gap has a name. In 1988 André Perold called it **implementation shortfall** (IS), and it remains the single most honest scorecard execution has. It refuses to let you cherry-pick: it counts the fills you got, the fills you chased, *and* the fills you never got at all.
+
+<MCQ
+  client:visible
+  pretest
+  question="You decide to buy a stock at $50.00 (the 'decision price'). By the time your order is fully worked, your average fill is $50.18, and 8% of your intended shares never executed because the price ran away. Which of these does implementation shortfall capture?"
+  options={[
+    { text: "Only the $0.18 you overpaid on the shares that actually filled" },
+    { text: "The overpayment on filled shares AND the alpha lost on the shares that never filled", correct: true },
+    { text: "Only the explicit commissions and exchange fees you paid" },
+    { text: "Nothing — once the trade is done, the decision price is irrelevant" },
+  ]}
+  explanation="IS is deliberately all-in. It measures the full gap between the paper portfolio you decided on and the real one you ended up with — including the opportunity cost of shares that got away. That last piece is exactly what naive measures miss."
+/>
+
+## What implementation shortfall is
+
+**Analogy.** You read the menu: pasta, \$18. That's your *decision price*. You order. The kitchen is out of the pasta you wanted, so you settle for a pricier dish; there's a service charge, then tax, then tip. The bill says \$31. Implementation shortfall is the \$13 gap between the price that *made you decide* and the all-in price you actually paid — including the dish you couldn't get.
+
+**Definition.** Implementation shortfall is the difference between the return of a hypothetical "paper" portfolio that transacts instantly and costlessly at the decision price, and the return of the real portfolio you actually built:
+
+$$
+\text{IS} = \underbrace{R_{\text{paper}}}_{\text{decided at decision price}} - \underbrace{R_{\text{real}}}_{\text{what you actually achieved}}
+$$
+
+For a single buy of $N$ intended shares with decision price $P_d$, fills $n$ shares at average price $\bar{P}$ plus costs $C$, and an end-of-horizon price $P_{end}$ marking the unfilled shares:
+
+$$
+\text{IS} = \underbrace{n\,(\bar{P} - P_d) + C}_{\text{execution cost on filled shares}} \;+\; \underbrace{(N - n)\,(P_{end} - P_d)}_{\text{opportunity cost on missed shares}}
+$$
+
+A positive IS for a buy means you did *worse* than the paper portfolio — you paid up. It is the most honest scorecard precisely because nothing can hide inside it: every penny of slippage, every fee, and every share you failed to capture lands somewhere in this number.
+
+<Callout variant="info" title="Sign convention">
+For a **buy**, paying more than the decision price is a *cost* (positive IS). For a **sell**, selling below the decision price is the cost. Most desks report IS in **basis points** of intended notional so buys and sells are comparable on one axis.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Fill in the benchmark IS measures against."
+  text="Implementation shortfall compares your real fills against the {{decision price|closing price|VWAP}} — the price at the instant you committed to trade."
+  explanation="IS is anchored to the decision (a.k.a. arrival) price: the price when the alpha signal fired and you committed. Closing price and VWAP are different benchmarks with different blind spots."
+/>
+
+## The decomposition
+
+**Analogy.** IS is the total bill; the decomposition is the itemized receipt. Knowing you "lost 28 bps" is useless for fixing anything. Knowing it was *2 bps spread, 5 bps delay, 12 bps impact, 4 bps timing, 5 bps opportunity* tells you exactly which knob to turn.
+
+**Definition.** Perold's shortfall decomposes into five additive buckets:
+
+| Bucket | What it measures | Driven by |
+|---|---|---|
+| **Delay (slippage)** | Price drift between the *decision* and when your order actually reaches the market | Latency, hesitation, slow routing |
+| **Spread & fees** | The bid–ask half-spread you cross plus explicit commissions/taxes | Liquidity of the name, order aggressiveness |
+| **Market impact** | The price move *you* cause by demanding liquidity | Your size vs. available depth, speed |
+| **Timing (trading) cost** | Price moves from natural volatility *while you work* the order | Horizon length, market drift |
+| **Opportunity cost** | Alpha lost on the portion that never filled | Passivity, limit prices set too tight |
+
+These sum to total IS. The deep insight: **the buckets trade off against each other.** Trade *fast* and you crush opportunity and timing cost but pay huge market impact. Trade *slow* and impact shrinks while timing and opportunity-cost risk balloon. There is no free lunch — only a different mix.
+
+<IsWaterfall client:visible caption="Toggle Trade fast vs. Trade slow: the buckets reshuffle, but the total never goes to zero — you are choosing which cost to pay, not whether to pay one." />
+
+<MatchConcepts
+  client:visible
+  question="Match each shortfall bucket to the lever that most directly causes it."
+  pairs={[
+    { term: "Delay cost", definition: "Price drifts in the gap between deciding and the order hitting the book" },
+    { term: "Market impact", definition: "Your own demand for liquidity pushes the price against you" },
+    { term: "Timing cost", definition: "Natural volatility moves the price while you slowly work the order" },
+    { term: "Opportunity cost", definition: "Alpha forgone on shares that were never executed" },
+    { term: "Spread & fees", definition: "Half-spread crossed plus explicit commissions and taxes" },
+  ]}
+  explanation="Each bucket has a distinct cause, which is the whole point of decomposing: it tells you whether to route faster (delay), slow down (impact), shorten the horizon (timing), or be more aggressive on price (opportunity)."
+/>
+
+## A fully worked example
+
+You manage a fund and your model flags a buy. At the moment you commit, the stock prints \$50.00 — that's your **decision price**. You intend to buy **100,000 shares**, an intended notional of 100,000 × \$50.00 = **\$5,000,000**.
+
+Here is what actually happens, step by step:
+
+| Stage | Price / Quantity | Detail |
+|---|---|---|
+| Decision price $P_d$ | \$50.00 | Price when the signal fired |
+| Arrival price (order hits book) | \$50.04 | Stock drifted up \$0.04 during routing → **delay** |
+| Average fill on executed shares $\bar{P}$ | \$50.18 | Spread crossed + your own impact baked in |
+| Shares filled $n$ | 90,000 | You captured 90% of the order |
+| Shares never filled $N-n$ | 10,000 | Price ran; your limit never traded |
+| End-of-horizon price $P_{end}$ | \$50.45 | Where the missed 10,000 would have had to be chased |
+| Explicit costs $C$ | \$1,800 | Commissions + fees on the 90,000 filled shares (≈0.4 bps) |
+
+**Execution cost on filled shares:**
+
+$$
+90{,}000 \times (\$50.18 - \$50.00) + \$1{,}800 = 90{,}000 \times \$0.18 + \$1{,}800 = \$16{,}200 + \$1{,}800 = \$18{,}000
+$$
+
+**Opportunity cost on the missed 10,000 shares** (marked at the end price they would now cost):
+
+$$
+10{,}000 \times (\$50.45 - \$50.00) = 10{,}000 \times \$0.45 = \$4{,}500
+$$
+
+**Total implementation shortfall:**
+
+$$
+\text{IS} = \$18{,}000 + \$4{,}500 = \$22{,}500
+$$
+
+**In basis points of intended notional:**
+
+$$
+\text{IS}_{\text{bps}} = \frac{\$22{,}500}{\$5{,}000{,}000} \times 10{,}000 = 45 \text{ bps}
+$$
+
+Now the itemized receipt — the same \$22,500 split into Perold's buckets:
+
+| Bucket | Arithmetic | Dollars | bps of \$5M |
+|---|---|---|---|
+| Delay | 90,000 × (\$50.04 − \$50.00) | \$3,600 | 7.2 |
+| Spread + impact | 90,000 × (\$50.18 − \$50.04) | \$12,600 | 25.2 |
+| Explicit fees | given | \$1,800 | 3.6 |
+| Opportunity | 10,000 × (\$50.45 − \$50.00) | \$4,500 | 9.0 |
+| **Total IS** | sum | **\$22,500** | **45.0** |
+
+The receipt is damning: impact (25.2 bps) is the elephant, and opportunity cost (9.0 bps) is the second-biggest line — bigger than delay. A trader staring only at the \$50.18 average fill would never see that 9 bps quietly bleeding out the back door.
+
+<Callout variant="tip" title="Why bps, not dollars">
+Dollars don't compare across trades — \$22,500 on a \$5M order (45 bps) is mediocre; the same \$22,500 on a \$50M order (4.5 bps) is excellent execution. Always normalize IS by intended notional so a small trade and a giant one sit on the same ruler.
+</Callout>
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">If all 100,000 shares had filled at \$50.18 with no shares missed, what would IS be in bps?</summary>
+
+Cost = 100,000 × (\$50.18 − \$50.00) + \$1,800 = \$18,000 + \$1,800 = \$19,800. In bps: \$19,800 / \$5,000,000 × 10,000 = **39.6 bps**. Lower than 45 bps — because you'd have *captured the full position* instead of eating 9 bps of opportunity cost on the 10,000 that ran away. Filling everything, even at a worse-looking average, can beat a "great price" on a partial fill.
+
+</details>
+</Reveal>
+
+## Why opportunity cost is the subtle killer
+
+**Analogy.** Two anglers compare their day. One brags about the average weight of the fish he landed — but he only kept the easy ones near the dock and let every big fighter snap the line. The other landed fewer trophies but counts the ones that got away as a loss. Only the second angler is being honest. Opportunity cost is the fish that got away.
+
+**Definition.** Opportunity cost is the alpha forgone on the intended shares that were never executed, marked at where they'd have to be acquired now: $(N - n)(P_{end} - P_d)$ for a buy. It is the *only* IS component that grows when you do *less* trading — which is exactly why naive, fills-only metrics miss it.
+
+**The trap.** A too-passive algorithm posts patient limit orders, gets filled only when the market comes to it, and brags about a beautiful average fill price. But it systematically fails to fill when the stock is *running in your favor* — precisely when the alpha is realest. Those unfilled shares are pure forgone profit. Measure only executed fills and this lazy algo looks like a genius; measure IS against the decision price and its 9, 15, 20 bps of leakage snaps into view.
+
+<Callout variant="warning" title="The adverse-selection of passivity">
+Passive fills are *adversely selected*: you tend to get filled when the market trades *through* you (the news went the other way) and miss out when it runs your way. A fills-only scorecard rewards exactly this losing behavior. Anchoring to the **arrival/decision price** — the IS benchmark — is what stops a passive algo from gaming the numbers, and it's the foundation of proper **Transaction Cost Analysis (TCA)**.
+</Callout>
+
+<MCQ
+  client:visible
+  question="A portfolio manager's broker reports a fantastic average fill price, well inside the day's VWAP, on every order. Yet the strategy's live returns badly lag its backtest. What's the most likely culprit?"
+  options={[
+    { text: "The backtest used the wrong risk-free rate" },
+    { text: "Large opportunity cost: the algo only fills the 'easy' shares and misses fills when the stock runs in the alpha's favor", correct: true },
+    { text: "Commissions are too high relative to the spread" },
+    { text: "The broker is front-running every order" },
+  ]}
+  explanation="Beautiful average fills on the executed shares plus a backtest-vs-live gap is the classic signature of opportunity cost. The passive algo captures cheap, adversely-selected fills and skips the ones where the alpha was real — invisible to a fills-only metric, glaring under IS."
+/>
+
+## Putting it together
+
+Implementation shortfall is the honest ledger of execution: paper return minus realized return, anchored to the **decision price**, decomposed into delay, spread/fees, impact, timing, and opportunity cost — and crucially counting the trades you never made.
+
+<MindMap
+  client:visible
+  title="Implementation shortfall at a glance"
+  caption="The all-in execution scorecard and its five additive buckets."
+  root={{
+    label: 'Implementation shortfall',
+    children: [
+      { label: 'Definition', children: [
+        { label: 'Paper return − realized return' },
+        { label: 'Anchored to decision (arrival) price' },
+        { label: 'Reported in bps of intended notional' },
+      ]},
+      { label: 'Decomposition', children: [
+        { label: 'Delay / slippage' },
+        { label: 'Spread + fees' },
+        { label: 'Market impact (your footprint)' },
+        { label: 'Timing cost (volatility while working)' },
+        { label: 'Opportunity cost (unfilled shares)' },
+      ]},
+      { label: 'Trade-offs', children: [
+        { label: 'Fast → low opportunity, high impact' },
+        { label: 'Slow → low impact, high timing + opportunity' },
+      ]},
+      { label: 'Why it matters', children: [
+        { label: 'Catches passivity gaming' },
+        { label: 'Foundation of TCA' },
+      ]},
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Implementation shortfall check"
+  questions={[
+    {
+      question: "Implementation shortfall is best defined as:",
+      options: [
+        { text: "The return of the paper portfolio minus the return of the real portfolio", correct: true },
+        { text: "The bid-ask spread times the number of shares traded" },
+        { text: "The difference between VWAP and the closing price" },
+        { text: "Commissions plus exchange fees as a fraction of notional" },
+      ],
+      explanation: "Perold's definition: the gap between a costless paper portfolio transacting at the decision price and the real one you actually built — all-in.",
+    },
+    {
+      question: "You buy 50,000 shares; decision price $20.00, average fill $20.06 on the 50,000 (all filled), fees $500. IS in bps of intended notional?",
+      options: [
+        { text: "About 35 bps", correct: true },
+        { text: "About 6 bps" },
+        { text: "About 60 bps" },
+        { text: "About 3 bps" },
+      ],
+      explanation: "Cost = 50,000 × $0.06 + $500 = $3,000 + $500 = $3,500. Notional = 50,000 × $20 = $1,000,000. IS = 3,500 / 1,000,000 × 10,000 = 35 bps.",
+    },
+    {
+      question: "An algo posts patient limits and reports gorgeous average fills, but only ever fills ~70% of each order. Which IS bucket is it almost certainly hiding?",
+      options: [
+        { text: "Opportunity cost on the ~30% that never filled", correct: true },
+        { text: "Explicit commission cost" },
+        { text: "Delay cost from slow routing" },
+        { text: "Half-spread on the filled shares" },
+      ],
+      explanation: "Unfilled shares are pure opportunity cost — invisible to a fills-only average but front-and-center in IS measured against the decision price.",
+    },
+    {
+      question: "If you switch from a slow schedule to an aggressive one to chase a fast-moving signal, which way do the buckets generally move?",
+      options: [
+        { text: "Market impact rises; timing and opportunity cost fall", correct: true },
+        { text: "Every bucket falls together to roughly zero" },
+        { text: "Market impact falls while opportunity cost rises" },
+        { text: "Only explicit fees change; everything else is fixed" },
+      ],
+      explanation: "Speed is a trade-off: demanding liquidity fast raises your impact footprint, but it shrinks the volatility (timing) and missed-fill (opportunity) costs of dawdling. Total IS just changes its mix.",
+    },
+  ]}
+/>
+
+The single biggest line in our worked receipt was **market impact** — 25.2 of the 45 bps. That's no accident: for any meaningful order, the price you push the market by is usually the dominant cost. Next we'll open up that bucket on its own and meet the workhorse model practitioners use to predict it: **Market Impact & the Square-Root Law**.

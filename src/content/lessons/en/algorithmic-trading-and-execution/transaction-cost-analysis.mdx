@@ -1,0 +1,256 @@
+---
+title: "Transaction-Cost Analysis (TCA)"
+description: "Measure execution quality honestly: arrival, VWAP, and close benchmarks, signed slippage in basis points, slippage attribution, pre- vs post-trade TCA, and closing the feedback loop on execution."
+topic: "en/algorithmic-trading-and-execution"
+order: 6
+minutes: 12
+updated: 2026-06-13
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, MindMap } from '@/components/react';
+
+You worked an order. The fills came in, the position is on, the desk moves to the next ticket. Question: was that a *good* trade or a *bad* one? "I made money" is not an answer — you might have made money and still bled 40 basis points to a sloppy algo that you could have saved by routing somewhere else. The only way to know is to score the execution against a yardstick, write it down, and compare it to the next one.
+
+That discipline is **transaction-cost analysis (TCA)** — the feedback loop that turns a one-off trade into a continuously improving *process*. It is also the paper trail regulators demand: under MiFID II in Europe and the SEC's best-execution obligations in the US, "we did our best" is not a defense unless you can *show* it, order by order. This lesson is about measuring execution without lying to yourself.
+
+<MCQ
+  client:visible
+  pretest
+  question="A trader brags: 'My algo beat VWAP by 5 bps on every order this month.' Why should the head of trading be skeptical that this proves great execution?"
+  options={[
+    { text: "VWAP can be matched almost mechanically by a passive algo that simply tracks volume, so beating it slightly can reward laziness rather than skill", correct: true },
+    { text: "VWAP is illegal to use as a benchmark under MiFID II" },
+    { text: "Beating any benchmark is impossible, so the trader is lying" },
+    { text: "VWAP already includes commissions, so the 5 bps is double-counted" },
+  ]}
+  explanation="Interval VWAP is gameable: an algo that participates in line with volume will land near VWAP almost by construction. 'Beat VWAP by a hair' can mean the algo did nothing clever — and it stays silent about whether the *decision-to-fill* price drifted away. That is exactly why serious desks anchor on arrival price too."
+/>
+
+## Why measure execution at all
+
+**Analogy.** TCA is a fitness tracker for the trading desk. Without one, "I think I'm getting in shape" is a vibe; with one, you have resting heart rate, pace, and weekly load — numbers that tell you what's working and what to change. A desk without TCA is a runner who never times a single lap and still insists they're improving.
+
+**Definition.** TCA is the systematic measurement of execution cost against one or more reference prices (benchmarks), reported in a comparable unit (basis points of notional), so that trades, algos, brokers, and venues can be ranked and the worst performers fixed or fired. It comes in two flavors that bracket the trade:
+
+- **Pre-trade TCA** — *before* you trade. A cost model forecasts expected slippage given order size, spread, volatility, and ADV, and helps you pick the algo and horizon. ("This 12% of ADV order will cost ~22 bps if worked over the day; ~40 bps if I rush it.")
+- **Post-trade TCA** — *after* the fills land. You score what actually happened against the benchmarks and feed the verdict back into tomorrow's pre-trade model and routing rules.
+
+The loop is the point: pre-trade sets a budget, post-trade checks the bill, and the difference updates the model. Skip the post-trade half and your pre-trade forecasts never learn.
+
+<Callout variant="info" title="Why basis points, not dollars">
+A 12-cent miss on a \$40 stock and a 12-cent miss on a \$400 stock are wildly different in relative terms. TCA reports everything in **basis points** (1 bp = 0.01%) of the benchmark so a \$2M trade and a \$200M trade sit on the same axis and can be averaged across the book.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Fill in the half of the loop that learns from reality."
+  text="A cost forecast that selects the algo before you trade is {{pre-trade|post-trade|interval}} TCA, while scoring the realized fills against benchmarks afterward is {{post-trade|pre-trade|arrival}} TCA — and the second feeds back to improve the first."
+  explanation="Pre-trade forecasts and chooses; post-trade scores and corrects. The feedback from post-trade is what keeps the pre-trade model honest over time."
+/>
+
+## The benchmarks
+
+**Analogy.** Asking "was that a good price?" is like asking "was that a fast time?" — meaningless until you say *fast compared to what*. Compared to the gun going off (arrival)? To the average runner in the race (VWAP)? To the photo finish (close)? Each benchmark answers a different question, and each can be gamed if you optimize to it blindly.
+
+**Definition.** For every benchmark, slippage is the signed gap between your average fill and that reference, scaled to basis points. Define it once, signed so that **positive = worse for a buy** (you paid up):
+
+$$
+\text{slippage (bps)} = \frac{\bar{P}_{\text{fill}} - P_{\text{benchmark}}}{P_{\text{benchmark}}}\times 10000
+$$
+
+For a **sell**, flip the sign (selling below the benchmark is the cost). Here are the workhorse benchmarks and what each really measures:
+
+- **Arrival price** — the mid (or last) price *at the instant the order hit the desk*. This is the implementation-shortfall benchmark. It is the most honest single number because it captures *both* market impact (your own footprint) *and* timing (the market drifting while you waited). It cannot be gamed by simply trading slowly, because slow trading lets the price walk away and that loss lands right in the slippage.
+- **Interval VWAP** — the volume-weighted average price over your trading window. It answers "did I beat the average trader who was active while I was?" Useful, intuitive, and *gameable*: an algo that participates in line with market volume tracks VWAP almost by construction, so beating it by a sliver can mean the algo did nothing clever.
+- **Close / TWAP / PWP** — the day's closing print (for index-tracking or NAV-sensitive flow), the *time*-weighted average price (when you want even pacing regardless of volume bursts), and the *participation*-weighted price, PWP-n%, the VWAP over the window it would have taken to trade at n% of volume (a fairer "could I have done better at my chosen aggressiveness?" yardstick).
+
+| Benchmark | What it answers | Strength | Weakness / gaming risk |
+|---|---|---|---|
+| Arrival price | "How far did I drift from the price when I committed?" | All-in: captures impact **and** timing; hard to game | Noisy on a single order; needs many trades to be stable |
+| Interval VWAP | "Did I beat the average trade in my window?" | Intuitive, easy to compute, peer-comparable | Gameable — track volume and you match it; ignores pre-trade drift |
+| TWAP | "Did I beat an even-paced clock?" | Simple, ignores volume spikes that aren't yours | Pays no attention to liquidity; can trade into thin moments |
+| Close / PWP | "Did I beat the close / a fair-pace price?" | Matches index & NAV mandates; PWP rewards realistic pace | Close is luck-of-the-auction; PWP needs a chosen participation rate |
+
+<Callout variant="warning" title="One benchmark is never enough">
+Report at least arrival **and** VWAP on every order. Arrival keeps the algo honest about drift; VWAP keeps it honest about working *within* the window. A trade can flatter one and condemn the other — and the difference between them is itself a signal (see attribution below).
+</Callout>
+
+<MatchConcepts
+  client:visible
+  question="Match each execution benchmark to the question it actually answers."
+  pairs={[
+    { term: "Arrival price", definition: "How far did my fills drift from the price at the moment I committed to trade?" },
+    { term: "Interval VWAP", definition: "Did I beat the volume-weighted average of everyone trading during my window?" },
+    { term: "TWAP", definition: "Did I beat an evenly-paced clock that ignores volume bursts?" },
+    { term: "PWP-n%", definition: "Could I have done better given the realistic pace implied by my chosen participation rate?" },
+  ]}
+  explanation="Arrival captures impact + timing and is hardest to game; VWAP and TWAP are window-relative; PWP fixes VWAP's biggest flaw by pinning a realistic pace before scoring."
+/>
+
+## A fully worked TCA example
+
+**Analogy.** Same race, three stopwatches, three verdicts. The runner who looks slow against the starting gun can look like a champion against the average of the pack. Pick the watch and you pick the story — which is precisely why you must read all of them.
+
+**Setup.** You buy **200,000 shares**. The reference prices:
+
+| Quantity | Value |
+|---|---|
+| Side | Buy |
+| Shares | 200,000 |
+| Arrival price (order hit the desk) | \$40.00 |
+| Achieved average fill | \$40.12 |
+| Interval VWAP (your window) | \$40.15 |
+| Close | \$40.30 |
+
+**Compute slippage in bps against each benchmark** using the signed buy formula (positive = paid up = worse):
+
+| Benchmark | Price | Fill − benchmark | ÷ benchmark | × 10000 | Slippage (bps) | Verdict |
+|---|---|---|---|---|---|---|
+| Arrival | \$40.00 | +\$0.12 | 0.0030000 | — | **+30.0 bps** | Bad — paid up vs commit price |
+| Interval VWAP | \$40.15 | −\$0.03 | −0.0007472 | — | **−7.5 bps** | Good — beat the window average |
+| Close | \$40.30 | −\$0.18 | −0.0044665 | — | **−44.7 bps** | Great — bought well below the close |
+
+Arithmetic, spelled out:
+
+- **Arrival:** (40.12 − 40.00) / 40.00 = 0.12 / 40.00 = 0.0030 → ×10000 = **+30.0 bps**.
+- **VWAP:** (40.12 − 40.15) / 40.15 = −0.03 / 40.15 = −0.00074720 → ×10000 = **−7.47 ≈ −7.5 bps**.
+- **Close:** (40.12 − 40.30) / 40.30 = −0.18 / 40.30 = −0.00446650 → ×10000 = **−44.7 bps**.
+
+**Read the verdicts.** Same fills, three radically different stories. Against arrival the execution looks *bad* — you paid 30 bps over the price you committed at, because the stock rose \$0.30 over the day and your buying chased some of that. Against VWAP it looks mildly *good* (−7.5 bps): you beat the average trade in your window. Against the close it looks *fantastic* (−44.7 bps) — but only because the whole market rallied, which had nothing to do with your skill.
+
+<Callout variant="tip" title="The honest read">
+Anchor on **arrival** (+30 bps): the order arrived, the price ran 75 bps to the close, and you captured part of that move at a cost. The VWAP and close numbers mostly reflect the market's drift, not your cleverness. The benchmark you choose can flatter or condemn the *identical* execution — so report the strict one first.
+</Callout>
+
+<MCQ
+  client:visible
+  question="Given the worked example (buy, arrival $40.00, fill $40.12, VWAP $40.15, close $40.30), which statement is the most defensible TCA conclusion?"
+  options={[
+    { text: "Execution was excellent — it beat the close by 44.7 bps", },
+    { text: "Execution cost about 30 bps versus arrival; the favorable VWAP and close numbers mostly reflect the day's upward drift, not skill", correct: true },
+    { text: "Execution was flawless because it beat both VWAP and the close" },
+    { text: "The trade is unmeasurable because the benchmarks disagree" },
+  ]}
+  explanation="Arrival is the honest anchor: +30 bps of real cost. The −7.5 vs VWAP and −44.7 vs close are largely artifacts of a rising market, not evidence the algo was good. Disagreement between benchmarks is informative, not a reason to throw up your hands."
+/>
+
+## Slippage attribution & closing the loop
+
+**Analogy.** "We lost 30 bps" is the total bill; attribution is the itemized receipt. You can't fix a restaurant tab you only know as one number — you need to see that it was \$2 spread, \$5 delay, and \$12 of you-bought-too-fast impact before you know which knob to turn.
+
+**Definition.** Decompose realized slippage (vs arrival) into the pieces a desk can actually manage:
+
+- **Spread cost** — the half-spread you cross when you take liquidity instead of posting. Knob: post more, cross less.
+- **Market impact** — how much *your own* trading pushed the price. Knob: trade slower, smaller clips, more venues.
+- **Timing / delay** — how much the price moved between the decision, the order's arrival, and the fills, for reasons unrelated to you. Knob: shorten the decision-to-route latency; trade with urgency when alpha decays fast.
+
+| Slippage bucket | Worked-example bps (vs arrival = 30) | What it tells you | The lever |
+|---|---|---|---|
+| Spread | 4 | You crossed the spread too often | Add passive posting / midpoint liquidity |
+| Impact | 14 | Your footprint moved the price | Slow down, smaller child orders, more venues |
+| Timing / delay | 12 | Price drifted while you worked | Tighten routing latency; raise urgency if alpha is fast |
+| **Total** | **30** | The full arrival-price cost | — |
+
+Now you can *act*: tabulate these buckets per algo, per broker, and per venue, and the worst offenders reveal themselves. If Broker A's impact runs 14 bps and Broker B's runs 6 bps on comparable orders, you route more flow to B next quarter. That routing decision, fed by post-trade numbers, *is* the closed loop.
+
+<Callout variant="warning" title="Two ways TCA quietly lies">
+**1) Optimizing to a gameable benchmark.** Rewarding traders for beating VWAP teaches them to track volume and coast — and to never measure the pre-trade drift that VWAP ignores. Score against **arrival** for incentives. **2) Survivorship.** If you only score *completed* orders, you erase every order that was cancelled because the price ran away — the opportunity cost. A desk that "never has bad TCA" may simply be deleting its worst trades from the sample.
+</Callout>
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Why does scoring only filled orders flatter a desk's TCA — and what's the fix?</summary>
+
+Unfilled orders are usually the ones where the price ran away faster than the algo could chase, so cancelling locks in an *opportunity cost* that never shows up in fill-based slippage. Drop them and you keep only the trades that behaved. The fix is to measure against **implementation shortfall**, which charges the unfilled shares at the end-of-horizon price, so an order that "got away" is counted as the cost it really was rather than silently deleted.
+
+</details>
+</Reveal>
+
+<FillBlank
+  client:visible
+  question="Fill in the benchmark a desk should tie incentives to."
+  text="To avoid rewarding lazy, volume-tracking execution, a desk should anchor its incentive metric on the {{arrival|VWAP|closing}} price, because it is the hardest benchmark to game and captures both impact and timing."
+  explanation="Arrival (implementation-shortfall) pricing punishes both footprint and drift, so you can't beat it just by passively matching volume the way you can with VWAP."
+/>
+
+## Putting it together
+
+TCA is the discipline that closes the loop: pre-trade forecasts the cost and picks the tool, the order is worked, post-trade scores the fills against *several* benchmarks (arrival first, because it's honest), attribution splits the cost into spread, impact, and timing, and the verdict reroutes tomorrow's flow. The traps are choosing a gameable yardstick and quietly dropping the orders that got away.
+
+<MindMap
+  client:visible
+  title="The TCA feedback loop"
+  caption="From cost forecast to routing decision — and back again."
+  root={{
+    label: 'TCA',
+    children: [
+      { label: 'Pre-trade', children: [
+        { label: 'Cost forecast' },
+        { label: 'Algo & horizon choice' },
+      ]},
+      { label: 'Benchmarks', children: [
+        { label: 'Arrival (honest, hard to game)' },
+        { label: 'Interval VWAP (gameable)' },
+        { label: 'Close / TWAP / PWP' },
+      ]},
+      { label: 'Post-trade', children: [
+        { label: 'Signed slippage in bps' },
+        { label: 'Attribution: spread / impact / timing' },
+      ]},
+      { label: 'Close the loop', children: [
+        { label: 'Rank algos / brokers / venues' },
+        { label: 'Reroute next order' },
+        { label: 'Best-execution proof (MiFID II / SEC)' },
+      ]},
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="TCA checkpoint"
+  questions={[
+    {
+      question: "A sell order achieves an average fill of $25.05 against an arrival price of $25.00. Using the buy-positive convention (positive = worse), what is the slippage versus arrival for this sell?",
+      options: [
+        { text: "+20 bps (worse) — you sold below arrival" },
+        { text: "−20 bps (favorable) — you sold above arrival", correct: true },
+        { text: "+20 bps (favorable)" },
+        { text: "0 bps — sells have no slippage" },
+      ],
+      explanation: "(25.05 − 25.00)/25.00 ×10000 = +20 bps, but for a SELL you flip the sign: selling ABOVE arrival is good, so the cost is −20 bps (favorable). Selling high beats the commit price.",
+    },
+    {
+      question: "Why is interval VWAP described as 'gameable' as a TCA benchmark?",
+      options: [
+        { text: "Because exchanges are allowed to manipulate the printed VWAP" },
+        { text: "Because an algo that participates in line with market volume will track VWAP almost mechanically, so beating it slightly need not reflect skill", correct: true },
+        { text: "Because VWAP secretly includes commissions" },
+        { text: "Because VWAP can only be computed after the close" },
+      ],
+      explanation: "Match the volume profile and you match VWAP by construction. That's why a 'beat VWAP by a few bps' headline can hide an algo that did nothing clever and ignored pre-trade drift entirely.",
+    },
+    {
+      question: "Post-trade attribution shows a buy cost 30 bps vs arrival, split as 4 spread / 14 impact / 12 timing. Which corrective action targets the biggest single bucket?",
+      options: [
+        { text: "Cross the spread more aggressively to fill faster" },
+        { text: "Slow the schedule, cut child-order size, and spread across more venues to shrink the footprint", correct: true },
+        { text: "Switch the benchmark from arrival to close so the number looks smaller" },
+        { text: "Stop measuring timing because it's out of the trader's control" },
+      ],
+      explanation: "Impact (14 bps) is the largest bucket and is the part driven by your own footprint — the lever is to trade slower, in smaller clips, across more liquidity. Changing the benchmark doesn't reduce real cost; it just hides it.",
+    },
+    {
+      question: "A desk reports stellar TCA every month but only scores orders that fully completed. What hidden cost is this most likely masking?",
+      options: [
+        { text: "Exchange rebates it forgot to claim" },
+        { text: "Opportunity cost on orders cancelled because the price ran away, which never enter the fill-based sample", correct: true },
+        { text: "Commission overcharges from the broker" },
+        { text: "Nothing — completed-order TCA is the most rigorous method" },
+      ],
+      explanation: "Survivorship: the orders that got away are exactly the worst ones, and dropping them flatters the average. Implementation shortfall fixes this by charging unfilled shares at the end-of-horizon price.",
+    },
+  ]}
+/>
+
+You can now score an execution honestly, pick the benchmark that informs rather than flatters, and turn the verdict into a routing decision. Next, in **Backtesting & HFT**, we take this measurement discipline to the extreme — simulating strategies on historical data without fooling ourselves, and pushing execution into the microsecond regime where the spread, impact, and timing costs you just learned to attribute are won or lost in the queue.

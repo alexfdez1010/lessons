@@ -56,25 +56,6 @@ export interface UpcomingCourse {
  */
 export const upcomingCourses: UpcomingCourse[] = [
   {
-    slug: 'algorithmic-trading-and-execution',
-    icon: '🤖',
-    difficulty: 'expert',
-    order: 1,
-    accent: 'brand',
-    title: {
-      en: 'Algorithmic Trading & Execution',
-      es: 'Trading Algorítmico y Ejecución',
-    },
-    description: {
-      en: 'How big orders get worked: execution algos, market impact, and the backtesting traps that fool everyone.',
-      es: 'Cómo se ejecutan las órdenes grandes: algoritmos de ejecución, impacto de mercado y las trampas del backtesting.',
-    },
-    dependencies: ['market-microstructure', 'time-series-finance'],
-    tags: ['trading-and-markets', 'quantitative-finance'],
-    buildNotes:
-      'How orders get worked: execution algos (TWAP/VWAP/POV/IS), implementation shortfall, market-impact models (square-root law), backtesting pitfalls (overfitting, survivorship, look-ahead), alpha decay, transaction-cost analysis, HFT strategies at a glance. Islands: impact-curve + execution-schedule.',
-  },
-  {
     slug: 'exotic-options-and-structured-products',
     icon: '🎰',
     difficulty: 'expert',

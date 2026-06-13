@@ -44,3 +44,10 @@ the **lowest-`order` entry** in `upcomingCourses`, then **deletes that entry**.
 
 _Stages −1 through 7 are built and live in the catalog — see
 `src/content/topics/en/`. Everything still to build is in `src/lib/upcoming.ts`._
+
+## Build log
+
+Most recently graduated courses (removed from `upcomingCourses` once their topic
+MDX landed):
+
+- [x] **Algorithmic Trading & Execution** (`algorithmic-trading-and-execution`, expert) — built 2026-06-13.
