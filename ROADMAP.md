@@ -48,7 +48,7 @@ cover yet, then back to expert quant depth._
   volatility risk premium, straddles/strangles as vol bets, dispersion
   trading, tail hedging in practice. _(deps: `greeks-and-hedging`,
   `time-series-finance`; vix-term-structure + vol-premium islands)_
-- [ ] **credit-derivatives-and-securitization** ⬤⬤⬤⬤ — trading default risk:
+- [x] **credit-derivatives-and-securitization** ⬤⬤⬤⬤ — trading default risk:
   CDS mechanics & spreads, hazard-rate pricing intuition, CDS indices,
   securitization (MBS/ABS), tranching & waterfalls, correlation and why 2008
   happened, CLOs today. _(deps: `fixed-income-analytics`; tranche-waterfall +

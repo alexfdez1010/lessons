@@ -90,10 +90,30 @@ function routesForFile(file: string): string[] | 'all' | null {
     return [route];
   }
 
-  // Anything else under src/ or the astro config can restyle every page.
-  if (f.startsWith('src/') || f === 'astro.config.mjs') return 'all';
+  // Test files never affect any page render.
+  if (/\.(test|spec)\.[tj]sx?$/.test(f)) return null;
 
-  // scripts/, public/, docs, lockfiles, package.json … — no visual impact.
+  // Catalog/roadmap data + the catalog graph only re-skin the catalog page and
+  // the home page (which lists roadmap summaries + difficulty labels). KEEP IN
+  // SYNC with the importers of these modules: src/pages/{,es/}index.astro,
+  // src/pages/{,es/}catalog.astro, src/components/react/CourseGraph.tsx.
+  const CATALOG_SCOPED = new Set([
+    'src/lib/roadmaps.ts',
+    'src/lib/roadmap-meta.ts',
+    'src/lib/catalog.ts',
+    'src/lib/catalog-filter.ts',
+    'src/components/react/CourseGraph.tsx',
+  ]);
+  if (CATALOG_SCOPED.has(f)) return ['/catalog', '/es/catalog', '/', '/es'];
+
+  // LENIENT POLICY: edits to shared chrome (layouts, global.css, Seo, header/
+  // footer, generic islands, lib helpers, astro.config) can in theory re-skin
+  // every OG card — but full regen of all ~726 routes costs minutes of build +
+  // screenshot on every such commit. We deliberately DON'T force that here:
+  // unmapped files map to NO routes, so `og:changed` only ever recaptures the
+  // lesson/topic/page routes whose own content changed. OG cards for global
+  // restyles may drift until a manual full refresh: `bun run og:build`
+  // (or `bun run og:generate` against an existing build).
   return null;
 }
 
