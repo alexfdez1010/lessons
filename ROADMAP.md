@@ -83,3 +83,14 @@ cover yet, then back to expert quant depth._
   oracles, perp funding as a vol/skew signal, settlement and liquidity
   frictions vs TradFi desks. _(deps: `volatility-trading`,
   `defi-derivatives-perps`; dov-payoff + onchain-vol islands)_
+- [ ] **history-of-finance** ⬤⬤ — where financial products came from (the
+  story `history-of-money` doesn't tell): ancient lending & interest and the
+  Code of Hammurabi, Italian merchant banks + double-entry bookkeeping +
+  bills of exchange, the first government bonds (Venetian *prestiti*), the
+  Amsterdam joint-stock company & the world's first stock exchange (VOC,
+  1602), tulip mania as the first derivatives bubble, Dojima rice & the first
+  futures market, Lloyd's & the birth of insurance, central banks (Bank of
+  England 1694), mutual funds → index funds → ETFs, and the rise of modern
+  derivatives & securitization. Focus on *why each product was invented* and
+  *what problem it solved*. _(deps: `history-of-money`,
+  `stock-markets-and-funds`; product-timeline + joint-stock-share islands)_
