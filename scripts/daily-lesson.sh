@@ -51,7 +51,7 @@ CLAUDE_TIMEOUT="${CLAUDE_TIMEOUT:-5400}"        # main/rescue implementation ses
 REPAIR_TIMEOUT="${REPAIR_TIMEOUT:-2400}"        # focused repair session (40m)
 VALIDATION_TIMEOUT="${VALIDATION_TIMEOUT:-1800}" # one `bun run pre-commit` (30m)
 KILL_GRACE="${KILL_GRACE:-30}"                  # TERM->KILL grace handed to `timeout -k`
-MAX_REPAIR_ATTEMPTS="${MAX_REPAIR_ATTEMPTS:-2}" # bounded repair loop
+MAX_REPAIR_ATTEMPTS="${MAX_REPAIR_ATTEMPTS:-4}" # bounded repair loop
 
 # Our own process group -- a safety guard so cleanup can NEVER signal it.
 WRAPPER_PGID="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ' || true)"
