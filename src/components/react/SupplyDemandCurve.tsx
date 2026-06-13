@@ -175,12 +175,55 @@ export function SupplyDemandCurve({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dShift, sShift]);
 
-  // Demand line endpoints (drawn across the visible price band 0..100).
-  const dTop = { q: qDemand(100, shownD), p: 100 };
-  const dBot = { q: qDemand(0, shownD), p: 0 };
-  // Supply line endpoints.
-  const sBot = { q: qSupply(0, shownS), p: 0 };
-  const sTop = { q: qSupply(100, shownS), p: 100 };
+  // Project raw (un-clamped) data coords so each line can be clipped exactly
+  // to the plot box instead of having one endpoint coordinate yanked into a
+  // corner (which detaches the line from the true equilibrium once shifted).
+  const sxRaw = (q: number) => padL + (q / 100) * plotW;
+  const syRaw = (p: number) => padT + plotH - (p / 100) * plotH;
+
+  // Price along each line as a function of quantity.
+  const dPrice = (q: number, shift: number) => demandIntercept(shift) - q;
+  const sPrice = (q: number, shift: number) => supplyIntercept(shift) + SUPPLY_SLOPE * q;
+
+  // Clip a line (data coords, q = x, p = y) to the visible [0,100]² box via
+  // Liang–Barsky. Returns the two endpoints of the visible segment, or null.
+  const clipToBox = (
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+  ): { a: { q: number; p: number }; b: { q: number; p: number } } | null => {
+    let t0 = 0;
+    let t1 = 1;
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const p = [-dx, dx, -dy, dy];
+    const q = [x1, 100 - x1, y1, 100 - y1];
+    for (let i = 0; i < 4; i++) {
+      if (p[i] === 0) {
+        if (q[i] < 0) return null;
+      } else {
+        const r = q[i] / p[i];
+        if (p[i] < 0) {
+          if (r > t1) return null;
+          if (r > t0) t0 = r;
+        } else {
+          if (r < t0) return null;
+          if (r < t1) t1 = r;
+        }
+      }
+    }
+    return {
+      a: { q: x1 + t0 * dx, p: y1 + t0 * dy },
+      b: { q: x1 + t1 * dx, p: y1 + t1 * dy },
+    };
+  };
+
+  // Extend each line well past the box, then clip — guarantees the drawn
+  // segment passes through the true equilibrium and hits the correct axis
+  // intercepts (supply meets the price axis at 20, not the corner).
+  const demandSeg = clipToBox(-60, dPrice(-60, shownD), 160, dPrice(160, shownD));
+  const supplySeg = clipToBox(-60, sPrice(-60, shownS), 160, sPrice(160, shownS));
 
   const eqShown = equilibrium(shownD, shownS);
 
@@ -294,25 +337,29 @@ export function SupplyDemandCurve({
         />
 
         {/* Supply line */}
-        <line
-          x1={sx(sBot.q)}
-          y1={sy(sBot.p)}
-          x2={sx(sTop.q)}
-          y2={sy(sTop.p)}
-          stroke="var(--color-brand-500)"
-          strokeWidth={3}
-          strokeLinecap="round"
-        />
+        {supplySeg && (
+          <line
+            x1={sxRaw(supplySeg.a.q)}
+            y1={syRaw(supplySeg.a.p)}
+            x2={sxRaw(supplySeg.b.q)}
+            y2={syRaw(supplySeg.b.p)}
+            stroke="var(--color-brand-500)"
+            strokeWidth={3}
+            strokeLinecap="round"
+          />
+        )}
         {/* Demand line */}
-        <line
-          x1={sx(dBot.q)}
-          y1={sy(dBot.p)}
-          x2={sx(dTop.q)}
-          y2={sy(dTop.p)}
-          stroke="var(--color-accent-500)"
-          strokeWidth={3}
-          strokeLinecap="round"
-        />
+        {demandSeg && (
+          <line
+            x1={sxRaw(demandSeg.a.q)}
+            y1={syRaw(demandSeg.a.p)}
+            x2={sxRaw(demandSeg.b.q)}
+            y2={syRaw(demandSeg.b.p)}
+            stroke="var(--color-accent-500)"
+            strokeWidth={3}
+            strokeLinecap="round"
+          />
+        )}
 
         {/* Quantity demanded / supplied markers at the held price */}
         {state !== 'balanced' && (
@@ -352,25 +399,29 @@ export function SupplyDemandCurve({
           opacity={0.5}
         />
 
-        {/* Line end labels */}
-        <text
-          x={sx(sTop.q) + 4}
-          y={sy(sTop.p) + 10}
-          fontSize="11"
-          fontWeight={600}
-          fill="var(--color-brand-600)"
-        >
-          {supplyLabel}
-        </text>
-        <text
-          x={sx(dTop.q) + 4}
-          y={sy(dTop.p) + 4}
-          fontSize="11"
-          fontWeight={600}
-          fill="var(--color-accent-600)"
-        >
-          {demandLabel}
-        </text>
+        {/* Line end labels — placed at the visible top end of each segment */}
+        {supplySeg && (
+          <text
+            x={sxRaw(supplySeg.b.q) + 4}
+            y={syRaw(supplySeg.b.p) + 10}
+            fontSize="11"
+            fontWeight={600}
+            fill="var(--color-brand-600)"
+          >
+            {supplyLabel}
+          </text>
+        )}
+        {demandSeg && (
+          <text
+            x={sxRaw(demandSeg.a.q) + 4}
+            y={syRaw(demandSeg.a.p) + 4}
+            fontSize="11"
+            fontWeight={600}
+            fill="var(--color-accent-600)"
+          >
+            {demandLabel}
+          </text>
+        )}
 
         {/* Axis titles */}
         <text
