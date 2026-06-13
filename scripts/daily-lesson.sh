@@ -279,13 +279,18 @@ validate_and_finalize() {
 # ---------------------------------------------------------------------------
 PROMPT='Run one autonomous lesson-building session for this repository.
 Read CLAUDE.md, ROADMAP.md, and the relevant skills in .claude/skills first, then follow
-them completely. Implement exactly the next unchecked roadmap item from top to bottom,
-including its complete English and Spanish content. If fewer than three unchecked items
-remain, first append suitable progressively harder finance, quantitative-finance, crypto,
-or DeFi items so the roadmap does not run empty, then implement only the first unchecked
-item. Mark the item you implement as checked with today'\''s date. Inspect the existing
-working tree carefully and never discard or overwrite changes you did not create. Work only
-inside this repository.
+them completely. The build queue is DATA in `src/lib/upcoming.ts` (the `upcomingCourses`
+array), NOT a markdown checklist. Implement exactly the entry with the LOWEST `order`,
+from top to bottom, including its complete English and Spanish content. Use that entry'\''s
+`buildNotes` as the brief, its `dependencies`/`tags` for catalog wiring, and keep the same
+`slug` for the topic MDX. After the course is fully written, REMOVE that entry from
+`upcomingCourses` in `src/lib/upcoming.ts` (the built topic under `src/content/topics/` is
+now the record; leaving it in upcoming would draw the node twice). If fewer than three
+entries remain in `upcomingCourses`, first append suitable progressively harder finance,
+quantitative-finance, crypto, or DeFi entries (each one notch up) so the queue does not run
+empty, then implement only the lowest-`order` entry. Inspect the existing working tree
+carefully and never discard or overwrite changes you did not create. Work only inside this
+repository.
 
 IMPORTANT -- you are running inside a wrapper that owns ALL validation and publishing:
 - Do NOT run `bun run pre-commit`, `bun run build`, `bun run check`, `og:generate`, any

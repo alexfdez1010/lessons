@@ -129,7 +129,9 @@ src/
   i18n/ui.ts, i18n/utils.ts             # Dictionaries + helpers
   layouts/BaseLayout.astro, LessonLayout.astro
   lib/site.ts, lib/content.ts, lib/og.ts
+  lib/upcoming.ts                       # Build queue (planned, unbuilt courses) — see "Build queue" below
   pages/                                # Routes (en at root, es under /es/). og/** = OG card routes
+  pages/upcoming.astro, es/upcoming.astro # "Coming soon" page (rendered from lib/upcoming.ts)
   styles/global.css                     # Design tokens (@theme) — single source of truth
 scripts/generate-og.ts                  # Playwright OG screenshotter
 public/og/                              # Generated OG PNGs (committed)
@@ -146,6 +148,33 @@ English is the default locale served at the root (`/catalog`); Spanish is prefix
 - Build links with `localizePath('/catalog', lang)` — pass **bare** paths (no locale prefix).
 - Every page passes `lang` + `alternates` to the layout so `hreflang` and the header
   language switcher work. Use `src/lib/content.ts` helpers for content-page alternates.
+
+## Build queue — planned courses (`src/lib/upcoming.ts`)
+
+"What gets built next" is **data**, not a markdown checklist. The queue of
+planned-but-unbuilt courses lives in **`src/lib/upcoming.ts`** as the
+`upcomingCourses` array (pure data — no `astro:content` imports, safe to import
+anywhere). The site renders it for free in three places:
+
+- **Catalog graph** — appended as dimmed, non-clickable **"Coming soon"** nodes
+  (`getCourseNodes` in `src/lib/catalog.ts` concatenates `getUpcomingNodes`),
+  wired into the ladder by their `dependencies` just like built courses.
+- **`/upcoming` page** (en + `/es/upcoming`) — a dedicated card list in build
+  order, linked from the header (`nav.upcoming`) and a home-page teaser.
+
+Two operations are meant to be one-liners:
+
+- **Add a planned course** → append an `UpcomingCourse` (slug, icon, difficulty,
+  order, bilingual `title`/`description`, `dependencies`, `tags`, free-text
+  `buildNotes`). It shows up everywhere immediately. No other file changes.
+- **Graduate it to a created course** → once its topic MDX exists under
+  `src/content/topics/`, **delete its entry from `upcomingCourses`**. The built
+  topic is now the record and appears on the live catalog automatically. (Leaving
+  the slug in both places would draw the node twice.) Keep the planned `slug` =
+  the eventual topic slug so the graduation is clean.
+
+The daily autonomous agent builds the **lowest-`order`** entry, then removes it;
+see `ROADMAP.md` for the full contract.
 
 ## Authoring content
 

@@ -74,6 +74,12 @@ export interface CourseNode {
   dependencies?: string[];
   /** Roadmap tags the course carries — drives the tag filter. */
   tags?: string[];
+  /**
+   * Planned-but-unbuilt course (from `@/lib/upcoming`). Rendered as a dimmed,
+   * non-clickable "Coming soon" node — still wired by `dependencies` so it
+   * shows where it lands on the ladder, but with no `href` or lesson count.
+   */
+  comingSoon?: boolean;
 }
 
 /** One selectable roadmap tag in the filter bar. */
@@ -117,6 +123,8 @@ export interface CourseGraphProps {
   tagsLabel?: string;
   /** Text for the tags "no filter" chip (e.g. `'All paths'`). */
   allTagsLabel?: string;
+  /** Badge text shown on a planned-but-unbuilt (`comingSoon`) course node. */
+  comingSoonLabel?: string;
   /** Extra classes merged onto the root element. */
   className?: string;
 }
@@ -326,11 +334,13 @@ export function CourseGraph({
   tagOptions = [],
   tagsLabel = 'Paths',
   allTagsLabel = 'All paths',
+  comingSoonLabel = 'Coming soon',
   className,
 }: CourseGraphProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   // One DOM ref per card, keyed by slug, so we can measure centers for edges.
-  const cardRefs = useRef(new Map<string, HTMLAnchorElement>());
+  // A built course is an <a>; a coming-soon node is a <div> — both HTMLElement.
+  const cardRefs = useRef(new Map<string, HTMLElement>());
   const [edges, setEdges] = useState<EdgePath[]>([]);
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   // Per-lesson completion + the legacy whole-course flags (localStorage). Both
@@ -563,15 +573,63 @@ export function CourseGraph({
                   const edge = n.difficulty
                     ? DIFFICULTY_EDGE_CLASS[n.difficulty]
                     : 'border-l-4 border-l-ink-200 bg-surface';
+                  const setRef = (el: HTMLElement | null) => {
+                    if (el) cardRefs.current.set(n.slug, el);
+                    else cardRefs.current.delete(n.slug);
+                  };
+
+                  // Planned-but-unbuilt course: a dimmed, non-clickable node
+                  // that still anchors its dependency edges on the ladder.
+                  if (n.comingSoon) {
+                    return (
+                      <li key={n.slug} className="m-0 p-0">
+                        <div
+                          ref={setRef}
+                          title={`${n.title} · ${comingSoonLabel}`}
+                          aria-label={`${n.title} · ${comingSoonLabel}`}
+                          className={cx(
+                            'relative flex h-full w-28 max-w-[40vw] flex-col rounded-card border border-dashed border-ink-200 p-2.5 opacity-70 shadow-soft sm:w-44 sm:max-w-[80vw] sm:p-3',
+                            edge,
+                          )}
+                        >
+                          <div className="mb-1.5 flex items-center justify-between gap-2 sm:mb-2">
+                            <span
+                              className={cx(
+                                'grid h-7 w-7 shrink-0 place-items-center rounded-card text-base grayscale sm:h-9 sm:w-9 sm:text-xl',
+                                tint,
+                              )}
+                            >
+                              {n.icon}
+                            </span>
+                            {n.difficulty ? (
+                              <span className={cx('difficulty-badge hidden sm:inline-flex', DIFFICULTY_CLASS[n.difficulty])}>
+                                {difficultyLabels[n.difficulty]}
+                              </span>
+                            ) : null}
+                          </div>
+                          <h3 className="font-display text-sm font-semibold leading-snug text-ink-700">
+                            {n.title}
+                          </h3>
+                          {n.difficulty ? (
+                            <span className={cx('difficulty-badge mt-1.5 self-start sm:hidden', DIFFICULTY_CLASS[n.difficulty])}>
+                              {difficultyLabels[n.difficulty]}
+                            </span>
+                          ) : null}
+                          <p className="mt-1.5 inline-flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-ink-400">
+                            <span aria-hidden="true">⏳</span>
+                            {comingSoonLabel}
+                          </p>
+                        </div>
+                      </li>
+                    );
+                  }
+
                   const prog = courseProgress(n.slug, n.lessonSlugs, finishedLessons, legacyCourses);
                   const isDone = prog.finished;
                   return (
                     <li key={n.slug} className="m-0 p-0">
                       <a
-                        ref={(el) => {
-                          if (el) cardRefs.current.set(n.slug, el);
-                          else cardRefs.current.delete(n.slug);
-                        }}
+                        ref={setRef}
                         href={n.href}
                         title={`${n.title} · ${prog.completed}/${prog.total} ${lessonsLabel}${isDone ? ` · ${finishedLabel}` : ''}`}
                         className={cx(
