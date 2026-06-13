@@ -669,3 +669,37 @@ export type { CorrelationTrancheLossProps } from '@/components/react/Correlation
 
 export { CloOcIcTest, default as CloOcIcTestDefault } from '@/components/react/CloOcIcTest';
 export type { CloOcIcTestProps } from '@/components/react/CloOcIcTest';
+
+// Taleb & uncertainty islands
+export { TurkeyConfidenceCurve, default as TurkeyConfidenceCurveDefault } from '@/components/react/TurkeyConfidenceCurve';
+export type { TurkeyConfidenceCurveProps } from '@/components/react/TurkeyConfidenceCurve';
+
+export { ExtremistanShift, default as ExtremistanShiftDefault } from '@/components/react/ExtremistanShift';
+export type { ExtremistanShiftProps } from '@/components/react/ExtremistanShift';
+
+export { SigmaImprobability, default as SigmaImprobabilityDefault } from '@/components/react/SigmaImprobability';
+export type { SigmaImprobabilityProps } from '@/components/react/SigmaImprobability';
+
+export { FragilityTriad, default as FragilityTriadDefault } from '@/components/react/FragilityTriad';
+export type { FragilityTriadProps } from '@/components/react/FragilityTriad';
+
+export { JensenConvexityBand, default as JensenConvexityBandDefault } from '@/components/react/JensenConvexityBand';
+export type { JensenConvexityBandProps } from '@/components/react/JensenConvexityBand';
+
+export { BarbellAllocation, default as BarbellAllocationDefault } from '@/components/react/BarbellAllocation';
+export type { BarbellAllocationProps } from '@/components/react/BarbellAllocation';
+
+export { MinorityRule, default as MinorityRuleDefault } from '@/components/react/MinorityRule';
+export type { MinorityRuleProps } from '@/components/react/MinorityRule';
+
+export { BobRubinAsymmetry, default as BobRubinAsymmetryDefault } from '@/components/react/BobRubinAsymmetry';
+export type { BobRubinAsymmetryProps } from '@/components/react/BobRubinAsymmetry';
+
+export { EnsembleTimeFan, default as EnsembleTimeFanDefault } from '@/components/react/EnsembleTimeFan';
+export type { EnsembleTimeFanProps } from '@/components/react/EnsembleTimeFan';
+
+export { LindyCurve, default as LindyCurveDefault } from '@/components/react/LindyCurve';
+export type { LindyCurveProps } from '@/components/react/LindyCurve';
+
+export { HormesisCurve, default as HormesisCurveDefault } from '@/components/react/HormesisCurve';
+export type { HormesisCurveProps } from '@/components/react/HormesisCurve';
