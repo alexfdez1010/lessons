@@ -56,25 +56,6 @@ export interface UpcomingCourse {
  */
 export const upcomingCourses: UpcomingCourse[] = [
   {
-    slug: 'exotic-options-and-structured-products',
-    icon: '🎰',
-    difficulty: 'expert',
-    order: 2,
-    accent: 'accent',
-    title: {
-      en: 'Exotic Options & Structured Products',
-      es: 'Opciones Exóticas y Productos Estructurados',
-    },
-    description: {
-      en: 'Beyond vanillas: barriers, digitals, autocallables, and how a structured note is really a bond plus an option strip.',
-      es: 'Más allá de las vainilla: barreras, digitales, autocancelables y cómo un nota estructurada es un bono más un paquete de opciones.',
-    },
-    dependencies: ['options-pricing', 'greeks-and-hedging', 'volatility-trading'],
-    tags: ['derivatives'],
-    buildNotes:
-      'Beyond vanillas: digital/binary options, barrier options (knock-in/out) and their hedging headaches, lookbacks & Asians, autocallables and cliquets, how a structured note is decomposed into a bond + option strip, payoff engineering and the hidden costs investors pay. Islands: barrier-payoff + autocall-ladder.',
-  },
-  {
     slug: 'counterparty-risk-and-xva',
     icon: '🤝',
     difficulty: 'expert',

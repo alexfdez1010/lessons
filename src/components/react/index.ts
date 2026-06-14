@@ -660,6 +660,13 @@ export type { DispersionBarsProps } from '@/components/react/DispersionBars';
 export { TailHedgeConvexity, default as TailHedgeConvexityDefault } from '@/components/react/TailHedgeConvexity';
 export type { TailHedgeConvexityProps } from '@/components/react/TailHedgeConvexity';
 
+// Exotic options & structured products islands
+export { BarrierPayoff, default as BarrierPayoffDefault } from '@/components/react/BarrierPayoff';
+export type { BarrierPayoffProps } from '@/components/react/BarrierPayoff';
+
+export { AutocallLadder, default as AutocallLadderDefault } from '@/components/react/AutocallLadder';
+export type { AutocallLadderProps } from '@/components/react/AutocallLadder';
+
 // Credit-derivatives & securitization islands
 export { CdsCashflow, default as CdsCashflowDefault } from '@/components/react/CdsCashflow';
 export type { CdsCashflowProps } from '@/components/react/CdsCashflow';

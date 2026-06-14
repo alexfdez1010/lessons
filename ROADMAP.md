@@ -51,3 +51,4 @@ Most recently graduated courses (removed from `upcomingCourses` once their topic
 MDX landed):
 
 - [x] **Algorithmic Trading & Execution** (`algorithmic-trading-and-execution`, expert) — built 2026-06-13.
+- [x] **Exotic Options & Structured Products** (`exotic-options-and-structured-products`, expert) — built 2026-06-14.
