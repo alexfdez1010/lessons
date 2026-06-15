@@ -1,0 +1,383 @@
+---
+title: "Measuring Exposure: EE, EPE & PFE"
+description: "Exposure is replacement cost, max(value, 0), and it is uncertain — so we track it through time with current exposure, expected exposure (EE/EPE) and potential future exposure (PFE), and read the hump of a swap against the rising profile of an FX forward."
+topic: "en/counterparty-risk-and-xva"
+order: 2
+minutes: 16
+updated: 2026-06-14
+---
+
+import { Callout, MCQ, Quiz, FillBlank, MatchConcepts, Categorize, MindMap, ExposureProfile } from '@/components/react';
+
+Last lesson you learned the one-sentence definition of counterparty risk: when a trade is worth money *to you* and your counterparty defaults, you lose that money — and exposure is $\max(\text{value}, 0)$, breathing as the market moves. That's the *what*. This lesson is the *how much*. Because "they might not pay" is useless to a risk desk until it has a number, and exposure isn't one number — it's a whole distribution that stretches out into the future. By the end you'll be able to read an exposure profile like a doctor reads an EKG: the swap's tidy hump, the FX forward's relentless climb, and the flat line that collateral draws through both. Let's put numbers on the fear.
+
+<MCQ
+  client:visible
+  pretest
+  question="You have a single swap with one counterparty. Today it's worth +$2m to you. Before any modelling — what's the most honest statement about how much that counterparty could cost you if they default?"
+  options={[
+    { text: 'Possibly much more than $2m, because the mark can grow before they ever default', correct: true },
+    { text: 'Exactly $2m — that is the value today, so that is the loss' },
+    { text: 'At most $2m, since exposure can never exceed the current mark' },
+    { text: 'Nothing, because the $2m is already booked as a gain' },
+  ]}
+  explanation="$2m is only TODAY's exposure. Default is a future event, and between now and then the trade's value can drift much higher — a swap that's +$2m today could be +$5m when the counterparty actually goes under. Measuring exposure means modelling that future distribution, not just snapshotting the current mark."
+/>
+
+## Exposure is replacement cost: max(value, 0)
+
+**Analogy.** A counterparty trade is a **half-finished home renovation with a contractor**. If you've paid in advance and they've done little of the work — the deal is "in the money" to you — and they vanish, you're out the money: you must hire someone else to finish, at today's prices. That re-hiring cost is your loss. But if *you* still owe *them* for work already done and they vanish, you lose nothing on their disappearance — you simply... still owe the bill. The loss only flows one way: toward whoever is owed.
+
+**The precise definition.** Exposure is **replacement cost**: if your counterparty defaults right now, what does it cost to replace the trade at market? If the trade is worth $+V$ to you, you must go re-establish it with someone solvent and pay $V$ to do so — that's your loss. If it's worth $-V$ to you (you're underwater on it), replacing it actually *frees* you, so the default costs you nothing. Hence the one-sided formula you met last lesson:
+
+$$\text{Exposure} = \max(V, 0)$$
+
+The trade's **value $V$ is two-sided** — it swings positive and negative as markets move. But your **exposure is one-sided** — it only ever counts the positive part. That asymmetry is the whole reason counterparty risk is hard: you eat the bad case (they default when they owe *you*) and get no credit for the good case (they default when *you* owe *them* — you still pay).
+
+**Worked example.** One interest-rate swap, two snapshots:
+
+| Snapshot | Mark-to-market $V$ to you | If they default now, you... | Exposure $\max(V,0)$ |
+|---|---|---|---|
+| Rates moved your way | +\$2m | must replace at market, costing \$2m | **\$2m** |
+| Rates moved against you | −\$2m | replace and walk free — but you still owe \$2m | **\$0** |
+
+In the first row you're owed \$2m, so default costs you \$2m. In the second you owe \$2m, so their default is — bluntly — not your problem; you still have to settle up. Same swap, same \$2m magnitude, two completely different exposures, because the $\max(\cdot,0)$ clips off the half where you're the debtor.
+
+<Callout variant="warning" title="The asymmetry is the trap">
+The instinct is "the swap is worth \$2m either way, so my risk is \$2m either way." Wrong. When you're the one who *owes*, their default doesn't refund your debt — you lose nothing from *them* defaulting and gain nothing either. Exposure throws away the favourable half of the value distribution. That's why you can't just look at net mark-to-market and call it risk: you have to model the *positive part*, and the positive part alone.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Fill in the definition of exposure."
+  text="Exposure is the {{replacement cost|notional|coupon}} if your counterparty defaults, equal to {{max(V, 0)|min(V, 0)|the absolute value of V}}. The trade's value V is {{two-sided|one-sided|always positive}}, swinging both ways, but exposure is {{one-sided|two-sided|symmetric}} — it counts only the part where the counterparty owes you."
+  explanation="Exposure = max(V, 0) = the replacement cost. Value is two-sided (it swings positive and negative); exposure is one-sided because a defaulting counterparty only costs you money when they owe YOU. The negative half — where you owe them — is clipped to zero."
+/>
+
+## Current exposure vs. potential future exposure
+
+<MCQ
+  client:visible
+  pretest
+  question="Your risk system shows current exposure to a counterparty of $2m. Why is that single number a dangerously incomplete picture of the risk?"
+  options={[
+    { text: 'It is just today’s snapshot; default happens later, by when the exposure could be far higher', correct: true },
+    { text: 'It overstates the risk, because exposure always shrinks over time' },
+    { text: 'It is irrelevant, since current exposure has nothing to do with default loss' },
+    { text: 'It double-counts, because current exposure already includes future moves' },
+  ]}
+  explanation="Current exposure is a known snapshot — max(MtM now, 0). But counterparties rarely default at this instant; they default months or years out, by which point the mark could have drifted well above (or below) $2m. The real risk lives in the FUTURE distribution of exposure, which is exactly why we model potential future exposure."
+/>
+
+**The definition.** Split exposure into two questions: *how much now* and *how much could it become*.
+
+**Current exposure (CE)** is the easy one — it's just $\max(\text{MtM now}, 0)$. You can read your marks off the screen, take the positive part, done. It's **known**, deterministic, no modelling required.
+
+The hard, interesting part is **potential future exposure**. Default is almost never *today* — it's a future event, landing weeks, months, or years out. Between now and then the trade's mark wanders, and by the time the counterparty actually folds, the exposure could be much larger than it is now. So we can't get away with a snapshot. We have to model the **whole distribution of future exposure** at each future date: simulate thousands of market paths, revalue the trade along each one, take $\max(V,0)$ at every step, and look at the spread of outcomes.
+
+**Worked example.** A swap is $\max(V,0) = 2$, i.e. \$2m, today. We simulate it forward one year and get a distribution of possible exposures: most paths cluster near \$2–3m, but a chunky tail reaches \$6m, and some paths leave it worthless (the mark went negative, exposure clipped to \$0). The current exposure is a flat \$2m. The *future* exposure is that entire fan of outcomes — and the risk that bites you is whether the counterparty defaults on a high path or a low one. One snapshot can't tell you that; a distribution can.
+
+<Callout variant="tip" title="Two clocks ticking">
+Counterparty risk runs on two clocks at once: **when does the mark move** (market risk — the value drifts around) and **when do they default** (credit risk — the counterparty fails at some unknown future date). Exposure measurement is where those two clocks collide. You're asking, "across all the futures where they default, how deep in the money is the trade *at the moment they fail*?" That's why a single current number isn't enough — you need the exposure's shape across *every* future date a default could land on.
+</Callout>
+
+<MatchConcepts
+  client:visible
+  question="Match each exposure idea to what it actually is."
+  pairs={[
+    { term: 'Current exposure (CE)', definition: 'max(MtM now, 0) — a known snapshot, no modelling' },
+    { term: 'Potential future exposure', definition: 'The modelled distribution of exposure at future dates' },
+    { term: 'Why CE is not enough', definition: 'Default lands later, when the mark may have drifted higher' },
+    { term: 'What drives the future spread', definition: 'Simulated market paths revalued and clipped at max(V,0)' },
+  ]}
+  explanation="Current exposure is the easy, known part — today's positive mark. The risk lives in the future: default arrives at some unknown later date, and the mark could have wandered far above today's level. To capture that, we simulate paths, revalue the trade along each, and take the positive part at every future step."
+/>
+
+## Expected Exposure (EE) and EPE
+
+<MCQ
+  client:visible
+  pretest
+  question="At a future date t, your simulation gives many possible trade values — some positive, some negative. To compute expected exposure EE(t), what do you average?"
+  options={[
+    { text: 'The positive part, max(V, 0), across all the simulated paths', correct: true },
+    { text: 'The raw value V across all paths, keeping the negatives' },
+    { text: 'Only the paths where V is positive, ignoring the rest entirely' },
+    { text: 'The single highest value across all paths at time t' },
+  ]}
+  explanation="EE(t) is the average of max(V, 0) over ALL paths — including the ones where V is negative, which contribute zero (not omitted). Averaging raw V would let negative paths cancel out positive exposure, understating it. Averaging only positive paths would drop the zeros and overstate it. The clip-then-average order is what makes EE an exposure, not a mark."
+/>
+
+**The definition.** **Expected Exposure $EE(t)$** is the average exposure at a future time $t$ — specifically, the mean of the *positive part* of value across the simulated distribution:
+
+$$EE(t) = \mathbb{E}\big[\max(V_t, 0)\big]$$
+
+The order of operations is everything. You **clip first** (take $\max(V,0)$ on each path, turning every negative into a zero) and **average second**. Do it the other way — average $V$ first, then clip — and the negative paths cancel out positive exposure on other paths, leaving you with a number that badly understates the risk. Clip, *then* average.
+
+**The worked example.** Forget thousands of paths; do three by hand. At time $t = 1\text{yr}$, three simulated values for one trade:
+
+| Path | Value $V_t$ | Exposure $\max(V_t,0)$ |
+|---|---|---|
+| A | +\$6m | \$6m |
+| B | −\$2m | \$0 |
+| C | +\$3m | \$3m |
+
+Clip first: the exposures are \$6m, \$0, \$3m. Average second (in \$m):
+
+$$EE(1\,\text{yr}) = \frac{6 + 0 + 3}{3} = 3.$$
+
+So the expected exposure at one year is **\$3m**.
+
+Now watch what the wrong order does. Average the raw values: $(6 - 2 + 3)/3 = 2.33$, i.e. \$2.33m — path B's negative leaked in and *reduced* the answer, even though a counterparty defaulting on path B costs you nothing (you owe *them*). The \$2.33m understates the true \$3m exposure. Clip, then average. Always.
+
+**EPE — squashing the curve to one number.** $EE(t)$ is a *curve* — one value per future date. **Expected Positive Exposure (EPE)** flattens that curve into a single summary by averaging $EE(t)$ over the life of the trade:
+
+$$\text{EPE} = \frac{1}{T}\int_0^T EE(t)\,dt \;\approx\; \text{the time-average of the EE profile.}$$
+
+If $EE$ reads \$2m, \$3m, \$3m, \$2m, \$0 across five annual points, EPE is roughly their average, about \$2m. EPE is the "typical exposure over the whole life" — and, as you'll see, it's the headline number that feeds **pricing** (the CVA you'll meet two lessons from now).
+
+<Callout variant="warning" title="Clip then average — the #1 exposure mistake">
+The single most common error in hand-built exposure calculations is averaging raw P&L and then taking the positive part. That lets in-the-money and out-of-the-money paths *net against each other*, which is exactly the netting exposure does **not** give you for a single trade's positive part. A defaulting counterparty doesn't refund you on the paths where you owe them. Take $\max(V,0)$ **per path, first**; average **after**. If you remember one thing from this section, make it the order.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Fill in the EE / EPE machinery."
+  text="Expected exposure EE(t) is the average of {{max(V, 0)|raw V|the maximum path}} across the simulated paths at time t — you clip {{first|last|never}}, then average. EPE is the {{time-average|maximum|final value}} of the EE curve across the life, collapsing the whole profile into a single number that feeds {{pricing (CVA)|credit limits|the notional}}."
+  explanation="EE(t) = E[max(V, 0)] — clip each path to its positive part FIRST, then average. EPE is the time-average of that EE curve over the trade's life, a single summary number. EPE is the pricing input: it's what CVA is built on."
+/>
+
+## Potential Future Exposure (PFE)
+
+<MCQ
+  client:visible
+  pretest
+  question="A risk officer wants to set a credit limit on a counterparty — a line they should never plausibly breach. Which exposure measure should they use, and why?"
+  options={[
+    { text: 'PFE, a high quantile of exposure, because limits guard against the bad case, not the average', correct: true },
+    { text: 'EE, the average exposure, because limits should reflect the typical day' },
+    { text: 'Current exposure, because limits only ever care about today' },
+    { text: 'EPE, the time-averaged exposure, because it summarises the whole life' },
+  ]}
+  explanation="Limits exist to cap the PLAUSIBLE BAD case, so they're set off PFE — a high quantile (e.g. 95th or 97.5th percentile) of future exposure. EE and EPE are averages; a limit built on an average would be breached on roughly half the bad paths. Averages price the risk (CVA); quantiles bound it (limits)."
+/>
+
+**The definition.** **Potential Future Exposure (PFE)** answers a different question from EE. EE asks "on average, how exposed am I?" PFE asks "**in a plausibly bad case, how exposed could I get?**" It's a **high quantile** of the exposure distribution at a horizon — typically the **95th or 97.5th percentile**. Not the worst case (that's unbounded and useless), and not the average (that's EE) — the bad-but-believable case, the kind of number you'd be embarrassed to be caught *above*.
+
+**Why a quantile, not a max.** The single worst simulated path is noise — one freak draw tells you nothing actionable. The 95th percentile says: "only 1 path in 20 is worse than this." That's a line you can manage to. PFE is the headroom number: it's what **credit limits** are built on. A desk gets a PFE limit per counterparty, and if a new trade would push the PFE profile above that line, the trade is blocked or needs more collateral.
+
+**Worked example.** At a one-year horizon, sort the simulated exposures from low to high. Say 20 representative paths come out (in \$m):
+
+$$0,\ 0,\ 0,\ 0.5,\ 1,\ 1,\ 1.5,\ 2,\ 2,\ 2.5,\ 3,\ 3,\ 3.5,\ 4,\ 4.5,\ 5,\ 5.5,\ 6,\ 7,\ 9.$$
+
+The **average** of these is the EE — work it out and it's about \$3.1m. The **95th percentile** sits near the top: with 20 points, the 95th percentile is around the 19th value, so $\text{PFE}_{95\%} \approx 7$, i.e. \$7m. Notice the gap: EE is \$3.1m but PFE is \$7m — more than double. That gap is the whole point. You *price* the trade off the \$3.1m (the average pain), but you *limit* the counterparty off the \$7m (the plausible bad day). Confuse the two and you'll either misprice or under-cap.
+
+<Callout variant="tip" title="Two numbers, two jobs — don't mix them up">
+**EE feeds pricing. PFE feeds limits.** Say it twice. The *average* exposure (EE/EPE) is what you charge for — CVA is essentially "EE integrated against the probability of default." The *quantile* exposure (PFE) is what you bound — limits keep any single counterparty from getting big enough to hurt you on a bad day. Same simulated distribution, two different statistics, two different jobs. A risk system that prices off PFE will overcharge; one that limits off EE will under-protect.
+</Callout>
+
+<Categorize
+  client:visible
+  question="Sort each fact under the exposure measure it belongs to."
+  buckets={['Expected exposure (EE/EPE) — for pricing', 'Potential future exposure (PFE) — for limits']}
+  items={[
+    { text: 'It is the average of max(V, 0) across paths', bucket: 'Expected exposure (EE/EPE) — for pricing' },
+    { text: 'It is a high quantile, e.g. the 95th percentile', bucket: 'Potential future exposure (PFE) — for limits' },
+    { text: 'It is the input that CVA is built on', bucket: 'Expected exposure (EE/EPE) — for pricing' },
+    { text: 'It caps how big a single counterparty can get', bucket: 'Potential future exposure (PFE) — for limits' },
+    { text: 'A new trade is blocked if it pushes this profile too high', bucket: 'Potential future exposure (PFE) — for limits' },
+    { text: 'Its time-average over the life is a single pricing summary', bucket: 'Expected exposure (EE/EPE) — for pricing' },
+  ]}
+  explanation="EE/EPE are averages — the mean of the positive part — and averages are what you price against, so they feed CVA. PFE is a high quantile — the plausible bad case — and quantiles are what you bound, so they feed credit limits. Pricing wants the typical pain; limits want the headroom against a bad day."
+/>
+
+## The shape of exposure: diffusion vs. amortisation
+
+<MCQ
+  client:visible
+  pretest
+  question="An interest-rate swap's exposure profile rises, peaks somewhere in the middle of its life, then falls back to zero at maturity. What pair of opposing forces produces that hump?"
+  options={[
+    { text: 'Diffusion pushing exposure up (uncertainty grows ~√t) versus amortisation pulling it down (cash flows settle and pay off)', correct: true },
+    { text: 'Inflation pushing it up versus interest pulling it down' },
+    { text: 'Credit spread widening up versus recovery rates down' },
+    { text: 'Collateral up versus margin calls down' },
+  ]}
+  explanation="Two forces fight. DIFFUSION: the longer you wait, the more the mark could have wandered, and uncertainty grows like √t, pushing exposure up. AMORTISATION: every settled swap payment is one less cash flow left to replace, pulling exposure down toward zero at maturity. Early on diffusion wins (the hump rises); late on amortisation wins (it collapses to zero)."
+/>
+
+**The two forces.** Why does an exposure profile have a *shape* at all? Two forces pull in opposite directions across a trade's life:
+
+- **Diffusion (pushes exposure UP).** The further into the future you look, the more the underlying could have moved, and that uncertainty grows roughly like $\sqrt{t}$ — the same square-root-of-time spreading you've seen in volatility scaling. More dispersion in the mark means a fatter positive tail, means more exposure. Diffusion alone would make exposure rise forever.
+- **Amortisation (pulls exposure DOWN).** But trades don't last forever, and many *pay themselves down* as they go. Every coupon or settlement on a swap is one more cash flow exchanged and gone — leaving **less remaining value left to replace** if the counterparty later defaults. As maturity approaches, there's almost nothing left, so exposure must collapse to **zero at maturity**.
+
+**The interest-rate swap: a hump.** A swap feels *both* forces. Early in its life, diffusion dominates — uncertainty is piling up faster than the cash flows are amortising — so exposure **rises**. Later, the swap has paid down most of its flows, amortisation takes over, and exposure **falls back to zero** at maturity. The result is the swap's signature **hump**, peaking roughly **one-third of the way** through the life. (That $1/3$ isn't folklore: for the simple proxy $\sqrt{u}\,(1-u)$, the maximum is exactly at $u = 1/3$.)
+
+**The FX forward: a monotonic climb.** Now strip out amortisation. An **FX forward** has a single exchange of currencies **at maturity** — no intermediate cash flows, nothing paid down along the way. So amortisation never gets to act. Only diffusion is left, and diffusion only ever pushes up. The exposure therefore **rises monotonically**, biggest on the **very last day**, when the accumulated uncertainty about the exchange rate is at its maximum and the whole notional is about to change hands. Same family of math, opposite shape — and the difference is entirely "does this trade pay itself down, or does it all land at the end?"
+
+The island below lets you flip between the two and watch the shapes diverge. The defaults open on the swap's hump; toggle to the FX forward and watch the curve straighten into a climb.
+
+<ExposureProfile
+  client:visible
+  caption="Toggle between Interest-rate swap and FX forward and watch where each one peaks: the swap humps and slides back to zero at maturity (diffusion up, amortisation down), while the FX forward climbs all the way to a maturity peak (diffusion only — nothing amortises). The solid line is EE (the pricing average); the dashed band is PFE (the bad-case quantile for limits) — notice PFE sits well above EE, the same gap you computed by hand. Then tick 'Add collateral (CSA)' to see the entire profile collapse to a thin band — a preview of the netting-and-collateral machinery coming up in the next two lessons."
+/>
+
+<Callout variant="tip" title="The shape is a fingerprint">
+Once you've internalised these two forces, you can *guess* a trade's exposure shape before you simulate it. Lots of intermediate cash flows that pay down the notional? Expect a hump — diffusion early, amortisation late. One big bullet exchange at the end with nothing in between? Expect a monotonic climb to a maturity peak. A forward-starting trade that doesn't begin for two years? Expect exposure pinned near zero until it starts, then rising. The profile is a fingerprint of the trade's cash-flow timing, read through the lens of diffusion-versus-amortisation.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Fill in the two forces that shape an exposure profile."
+  text="Exposure is shaped by two opposing forces: {{diffusion|inflation|recovery}}, which pushes exposure up as uncertainty grows like the square root of time, and {{amortisation|collateral|netting}}, which pulls it down as cash flows settle and there's less left to replace. An interest-rate swap feels both, giving a {{hump|flat line|cliff}} that peaks about a third of the way in. An FX forward has no amortisation — one exchange at maturity — so it {{rises monotonically to a maturity peak|stays flat|drops to zero immediately}}."
+  explanation="Diffusion (uncertainty ~√t) pushes exposure up; amortisation (cash flows settling) pulls it down to zero at maturity. A swap feels both forces, producing a hump peaking ~1/3 of the way in. An FX forward settles in one shot at maturity, so amortisation never acts and diffusion alone drives a monotonic climb to a peak on the last day."
+/>
+
+## From a profile to one number
+
+<MCQ
+  client:visible
+  pretest
+  question="Regulators need a single exposure number per netting set to plug into a capital formula. Which family of measures does that regulatory 'Exposure at Default' (EAD) come from?"
+  options={[
+    { text: 'The expected-exposure family — an effective EPE, scaled up, becomes the EAD that feeds capital', correct: true },
+    { text: 'The current-exposure snapshot alone, ignoring all future dates' },
+    { text: 'The single worst simulated path, as a maximal stress case' },
+    { text: 'The notional of the trade, since that is what is ultimately at risk' },
+  ]}
+  explanation="Capital rules need ONE number, and they build it from the expected-exposure family: an 'effective EPE' (EPE with a non-decreasing tweak) scaled by a regulatory multiplier (alpha) becomes Exposure at Default (EAD). That's the bridge from a full profile to the single figure a capital formula consumes — taught in detail when we reach SA-CCR."
+/>
+
+**From a curve to a scalar.** You've now got a whole *profile* — EE at every future date, a PFE band, a shape driven by diffusion and amortisation. Beautiful, but a capital formula can't eat a curve; it wants **one number**. So the last move is to collapse the profile into a single regulatory summary.
+
+The bridge is the **expected-exposure family** you already met. Start with **EPE** (the time-average of EE). Regulators tweak it into **effective EPE** — essentially EPE computed on a *non-decreasing* version of the EE profile, so a trade's exposure measure can't drop just because the next trade hasn't been added yet (it stops banks from gaming roll-off). Then scale by a regulatory multiplier (the famous **alpha**, $\approx 1.4$) to get **Exposure at Default (EAD)** — the single figure that feeds the capital charge.
+
+We're not deriving that here — the full **SA-CCR** machinery that computes EAD gets its own lesson later in this course. For now, just hold the chain in your head: **simulate → EE profile → EPE → effective EPE → × alpha → EAD → capital.** Every box in that chain is a way of squeezing the same underlying object — the distribution of $\max(V,0)$ over time — down to whatever shape the next consumer needs: a curve for intuition, an average for pricing, a quantile for limits, a single scalar for capital.
+
+<Callout variant="tip" title="One distribution, many faces">
+Everything in this lesson is a different *view* of one object: the distribution of $\max(V,0)$ across future dates. **EE** is its average at each date. **EPE** is that average over time. **PFE** is its high quantile. **Effective EAD** is the regulatory scalar. You don't compute four unrelated things — you compute one exposure distribution and then read off whichever statistic the question demands. Master the distribution and every exposure metric is just a lens you hold up to it.
+</Callout>
+
+## Putting it together
+
+Exposure is **replacement cost** — $\max(V,0)$ — and it's brutally one-sided: value swings both ways, but you only ever lose when the counterparty owes *you*. **Current exposure** is today's known snapshot; the real risk is **potential future exposure**, because default lands later, when the mark may have wandered far higher, so we model the whole future distribution. From that distribution we read two headline statistics: **Expected Exposure** $EE(t)$, the mean of $\max(V_t,0)$ — *clip each path first, average second* — whose time-average **EPE** feeds **pricing (CVA)**; and **Potential Future Exposure**, a high quantile (95th/97.5th percentile), which feeds **credit limits**. The profile's *shape* is a tug-of-war: **diffusion** (uncertainty ~$\sqrt{t}$, pushing up) versus **amortisation** (cash flows settling, pulling down). A swap feels both and **humps** to a peak about a third of the way in, then back to zero at maturity; an FX forward has no amortisation and **climbs monotonically** to a maturity peak. And to feed capital, the same distribution collapses one last time — EPE → effective EPE → × alpha → **EAD** — a single number waiting on the SA-CCR lesson ahead.
+
+<MindMap
+  client:visible
+  title="Measuring exposure"
+  caption="One object — the distribution of max(V, 0) over future dates — viewed many ways. Clip first, average second for EE; time-average it for EPE (pricing); take a high quantile for PFE (limits). The profile's shape is diffusion (up) versus amortisation (down): swaps hump, FX forwards climb. Collapse the lot to EAD for capital."
+  root={{
+    label: 'Measuring Exposure = views of max(V, 0)',
+    children: [
+      {
+        label: 'Exposure = replacement cost',
+        children: [
+          { label: 'Exposure = max(V, 0)' },
+          { label: 'Value is two-sided; exposure is one-sided' },
+          { label: '+\$2m owed to you → \$2m loss; −\$2m → \$0' },
+        ],
+      },
+      {
+        label: 'Current vs. future',
+        children: [
+          { label: 'Current exposure = max(MtM now, 0), known' },
+          { label: 'Default lands later → model the future' },
+          { label: 'Simulate paths, revalue, clip at max(V,0)' },
+        ],
+      },
+      {
+        label: 'EE & EPE → pricing',
+        children: [
+          { label: 'EE(t) = mean of max(V,0): clip first, average second' },
+          { label: '3-path example: (6 + 0 + 3)/3 = \$3m' },
+          { label: 'EPE = time-average of the EE curve' },
+          { label: 'EPE feeds CVA (pricing)' },
+        ],
+      },
+      {
+        label: 'PFE → limits',
+        children: [
+          { label: 'A high quantile (95th / 97.5th percentile)' },
+          { label: 'The plausible bad case, not the average' },
+          { label: 'Sets credit limits; blocks oversized trades' },
+        ],
+      },
+      {
+        label: 'Shape: diffusion vs. amortisation',
+        children: [
+          { label: 'Diffusion (~√t) pushes exposure UP' },
+          { label: 'Amortisation pulls it DOWN to zero at maturity' },
+          { label: 'Swap = hump, peaks ~1/3 of the way in' },
+          { label: 'FX forward = monotonic climb to maturity peak' },
+        ],
+      },
+      {
+        label: 'Profile → one number',
+        children: [
+          { label: 'EPE → effective EPE (non-decreasing)' },
+          { label: '× alpha (≈ 1.4) → EAD' },
+          { label: 'EAD feeds capital — SA-CCR lesson ahead' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Recap: measuring exposure"
+  questions={[
+    {
+      question: 'A swap is worth −\$3m to you (you owe the counterparty). They default. What is your exposure on this trade?',
+      options: [
+        { text: '\$0 — exposure is max(V, 0), and you were the one who owed', correct: true },
+        { text: '\$3m — the magnitude of the mark is the loss' },
+        { text: '−\$3m — exposure can be negative when you owe' },
+        { text: '\$1.5m — you split the difference on default' },
+      ],
+      explanation: 'Exposure = max(V, 0). With V = −\$3m, max(−3, 0) = \$0. When you’re the debtor, the counterparty’s default doesn’t cost you anything (and doesn’t refund your debt either). Exposure clips the negative half of the value distribution to zero — that’s the one-sidedness.',
+    },
+    {
+      question: 'At a future date, three simulated trade values are +\$8m, −\$4m, and +\$2m. What is the expected exposure EE at that date?',
+      options: [
+        { text: '\$3.33m — clip each to max(V,0) giving 8, 0, 2, then average', correct: true },
+        { text: '\$2m — average the raw values (8 − 4 + 2)/3' },
+        { text: '\$5m — average only the two positive paths (8 + 2)/2' },
+        { text: '\$8m — take the single largest exposure' },
+      ],
+      explanation: 'Clip first: max(8,0)=8, max(−4,0)=0, max(2,0)=2. Average second: (8 + 0 + 2)/3 = \$3.33m. Averaging raw values lets the −4 leak in and understates it (\$2m); averaging only positives drops the zero and overstates it (\$5m). Clip, then average — order matters.',
+    },
+    {
+      question: 'Which statement correctly pairs each measure with its job?',
+      options: [
+        { text: 'EE/EPE (averages) feed pricing/CVA; PFE (a high quantile) feeds credit limits', correct: true },
+        { text: 'EE feeds limits because the average is conservative; PFE feeds pricing' },
+        { text: 'Both EE and PFE feed pricing; limits use current exposure only' },
+        { text: 'PFE feeds pricing because banks must charge for the worst case' },
+      ],
+      explanation: 'Averages price the risk: EPE is the backbone of CVA. Quantiles bound the risk: PFE (95th/97.5th percentile) sets credit limits against the plausible bad case. Swap them and you’d overcharge (pricing off PFE) or under-protect (limiting off EE).',
+    },
+    {
+      question: 'Why does an interest-rate swap’s exposure profile hump in the middle while an FX forward’s climbs all the way to maturity?',
+      options: [
+        { text: 'The swap amortises (cash flows settle, pulling exposure down), the FX forward does not — its single exchange is at maturity, so only diffusion acts', correct: true },
+        { text: 'The swap is riskier early and safer late by regulation; the FX forward is the reverse' },
+        { text: 'The FX forward has more cash flows, so its diffusion accumulates faster' },
+        { text: 'The swap’s notional shrinks by contract, while the FX forward’s grows' },
+      ],
+      explanation: 'Both feel diffusion (uncertainty ~√t, pushing up). The swap ALSO amortises — each settled payment leaves less to replace — so amortisation eventually wins and it humps back to zero at maturity. The FX forward exchanges once at the end, so nothing amortises; diffusion alone drives a monotonic climb to a maturity peak.',
+    },
+    {
+      question: 'At a one-year horizon, the sorted exposures (\$m) are 0, 0, 1, 2, 2, 3, 3, 4, 6, 9. Which value is the better PFE estimate, and which feeds pricing instead?',
+      options: [
+        { text: 'PFE ≈ \$9m (a top quantile) for limits; the average ≈ \$3m (EE) feeds pricing', correct: true },
+        { text: 'PFE ≈ \$3m (the average) for limits; the \$9m max feeds pricing' },
+        { text: 'PFE ≈ \$0 (the floor) for limits; the \$9m feeds pricing' },
+        { text: 'PFE and EE are both \$3m — they are the same statistic' },
+      ],
+      explanation: 'PFE is a high quantile — near the top of the sorted list, around \$9m here — and it feeds credit limits (the bad-case headroom). The mean of these values is about \$3m, which is the EE, and the time-average of EE (EPE) is what feeds pricing/CVA. A quantile bounds; an average prices.',
+    },
+  ]}
+/>
+
+Next — **Netting & Collateral** — that thin band you saw when you ticked the collateral box wasn't a rounding error. It's the single most powerful lever in counterparty risk: netting agreements that let offsetting trades cancel, and CSAs that demand margin as the mark moves. We'll show how they shrink those humps and climbs down to almost nothing — and exactly how much "almost" is.

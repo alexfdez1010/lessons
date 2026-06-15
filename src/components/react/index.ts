@@ -17,6 +17,12 @@ export type { ExecutionScheduleProps } from '@/components/react/ExecutionSchedul
 export { IsWaterfall, default as IsWaterfallDefault } from '@/components/react/IsWaterfall';
 export type { IsWaterfallProps } from '@/components/react/IsWaterfall';
 
+export { ExposureProfile, default as ExposureProfileDefault } from '@/components/react/ExposureProfile';
+export type { ExposureProfileProps } from '@/components/react/ExposureProfile';
+
+export { XvaWaterfall, default as XvaWaterfallDefault } from '@/components/react/XvaWaterfall';
+export type { XvaWaterfallProps } from '@/components/react/XvaWaterfall';
+
 export { ExecutionFrontier, default as ExecutionFrontierDefault } from '@/components/react/ExecutionFrontier';
 export type { ExecutionFrontierProps } from '@/components/react/ExecutionFrontier';
 

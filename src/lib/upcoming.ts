@@ -56,25 +56,6 @@ export interface UpcomingCourse {
  */
 export const upcomingCourses: UpcomingCourse[] = [
   {
-    slug: 'counterparty-risk-and-xva',
-    icon: '🤝',
-    difficulty: 'expert',
-    order: 3,
-    accent: 'brand',
-    title: {
-      en: 'Counterparty Risk & XVA',
-      es: 'Riesgo de Contraparte y XVA',
-    },
-    description: {
-      en: 'The cost of who you trade with: credit exposure, the XVA family (CVA/DVA/FVA…), collateral, and post-2008 plumbing.',
-      es: 'El coste de con quién operas: exposición crediticia, la familia XVA (CVA/DVA/FVA…), colateral y la fontanería post-2008.',
-    },
-    dependencies: ['swaps-and-rate-derivatives', 'credit-derivatives-and-securitization'],
-    tags: ['derivatives', 'risk-management'],
-    buildNotes:
-      'The cost of who you trade with: counterparty credit exposure (EE/PFE), netting sets and collateral, the XVA family (CVA/DVA/FVA/MVA/KVA), wrong-way risk, central clearing vs bilateral, initial vs variation margin and the post-2008 plumbing. Islands: exposure-profile + xva-waterfall.',
-  },
-  {
     slug: 'systematic-and-statistical-arbitrage',
     icon: '🔗',
     difficulty: 'expert',
