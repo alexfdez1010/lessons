@@ -1,0 +1,368 @@
+---
+title: "Pairs Trading y Cointegración"
+description: "La operación de stat-arb original: por qué la correlación no basta, cómo la cointegración hace que un spread sea estacionario, operar bandas de z-score en ±2σ y leer la vida media."
+topic: "es/systematic-and-statistical-arbitrage"
+order: 2
+minutes: 15
+updated: 2026-06-15
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, MindMap, SpreadZScore, MeanReversionPath, TsStationarityChart, TsAcfPlot, BetaScatter } from '@/components/react';
+
+En los años 80, un equipo de quants de Morgan Stanley se fijó en algo casi demasiado simple para ser una estrategia: cuando dos acciones casi idénticas —pongamos dos gigantes de los refrescos, o dos petroleras grandes— se separaban, casi siempre volvían a juntarse. Así que montaron una regla. Compra la barata, ponte corto en la cara, espera a que la brecha se cierre, embolsa la diferencia y repite. Sin opinión sobre el mercado, sin opinión sobre si las acciones suben o bajan: solo una apuesta a que *la distancia entre dos cosas que van juntas* no se quedará estirada para siempre. Esa operación es el **pairs trading**, y es el antepasado de toda la industria del arbitraje estadístico.
+
+Todo el juego vive o muere por una sola pregunta: *¿cuándo una brecha es una goma elástica de verdad que se va a recuperar, frente a dos barcos que simplemente coincidieron en navegar cerca antes de alejarse hacia océanos opuestos?* Falla en eso y no estarás arbitrando: estarás atrapando un cuchillo que cae con las dos manos. La herramienta matemática que distingue ambos casos es la **cointegración**, y como veremos, *no* es en absoluto lo mismo que la correlación a la que todo el mundo recurre primero.
+
+<MCQ
+  client:visible
+  pretest
+  question="Dos acciones tienen una correlación de rendimientos diarios de 0.95 durante el último año. Un analista junior dice 'están correlacionadas al 95%, así que un pairs trade es seguro: el spread siempre revertirá'. ¿Qué falla en ese razonamiento?"
+  options={[
+    { text: "Nada: una correlación alta garantiza que el spread revierte a la media.", },
+    { text: "La correlación solo mide si los rendimientos se mueven juntos día a día; no dice nada sobre si la brecha de precios se mantiene anclada. Dos series pueden estar muy correlacionadas y aun así separarse para siempre.", correct: true },
+    { text: "0.95 es demasiado bajo; necesitas una correlación por encima de 0.99 para un pairs trade.", },
+    { text: "La correlación está bien, pero deberías usar rendimientos semanales en lugar de diarios.", }
+  ]}
+  explanation="La correlación va del co-movimiento de los RENDIMIENTOS: ¿tienden a dar el paso en la misma dirección cada día? No contiene ninguna noción de un nivel de largo plazo al que vuelve la brecha. Puedes tener dos paseos aleatorios que dan el paso juntos (correlación de rendimientos alta) y aun así alejarse arbitrariamente en nivel. Lo que un pairs trade realmente requiere es COINTEGRACIÓN: un spread estacionario con una media fija a la que revierte. El resto de esta lección va de esa distinción."
+/>
+
+## La idea del pairs trade
+
+**Analogía.** Imagina dos perros —Coca-Cola y Pepsi— paseados por el mismo dueño a través de un campo. El dueño es "el sector de refrescos", y mientras pasea, ambos perros lo siguen más o menos. Los perros van unidos por una correa elástica: uno puede salir corriendo por delante y el otro rezagarse, pero la correa los va tirando de vuelta el uno hacia el otro. Un pairs trader no apuesta por adónde va el *dueño* (eso es la dirección del mercado, irrelevante aquí). Apuesta por la **correa**: cuando un perro se adelanta demasiado, ponte corto en él y compra el rezagado, y cobra cuando la correa los vuelve a juntar.
+
+**Definición.** Un pairs trade elige dos activos impulsados por la *misma fuerza económica subyacente* —dos refresqueras, dos petroleras grandes, un ETF y la cesta de acciones que contiene, oro y mineras de oro— y opera el precio **relativo**, no el absoluto:
+
+- **Largo** en la pata barata (la que se ha quedado atrás).
+- **Corto** en la pata cara (la que se ha disparado).
+
+Como mantienes un largo y un corto de tamaño comparable, un movimiento de todo el mercado sube (o hunde) ambas patas a la vez y *se cancela*. La posición es **neutral al mercado por construcción**: has cubierto "al dueño" y has conservado solo "la correa".
+
+| Elemento | Ejemplo Coca-Cola / Pepsi | Qué representa |
+|---|---|---|
+| Driver común | Demanda de refrescos, consumo básico | El "dueño" compartido al que no apuestas |
+| Pata larga | La que se ha rezagado (parece barata) | Se espera que recupere terreno |
+| Pata corta | La que se ha disparado (parece cara) | Se espera que retroceda |
+| La apuesta | La *brecha* entre ambas se cierra | La "correa" tensándose |
+| Riesgo que conservas | El spread específico del par | Lo único a lo que quieres exposición |
+
+<Callout variant="info" title="Por qué la neutralidad al mercado es el gancho">
+Como el largo y el corto cancelan aproximadamente los movimientos amplios del mercado, un par bien construido puede ganar dinero en una caída, en un rally o en un mercado plano: solo necesita que la *relación* se comporte. Por eso estas estrategias las valoran tanto los fondos que quieren rendimientos no correlacionados con "las acciones subieron". La otra cara: todo tu P&L depende ahora del spread, así que si el spread se descarría no hay dónde esconderse.
+</Callout>
+
+### Cuándo usarlo
+
+El pairs trading brilla cuando puedes nombrar un *auténtico* vínculo económico entre dos activos: misma industria, mismos costes de insumos, uno es literalmente una cesta que contiene al otro. Flaquea cuando el "par" es una coincidencia rescatada al escanear miles de tickers buscando lo que cuadre dentro de la muestra (los pares minados por datos se rompen en cuanto los operas). Regla general: si no puedes explicarle a un colega escéptico, en una sola frase, *por qué* estos dos deberían estar atados, probablemente tengas un par espurio, no uno operable.
+
+## La correlación no basta
+
+**Analogía.** Dos senderistas salen del mismo punto de partida y, durante una tarde, casualmente caminan en la misma dirección de la brújula: ambos van derivando hacia el norte. Las *direcciones de sus pasos* están muy correlacionadas. Pero no hay ninguna cuerda entre ellos. Al caer la noche uno está en una cresta y el otro en un valle, a kilómetros de distancia, y nada los atrae de vuelta. Correlación alta, ancla nula. Un pairs trade sobre estos dos te haría apostar a que la brecha se cierra, y nunca lo hace.
+
+**El quid.** La correlación mide si los **rendimientos** de dos series (sus *cambios* paso a paso) se mueven juntos. No dice nada sobre los **niveles**, sobre si la *brecha* entre los precios tiene alguna tendencia a volver a un valor fijo. Puedes fabricar dos **paseos aleatorios** cuyos incrementos diarios estén correlacionados (empuja ambos con un shock compartido más un poco de ruido privado) y mostrarán una correlación gorda en cualquier ventana dada; y sin embargo, como cada uno es un paseo aleatorio, su *diferencia* es ella misma un paseo aleatorio, libre de irse al infinito. Correlación: alta. Reversión: ninguna.
+
+Una serie **estacionaria** tiene una media y una varianza de largo plazo fijas: se menea alrededor de un nivel y no para de volver a casa. Una serie **no estacionaria** (el ejemplo clásico: un paseo aleatorio, también llamado **integrado de orden 1**, o $I(1)$) no tiene ese hogar; el nivel de hoy es solo el de ayer más un shock fresco, así que deriva indefinidamente. Los precios son casi siempre $I(1)$. La pregunta para un pairs trade es si alguna *combinación* de dos precios $I(1)$ logra ser estacionaria.
+
+<TsStationarityChart client:visible priceLabel="Precio (paseo aleatorio + deriva)" returnsLabel="Rendimientos (primera diferencia)" toggleLabel="Mostrar rendimientos" resimulateLabel="Resimular" title="Precio no estacionario vs rendimientos estacionarios" caption="Arriba: una serie estacionaria y con reversión a la media: se desvía, pero un muelle la sigue tirando de vuelta a su media, así que la brecha respecto al centro nunca crece sin límite. Abajo: un paseo aleatorio no estacionario: cada paso se construye sobre el anterior sin ancla, así que deriva y nunca tiene que volver. La correlación no sabe distinguirlos; la estacionariedad es la propiedad que debe tener un spread operable." />
+
+La huella dactilar de estos dos regímenes aparece de forma vívida en la **función de autocorrelación**: cuán relacionada está una serie con su propio pasado:
+
+<TsAcfPlot client:visible whiteNoiseLabel="Ruido blanco" arLabel="Decaimiento AR(1)" maLabel="Pico MA(1)" lagLabel="Retardo k" acfLabel="Autocorrelación" bandLabel="Banda de ruido blanco (±2/√n)" title="Firmas de la ACF: ruido blanco, AR(1), MA(1)" caption="Una serie con reversión a la media (estacionaria) tiene una autocorrelación que decae rápido hacia cero: el pasado deja de importar al poco tiempo. La autocorrelación de un paseo aleatorio se mantiene tercamente cerca de 1 a lo largo de muchos retardos: cada valor está pegado a toda su historia, la firma de algo sin media a la que revertir." />
+
+| Propiedad | Spread estacionario (lo que quieres) | Paseo aleatorio (la trampa) |
+|---|---|---|
+| Media de largo plazo | Fija: revierte | Ninguna: deriva para siempre |
+| Varianza en el tiempo | Acotada | Crece sin límite |
+| Autocorrelación | Decae rápido hacia 0 | Se mantiene cerca de 1 muchos retardos |
+| Pronóstico de la brecha | "Volverá a μ" | "Mejor estimación = donde esté ahora" |
+| ¿Operable? | Sí: apuesta por la reversión | No: no hay nada a lo que revertir |
+
+<Callout variant="warning" title="Trampa — el escollo de la regresión espuria">
+Regresa un paseo aleatorio sobre otro paseo aleatorio sin relación y a menudo obtendrás un t-stat precioso y un R² alto: puro espejismo estadístico. Dos series independientes con tendencia parecen "relacionadas" simplemente porque ambas tienen tendencia. Por eso no puedes limitarte a mirar a ojo la correlación o el R² de una regresión: debes comprobar explícitamente si el *spread residual* es estacionario. Saltarse esa prueba es la forma más común en que los principiantes construyen un "par" que no tiene goma elástica alguna.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Rellena las dos propiedades que se contrastan."
+  text="La correlación mide el co-movimiento de los {{rendimientos|niveles|varianzas}}, pero un spread de pares operable requiere una combinación {{estacionaria|correlacionada|con tendencia}}: una con una media fija a la que revierte. Un paseo aleatorio es {{no estacionario|estacionario|con reversión a la media}}, así que su nivel deriva para siempre sin ancla."
+  explanation="La correlación mira si los rendimientos (cambios) se mueven juntos: no tiene concepto de un nivel fijo. Un spread operable debe ser estacionario: una media de largo plazo fija y varianza acotada, para que revierta. Un paseo aleatorio es no estacionario (I(1)) y deambula indefinidamente."
+/>
+
+## Cointegración — el verdadero premio
+
+**Analogía.** Volvamos a los dos perros con la correa elástica. Por separado, la *posición* de cada perro es un paseo aleatorio: deambula por todo el campo sin un punto fijo al que vuelve (cada uno es $I(1)$). Pero la **longitud de la correa** —la distancia entre ellos— está fijada: se estira y se contrae pero siempre vuelve de golpe a su longitud natural. Esa correa es una *combinación estacionaria de dos cosas no estacionarias*. Eso, exactamente, es la **cointegración**.
+
+**Definición.** Dos series de precios no estacionarias ($I(1)$) $P_a$ y $P_b$ están **cointegradas** si existe una constante $\beta$ —el **hedge ratio**— tal que la combinación lineal
+
+$$S_t = P_{a,t} - \beta\, P_{b,t}$$
+
+es **estacionaria** ($I(0)$): tiene una media fija $\mu$ y revierte a ella. El vector $(1, -\beta)$ se llama el **vector de cointegración**, y $S_t$ es tu **spread**. Los precios pueden cada uno irse a la luna, pero $\beta$ está afinado para que su *diferencia ponderada* se mantenga atada.
+
+El hedge ratio $\beta$ responde a "¿cuántas unidades de $B$ hacen falta para neutralizar una unidad de $A$?". Si el activo $A$ se mueve típicamente 1,50 \$ por cada movimiento de 1,00 \$ en $B$, entonces $\beta \approx 1.5$, y un spread más o menos neutral en dólares pone corto 1,5 unidades de $B$ contra cada unidad de $A$.
+
+### Estimar β — los dos pasos de Engle–Granger
+
+La receta clásica (Engle & Granger, 1987, que le valió a Granger un Nobel) son dos movimientos:
+
+1. **Estima el vector de cointegración.** Regresa $P_a$ sobre $P_b$ por mínimos cuadrados ordinarios: $P_{a,t} = \alpha + \beta\,P_{b,t} + \varepsilon_t$. La pendiente $\hat\beta$ es tu hedge ratio; el residuo $\hat\varepsilon_t$ *es* el spread.
+2. **Prueba la estacionariedad del residuo.** Aplica un **test de Dickey–Fuller aumentado (ADF)** sobre $\hat\varepsilon_t$. Su hipótesis nula es "el residuo tiene una raíz unitaria" (es decir, es un paseo aleatorio no estacionario: *no* hay cointegración). Un p-valor del ADF pequeño (digamos < 0.05) te permite **rechazar** esa nula y concluir que el spread es estacionario: el par está cointegrado y tienes una goma elástica operable.
+
+<BetaScatter client:visible marketAxisLabel="Precio de B" portfolioAxisLabel="Precio de A" betaLabel="Beta (pendiente)" alphaLabel="Alfa (intercepto)" defensiveLabel="Defensivo" marketNeutralLabel="Sigue al mercado" aggressiveLabel="Agresivo" title="Leer alfa y beta en la recta" caption="Paso 1 de Engle–Granger: cada punto es el (precio de B, precio de A) de un día. La pendiente de la recta ajustada es el hedge ratio β: cuántas unidades de B neutralizan una unidad de A. La distancia vertical de cada punto a la recta es el spread de ese día (el residuo). El paso 2 prueba si esos residuos son estacionarios; si lo son, el par está cointegrado." />
+
+**Ejemplo resuelto.** Regresas KO sobre PEP y los MCO devuelven $\hat\alpha = 4.0$, $\hat\beta = 0.80$. Así que tu spread es
+
+$$S_t = P_{\text{KO}} - 0.80\,P_{\text{PEP}} - 4.0.$$
+
+Metes la serie de residuos en un test ADF y obtienes un p-valor de **0.012**. Como $0.012 < 0.05$, rechazas la nula de raíz unitaria: el spread es estacionario. El par está cointegrado con hedge ratio 0,80 —ponte corto 0,80 acciones de PEP por cada acción de KO y la combinación revierte. (Si en cambio el p-valor hubiera sido 0.34, no rechazarías, concluirías que *no* hay cointegración y te apartarías: no hay goma elástica.)
+
+| Paso | Qué haces | Qué obtienes | Decisión |
+|---|---|---|---|
+| 1. Regresa $P_a$ sobre $P_b$ | MCO, lee la pendiente | Hedge ratio $\hat\beta$ + spread residual | Define el spread |
+| 2. ADF sobre el residuo | Prueba de raíz unitaria | p-valor | p < 0.05 → cointegrado (opéralo); p grande → apártate |
+
+<Callout variant="info" title="Johansen — el primo multivariante">
+Engle–Granger maneja dos activos y elige uno como variable "dependiente" (lo que puede hacer que $\hat\beta$ sea ligeramente asimétrico según cuál regreses sobre cuál). Para cestas de tres o más activos —o para tratar las patas simétricamente— los profesionales usan el **test de Johansen**, que encuentra de golpe *todos* los vectores de cointegración independientes mediante una descomposición en autovalores. Misma idea, más patas.
+</Callout>
+
+<MatchConcepts
+  client:visible
+  question="Empareja cada término con su significado preciso."
+  pairs={[
+    { term: "Correlación", definition: "Co-movimiento de los rendimientos (cambios): no dice nada sobre un nivel fijo al que la brecha revierte." },
+    { term: "Cointegración", definition: "Dos series I(1) cuya diferencia ponderada es estacionaria: un spread de equilibrio de largo plazo." },
+    { term: "Estacionaria (I(0))", definition: "Media fija y varianza acotada; la serie no para de volver a su promedio." },
+    { term: "Hedge ratio β", definition: "Unidades del activo B por unidad de A que hacen estacionario el spread: la pendiente de cointegración." },
+    { term: "Vida media", definition: "Cuánto tarda el spread en cerrar la mitad de su distancia a la media: fija el horizonte de mantenimiento." }
+  ]}
+  explanation="La correlación va de rendimientos; la cointegración va de una combinación lineal estacionaria de NIVELES. La estacionariedad es la propiedad que debe tener el spread, β es la ponderación que la logra, y la vida media mide cuán rápido revierte."
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  allCorrectLabel="✓ Todo emparejado"
+  termsLabel="Términos"
+  definitionsLabel="Definiciones"
+/>
+
+### Cuándo usarlo
+
+La cointegración es la lente adecuada siempre que sospeches un vínculo *estructural* que fije una relación de largo plazo: un ETF y su cesta subyacente (casi mecánico), dos clases de acción de la misma empresa, una materia prima y sus productores, acciones cotizadas en dos divisas. Reestima $\beta$ sobre una ventana móvil: la relación de equilibrio puede ir desplazándose despacio, y un hedge ratio caduco deja calladamente de ser neutral al mercado.
+
+## Construir y operar el spread
+
+Has establecido que el par está cointegrado y tienes $\beta$. Ahora tienes que convertir el spread en *señales*. Los valores brutos del spread ("la brecha es 3,20 \$") son difíciles de accionar: ¿es 3,20 \$ mucho? Depende de la escala típica del spread. Así que lo **estandarizas** en un **z-score**: a cuántas desviaciones estándar se sitúa ahora mismo el spread de su propia media.
+
+$$z_t = \frac{S_t - \mu}{\sigma}$$
+
+donde $\mu$ es la media del spread y $\sigma$ su desviación estándar (estimada sobre una ventana móvil). Ahora cada par habla el mismo idioma: $z = +2$ significa "dos sigma caro", $z = -2$ significa "dos sigma barato", sea cual sea la escala de precio del activo. La estrategia de bandas clásica:
+
+- **Entra CORTO en el spread** cuando $z \ge +2$ (el spread está inusualmente caro → corto en $A$, largo $\beta$ unidades de $B$).
+- **Entra LARGO en el spread** cuando $z \le -2$ (inusualmente barato → largo en $A$, corto $\beta$ unidades de $B$).
+- **Sal** cuando $z$ vuelve cerca de **0** (el spread está de vuelta en el equilibrio: cobra).
+- **Stop opcional** en $z = \pm 3$: si atraviesa *del todo* tres sigma en lugar de revertir, puede que la cointegración se haya roto: corta la operación en vez de promediar a la baja.
+
+Este es el plato fuerte. Arrastra la banda de entrada y resimula para sentir el compromiso entre operar a menudo (banda estrecha, más ruido) y esperar a tener convicción (banda ancha, señales más raras):
+
+<SpreadZScore client:visible title="Pairs trade: operar el z-score del spread alrededor de su media" thresholdLabel="Umbral de entrada (Z)" tradesLabel="Operaciones de ida y vuelta" meanLabel="Media (salida)" entryZoneLabel="Zona de entrada" resimulateLabel="Resimular" longLabel="Largo en spread" shortLabel="Corto en spread" caption="El spread estandarizado (z-score) oscila alrededor de 0, su equilibrio. Las bandas discontinuas se sitúan en el umbral de entrada (por defecto ±2σ). Cuando la línea asoma por encima de la banda superior el spread está CARO y la estrategia se pone corta (punto acento); cuando cae por debajo de la banda inferior el spread está BARATO y la estrategia se pone larga (punto acento); cada posición se cierra cuando la línea revierte de vuelta a través de 0 (punto brand: tu salida). Aprieta la banda hacia ±1 y dispararás muchas más operaciones pero perseguirás más ruido; ensánchala hacia ±3 y esperarás a dislocaciones más raras y de mayor convicción. La banda de ±2σ es el compromiso canónico." />
+
+**Ejemplo resuelto.** Tu spread KO–PEP tiene media $\mu = 4.0$ y desviación estándar $\sigma = 1.2$. Hoy el spread en vivo es $S_t = 6.7$. Entonces
+
+$$z_t = \frac{6.7 - 4.0}{1.2} = \frac{2.7}{1.2} = 2.25.$$
+
+Como $z = 2.25 \ge +2$, el spread está caro: **entra corto en el spread** —corto en KO, largo 0,80 unidades de PEP por acción de KO. Saldrás cuando el spread vuelva a caer hacia 4,0 \$ ($z \approx 0$). Si en cambio siguiera subiendo hasta $z = 3.1$, tu stop de $\pm 3$ saltaría y cerrarías con pérdida, sospechando que la goma elástica se ha roto.
+
+| Spread de hoy $S_t$ | $z = (S_t - 4.0)/1.2$ | Señal |
+|---|---|---|
+| 6,7 | +2,25 | Corto en el spread (caro) |
+| 5,0 | +0,83 | Mantener / plano (dentro de bandas) |
+| 4,0 | 0,00 | En equilibrio: salir |
+| 2,6 | −1,17 | Mantener / plano (dentro de bandas) |
+| 1,5 | −2,08 | Largo en el spread (barato) |
+| 0,3 | −3,08 | Stop: probablemente par roto |
+
+<Callout variant="tip" title="¿Por qué ±2 y no ±0,5?">
+Las bandas son una apuesta sobre ruido frente a señal. Las bandas estrechas (±0,5σ) operan constantemente, pagando spread y comisiones en cada meneo mientras la mitad de tus "señales" son solo ruido que en realidad no estaba estirado. Las bandas anchas (±3σ) casi nunca se disparan, así que tu capital se queda ocioso. ±2σ es el término medio consagrado: lo bastante raro como para que un movimiento de 2 sigma sea genuinamente inusual, lo bastante frecuente como para desplegar capital de verdad. Afínalo a la vida media del par y a tus costes de transacción, no a una constante folclórica.
+</Callout>
+
+## Vida media de la reversión a la media
+
+Un spread estacionario revierte, pero *¿cómo de rápido?* Un spread que cierra su brecha en dos días es una gran operación; uno que tarda ocho meses en revertir inmoviliza capital, acumula costes de financiación y le da a la relación tiempo de sobra para romperse antes de que llegues a cobrar. La velocidad de reversión la captura la **vida media**.
+
+**El modelo.** Modela el spread como un proceso de **Ornstein–Uhlenbeck** (el primo en tiempo continuo de una autorregresión AR(1)): cada periodo el spread es atraído de vuelta hacia su media por una fracción, más un shock aleatorio. En forma discreta AR(1):
+
+$$S_t - \mu = \phi\,(S_{t-1} - \mu) + \epsilon_t,$$
+
+donde $\phi$ (entre 0 y 1) es cuánto de la desviación de *ayer* sobrevive hasta hoy. Un $\phi$ cercano a 1 significa reversión lenta (la mayor parte de la brecha persiste); un $\phi$ pequeño significa reversión enérgica. La **velocidad** de reversión continua es $\kappa = -\ln\phi$, y la **vida media** —el tiempo que tarda el spread en cerrar *la mitad* de su distancia a la media— es
+
+$$t_{1/2} = \frac{\ln 2}{\kappa} = \frac{\ln 2}{-\ln \phi}.$$
+
+<MeanReversionPath client:visible title="Reversión a la media: un proceso de Ornstein–Uhlenbeck atraído de vuelta a su media" speedLabel="Velocidad de reversión (κ)" meanLabel="Media de largo plazo" halfLifeLabel="Vida media" randomWalkLabel="Sin reversión (κ=0)" resimulateLabel="Resimular" caption="El muelle en acción: el spread (línea errante) es tirado repetidamente de vuelta hacia su media. La lectura de la vida media es cuánto tarda un viaje típico 'a medio camino de casa': el reloj natural del par. Una vida media corta significa idas y vueltas rápidas y reciclaje veloz del capital; una vida media larga significa que comprometes capital en un trayecto largo y expuesto." />
+
+**Ejemplo resuelto.** Ajustas un AR(1) al spread diario y obtienes $\phi = 0.95$. Entonces:
+
+$$\kappa = -\ln(0.95) = 0.0513, \qquad t_{1/2} = \frac{\ln 2}{0.0513} = \frac{0.6931}{0.0513} \approx 13.5 \ \text{días}.$$
+
+Así que una dislocación típica tarda unos **13,5 días de cotización** en cerrar la mitad de su brecha —llámalo aproximadamente tres semanas para un viaje completo de ida y vuelta. Eso fija expectativas: mantén durante días-a-semanas, no minutos; presupuesta costes de financiación/préstamo a lo largo de esa ventana; y si una operación sigue abierta bastante más allá de un par de vidas medias, trátalo como un aviso, no como una ganga.
+
+| Coeficiente AR(1) $\phi$ | $\kappa = -\ln\phi$ | Vida media $= \ln 2 / \kappa$ | Lectura |
+|---|---|---|---|
+| 0,70 | 0,357 | ≈ 1,9 días | Enérgica: idas y vueltas rápidas |
+| 0,90 | 0,105 | ≈ 6,6 días | Ágil |
+| 0,95 | 0,051 | ≈ 13,5 días | Moderada: unas pocas semanas |
+| 0,99 | 0,0101 | ≈ 69 días | Lenta: meses; los costes pueden comérsela |
+| 1,00 | 0 | ∞ | No revierte en absoluto (¡raíz unitaria!) |
+
+<Callout variant="warning" title="Trampa — una vida media más larga que tu paciencia (o que tu préstamo)">
+A medida que $\phi \to 1$, la vida media explota hacia el infinito, y $\phi = 1$ *es* un paseo aleatorio sin reversión alguna. Un par con una vida media de 200 días es apenas distinguible de un par roto (no cointegrado), y pagarás costes de préstamo/short y financiación todo el tiempo que esperes. Comprueba siempre la cordura: ¿es la vida media lo bastante corta como para que el beneficio esperado de la reversión supere tus costes de mantenimiento acumulados? Si no, la operación es antieconómica aunque técnicamente esté cointegrada.
+</Callout>
+
+### Cuándo usarlo
+
+Usa la vida media para *dimensionar tu horizonte y tus costes*, no como un filtro de sí/no por sí sola. Ajusta a ella tu frecuencia de datos y tu tiempo de stop (una vida media de 13 días quiere velas diarias y una paciencia de varias semanas, no un gráfico de 5 minutos). Y compara la vida media entre pares candidatos: dados dos pares cointegrados, el de vida media más corta recicla capital más rápido y pasa menos tiempo expuesto a que la relación se rompa.
+
+## Cuando se rompe
+
+Aquí va la verdad incómoda: **la cointegración es una observación estadística sobre el pasado, no una ley de la naturaleza.** La correa puede romperse. Una fusión o adquisición funde o corta la relación de la noche a la mañana; un cambio de régimen (una nueva regulación, una tecnología que disrumpe a una firma, un shock de materias primas que golpea más fuerte a una pata) revaloriza permanentemente un lado; los fundamentales de una empresa divergen de verdad —distinto crecimiento, distinta deuda, distinto destino. Cuando eso ocurre, el "spread" que operas ya no es una goma elástica. Son solo dos precios yéndose por caminos separados.
+
+**El modo de fallo letal.** Tu spread llega a $z = -3$. Tu modelo grita "históricamente barato, ¡carga!". Así que doblas la apuesta. Pero la razón de que esté en $-3$ es que la relación *se rompió* —una firma quedó aplastada por noticias que el modelo no puede ver— y el spread sigue justo hacia $-4$, $-5$, sin revertir nunca. Has caído de lleno en una **trampa de valor**: promediar hacia dentro de una posición precisamente porque parece barata, cuando "barata" es en realidad "revalorizada permanentemente". Así es como revientan los libros de pares. La lógica de reversión a la media que hace funcionar la estrategia es la *misma* lógica que te destruye cuando la media se ha movido.
+
+**Analogía.** La correa no se estiró: se *rompió*. Sigues tirando, esperando que el perro vuelva de un tirón, pero ya no hay ningún perro al otro lado. Cada tirón solo recoge cuerda floja.
+
+**Gestión del riesgo — lo que de verdad te mantiene con vida:**
+
+- **Stops duros** (p. ej. salir en $z = \pm 3$): limita la pérdida en cualquier par individual en lugar de promediar hacia dentro de uno roto. Un stop es tu forma de admitir "si no ha revertido a estas alturas, mi tesis de reversión probablemente esté equivocada".
+- **Límites de posición** por par y entre pares: ninguna goma elástica individual debería poder hundir el libro. Diversifica entre *muchos* pares débilmente relacionados para que una correa rota sea un arañazo, no una herida.
+- **Monitoriza un p-valor del ADF móvil:** vuelve a correr el test de cointegración sobre una ventana móvil. Si el p-valor va subiendo (el spread está perdiendo su estacionariedad), eso es un aviso temprano de que la relación se está degradando: reduce riesgo *antes* de que sea un desastre.
+- **Vigila los eventos corporativos:** marca fusiones, escisiones, cambios de índice, resultados en cualquiera de las patas. Estos son los sospechosos habituales detrás de una ruptura repentina.
+
+<Callout variant="warning" title="Trampa — confundir 'siempre revirtió antes' con 'tiene que revertir ahora'">
+Todo par que ha reventado tiene un backtest que muestra una reversión preciosa justo hasta el día en que no la tuvo. La estacionariedad histórica que te metió en la operación no ofrece garantía alguna para mañana. Trata la cointegración como una ventaja *perecedera* que debe reverificarse continuamente, no como una propiedad permanente que puedas dejar y olvidar. El trader que sobrevive es el que tiene un stop, no el que tiene el backtest más bonito.
+</Callout>
+
+<MCQ
+  client:visible
+  question="Tu spread cointegrado, normalmente acotado dentro de ±2,5σ, atraviesa −3σ y una semana después se sitúa en −4,5σ sin señal alguna de revertir. Mientras tanto, una de las dos empresas acaba de anunciar que va a ser adquirida. La acción más defendible es:"
+  options={[
+    { text: "Doblar la posición: en −4,5σ está aún más barata, así que el eventual beneficio de la reversión es mayor.", },
+    { text: "Mantener y esperar indefinidamente; la cointegración garantiza que tiene que revertir tarde o temprano.", },
+    { text: "Tratar la ruptura como real —la adquisición es un evento estructural que probablemente cortó la relación— y salir en el stop en lugar de promediar hacia dentro de una trampa de valor.", correct: true },
+    { text: "Reestimar β con una ventana más larga para que el spread parezca menos extremo.", }
+  ]}
+  explanation="Una fusión es exactamente el tipo de evento estructural que rompe la cointegración de forma permanente. Un spread que se pasa de largo de sus stops históricos sin revertir, más una razón fundamental para la ruptura, es el montaje clásico de la trampa de valor. El movimiento disciplinado es honrar el stop y salir. Doblar la apuesta ('ahora está aún más barata') es precisamente cómo revientan los libros de pares; la cointegración es una propiedad estadística perecedera, no una garantía."
+/>
+
+## Juntándolo todo
+
+El pairs trading es el arbitraje estadístico original: encuentra dos activos atados por una fuerza económica compartida, ponte largo en la pata barata y corto en la cara, y cosecha la brecha a medida que se cierra —neutral al mercado por construcción. La clave no obvia es que **la correlación no es la atadura** —la correlación va de rendimientos co-moviéndose, sin ancla— mientras que la **cointegración** te da un *spread estacionario* con una media fija a la que revierte. Estima el hedge ratio $\beta$ (Engle–Granger: regresa, luego haz el test ADF al residuo), estandariza el spread a un **z-score**, opera las **bandas de ±2σ**, lee la **vida media** ($\ln 2 / \kappa$) para dimensionar tu horizonte y costes, y nunca olvides que la correa puede romperse, así que mantén un stop.
+
+<MindMap
+  client:visible
+  title="Pairs trading y cointegración de un vistazo"
+  caption="Desde la idea de la operación, pasando por la matemática que la hace real, hasta la disciplina que la mantiene viva."
+  root={{
+    label: 'Pairs trading',
+    children: [
+      { label: 'La operación', children: [
+        { label: 'Dos activos, un driver compartido' },
+        { label: 'Largo en la pata barata, corto en la cara' },
+        { label: 'Neutral al mercado por construcción' }
+      ]},
+      { label: 'Correlación ≠ cointegración', children: [
+        { label: 'Correlación = rendimientos co-mueven (sin ancla)' },
+        { label: 'Dos paseos aleatorios pueden correlacionar y separarse' },
+        { label: 'Hace falta un spread ESTACIONARIO que revierta' }
+      ]},
+      { label: 'Cointegración', children: [
+        { label: 'S = Pa − β·Pb es estacionario (I(0))' },
+        { label: 'β = hedge ratio (vector de cointegración)' },
+        { label: 'Engle–Granger: regresa, luego ADF al residuo' },
+        { label: 'Johansen para 3+ patas' }
+      ]},
+      { label: 'Operar el spread', children: [
+        { label: 'z = (S − μ)/σ' },
+        { label: 'Corto en z≥+2, largo en z≤−2, salir cerca de 0' },
+        { label: 'Stop cerca de z=±3 (quizá roto)' }
+      ]},
+      { label: 'Vida media', children: [
+        { label: 't½ = ln2 / κ = ln2 / (−ln φ)' },
+        { label: 'φ=0.95 → ≈13,5 días' },
+        { label: 'Fija el horizonte y el presupuesto de costes' }
+      ]},
+      { label: 'Cuando se rompe', children: [
+        { label: 'Fusiones, cambios de régimen, fundamentales divergen' },
+        { label: 'Trampa de valor: doblar la apuesta en z=−3' },
+        { label: 'Stops, límites, monitorizar ADF móvil' }
+      ]}
+    ]
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Pairs trading y cointegración: fíjalo"
+  questions={[
+    {
+      question: "Dos acciones tienen una correlación de rendimientos diarios de 0,92, pero cuando regresas una sobre la otra y corres un test ADF sobre el residuo, el p-valor es 0,40. ¿Deberías operar el par como un spread con reversión a la media?",
+      options: [
+        { text: "No: el p-valor del ADF alto significa que no puedes rechazar una raíz unitaria, así que el spread es no estacionario; la correlación alta es irrelevante.", correct: true },
+        { text: "Sí: una correlación de 0,92 es más que suficiente para garantizar la reversión.", },
+        { text: "Sí, pero solo si ensanchas las bandas a ±3σ.", },
+        { text: "No, porque una correlación de 0,92 es demasiado baja para cualquier pairs trade.", }
+      ],
+      explanation: "La correlación no dice nada sobre la reversión. El p-valor del ADF de 0,40 no logra rechazar la nula de raíz unitaria, así que el spread es no estacionario: no hay media fija a la que revertir. El par no está cointegrado; no lo operes, da igual la correlación."
+    },
+    {
+      question: "Un spread tiene media μ = 10 y desviación estándar σ = 2. El spread en vivo está ahora mismo en 5,6. Bajo una regla de bandas de ±2σ, ¿cuál es la señal?",
+      options: [
+        { text: "z = (5,6 − 10)/2 = −2,2 ≤ −2, así que ponte LARGO en el spread (está barato): largo A, corto β unidades de B.", correct: true },
+        { text: "z = +2,2, así que ponte corto en el spread.", },
+        { text: "z = −2,2, pero eso está dentro de las bandas, así que quédate plano.", },
+        { text: "z = −0,45, así que sal de cualquier posición abierta.", }
+      ],
+      explanation: "z = (5,6 − 10)/2 = −4,4/2 = −2,2. Como −2,2 ≤ −2, el spread está dos sigma y pico BARATO, así que te pones largo en el spread: largo en la pata A (barata), corto β unidades de B, esperando la reversión hacia z = 0."
+    },
+    {
+      question: "Ajustas un AR(1) a un spread diario y obtienes φ = 0,90. ¿Cuál es, aproximadamente, la vida media de la reversión a la media?",
+      options: [
+        { text: "Unos 6,6 días: κ = −ln(0,90) ≈ 0,105, y ln2/0,105 ≈ 6,6.", correct: true },
+        { text: "Unos 0,90 días, ya que la vida media equivale a φ.", },
+        { text: "Unos 69 días, igual que φ = 0,99.", },
+        { text: "Infinita, porque φ < 1 significa que nunca revierte.", }
+      ],
+      explanation: "Vida media = ln2 / (−ln φ). Con φ = 0,90: −ln(0,90) ≈ 0,1054, y 0,6931/0,1054 ≈ 6,6 días. (φ = 0,99 daría ≈ 69 días; φ < 1 siempre revierte: es φ = 1 lo que es un paseo aleatorio sin reversión.)"
+    },
+    {
+      question: "¿Qué escenario es la 'trampa de valor' de manual que revienta un libro de pares?",
+      options: [
+        { text: "Una ruptura estructural (p. ej. una fusión) empuja el spread más allá de −3σ; el modelo aún lo lee como 'barato', así que el trader dobla la apuesta mientras sigue divergiendo.", correct: true },
+        { text: "El spread revierte a 0 más rápido de lo esperado, así que sales antes con un beneficio menor.", },
+        { text: "La banda de ±2σ dispara una operación que cierra en z = 0 en una vida media.", },
+        { text: "Diversificas entre 40 pares débilmente relacionados y uno de ellos se salda con una pérdida diminuta.", }
+      ],
+      explanation: "La trampa de valor es promediar HACIA DENTRO de una posición porque parece estadísticamente barata (z = −3 y cayendo) cuando la relación en realidad se ha roto: una fusión, un cambio de régimen o una divergencia fundamental. La media se ha movido permanentemente, así que la reversión nunca llega. Los stops, los límites de posición y monitorizar un p-valor del ADF móvil son las defensas."
+    }
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  nextLabel="Siguiente"
+  seeResultsLabel="Ver resultados"
+  backLabel="Atrás"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  completeTitleLabel="Cuestionario completado"
+  correctCountLabel="correctas"
+  gateLabel="Comprueba tu respuesta para continuar."
+/>
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Resumen en una línea de toda la tubería</summary>
+
+Elige un par atado económicamente → confirma la cointegración (regresa para $\beta$, haz el test ADF al spread residual) → estandariza el spread a un z-score → opera las bandas de ±2σ y sal cerca de 0 → usa la vida media ($\ln 2 / \kappa$) para fijar el horizonte y comprobar costes → mantén un stop y monitoriza un p-valor del ADF móvil, porque la correa puede romperse.
+
+</details>
+</Reveal>
+
+Ya sabes *cómo* encontrar un spread operable y *cuándo* apostar a que revierte. Pero debajo acecha una pregunta más afilada: ¿cómo sabes, en general, si un mercado quiere **revertir** (volver de golpe, como nuestro spread) o **seguir la tendencia** (continuar, donde doblar la apuesta es lo correcto y desvanecerla es suicida)? El pairs trading es una apuesta pura por la reversión a la media: su enemigo mortal es un régimen donde las cosas siguen divergiendo. La próxima lección, **Reversión a la media vs Momentum**, aleja el zoom del spread individual hacia las dos fuerzas opuestas que gobiernan *todas* las estrategias sistemáticas, y cómo saber en cuál de ellas estás parado.

@@ -1,0 +1,347 @@
+---
+title: "Pairs Trading & Cointegration"
+description: "The original stat-arb trade: why correlation isn't enough, how cointegration makes a spread stationary, trading z-score bands at ±2σ, and reading half-life."
+topic: "en/systematic-and-statistical-arbitrage"
+order: 2
+minutes: 15
+updated: 2026-06-15
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, MindMap, SpreadZScore, MeanReversionPath, TsStationarityChart, TsAcfPlot, BetaScatter } from '@/components/react';
+
+In the 1980s a quant team at Morgan Stanley noticed something almost too simple to be a strategy: when two near-identical stocks — say two soda giants, or two oil majors — drifted apart, they almost always snapped back together. So they built a rule. Buy the cheap one, short the expensive one, wait for the gap to close, pocket the difference, repeat. No view on the market, no view on whether stocks go up or down — just a bet that *the distance between two things that belong together* won't stay stretched forever. That trade is **pairs trading**, and it is the ancestor of the entire statistical-arbitrage industry.
+
+The whole game lives or dies on one question: *when is a gap a real rubber band that will snap back, versus two ships that merely happened to sail near each other before drifting off to opposite oceans?* Get that wrong and you are not arbitraging — you are catching a falling knife with both hands. The mathematical tool that tells the two apart is **cointegration**, and as we'll see, it is emphatically *not* the same thing as the correlation everyone reaches for first.
+
+<MCQ
+  client:visible
+  pretest
+  question="Two stocks have a daily-return correlation of 0.95 over the past year. A junior analyst says 'they're 95% correlated, so a pairs trade is safe — the spread will always revert.' What's wrong with that reasoning?"
+  options={[
+    { text: "Nothing — high correlation guarantees the spread mean-reverts.", },
+    { text: "Correlation only measures whether returns move together day to day; it says nothing about whether the price gap stays anchored. Two series can be highly correlated and still drift apart forever.", correct: true },
+    { text: "0.95 is too low; you need correlation above 0.99 for a pairs trade.", },
+    { text: "Correlation is fine, but you should use weekly returns instead of daily.", }
+  ]}
+  explanation="Correlation is about co-movement of RETURNS — do they tend to step in the same direction each day. It contains no notion of a long-run level the gap returns to. You can have two random walks that step together (high return correlation) yet wander arbitrarily far apart in level. What a pairs trade actually requires is COINTEGRATION: a stationary spread with a fixed mean it reverts to. The rest of this lesson is about that distinction."
+/>
+
+## The pairs-trade idea
+
+**Analogy.** Picture two dogs — Coke and Pepsi — being walked by the same owner across a field. The owner is "the soft-drink sector," and as the owner strolls, both dogs roughly follow. The dogs are joined by an elastic leash: one can sprint ahead and the other lag, but the leash keeps yanking them back toward each other. A pairs trader doesn't bet on where the *owner* is going (that's market direction — irrelevant here). They bet on the **leash**: when one dog bolts too far ahead, short it and buy the laggard, and collect when the leash reins them back in.
+
+**Definition.** A pairs trade picks two assets driven by the *same underlying economic force* — two soda companies, two oil majors, an ETF and the basket of stocks it holds, gold and gold miners — and trades the **relative** price, not the absolute price:
+
+- **Long** the cheap leg (the one that has fallen behind).
+- **Short** the rich leg (the one that has run ahead).
+
+Because you hold one long and one short of comparable size, a market-wide move lifts (or sinks) both legs together and *cancels out*. The position is **market-neutral by construction**: you've hedged away "the owner" and kept only "the leash."
+
+| Element | Coke / Pepsi example | What it represents |
+|---|---|---|
+| Common driver | Soft-drink demand, consumer staples | The shared "owner" you don't bet on |
+| Long leg | Whichever has lagged (looks cheap) | Expected to catch up |
+| Short leg | Whichever has surged (looks rich) | Expected to fall back |
+| The bet | The *gap* between them closes | The "leash" tightening |
+| Risk you keep | The pair-specific spread | The only thing you want exposure to |
+
+<Callout variant="info" title="Why market-neutral is the selling point">
+Because the long and short roughly cancel out broad market moves, a well-built pair can make money in a crash, a rally, or a flat tape — it only needs the *relationship* to behave. That's why these strategies are prized by funds that want returns uncorrelated with "stocks went up." The flip side: your entire P&L now rides on the spread, so if the spread misbehaves there's nowhere to hide.
+</Callout>
+
+### When to use it
+
+Pairs trading shines when you can name a *genuine* economic tether between two assets — same industry, same input costs, one is literally a basket containing the other. It struggles when the "pair" is a coincidence dredged up by scanning thousands of tickers for whatever lines up in-sample (data-mined pairs break the instant you trade them). Rule of thumb: if you can't explain *why* these two should be tied together to a skeptical colleague in one sentence, you probably have a spurious pair, not a tradable one.
+
+## Correlation is not enough
+
+**Analogy.** Two hikers leave the same trailhead and, for an afternoon, happen to walk in roughly the same compass direction — both drifting north-ish. Their *step directions* are highly correlated. But there's no rope between them. By nightfall one is on a ridge and the other in a valley, miles apart, and nothing pulls them back. High correlation, zero anchor. A pairs trade on these two would have you betting the gap closes — and it never does.
+
+**The crux.** Correlation measures whether two series' **returns** (their step-to-step *changes*) move together. It is silent about **levels** — about whether the *gap* between the prices has any tendency to return to a fixed value. You can manufacture two **random walks** whose daily increments are correlated (push both with a shared shock plus a little private noise) and they will show a fat correlation over any given window — yet because each is a random walk, their *difference* is itself a random walk, free to wander off to infinity. Correlation: high. Reversion: none.
+
+A **stationary** series has a fixed long-run mean and variance — it wiggles around a level and keeps coming home. A **non-stationary** series (the classic example: a random walk, also called **integrated of order 1**, or $I(1)$) has no such home; today's level is just yesterday's plus a fresh shock, so it drifts indefinitely. Prices are almost always $I(1)$. The question for a pairs trade is whether some *combination* of two $I(1)$ prices manages to be stationary.
+
+<TsStationarityChart client:visible caption="Top: a stationary, mean-reverting series — it strays but a spring keeps yanking it back to its mean, so the gap from the center never grows without bound. Bottom: a non-stationary random walk — each step builds on the last with no anchor, so it wanders off and never has to come back. Correlation can't tell these apart; stationarity is the property a tradable spread must have." />
+
+The fingerprint of these two regimes shows up vividly in the **autocorrelation function** — how related a series is to its own past:
+
+<TsAcfPlot client:visible caption="A mean-reverting (stationary) series has autocorrelation that decays quickly toward zero: the past stops mattering after a short while. A random walk's autocorrelation stays stubbornly near 1 across many lags — every value is glued to its entire history, the signature of something with no mean to revert to." />
+
+| Property | Stationary spread (what you want) | Random walk (the trap) |
+|---|---|---|
+| Long-run mean | Fixed — it reverts | None — drifts forever |
+| Variance over time | Bounded | Grows without bound |
+| Autocorrelation | Decays fast toward 0 | Stays near 1 for many lags |
+| Forecast of the gap | "It'll come back to μ" | "Best guess = wherever it is now" |
+| Tradable? | Yes — bet on reversion | No — there's nothing to revert to |
+
+<Callout variant="warning" title="Pitfall — the spurious-regression trap">
+Regress one random walk on another unrelated random walk and you'll often get a gorgeous t-stat and a high R² — pure statistical mirage. Two independent trending series look "related" simply because both trend. This is why you can't just eyeball correlation or a regression's R²: you must explicitly test whether the *residual spread* is stationary. Skipping that test is the single most common way beginners build a "pair" that has no rubber band at all.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Fill in the two properties being contrasted."
+  text="Correlation measures the co-movement of {{returns|levels|variances}}, but a tradable pairs spread requires a {{stationary|correlated|trending}} combination — one with a fixed mean it reverts to. A random walk is {{non-stationary|stationary|mean-reverting}}, so its level drifts forever with no anchor."
+  explanation="Correlation looks at returns (changes) moving together — it has no concept of a fixed level. A tradable spread must be stationary: a fixed long-run mean and bounded variance, so it reverts. A random walk is non-stationary (I(1)) and wanders indefinitely."
+/>
+
+## Cointegration — the real prize
+
+**Analogy.** Back to the two dogs on the elastic leash. Individually, each dog's *position* is a random walk — it wanders all over the field with no fixed spot it returns to (each is $I(1)$). But the **leash length** — the distance between them — is pinned: it stretches and contracts but always snaps back to its natural length. That leash is a *stationary combination of two non-stationary things*. That, precisely, is **cointegration**.
+
+**Definition.** Two non-stationary ($I(1)$) price series $P_a$ and $P_b$ are **cointegrated** if there exists a constant $\beta$ — the **hedge ratio** — such that the linear combination
+
+$$S_t = P_{a,t} - \beta\, P_{b,t}$$
+
+is **stationary** ($I(0)$): it has a fixed mean $\mu$ and reverts to it. The vector $(1, -\beta)$ is called the **cointegrating vector**, and $S_t$ is your **spread**. The prices can each wander to the moon, but $\beta$ is tuned so their *weighted difference* stays leashed.
+
+The hedge ratio $\beta$ answers "how many units of $B$ does it take to neutralize one unit of $A$?" If asset $A$ typically moves \$1.50 for every \$1.00 move in $B$, then $\beta \approx 1.5$, and a dollar-neutral-ish spread shorts 1.5 units of $B$ against each unit of $A$.
+
+### Estimating β — the Engle–Granger two-step
+
+The classic recipe (Engle & Granger, 1987 — it won Granger a Nobel) is two moves:
+
+1. **Estimate the cointegrating vector.** Regress $P_a$ on $P_b$ by ordinary least squares: $P_{a,t} = \alpha + \beta\,P_{b,t} + \varepsilon_t$. The slope $\hat\beta$ is your hedge ratio; the residual $\hat\varepsilon_t$ *is* the spread.
+2. **Test the residual for stationarity.** Run an **Augmented Dickey–Fuller (ADF) test** on $\hat\varepsilon_t$. Its null hypothesis is "the residual has a unit root" (i.e. it's a non-stationary random walk — *no* cointegration). A small ADF p-value (say < 0.05) lets you **reject** that null and conclude the spread is stationary: the pair is cointegrated, and you have a tradable rubber band.
+
+<BetaScatter client:visible caption="Step 1 of Engle–Granger: each dot is a day's (price of B, price of A). The fitted line's slope is the hedge ratio β — how many units of B neutralize one unit of A. The vertical distance from each point to the line is that day's spread (the residual). Step 2 tests whether those residuals are stationary; if they are, the pair is cointegrated." />
+
+**Worked example.** You regress KO on PEP and OLS returns $\hat\alpha = 4.0$, $\hat\beta = 0.80$. So your spread is
+
+$$S_t = P_{\text{KO}} - 0.80\,P_{\text{PEP}} - 4.0.$$
+
+You feed the residual series into an ADF test and get a p-value of **0.012**. Since $0.012 < 0.05$, you reject the unit-root null: the spread is stationary. The pair is cointegrated with hedge ratio 0.80 — short 0.80 shares of PEP for every share of KO and the combination reverts. (If instead the p-value had been 0.34, you'd fail to reject, conclude *no* cointegration, and walk away — no rubber band.)
+
+| Step | What you do | What you get | Decision |
+|---|---|---|---|
+| 1. Regress $P_a$ on $P_b$ | OLS, read the slope | Hedge ratio $\hat\beta$ + residual spread | Defines the spread |
+| 2. ADF on the residual | Test for a unit root | p-value | p < 0.05 → cointegrated (trade it); p large → walk away |
+
+<Callout variant="info" title="Johansen — the multivariate cousin">
+Engle–Granger handles two assets and picks one as the "dependent" variable (which can make $\hat\beta$ slightly asymmetric depending on which you regress on which). For baskets of three or more assets — or to treat the legs symmetrically — practitioners use the **Johansen test**, which finds *all* independent cointegrating vectors at once via an eigenvalue decomposition. Same idea, more legs.
+</Callout>
+
+<MatchConcepts
+  client:visible
+  question="Match each term to its precise meaning."
+  pairs={[
+    { term: "Correlation", definition: "Co-movement of returns (changes) — says nothing about a fixed level the gap reverts to." },
+    { term: "Cointegration", definition: "Two I(1) series whose weighted difference is stationary — a long-run equilibrium spread." },
+    { term: "Stationary (I(0))", definition: "Fixed mean and bounded variance; the series keeps returning to its average." },
+    { term: "Hedge ratio β", definition: "Units of asset B per unit of A that make the spread stationary — the cointegrating slope." },
+    { term: "Half-life", definition: "How long the spread takes to close half its distance to the mean — sets the holding period." }
+  ]}
+  explanation="Correlation is about returns; cointegration is about a stationary linear combination of LEVELS. Stationarity is the property the spread must have, β is the weighting that achieves it, and half-life measures how fast it reverts."
+/>
+
+### When to use it
+
+Cointegration is the right lens whenever you suspect a *structural* tie that pins a long-run relationship: an ETF and its underlying basket (near-mechanical), two share classes of the same company, a commodity and its producers, cross-listed shares in two currencies. Re-estimate $\beta$ on a rolling window — the equilibrium relationship can slowly shift, and a stale hedge ratio quietly stops being market-neutral.
+
+## Building and trading the spread
+
+You've established the pair is cointegrated and you have $\beta$. Now you have to turn the spread into *signals*. Raw spread values ("the gap is \$3.20") are hard to act on — is \$3.20 a lot? It depends on the spread's typical scale. So you **standardize** it into a **z-score**: how many standard deviations the spread currently sits from its own mean.
+
+$$z_t = \frac{S_t - \mu}{\sigma}$$
+
+where $\mu$ is the spread's mean and $\sigma$ its standard deviation (estimated over a rolling lookback). Now every pair speaks the same language: $z = +2$ means "two sigma rich," $z = -2$ means "two sigma cheap," regardless of the asset's price scale. The classic band strategy:
+
+- **Enter SHORT-the-spread** when $z \ge +2$ (the spread is unusually rich → short $A$, long $\beta$ units of $B$).
+- **Enter LONG-the-spread** when $z \le -2$ (unusually cheap → long $A$, short $\beta$ units of $B$).
+- **Exit** when $z$ returns near **0** (the spread is back at equilibrium — collect).
+- **Optional stop** at $z = \pm 3$: if it blows *through* three sigma instead of reverting, the cointegration may have broken — cut the trade rather than average down.
+
+This is the centerpiece. Drag the entry band and resimulate to feel the trade-off between trading often (tight band, more noise) and waiting for conviction (wide band, rarer signals):
+
+<SpreadZScore client:visible caption="The standardized spread (z-score) oscillates around 0 — its equilibrium. The dashed bands sit at the entry threshold (default ±2σ). When the line pokes above the top band the spread is RICH and the strategy shorts it (accent dot); when it dips below the bottom band the spread is CHEAP and the strategy goes long (accent dot); each position closes when the line reverts back through 0 (brand dot — your exit). Tighten the band toward ±1 and you fire far more trades but chase more noise; widen it toward ±3 and you wait for rarer, higher-conviction dislocations. The ±2σ band is the canonical compromise." />
+
+**Worked example.** Your KO–PEP spread has mean $\mu = 4.0$ and standard deviation $\sigma = 1.2$. Today the live spread is $S_t = 6.7$. Then
+
+$$z_t = \frac{6.7 - 4.0}{1.2} = \frac{2.7}{1.2} = 2.25.$$
+
+Since $z = 2.25 \ge +2$, the spread is rich: **enter short-the-spread** — short KO, long 0.80 units of PEP per KO share. You'll exit when the spread falls back toward \$4.0 ($z \approx 0$). If instead it kept climbing to $z = 3.1$, your $\pm 3$ stop would fire and you'd close at a loss, suspecting the rubber band has snapped.
+
+| Today's spread $S_t$ | $z = (S_t - 4.0)/1.2$ | Signal |
+|---|---|---|
+| 6.7 | +2.25 | Short the spread (rich) |
+| 5.0 | +0.83 | Hold / flat (inside bands) |
+| 4.0 | 0.00 | At equilibrium — exit |
+| 2.6 | −1.17 | Hold / flat (inside bands) |
+| 1.5 | −2.08 | Long the spread (cheap) |
+| 0.3 | −3.08 | Stop — likely a broken pair |
+
+<Callout variant="tip" title="Why ±2 and not ±0.5?">
+The bands are a bet on noise versus signal. Tight bands (±0.5σ) trade constantly, paying spread and commissions on every wiggle while half your "signals" are just noise that wasn't really stretched. Wide bands (±3σ) almost never trigger, so your capital sits idle. ±2σ is the time-honored middle: rare enough that a 2-sigma move is genuinely unusual, frequent enough to actually deploy capital. Tune it to the pair's half-life and your transaction costs, not to a folk constant.
+</Callout>
+
+## Half-life of mean reversion
+
+A stationary spread reverts — but *how fast*? A spread that closes its gap in two days is a great trade; one that takes eight months to revert ties up capital, racks up financing costs, and gives the relationship ample time to break before you ever collect. The speed of reversion is captured by the **half-life**.
+
+**The model.** Model the spread as an **Ornstein–Uhlenbeck** process (the continuous-time cousin of an AR(1) autoregression): each period the spread is pulled back toward its mean by a fraction, plus a random shock. In discrete AR(1) form:
+
+$$S_t - \mu = \phi\,(S_{t-1} - \mu) + \epsilon_t,$$
+
+where $\phi$ (between 0 and 1) is how much of *yesterday's* deviation survives into today. A $\phi$ near 1 means sluggish reversion (most of the gap persists); a small $\phi$ means snappy reversion. The continuous mean-reversion **speed** is $\kappa = -\ln\phi$, and the **half-life** — the time for the spread to close *half* its distance to the mean — is
+
+$$t_{1/2} = \frac{\ln 2}{\kappa} = \frac{\ln 2}{-\ln \phi}.$$
+
+<MeanReversionPath client:visible caption="The spring in action: the spread (wandering line) gets repeatedly yanked back toward its mean. The half-life readout is how long a typical 'halfway home' journey takes — the natural clock of the pair. A short half-life means quick round trips and quick capital recycling; a long half-life means you're committing capital for a long, exposed ride." />
+
+**Worked example.** You fit AR(1) to the daily spread and get $\phi = 0.95$. Then:
+
+$$\kappa = -\ln(0.95) = 0.0513, \qquad t_{1/2} = \frac{\ln 2}{0.0513} = \frac{0.6931}{0.0513} \approx 13.5 \ \text{days}.$$
+
+So a typical dislocation takes about **13.5 trading days** to close half its gap — call it roughly three weeks for a full round trip. That sets expectations: hold for days-to-weeks, not minutes; budget financing/borrow costs over that window; and if a trade is still open well past a couple of half-lives, treat it as a warning, not a bargain.
+
+| AR(1) coefficient $\phi$ | $\kappa = -\ln\phi$ | Half-life $= \ln 2 / \kappa$ | Reading |
+|---|---|---|---|
+| 0.70 | 0.357 | ≈ 1.9 days | Snappy — fast round trips |
+| 0.90 | 0.105 | ≈ 6.6 days | Brisk |
+| 0.95 | 0.051 | ≈ 13.5 days | Moderate — a few weeks |
+| 0.99 | 0.0101 | ≈ 69 days | Sluggish — months; costs may eat it |
+| 1.00 | 0 | ∞ | Not reverting at all (unit root!) |
+
+<Callout variant="warning" title="Pitfall — a half-life that's longer than your patience (or your borrow)">
+As $\phi \to 1$, the half-life explodes toward infinity — and $\phi = 1$ *is* a random walk with no reversion at all. A pair with a 200-day half-life is barely distinguishable from a broken (non-cointegrated) pair, and you'll pay shorting/borrow and financing costs the entire time you wait. Always sanity-check: is the half-life short enough that the expected reversion profit clears your accumulated holding costs? If not, the trade is uneconomic even if it's technically cointegrated.
+</Callout>
+
+### When to use it
+
+Use the half-life to *size your horizon and your costs*, not as a go/no-go gate by itself. Match your data frequency and stop-out time to it (a 13-day half-life wants daily bars and a multi-week patience, not a 5-minute chart). And compare half-life across candidate pairs: given two cointegrated pairs, the shorter half-life recycles capital faster and spends less time exposed to the relationship breaking.
+
+## When it breaks
+
+Here's the uncomfortable truth: **cointegration is a statistical observation about the past, not a law of nature.** The leash can snap. A merger or acquisition fuses or severs the relationship overnight; a regime shift (new regulation, a technology that disrupts one firm, a commodity shock that hits one leg harder) permanently re-rates one side; one company's fundamentals genuinely diverge — different growth, different debt, different fate. When that happens, the "spread" you're trading is no longer a rubber band. It's just two prices going their separate ways.
+
+**The killer failure mode.** Your spread hits $z = -3$. Your model screams "historically cheap — load up!" So you double down. But the reason it's at $-3$ is that the relationship *broke* — one firm got crushed by news the model can't see — and the spread keeps right on going to $-4$, $-5$, never reverting. You've walked straight into a **value trap**: averaging into a position precisely because it looks cheap, when "cheap" is actually "permanently repriced." This is how pairs books blow up. The mean-reversion logic that makes the strategy work is the *same* logic that destroys you when the mean has moved.
+
+**Analogy.** The leash didn't stretch — it *broke*. You keep pulling, expecting the dog to be yanked back, but there's no dog on the other end anymore. Every tug just pulls slack.
+
+**Risk management — what actually keeps you alive:**
+
+- **Hard stops** (e.g. exit at $z = \pm 3$): cap the loss on any single pair instead of averaging into a broken one. A stop is you admitting "if it hasn't reverted by here, my reversion thesis is probably wrong."
+- **Position limits** per pair and across pairs: no single rubber band should be able to sink the book. Diversify across *many* weakly-related pairs so one snapped leash is a scratch, not a wound.
+- **Monitor a rolling ADF p-value:** re-run the cointegration test on a moving window. If the p-value creeps up (the spread is losing its stationarity), that's an early warning the relationship is decaying — derisk *before* it's a disaster.
+- **Watch for corporate events:** flag mergers, spin-offs, index changes, earnings on either leg. These are the usual suspects behind a sudden break.
+
+<Callout variant="warning" title="Pitfall — confusing 'it always reverted before' with 'it must revert now'">
+Every blown-up pair has a backtest showing beautiful reversion right up until the day it didn't. The historical stationarity that got you into the trade carries no guarantee for tomorrow. Treat cointegration as a *perishable* edge that must be continuously re-verified, not a permanent property you can set and forget. The trader who survives is the one with a stop, not the one with the prettiest backtest.
+</Callout>
+
+<MCQ
+  client:visible
+  question="Your cointegrated spread, normally bounded within ±2.5σ, blows through −3σ and a week later sits at −4.5σ with no sign of reverting. Meanwhile one of the two companies just announced it's being acquired. The most defensible action is to:"
+  options={[
+    { text: "Double the position — at −4.5σ it's even cheaper, so the eventual reversion profit is larger.", },
+    { text: "Hold and wait indefinitely; cointegration guarantees it must eventually revert.", },
+    { text: "Treat the break as real — the acquisition is a structural event that likely severed the relationship — and exit at the stop rather than average into a value trap.", correct: true },
+    { text: "Re-estimate β with a longer lookback so the spread looks less extreme.", }
+  ]}
+  explanation="A merger is exactly the kind of structural event that breaks cointegration permanently. A spread that runs PAST its historical stops without reverting, plus a fundamental reason for the break, is the classic value-trap setup. The disciplined move is to honor the stop and exit. Doubling down ('it's even cheaper now') is precisely how pairs books blow up; cointegration is a perishable statistical property, not a guarantee."
+/>
+
+## Putting it together
+
+Pairs trading is the original statistical arbitrage: find two assets tethered by a shared economic force, go long the cheap leg and short the rich one, and harvest the gap as it closes — market-neutral by construction. The non-obvious key is that **correlation isn't the tether** — correlation is about returns co-moving, with no anchor — whereas **cointegration** gives you a *stationary spread* with a fixed mean it reverts to. Estimate the hedge ratio $\beta$ (Engle–Granger: regress, then ADF-test the residual), standardize the spread to a **z-score**, trade the **±2σ bands**, read the **half-life** ($\ln 2 / \kappa$) to size your horizon and costs — and never forget the leash can break, so keep a stop.
+
+<MindMap
+  client:visible
+  title="Pairs trading & cointegration at a glance"
+  caption="From the trade idea, through the math that makes it real, to the discipline that keeps it alive."
+  root={{
+    label: 'Pairs trading',
+    children: [
+      { label: 'The trade', children: [
+        { label: 'Two assets, one shared driver' },
+        { label: 'Long cheap leg, short rich leg' },
+        { label: 'Market-neutral by construction' }
+      ]},
+      { label: 'Correlation ≠ cointegration', children: [
+        { label: 'Correlation = returns co-move (no anchor)' },
+        { label: 'Two random walks can correlate yet drift apart' },
+        { label: 'Need a STATIONARY spread that reverts' }
+      ]},
+      { label: 'Cointegration', children: [
+        { label: 'S = Pa − β·Pb is stationary (I(0))' },
+        { label: 'β = hedge ratio (cointegrating vector)' },
+        { label: 'Engle–Granger: regress, then ADF-test residual' },
+        { label: 'Johansen for 3+ legs' }
+      ]},
+      { label: 'Trading the spread', children: [
+        { label: 'z = (S − μ)/σ' },
+        { label: 'Short at z≥+2, long at z≤−2, exit near 0' },
+        { label: 'Stop near z=±3 (maybe broken)' }
+      ]},
+      { label: 'Half-life', children: [
+        { label: 't½ = ln2 / κ = ln2 / (−ln φ)' },
+        { label: 'φ=0.95 → ≈13.5 days' },
+        { label: 'Sets holding period & cost budget' }
+      ]},
+      { label: 'When it breaks', children: [
+        { label: 'Mergers, regime shifts, fundamentals diverge' },
+        { label: 'Value trap: doubling down at z=−3' },
+        { label: 'Stops, limits, rolling ADF monitoring' }
+      ]}
+    ]
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Pairs trading & cointegration: lock it in"
+  questions={[
+    {
+      question: "Two stocks have a 0.92 daily-return correlation, but when you regress one on the other and run an ADF test on the residual, the p-value is 0.40. Should you trade the pair as a mean-reverting spread?",
+      options: [
+        { text: "No — the high ADF p-value means you can't reject a unit root, so the spread is non-stationary; the high correlation is irrelevant.", correct: true },
+        { text: "Yes — a 0.92 correlation is more than enough to guarantee reversion.", },
+        { text: "Yes, but only if you widen the bands to ±3σ.", },
+        { text: "No, because 0.92 correlation is too low for any pairs trade.", }
+      ],
+      explanation: "Correlation says nothing about reversion. The ADF p-value of 0.40 fails to reject the unit-root null, so the spread is non-stationary — there's no fixed mean to revert to. The pair is not cointegrated; don't trade it, regardless of correlation."
+    },
+    {
+      question: "A spread has mean μ = 10 and standard deviation σ = 2. The live spread is currently 5.6. Under a ±2σ band rule, what's the signal?",
+      options: [
+        { text: "z = (5.6 − 10)/2 = −2.2 ≤ −2, so go LONG the spread (it's cheap) — long A, short β units of B.", correct: true },
+        { text: "z = +2.2, so short the spread.", },
+        { text: "z = −2.2, but that's inside the bands, so stay flat.", },
+        { text: "z = −0.45, so exit any open position.", }
+      ],
+      explanation: "z = (5.6 − 10)/2 = −4.4/2 = −2.2. Since −2.2 ≤ −2, the spread is two-plus sigma CHEAP, so you go long the spread: long the (cheap) A leg, short β units of B, expecting reversion toward z = 0."
+    },
+    {
+      question: "You fit AR(1) to a daily spread and get φ = 0.90. Roughly what is the half-life of mean reversion?",
+      options: [
+        { text: "About 6.6 days — κ = −ln(0.90) ≈ 0.105, and ln2/0.105 ≈ 6.6.", correct: true },
+        { text: "About 0.90 days, since the half-life equals φ.", },
+        { text: "About 69 days, the same as φ = 0.99.", },
+        { text: "Infinite, because φ < 1 means it never reverts.", }
+      ],
+      explanation: "Half-life = ln2 / (−ln φ). With φ = 0.90: −ln(0.90) ≈ 0.1054, and 0.6931/0.1054 ≈ 6.6 days. (φ = 0.99 would give ≈ 69 days; φ < 1 always reverts — it's φ = 1 that's a non-reverting random walk.)"
+    },
+    {
+      question: "Which scenario is the textbook 'value trap' that blows up a pairs book?",
+      options: [
+        { text: "A structural break (e.g. a merger) pushes the spread past −3σ; the model still reads it as 'cheap,' so the trader doubles down while it keeps diverging.", correct: true },
+        { text: "The spread reverts to 0 faster than expected, so you exit early with a smaller profit.", },
+        { text: "The ±2σ band triggers a trade that closes at z = 0 within one half-life.", },
+        { text: "You diversify across 40 weakly-related pairs and one of them scratches for a tiny loss.", }
+      ],
+      explanation: "The value trap is averaging INTO a position because it looks statistically cheap (z = −3 and falling) when the relationship has actually broken — a merger, regime shift, or fundamental divergence. The mean has permanently moved, so reversion never comes. Stops, position limits, and monitoring a rolling ADF p-value are the defenses."
+    }
+  ]}
+/>
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">One-line recap of the whole pipeline</summary>
+
+Pick an economically-tethered pair → confirm cointegration (regress for $\beta$, ADF-test the residual spread) → standardize the spread to a z-score → trade the ±2σ bands and exit near 0 → use the half-life ($\ln 2 / \kappa$) to set horizon and check costs → keep a stop and monitor a rolling ADF p-value, because the leash can break.
+
+</details>
+</Reveal>
+
+You now know *how* to find a tradable spread and *when* to bet on it reverting. But a sharper question lurks underneath: how do you even know, in general, whether a market wants to **revert** (snap back, like our spread) or **trend** (keep going, where doubling down is correct and fading is suicide)? Pairs trading is a pure mean-reversion bet — its mortal enemy is a regime where things keep diverging. The next lesson, **Mean Reversion vs Momentum**, zooms out from the single spread to the two opposing forces that govern *all* systematic strategies, and how to tell which one you're standing in.

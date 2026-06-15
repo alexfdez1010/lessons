@@ -728,3 +728,10 @@ export type { LindyCurveProps } from '@/components/react/LindyCurve';
 
 export { HormesisCurve, default as HormesisCurveDefault } from '@/components/react/HormesisCurve';
 export type { HormesisCurveProps } from '@/components/react/HormesisCurve';
+
+// Systematic & statistical arbitrage islands
+export { SpreadZScore, default as SpreadZScoreDefault } from '@/components/react/SpreadZScore';
+export type { SpreadZScoreProps } from '@/components/react/SpreadZScore';
+
+export { SignalDecay, default as SignalDecayDefault } from '@/components/react/SignalDecay';
+export type { SignalDecayProps } from '@/components/react/SignalDecay';

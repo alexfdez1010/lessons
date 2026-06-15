@@ -1,0 +1,297 @@
+---
+title: "Building a Market-Neutral Book"
+description: "Turn a raw cross-sectional signal into a tradable book: dollar-neutral, beta-neutral, and factor-neutral hedging that strips out market and style exposures to leave pure residual alpha."
+topic: "en/systematic-and-statistical-arbitrage"
+order: 4
+minutes: 15
+updated: 2026-06-15
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, MindMap, BetaScatter, PoWeightsBar, CorrelationBlender, RiskReturnRace } from '@/components/react';
+
+You have a signal. It ranks 500 stocks from "most underpriced" to "most overpriced," and your backtest swears it predicts next-month returns. So you buy the top names, short the bottom names, and call it a hedge fund. Then the market drops 4% on a Tuesday, your "hedged" book bleeds 3%, and you discover the uncomfortable truth: your long-short signal was quietly making a giant *directional* bet on the market the whole time. The signal was clean; the **book** was not.
+
+Turning a signal into a market-neutral book is the unglamorous engineering step that separates "I have an idea" from "I have a strategy." Think of it like **noise-cancelling headphones**: the world is full of predictable ambient hum — the market's daily roar, the value factor's mood swings, your sector's drift — and you want none of it. You subtract every predictable wave so that only *your* signal, the idiosyncratic residual nobody else is pricing, comes through clean. This lesson is the wiring diagram for that subtraction.
+
+<MCQ
+  client:visible
+  pretest
+  question="You build a book with exactly $10M long and $10M short — perfectly dollar-neutral. Does that guarantee the book is market-neutral (immune to a broad market move)?"
+  options={[
+    { text: "No — if your longs have higher beta than your shorts, the book still has net positive market exposure and drops when the market drops." , correct: true },
+    { text: "Yes — equal dollars long and short always cancel any market move exactly." },
+    { text: "Yes — dollar-neutral and market-neutral are two names for the same thing." },
+    { text: "No — but only if you used leverage; an unlevered dollar-neutral book is always market-neutral." }
+  ]}
+  explanation="Dollar-neutral balances CAPITAL, not RISK. If your $10M of longs averages β = 1.3 and your $10M of shorts averages β = 0.8, the net beta is +0.5: a 1% market move still pushes the book ~0.5%. Equal dollars only cancels the market if the two legs have equal beta — which they almost never do. Neutralizing beta, not dollars, is the real job."
+/>
+
+## Why neutralize at all
+
+**Analogy.** Your raw long-short signal is a microphone in a noisy room. It picks up the voice you care about (your alpha), but also the air conditioner, the traffic outside, and the guy two desks over. **Neutralization is noise cancellation**: you measure each predictable hum and subtract it, so the recording carries only the signal you actually predicted. Get paid for your edge; stop getting paid — or punished — for ambient risks you never intended to take.
+
+A raw signal-weighted book typically smuggles in three unwanted bets:
+
+- **A net directional tilt.** If the longs and shorts don't sum to zero capital, you're net long (or short) the market — a beta bet you didn't ask for.
+- **A beta tilt.** Even at zero net dollars, if your longs are higher-beta than your shorts, you carry positive market exposure (the pretest trap).
+- **Style tilts.** Your signal might systematically pick cheap, small, or recently-winning stocks — loading you onto the **value, size, or momentum** factors. When those factors zig, your "alpha" zigs with them, and you can't tell skill from a factor ride.
+
+Recall the factor decomposition from your factor-models work. Any return splits into a part the factors explain and a part they don't:
+
+$$r_i = \alpha_i + \sum_{k} \beta_{ik}\,F_k + \varepsilon_i$$
+
+The $\sum_k \beta_{ik} F_k$ piece is **common risk** — exposure shared with everyone running value, momentum, or just being long the market. The $\varepsilon_i$ piece is the **idiosyncratic residual**: the part specific to *this* name that the factor model cannot explain. Your signal claims to predict $\varepsilon$. A market-neutral book is engineered so its return is (approximately) a weighted sum of those residuals — pure $\varepsilon$, with the common-factor exposures driven to zero.
+
+<Callout variant="info" title="The one-sentence goal">
+Neutralizing means: set the book's net exposure to every risk you don't want (market, beta, value, size, momentum, sector) to ≈ 0, so the only thing left moving your P&L is the residual your signal actually forecasts.
+</Callout>
+
+### When to use it
+
+You neutralize a factor when you have **no edge in timing it**. You can't predict whether value or the market goes up next month, so carrying that exposure is uncompensated risk — pure variance, zero expected return added. Strip it. The flip side (covered later): if your signal *does* have genuine factor-timing skill, neutralizing that factor throws away real alpha. Neutralize the risks you can't forecast; keep the ones you can.
+
+## Dollar-neutral
+
+**Analogy.** A balanced seesaw with equal weight on each side. It *looks* level — but only if both kids weigh the same. Dollar-neutral is equal *dollars* per side; it says nothing about whether those dollars are equally *sensitive* to the market.
+
+**Definition.** A book is **dollar-neutral** when the capital in longs equals the capital in shorts:
+
+$$\sum_{i \in \text{long}} w_i = \sum_{j \in \text{short}} |w_j| \quad\Longleftrightarrow\quad \sum_i w_i = 0$$
+
+where $w_i$ is the signed dollar (or fractional) weight. It's the simplest neutralization, it zeroes your *net* directional capital, and it's free to impose. But it does **not** guarantee market-neutral.
+
+**Worked example.** A \$2M gross book — \$1M long, \$1M short — built from a 4-stock signal:
+
+| Position | Side | Capital | Beta (β) | β-weighted exposure |
+|---|---|---|---|---|
+| AAA | Long | +\$0.5M | 1.4 | +0.70 |
+| BBB | Long | +\$0.5M | 1.2 | +0.60 |
+| CCC | Short | −\$0.5M | 0.7 | −0.35 |
+| DDD | Short | −\$0.5M | 0.9 | −0.45 |
+| **Net** | | **\$0.0M** | | **+0.50** |
+
+Dollars cancel perfectly: \$1M long, \$1M short, net \$0. But the **net beta is +0.50** (in units of \$1M of exposure). A 1% market rally lifts this "neutral" book by roughly 0.5% — and a 1% selloff hits it just as hard. The longs were simply higher-beta than the shorts, so the seesaw was never actually level.
+
+<Callout variant="warning" title="Pitfall — calling dollar-neutral 'hedged'">
+Dollar-neutral is the most over-trusted word in the business. It balances *capital*, not *risk*. A long book of high-flying growth names against a short book of sleepy utilities can be perfectly dollar-neutral and still behave like a leveraged bet on the market. If your tear sheet shows the book moving with the index on big days, beta — not dollars — is the culprit.
+</Callout>
+
+### When to use it
+
+Dollar-neutral is the right *starting* constraint (it pins gross leverage and net capital) and is sometimes the *only* constraint when betas are genuinely similar across both legs or unavailable/unreliable. But treat it as the floor, not the ceiling: it's step one, and the next two sections fix what it leaves exposed.
+
+## Beta-neutral
+
+**Analogy.** Now you weigh the kids before seating them. To balance a heavy kid on one side, you either scoot a lighter kid further out (size the position bigger) or swap in a heavier kid on the other side. **Beta-neutral balances the seesaw by sensitivity, not headcount.**
+
+**Definition / formula.** A book is **beta-neutral** when the dollar-weighted sum of betas is zero:
+
+$$\beta_{\text{book}} = \sum_i w_i\,\beta_i = 0$$
+
+Each $\beta_i$ comes straight from your factor work — the slope of stock $i$'s return regressed on the market: $r_i = \alpha_i + \beta_i r_m + \varepsilon_i$. The fitted slope is $\beta_i$; whatever the line *doesn't* explain is the residual $\varepsilon_i$, which is exactly the part you want to keep.
+
+<BetaScatter client:visible caption="Each dot is one period: market return on the x-axis, the stock's return on the y-axis. The fitted line's SLOPE is that name's beta. The vertical gap from each dot to the line is the residual ε — the idiosyncratic move your signal is trying to predict. Beta-neutralizing strips out the slope (the market component) so the book lives on those gaps." />
+
+**Worked example — computing the hedge.** Start from the dollar-neutral book above, which has $\beta_{\text{book}} = +0.50$ per \$1M. Suppose the longs average β = 1.3 and the shorts average β = 0.8. With \$1M on each side, net beta is $(1.3 - 0.8) = +0.5$ per \$1M. To zero it, scale the short leg up so its beta-weighted exposure matches the long leg's:
+
+$$\text{short capital} = \frac{\beta_{\text{long}}}{\beta_{\text{short}}}\times \text{long capital} = \frac{1.3}{0.8}\times \$1\text{M} = \$1.625\text{M}.$$
+
+| Leg | Avg β | Capital (after hedge) | β-weighted exposure |
+|---|---|---|---|
+| Long | 1.3 | +\$1.000M | +1.30 |
+| Short | 0.8 | −\$1.625M | −1.30 |
+| **Net** | | **−\$0.625M** | **0.00** |
+
+Net beta is now **0** — a 1% market move barely touches the book. Notice the cost: the book is no longer dollar-neutral (it's net −\$0.625M short capital). You can't generally hold *both* dollar- and beta-neutral with only two free legs unless you also adjust which names you hold (e.g., pick lower-beta longs or higher-beta shorts) so the betas match at equal dollars. Practitioners usually let the optimizer juggle both constraints at once across many names.
+
+<FillBlank
+  client:visible
+  question="Fill in the neutrality each statement describes."
+  text="Equal capital on each side, so net invested dollars are zero, is {{dollar|beta|factor}}-neutral, while a zero dollar-weighted sum of market sensitivities, Σwᵢβᵢ = 0, is {{beta|dollar|sector}}-neutral."
+  explanation="Dollar-neutral balances capital (Σwᵢ = 0). Beta-neutral balances market sensitivity (Σwᵢβᵢ = 0). The first cancels net dollars; the second cancels net market exposure — and they coincide only when both legs happen to have equal average beta."
+/>
+
+### When to use it
+
+Beta-neutral is the minimum bar for calling a long-short book "market-neutral." Impose it whenever you can estimate betas with reasonable stability (rolling 1–2 year windows, shrunk toward 1) and you have no view on market direction. The caveat: beta is noisy and time-varying, so a book that's beta-neutral *today* drifts; you re-hedge on a schedule. And zeroing market beta still leaves you exposed to *style* factors — which is exactly the next step.
+
+## Factor-neutral
+
+**Analogy.** Beta-neutral cancels one instrument — the market's bass drum. **Factor-neutral cancels the whole rhythm section**: the market, plus value, size, momentum, and your sector's drumbeat. Whatever survives that subtraction is the solo nobody else is playing — your residual alpha.
+
+**Definition / formula.** Generalize the single-beta hedge to a whole factor set. With the model
+
+$$r_i = \alpha_i + \sum_{k=1}^{K} \beta_{ik}\,F_k + \varepsilon_i,$$
+
+a **factor-neutral** book sets the net loading on *every* factor $k$ to zero:
+
+$$\beta_{\text{book},k} = \sum_i w_i\,\beta_{ik} = 0 \quad \text{for all } k = 1,\dots,K.$$
+
+Geometrically, you're **projecting your raw weight vector off the factor space**: you remove the part of the book that lives along any factor direction, leaving only the orthogonal component. The book's return then collapses to
+
+$$r_{\text{book}} = \sum_i w_i r_i \approx \sum_i w_i \varepsilon_i,$$
+
+a weighted sum of **residuals** — the pure alpha the factor model cannot explain. That residual is the only thing your signal ever claimed to forecast.
+
+<PoWeightsBar client:visible caption="A book is a vector of weights — one number per name, longs above the line, shorts below. Factor-neutralization reshapes this vector so that, for every factor (market, value, size, momentum, sector), the dollar-weighted loadings cancel to zero. The weights you see are what's left after the common-factor directions are projected out." />
+
+**Worked example — industry/sector neutralization.** The single most common practical neutralization is **rank within industry**. Instead of ranking all 500 names against each other (which secretly bets on whichever sector your signal happens to love today), you rank each stock *only against its sector peers*, then go long the top of each sector and short the bottom of each sector. Net sector exposure ≈ 0 by construction.
+
+| Sector | Long (top-ranked peer) | Short (bottom-ranked peer) | Net sector capital |
+|---|---|---|---|
+| Tech | +\$0.5M | −\$0.5M | \$0 |
+| Energy | +\$0.5M | −\$0.5M | \$0 |
+| Financials | +\$0.5M | −\$0.5M | \$0 |
+| **Net** | **+\$1.5M** | **−\$1.5M** | **\$0 per sector** |
+
+Because each sector is long-short within itself, an energy-wide selloff hits your long and short energy legs equally and cancels. Your bet is purely *relative* — the good tech name vs. the bad tech name — never tech-vs-energy.
+
+<CorrelationBlender client:visible caption="Two assets sharing a common factor move together — high correlation, lots of redundant risk. Hedging that factor out is exactly the dial here: subtract the shared component and the residuals decorrelate toward independence. A factor-neutral book is built from those near-independent residuals, which is why it diversifies instead of secretly stacking the same bet." />
+
+<Callout variant="info" title="Why orthogonal residuals are the prize">
+Once you've projected out the common factors, the leftover residuals are close to *uncorrelated* with each other (and with the market). Near-independent bets are the holy grail: their risks diversify away, so a book of many small residual positions has dramatically lower volatility than its gross size suggests — and every basis point of return it earns is genuinely yours, not a factor in disguise.
+</Callout>
+
+<MatchConcepts
+  client:visible
+  question="Match each neutralization to exactly what it removes."
+  pairs={[
+    { term: "Dollar-neutral", definition: "Net invested capital: equal dollars long and short, so Σwᵢ = 0 (but market exposure can remain)." },
+    { term: "Beta-neutral", definition: "Net market sensitivity: the dollar-weighted sum of single-factor betas, Σwᵢβᵢ = 0." },
+    { term: "Factor-neutral", definition: "Net loading on EVERY modeled factor (market, value, size, momentum), leaving a book of pure residuals." },
+    { term: "Sector-neutral", definition: "Net exposure to each industry, typically by ranking and trading names only against their own-sector peers." }
+  ]}
+  explanation="Each step removes more: dollars (capital) ⊂ beta (market risk) ⊂ factor (all style risks) — with sector-neutral as the most common practical slice, ranking within industry so industry-wide moves cancel."
+/>
+
+## The cost of neutrality
+
+**Analogy.** Noise cancellation drains the battery. Every wave you subtract takes power, and crank the cancellation to maximum and you might mute a sound you actually wanted to hear. Neutralizing is the same: each hedge is real work, and over-hedging can erase good exposure along with the bad.
+
+Neutrality is never free. The bill comes in three forms:
+
+- **Trading and financing cost.** Every hedge — shorting more, adding offsetting names — is a trade, and trades pay spread, impact, borrow, and financing. A fully factor-neutral book trades *more names* and *rebalances more often* (factor loadings drift), so its turnover and costs are higher.
+- **Risk budget consumed.** Hedges occupy gross leverage and position slots that could have held alpha. You sculpt the book down to small residuals, each cheap to *carry* but, in aggregate, expensive to *trade in and out of*.
+- **Hedging away good exposure.** This is the subtle one. If your signal genuinely *times* a factor — say it gets long value precisely when value is about to outperform — then neutralizing value **throws away real alpha**. You've cancelled the very wave you wanted to hear.
+
+| Book | Removes | Leaves exposed | Cost / downside |
+|---|---|---|---|
+| **Raw signal-weighted** | Nothing | Market, beta, all styles, sectors | Cheapest to trade; P&L dominated by uncontrolled factor bets |
+| **Dollar-neutral** | Net directional capital | Beta, styles, sectors | Nearly free; still moves with the market via beta tilt |
+| **Beta-neutral** | Net market beta | Value, size, momentum, sector | Re-hedge as beta drifts; style factors still ride along |
+| **Fully factor-neutral** | Market + all styles + sector | Only the residual ε | Highest turnover/cost; risks over-sculpting to tiny, expensive residuals |
+
+<RiskReturnRace client:visible caption="Two equity curves racing. The hedged residual book is low-volatility and steady — it grinds out alpha with little dependence on the market's direction. The un-hedged tilted book has a higher-volatility ride dominated by the market: great on up days, brutal on down days. Same gross size, completely different risk character — neutralization is what buys the smoother line." />
+
+<Callout variant="warning" title="Pitfall — over-neutralizing into nothing">
+Chase neutrality too hard and you constrain the optimizer until the only positions left are minuscule residual bets — each so small that trading costs swamp the alpha. You've technically achieved 'pure' alpha and simultaneously made it untradeable. Neutralize the factors you can't forecast; don't reflexively zero exposures you actually have an edge in, and watch that the post-hedge book is still big enough to be worth trading.
+</Callout>
+
+### When to use it (the trade-off)
+
+Neutralize aggressively when your edge is *purely cross-sectional* (relative-value within a universe) and you have **no factor-timing skill** — then every factor is uncompensated noise and worth the hedging cost. Neutralize *selectively* when your signal has demonstrated, out-of-sample factor-timing alpha: keep the exposures you can forecast, hedge the rest. The decision is empirical: hedge a factor only if doing so improves your *risk-adjusted, net-of-cost* return, not just your raw volatility.
+
+<MCQ
+  client:visible
+  question="A PM fully factor-neutralizes a book and the Sharpe ratio DROPS versus the merely beta-neutral version. What is the most likely explanation?"
+  options={[
+    { text: "The signal had genuine factor-timing alpha, so neutralizing those factors hedged away real expected return, not just noise." , correct: true },
+    { text: "Factor-neutralization always lowers Sharpe; beta-neutral is strictly better." },
+    { text: "The book became dollar-neutral, which mechanically reduces returns." },
+    { text: "Residual returns are riskier than factor returns, so removing factors raises volatility." }
+  ]}
+  explanation="Neutralizing removes both the RISK and the RETURN of an exposure. If the factor exposure was uncompensated noise, removing it raises Sharpe (less risk, same return). If the signal could time that factor, the exposure carried real expected return — hedging it drops both numerator and denominator and can lower Sharpe. The drop is a signal that the PM had a factor-timing edge worth keeping."
+/>
+
+## Putting the book together
+
+End to end, building a market-neutral book is a pipeline. Here is the whole assembly line on a tiny universe.
+
+1. **Signal → ranks.** Your model scores each name; you rank the universe (often *within sector* to bake in sector-neutrality). Say the top decile is "buy," bottom decile is "sell."
+2. **Ranks → raw weights.** Convert ranks to signed weights (e.g., proportional to rank, or equal-weight the top/bottom buckets). This is the raw, *un-hedged* book — and it carries every tilt.
+3. **Neutralize.** Impose the constraints: $\sum_i w_i = 0$ (dollar), $\sum_i w_i \beta_{ik} = 0$ for the market and every style factor (beta + factor), and net-zero within each sector. An optimizer solves for the closest weight vector to your raw signal that satisfies all of them.
+4. **Scale to risk target.** Multiply the neutralized weights by a constant so the book's forecast volatility hits your target (say 8% annualized). This sets gross leverage.
+5. **Trade.** Send the orders — ideally through the execution logic from earlier lessons so you don't hand back your alpha in market impact.
+
+**Worked mini-example.** Raw signal says: long AAA (β 1.4), BBB (β 1.2); short CCC (β 0.7), DDD (β 0.9), \$0.5M each → that's our dollar-neutral-but-β = +0.5 book from before. Neutralize: the optimizer nudges weights to AAA +\$0.45M, BBB +\$0.40M, CCC −\$0.50M, DDD −\$0.55M, leaving Σwᵢ ≈ 0 *and* Σwᵢβᵢ ≈ 0 (and, with a sector constraint, net-zero per sector). Forecast vol comes out at 5%; you want 8%, so scale gross up by 1.6×. Now trade. The book that hits the market is pure residual, sized to budget — a strategy, not just a hunch.
+
+<MindMap
+  client:visible
+  title="From signal to market-neutral book"
+  caption="One signal, three layers of neutrality, and the assembly line that ships a tradable residual book."
+  root={{
+    label: 'Market-neutral book',
+    children: [
+      { label: 'Why neutralize', children: [
+        { label: 'Strip uncompensated risk (market/beta/style)' },
+        { label: 'Isolate residual ε your signal predicts' },
+        { label: 'r = α + ΣβₖFₖ + ε → keep ε' }
+      ]},
+      { label: 'Layers of neutrality', children: [
+        { label: 'Dollar: Σwᵢ = 0 (capital, not risk)' },
+        { label: 'Beta: Σwᵢβᵢ = 0 (market sensitivity)' },
+        { label: 'Factor: Σwᵢβₖ = 0 for all k (all styles)' },
+        { label: 'Sector: rank within industry' }
+      ]},
+      { label: 'Cost of neutrality', children: [
+        { label: 'Trading/financing + turnover' },
+        { label: 'Risk budget consumed' },
+        { label: 'Can hedge away good factor-timing alpha' }
+      ]},
+      { label: 'Assembly line', children: [
+        { label: 'Signal → ranks → raw weights' },
+        { label: 'Neutralize (beta + factor + sector)' },
+        { label: 'Scale to risk target → trade' }
+      ]}
+    ]
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Market-neutral book: lock it in"
+  questions={[
+    {
+      question: "A dollar-neutral book has $3M long (avg β = 1.5) and $3M short (avg β = 1.0). What is the net beta, and is it market-neutral?",
+      options: [
+        { text: "Net β ≈ +1.5 (in $M units): not market-neutral — the higher-beta longs leave net positive market exposure.", correct: true },
+        { text: "Net β = 0: equal dollars make it automatically market-neutral.", },
+        { text: "Net β ≈ −1.5: the shorts dominate because shorts always carry negative beta.", },
+        { text: "Net β = +2.5: you add the two average betas together.", }
+      ],
+      explanation: "Net β-weighted exposure = 1.5×$3M − 1.0×$3M = +$1.5M of beta. Positive, so a market rally lifts the book — dollar-neutral but NOT market-neutral. To zero it you'd scale shorts up to $4.5M (1.5/1.0 × $3M) or pick lower-beta longs."
+    },
+    {
+      question: "In r = α + Σβₖ·Fₖ + ε, which piece does a fully factor-neutral book aim to leave as its only source of return?",
+      options: [
+        { text: "ε — the idiosyncratic residual the factor model can't explain.", correct: true },
+        { text: "Σβₖ·Fₖ — the combined factor exposures.", },
+        { text: "α only, with ε hedged away alongside the factors.", },
+        { text: "Fₖ — the raw factor returns themselves.", }
+      ],
+      explanation: "Factor-neutralizing drives every net factor loading Σwᵢβₖ to zero, so the ΣβₖFₖ term vanishes from the book's return, leaving ≈ Σwᵢεᵢ — a weighted sum of residuals. That residual is the pure alpha your signal forecasts."
+    },
+    {
+      question: "Which neutralization is the most common PRACTICAL one, and how is it usually implemented?",
+      options: [
+        { text: "Sector/industry-neutral, by ranking each stock only against its own-sector peers so industry-wide moves cancel.", correct: true },
+        { text: "Dollar-neutral, by always using exactly 2× leverage.", },
+        { text: "Beta-neutral, by holding only stocks with β = 1.0.", },
+        { text: "Factor-neutral, by shorting an index future against the whole book.", }
+      ],
+      explanation: "Ranking within industry (long the top peer, short the bottom peer in each sector) is the workhorse: it makes the bet purely relative within each sector, so a sector-wide selloff hits both legs equally and cancels. It's cheap to implement and removes a huge chunk of unwanted common risk."
+    },
+    {
+      question: "After fully factor-neutralizing, a quant finds the surviving residual positions are so tiny that trading costs eat the alpha. What went wrong?",
+      options: [
+        { text: "Over-neutralization: piling on constraints sculpted the book down to minuscule, expensive-to-trade residuals.", correct: true },
+        { text: "The signal was too strong, so neutralization had nothing to remove.", },
+        { text: "Dollar-neutrality was never imposed, so the weights blew up.", },
+        { text: "Residuals are always untradeable; neutral books can't be implemented in practice.", }
+      ],
+      explanation: "Every constraint shrinks the feasible book. Stack too many and the optimizer is left with tiny residual bets whose trading costs swamp the edge — technically 'pure' alpha, practically untradeable. Neutralize the factors you can't forecast, keep the book large enough to trade, and check net-of-cost improvement."
+    }
+  ]}
+/>
+
+You now know how to take a raw cross-sectional signal and forge it into a hedged, tradable book: balance the dollars, zero the beta, project out the style and sector factors, scale to a risk target, and trade the pure residual that's left. But one question lurks underneath this whole pipeline — *how good is the signal you started with, and how fast does it rot?* Most signals decay: the edge that ranked stocks beautifully last month is half as sharp this month and gone by next quarter. The next lesson, **Signal Combination & Decay**, tackles how to measure that decay, blend multiple signals so their residuals reinforce rather than cancel, and time your trades before the alpha evaporates.

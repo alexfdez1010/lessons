@@ -56,25 +56,6 @@ export interface UpcomingCourse {
  */
 export const upcomingCourses: UpcomingCourse[] = [
   {
-    slug: 'systematic-and-statistical-arbitrage',
-    icon: '🔗',
-    difficulty: 'expert',
-    order: 4,
-    accent: 'accent',
-    title: {
-      en: 'Systematic & Statistical Arbitrage',
-      es: 'Arbitraje Sistemático y Estadístico',
-    },
-    description: {
-      en: 'Mining relative value: pairs trading, cointegration, factor-neutral books, signal decay, and the 2007 quant quake.',
-      es: 'Minando valor relativo: pairs trading, cointegración, carteras neutrales por factor, decaimiento de señal y el quant quake de 2007.',
-    },
-    dependencies: ['time-series-finance', 'factor-models', 'algorithmic-trading-and-execution'],
-    tags: ['quantitative-finance', 'trading-and-markets'],
-    buildNotes:
-      'Mining relative value: pairs trading & cointegration, mean-reversion vs momentum signals, building a market-/factor-neutral book, signal combination & decay, capacity and crowding, the 2007 quant quake. Islands: spread-zscore + signal-decay.',
-  },
-  {
     slug: 'defi-options-and-onchain-volatility',
     icon: '🌀',
     difficulty: 'expert',
@@ -111,6 +92,63 @@ export const upcomingCourses: UpcomingCourse[] = [
     tags: ['investing-basics'],
     buildNotes:
       "Where financial products came from (the story history-of-money doesn't tell): ancient lending & interest and the Code of Hammurabi, Italian merchant banks + double-entry bookkeeping + bills of exchange, the first government bonds (Venetian prestiti), the Amsterdam joint-stock company & the world's first stock exchange (VOC, 1602), tulip mania as the first derivatives bubble, Dojima rice & the first futures market, Lloyd's & the birth of insurance, central banks (Bank of England 1694), mutual funds → index funds → ETFs, and the rise of modern derivatives & securitization. Focus on why each product was invented and what problem it solved. Islands: product-timeline + joint-stock-share.",
+  },
+  {
+    slug: 'machine-learning-for-alpha',
+    icon: '🧠',
+    difficulty: 'expert',
+    order: 7,
+    accent: 'accent',
+    title: {
+      en: 'Machine Learning for Alpha',
+      es: 'Machine Learning para Alpha',
+    },
+    description: {
+      en: 'ML done right in markets: feature engineering, leakage and purged cross-validation, backtest overfitting, ensembles, and the deflated Sharpe ratio.',
+      es: 'ML bien hecho en mercados: ingeniería de features, fugas y validación cruzada purgada, sobreajuste del backtest, ensembles y el ratio de Sharpe desinflado.',
+    },
+    dependencies: ['time-series-finance', 'factor-models', 'systematic-and-statistical-arbitrage'],
+    tags: ['quantitative-finance'],
+    buildNotes:
+      'Applying machine learning to predictive signals without fooling yourself: financial features & labeling (fixed-horizon vs triple-barrier), the leakage problem and why standard k-fold fails on time series, purged & embargoed cross-validation, the backtest-overfitting / multiple-testing trap and the deflated Sharpe ratio, tree ensembles vs linear models & feature importance (MDI/MDA), regularization and ensembling for noisy low-signal data, and combining ML signals with the stat-arb pipeline. Heavy emphasis on overfitting as the central enemy. Islands: purged-cv-split + deflated-sharpe.',
+  },
+  {
+    slug: 'high-frequency-market-making',
+    icon: '⚡',
+    difficulty: 'expert',
+    order: 8,
+    accent: 'brand',
+    title: {
+      en: 'High-Frequency Market Making',
+      es: 'Creación de Mercado de Alta Frecuencia',
+    },
+    description: {
+      en: 'Quoting both sides for a living: the Avellaneda–Stoikov model, inventory risk, optimal spreads, adverse selection, and the latency arms race.',
+      es: 'Cotizar ambos lados para vivir: el modelo de Avellaneda–Stoikov, riesgo de inventario, spreads óptimos, selección adversa y la carrera de latencia.',
+    },
+    dependencies: ['market-microstructure', 'algorithmic-trading-and-execution', 'systematic-and-statistical-arbitrage'],
+    tags: ['quantitative-finance', 'trading-and-markets'],
+    buildNotes:
+      'The other side of every order: how a market maker earns the spread while managing inventory. The market-making P&L (spread capture minus adverse selection minus inventory risk), the Avellaneda–Stoikov optimal-quoting model (reservation price, optimal bid/ask skew vs inventory and risk aversion), inventory mean-reversion & skewing quotes, adverse selection & the Glosten–Milgrom intuition, queue position & order-book dynamics, latency and the speed arms race, and maker-taker / rebate economics. Islands: as-quoting-sim + inventory-skew.',
+  },
+  {
+    slug: 'onchain-arbitrage-and-cross-dex-mev',
+    icon: '🔀',
+    difficulty: 'expert',
+    order: 9,
+    accent: 'accent',
+    title: {
+      en: 'On-chain Arbitrage & Cross-DEX MEV',
+      es: 'Arbitraje On-chain y MEV entre DEX',
+    },
+    description: {
+      en: 'Statistical arbitrage meets the blockchain: cross-DEX and triangular arb, atomic bundles, sandwiching, and the searcher–builder economics of MEV.',
+      es: 'El arbitraje estadístico se topa con la blockchain: arbitraje entre DEX y triangular, bundles atómicos, sandwiching y la economía searcher–builder del MEV.',
+    },
+    dependencies: ['defi-amms', 'mev-and-ordering', 'systematic-and-statistical-arbitrage'],
+    tags: ['defi', 'quantitative-finance', 'trading-and-markets'],
+    buildNotes:
+      'Relative-value arbitrage with no shorting and atomic settlement: cross-DEX price discrepancies and how AMM curves create them, triangular arbitrage across pools, atomic arbitrage bundles & flash-loan-funded legs, the cost stack (gas, priority fees, builder payment, slippage), competition in the priority-gas/PBS auction and why most arb profit is bid away to builders/validators, backrunning vs sandwiching, and the statistical edge & capacity limits of on-chain arb vs TradFi stat-arb. Islands: cross-dex-arb + bundle-profit-split.',
   },
 ];
 
