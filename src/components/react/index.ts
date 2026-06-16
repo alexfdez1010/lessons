@@ -735,3 +735,13 @@ export type { SpreadZScoreProps } from '@/components/react/SpreadZScore';
 
 export { SignalDecay, default as SignalDecayDefault } from '@/components/react/SignalDecay';
 export type { SignalDecayProps } from '@/components/react/SignalDecay';
+
+// Mental-models-for-finance islands
+export { MentalModelLattice, default as MentalModelLatticeDefault } from '@/components/react/MentalModelLattice';
+export type { MentalModelLatticeProps, MentalModelTile } from '@/components/react/MentalModelLattice';
+
+export { ExpectedValueDial, default as ExpectedValueDialDefault } from '@/components/react/ExpectedValueDial';
+export type { ExpectedValueDialProps } from '@/components/react/ExpectedValueDial';
+
+export { AsymmetryPayoff, default as AsymmetryPayoffDefault } from '@/components/react/AsymmetryPayoff';
+export type { AsymmetryPayoffProps } from '@/components/react/AsymmetryPayoff';

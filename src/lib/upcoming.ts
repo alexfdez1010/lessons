@@ -56,25 +56,6 @@ export interface UpcomingCourse {
  */
 export const upcomingCourses: UpcomingCourse[] = [
   {
-    slug: 'mental-models-for-finance',
-    icon: '🧩',
-    difficulty: 'beginner',
-    order: 4,
-    accent: 'brand',
-    title: {
-      en: 'Mental Models for Finance',
-      es: 'Modelos Mentales para las Finanzas',
-    },
-    description: {
-      en: 'The thinking toolkit before the math: the core economics and finance mental models that turn money decisions from guesswork into reasoning.',
-      es: 'La caja de herramientas mental antes que las fórmulas: los modelos mentales clave de economía y finanzas que convierten las decisiones de dinero en razonamiento.',
-    },
-    dependencies: ['investing-basics', 'economics-for-finance'],
-    tags: ['investing-basics'],
-    buildNotes:
-      "The thinking toolkit a beginner needs before any formula — a curated set of economics + finance mental models, each taught with a plain-language intuition, a worked everyday example, the common misuse, and a 'when to reach for it' note. Assume zero finance background; define every term on first use. Cover: ECONOMICS — opportunity cost, trade-offs & 'there is no free lunch', incentives & second-order effects, marginal thinking (sunk cost vs marginal cost), supply & demand intuition, comparative advantage & specialization, scarcity, time value of money as a model. RISK & PROBABILITY — expected value, risk vs uncertainty, base rates & regression to the mean, asymmetry / convexity (limited downside vs open upside), margin of safety, ergodicity / never risk ruin. MARKETS & BEHAVIOR — compounding as the 8th wonder, diversification ('don't put all eggs in one basket'), Mr. Market & price vs value, reflexivity & feedback loops, efficient-market intuition and its limits, the map is not the territory (models lie). BEHAVIORAL TRAPS — loss aversion, anchoring, confirmation bias, herd behavior/FOMO, recency bias, overconfidence. Mention Munger's 'latticework of mental models' as the framing. Islands: a mental-model latticework/grid explorer + an expected-value-vs-intuition interactive + an asymmetry/convexity payoff visual + a compounding-curve animation. Heavy on analogies and decision scenarios, light on equations (this is the pre-math layer).",
-  },
-  {
     slug: 'defi-options-and-onchain-volatility',
     icon: '🌀',
     difficulty: 'expert',

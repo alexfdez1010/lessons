@@ -54,3 +54,4 @@ MDX landed):
 - [x] **Exotic Options & Structured Products** (`exotic-options-and-structured-products`, expert) — built 2026-06-14.
 - [x] **Counterparty Risk & XVA** (`counterparty-risk-and-xva`, expert) — built 2026-06-14.
 - [x] **Systematic & Statistical Arbitrage** (`systematic-and-statistical-arbitrage`, expert) — built 2026-06-15.
+- [x] **Mental Models for Finance** (`mental-models-for-finance`, beginner) — built 2026-06-16.
