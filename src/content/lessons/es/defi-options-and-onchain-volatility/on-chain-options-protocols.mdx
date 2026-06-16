@@ -1,0 +1,311 @@
+---
+title: "Protocolos de opciones on-chain"
+description: "Cómo una opción se convierte en un smart contract: la colateralización total y su coste de capital, la vol cotizada por AMM frente a libros de órdenes on-chain, los diseños europeos liquidados en efectivo frente a los de entrega física, y por qué valorar una opción on-chain es mucho más difícil que intercambiar dos tokens."
+topic: "es/defi-options-and-onchain-volatility"
+order: 1
+minutes: 16
+updated: 2026-06-16
+---
+
+import { MCQ, Quiz, FillBlank, MatchConcepts, Categorize, Callout, OptionPayoff, OrderbookVsAmm, ConstantProductCurve } from '@/components/react';
+
+Ya sabéis lo que *es* una opción: el derecho (no la obligación) a comprar (call) o vender (put) un subyacente a un strike fijo, por el que el comprador paga una prima, y cuyo valor gobiernan las griegas. Sabéis cómo un AMM intercambia dos tokens a lo largo de una curva. Esta lección va sobre la colisión de esos dos mundos — qué ocurre cuando intentáis codificar una opción como un **smart contract** y dejáis que una blockchain, en lugar de una cámara de compensación, la haga cumplir.
+
+Spoiler: las matemáticas son la parte fácil. La parte difícil es que una blockchain es una máquina determinista que no puede consultar un precio, no se fía de nadie, y os cobra alquiler (gas) por cada multiplicación. Un protocolo de opciones tiene que fabricar, on-chain, las tres cosas que una mesa de TradFi da por sentadas: una fuente de precios, un input de volatilidad y una contraparte que no se largue.
+
+<MCQ
+  client:visible
+  pretest
+  question="Antes de empezar: en la mayoría de protocolos de opciones DeFi, cuando ESCRIBÍS (vendéis) una opción call sobre 1 ETH, ¿qué os exige bloquear el protocolo como colateral hasta el vencimiento?"
+  options={[
+    { text: "Un pequeño depósito de margen (digamos un 15–20% del nocional), como una cuenta de futuros de TradFi", correct: false },
+    { text: "El 1 ETH completo sobre el que se escribe la call", correct: true },
+    { text: "Nada — el saldo total de vuestra wallet es el colateral", correct: false },
+    { text: "La prima de la opción, retenida en depósito en garantía", correct: false },
+  ]}
+  explanation="La mayoría de las opciones on-chain están COMPLETAMENTE colateralizadas: una call escrita bloquea el subyacente entero (1 ETH), una put escrita bloquea el strike completo en stablecoins. No hay cámara de compensación que persiga a un moroso, así que el contrato prefinancia cada pago posible. Esa seguridad tiene un precio — la ineficiencia de capital — que es el hilo conductor de toda esta lección."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+/>
+
+## De contrato de opción a smart contract
+
+En TradFi, una opción es un contrato legal estandarizado por un mercado organizado y garantizado por una **cámara de compensación** (clearinghouse) — una contraparte central que se interpone entre comprador y vendedor, cobra márgenes y os deja indemnes si la otra parte incumple. La cámara de compensación es la capa de confianza.
+
+On-chain no hay cámara de compensación. Solo hay código. Así que un protocolo de opciones DeFi convierte cada opción en un **token** — típicamente un ERC-20 (el estándar de token fungible de Ethereum, el mismo que usa una stablecoin o un token de gobernanza). El diseño original, popularizado por Opyn, los llamaba **oTokens**: un ERC-20 por cada *serie* única de opción (un subyacente + un strike + un vencimiento + call/put). Poseer el token *es* poseer la opción; transferirlo transfiere la posición; no hay anotación en la DTCC, solo un saldo en vuestra wallet.
+
+El ciclo de vida tiene tres actores, todos forzados por el contrato:
+
+1. **El escritor (vendedor)** deposita colateral en el contrato y, a cambio, el contrato le **acuña (mintea)** oTokens. El escritor tiene ahora una posición corta de opción más un montón de colateral bloqueado.
+2. **El comprador** adquiere el oToken (lo compra en un AMM o libro de órdenes) pagando la prima. Ahora tiene una opción larga.
+3. **Al vencimiento**, el contrato lee el precio de liquidación de un **oráculo** (una fuente de precios on-chain — más sobre su peligro luego) y calcula el pago de forma determinista. El comprador canjea su oToken por cualquier valor intrínseco; el escritor recupera el colateral que quede.
+
+Ningún humano da el visto bueno. Ninguna cámara de compensación llama a nadie. El colateral se bloqueó por adelantado *precisamente porque* después no se puede perseguir a nadie.
+
+### Ejemplo resuelto: acuñar una covered call
+
+Una **covered call** (call cubierta) es la escritura segura por excelencia: poseéis el subyacente y vendéis una call contra él, cobrando prima a cambio de poner un techo a vuestro potencial al alza. Es "cubierta" porque si la call se ejerce, simplemente entregáis las monedas que ya poseéis — sin sustos.
+
+Digamos que el ETH cotiza a \$3.000. Tenéis 1 ETH y queréis rendimiento sobre él. Acuñáis una covered call a 1 mes con strike \$3.500:
+
+| Paso | Qué ocurre on-chain |
+|---|---|
+| Depósito | Enviáis 1 ETH al contrato de opciones como colateral |
+| Acuñación | El contrato os acuña 1 oToken: "call ETH \$3.500, vencimiento 30d" |
+| Venta | Vendéis ese oToken en el mercado del protocolo por, digamos, \$60 de prima |
+| Resultado A (ETH < \$3.500 al vencimiento) | La call vence sin valor; recuperáis vuestro 1 ETH; os quedáis los \$60. Rendimiento conseguido. |
+| Resultado B (ETH ≥ \$3.500 al vencimiento) | El comprador ejerce; el contrato le paga `spot − 3.500` de vuestro colateral; os quedáis los \$60 pero vuestro ETH se vendió en la práctica a \$3.500. |
+
+Vuestro 1 ETH estuvo *bloqueado todo el mes*. No lo pudisteis prestar, hacer staking, ni usar en otro sitio. Ese capital ocioso es la historia entera de la próxima sección.
+
+<OptionPayoff
+  client:visible
+  title="Covered call: largo 1 ETH + corto 1 call a $3.500"
+  legs={[
+    { type: 'call', position: 'short', strike: 3500, premium: 60, label: 'Call corta $3.500 (prima $60)' },
+  ]}
+  spotMax={5000}
+  caption="La pata corta de call por sí sola: cobráis $60 de prima (vuestra ganancia máxima) y vuestro payoff se vuelve negativo por encima de $3.500. Como también tenéis el ETH, la pata larga de la acción compensa esa caída — la parte 'cubierta' — pero el colateral de la call corta es el propio ETH, bloqueado hasta el vencimiento."
+/>
+
+## La colateralización total y el impuesto de la ineficiencia de capital
+
+Aquí está la regla que define las opciones DeFi de primera generación: **están completamente colateralizadas.** Cada dólar que la opción podría llegar a pagar está prefinanciado y congelado en el contrato.
+
+- **Escribir una call** → bloquear el **subyacente** completo (1 ETH por call sobre ETH), porque si se ejerce debéis entregar, y el payoff de una call no tiene techo al alza.
+- **Escribir una put** → bloquear el **strike completo en stablecoins** (\$3.500 por una put de strike \$3.500 sobre 1 ETH), porque el peor caso es que el subyacente caiga a cero y debáis el strike entero.
+
+Comparadlo con TradFi. Allí, un creador de mercado funciona con **margen de cartera** (SPAN, el "Standard Portfolio Analysis of Risk" del CME): el bróker somete a estrés vuestro *libro entero* ante shocks de precio y de vol, deja que las posiciones ganadoras y perdedoras se **compensen** entre sí, y solo exige margen suficiente para cubrir el peor escenario plausible — a menudo un pequeño porcentaje del nocional. Una mesa puede estar corta de mil opciones respaldada por una porción minúscula de capital, porque la cámara de compensación confía en ella (y la vigila).
+
+Un smart contract no se fía de nadie y no puede liquidar a nadie a posteriori (el escritor podría ser una wallet anónima que se esfuma). Así que exige el 100% por adelantado. Sin compensación (netting), sin margen de cartera, sin pagarés.
+
+### Ejemplo resuelto: capital bloqueado por cada \$1 de prima
+
+Cuantifiquemos el "impuesto". Tomad esa covered call de 1 ETH: bloquear **\$3.000** de ETH para ganar **\$60** de prima en un mes.
+
+$$
+\text{Eficiencia de capital} = \frac{\text{prima}}{\text{colateral bloqueado}} = \frac{60}{3000} = 2.0\%\ \text{al mes}
+$$
+
+Anualizadlo (ignorando el interés compuesto por claridad): $2.0\% \times 12 = 24\%$ de rendimiento bruto sobre el ETH bloqueado. Nada mal — pero cada céntimo de ese ETH estuvo ocioso para ganarlo.
+
+Ahora el lado de la put. Escribid una put de \$3.500 sobre ETH, cobrad \$90 de prima:
+
+| Diseño | Colateral bloqueado | Prima | Rendimiento mensual sobre el colateral |
+|---|---|---|---|
+| Put totalmente colateralizada (DeFi) | \$3.500 (strike completo, en stablecoins) | \$90 | $90 / 3500 = 2.6\%$ |
+| Put con margen de cartera (TradFi, ~10% de margen) | \$350 | \$90 | $90 / 350 = 25.7\%$ |
+
+Misma opción, misma prima, **10× el capital bloqueado** en DeFi — así que una décima parte del rendimiento sobre el capital. Este es el **impuesto de la ineficiencia de capital**, y es la razón por la que los rendimientos de las opciones on-chain, expresados *por dólar de prima*, parecen generosos mientras que los rendimientos *por dólar bloqueado* parecen escuálidos. También limita lo agresivamente que pueden ofrecer los escritores, lo que adelgaza la liquidez y ensancha los spreads.
+
+<Callout variant="warning" title="Colateral total ≠ riesgo cero">
+Completamente colateralizado significa que el escritor nunca puede incumplir frente al comprador — el pago está prefinanciado. NO significa que el escritor no pueda perder dinero. Un escritor de covered call sigue renunciando a todo el potencial por encima del strike; un escritor de cash-secured put sigue tragándose toda la caída si el subyacente se desploma. La colateralización protege a la *contraparte*, no al *P&L del escritor*.
+</Callout>
+
+La frontera son los **diseños con colateral parcial / con margen**: protocolos que dejan a los escritores depositar menos del 100% añadiendo motores de riesgo on-chain, compensación entre posiciones y liquidaciones automáticas (la misma maquinaria que conocisteis en la lección de perps). Es potente y peligroso — la infracolateralización más un oráculo manipulable es exactamente cómo ocurren los reventones on-chain. Lecciones posteriores de este curso ahondan en esas mecánicas de liquidación.
+
+<FillBlank
+  client:visible
+  question="Reglas de colateral"
+  text="Para escribir una call totalmente colateralizada, bloqueas el {{subyacente|prima|strike}} completo; para escribir una put, bloqueas el {{strike|subyacente|delta}} completo en stablecoins. DeFi no puede usar el margen de cartera de TradFi porque un smart contract no puede {{fiarse de|gravar a|cubrir a}} un escritor anónimo para que pague luego."
+  explanation="Una call escrita bloquea el subyacente (una call se puede ejercer contra ti, entregando el activo); una put escrita bloquea el strike completo en stablecoins (el peor caso es que el subyacente caiga a cero). Sin margen de cartera, porque el contrato no puede fiarse de una wallet anónima para que liquide una deuda a posteriori."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+/>
+
+## Cotizar la volatilidad: AMM frente a libro de órdenes
+
+Podéis codificar la *liquidación* de una opción en un contrato con relativa facilidad. El problema genuinamente difícil es el *precio* antes del vencimiento — ¿por cuánto debería cotizar esta opción *ahora mismo*? Han surgido dos arquitecturas, que reflejan la división del mercado spot que ya conocéis.
+
+**(a) Vol cotizada por AMM** (Lyra, Premia, los primeros Dopex). Un creador de mercado automatizado valora las opciones a partir de una **superficie de volatilidad** on-chain (la curva de vol implícita que el protocolo almacena a lo largo de strikes y vencimientos) más un modelo de valoración (Black-76 / Black-Scholes horneado en el contrato). Los proveedores de liquidez depositan en un único pool que es la contraparte de *cada* operación. Cuando compráis una call, el AMM:
+
+1. mete el spot (de un oráculo), la IV de la superficie y el tiempo a vencimiento en su modelo para obtener un valor justo,
+2. añade un spread, y sesga la cotización según la **delta neta** que el pool ya carga — si el pool ya está muy largo del mercado, os cobra más por ponerlo aún más largo, empujándose de vuelta hacia la neutralidad,
+3. os ejecuta al instante desde el pool. Los LP cobran comisiones pero heredan las griegas agregadas del pool y deben cubrirse (a menudo vía perps — hola, curso anterior).
+
+**(b) Libros de órdenes** (Aevo, y Deribit como la referencia centralizada que los libros on-chain imitan). **Creadores de mercado** profesionales emiten cotizaciones de bid/ask en vivo en muchos strikes; operáis contra una orden en reposo, no contra una fórmula. Así funciona esencialmente toda la liquidez de opciones en TradFi. On-chain, el emparejamiento (matching) puede ser off-chain (por velocidad y gas) con liquidación on-chain — un híbrido.
+
+<OrderbookVsAmm
+  client:visible
+  title="Valorar una opción: AMM en pool frente a libro de órdenes en streaming"
+  rows={[
+    { aspect: 'Quién cotiza la opción', orderbook: 'Los creadores de mercado emiten bid/ask en vivo en cada strike', amm: 'Una fórmula valora a partir de una superficie de vol almacenada + spot del oráculo' },
+    { aspect: 'Contraparte', orderbook: 'La cotización en reposo del creador que toques', amm: 'Un pool de LP compartido — siempre presente' },
+    { aspect: 'Quién carga las griegas', orderbook: 'Cada creador gestiona su propio libro', amm: 'Los LP heredan la delta/vega neta del pool y deben cubrirla' },
+    { aspect: 'Eficiencia de capital', orderbook: 'Los creadores pueden cotizar ajustado y cancelar al instante', amm: 'Colateral en pool, a menudo bloqueado del todo — más fino' },
+    { aspect: 'Calidad de la liquidez', orderbook: 'Profunda y ajustada CUANDO hay creadores presentes', amm: 'Siempre activa pero los spreads se ensanchan con el riesgo del pool' },
+    { aspect: 'Mejor cuándo', orderbook: 'Activos activos y líquidos con creadores profesionales', amm: 'Mercados de cola larga 24/7, LP pasivos' },
+  ]}
+  caption="El mismo trabajo — ponerle un precio a la opción — hecho por dos máquinas: una cola de cotizaciones de creadores profesionales, o un pool más una fórmula de valoración. El AMM siempre cotiza pero los LP se comen el riesgo de inventario; el libro de órdenes puede ser más ajustado pero solo cuando alguien ha publicado."
+/>
+
+No hay comida gratis. El libro de órdenes da spreads ajustados cuando aparecen los creadores — y un libro vacío cuando no. El AMM está *siempre* activo, pero sus LP son pasivos y acaban con una bolsa irregular de griegas que no eligieron, así que el AMM se defiende con cotizaciones más anchas y sesgadas. La eficiencia de capital, la profundidad de liquidez y quién-carga-el-riesgo son los tres mandos, y cada protocolo elige un ajuste distinto.
+
+<MCQ
+  client:visible
+  allowMultiple
+  question="Seleccionad TODA afirmación que sea cierta sobre un protocolo de opciones cotizado por AMM (frente a un libro de órdenes)."
+  options={[
+    { text: "Puede cotizar un precio incluso cuando ningún otro trader está conectado, porque el pool es la contraparte", correct: true },
+    { text: "Sus LP heredan pasivamente las griegas netas del pool y normalmente deben cubrirlas externamente", correct: true },
+    { text: "Necesita un oráculo de spot en vivo y una superficie de vol implícita almacenada para calcular una cotización", correct: true },
+    { text: "Garantiza spreads más ajustados que un libro de órdenes profundo en todo momento", correct: false },
+    { text: "Sesga las cotizaciones para empujar la delta neta del pool de vuelta hacia la neutralidad", correct: true },
+  ]}
+  explanation="Un AMM está siempre activo (el pool es contraparte), valora a partir del spot de un oráculo + una superficie de vol, sesga para gestionar su delta neta y entrega a los LP las griegas residuales para cubrir. Lo que NO hace es garantizar spreads más ajustados que un libro profundo — cuando hay creadores reales presentes y compitiendo, un libro de órdenes puede ser mucho más ajustado; el AMM se ensancha para proteger a los LP pasivos."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+/>
+
+## Diseños de liquidación: europea liquidada en efectivo frente a entrega física
+
+Dos ejes de diseño independientes deciden *cómo* paga una opción on-chain.
+
+**Estilo de ejercicio — europea frente a americana.** Una opción **europea** solo se puede ejercer *al vencimiento*; una **americana** se puede ejercer *en cualquier momento hasta* el vencimiento. On-chain domina la europea, porque el ejercicio anticipado americano significa que el contrato debe estar listo para liquidar en un bloque arbitrario — más lecturas de oráculo, más gas, más superficie de ataque. Un único timestamp de liquidación fijo es mucho más simple de codificar y de oraculizar.
+
+**Tipo de liquidación — efectivo frente a físico.** Una opción **de entrega física** *entrega el activo*: ejercéis una call y de verdad recibís 1 ETH por \$3.500. Una opción **liquidada en efectivo** *paga la diferencia en metálico*: ejercéis la misma call y simplemente recibís `spot − 3.500` en una stablecoin — ningún ETH cambia de manos. La liquidación en efectivo solo necesita un único número de confianza al vencimiento — el **precio de liquidación del oráculo** — lo que la hace perfectamente adecuada para una blockchain que lee una fuente y hace aritmética.
+
+Así que el predeterminado on-chain es abrumadoramente **europea + liquidada en efectivo**: un timestamp de vencimiento, una lectura de oráculo, una resta, listo. (Existen diseños de entrega física — son atractivos para las covered calls donde de verdad queréis entregar monedas que ya poseéis — pero añaden lógica de transferencia y casos límite de entrega.)
+
+| Eje | Opción A | Opción B | Favorito on-chain y por qué |
+|---|---|---|---|
+| Ejercicio | Europea (solo al vencimiento) | Americana (en cualquier momento) | **Europea** — un bloque de liquidación, menos lecturas de oráculo, menor superficie de ataque |
+| Liquidación | Efectivo (pagar la diferencia) | Física (entregar el activo) | **Efectivo** — solo necesita un precio de oráculo; pura aritmética, sin lógica de entrega |
+
+### Ejemplo resuelto: liquidar en efectivo una call europea
+
+Tenéis la call europea de \$3.500 de antes. Llega el bloque de vencimiento. El oráculo reporta el precio de liquidación del ETH en **\$3.900**.
+
+$$
+\text{Pago} = \max(S_{\text{liq}} - K,\ 0) = \max(3900 - 3500,\ 0) = 400
+$$
+
+El contrato os paga **\$400** en USDC del colateral bloqueado del escritor. No se entrega ETH, no hay aviso de ejercicio, no hay lotería de asignación — solo `max(3900 − 3500, 0)` evaluado una vez, on-chain, en un timestamp. El escritor recupera su colateral restante. Neto de los \$60 de prima que pagasteis, vuestro beneficio es `400 − 60`, es decir, **\$340**.
+
+Si el oráculo hubiera reportado \$3.100 en su lugar, el pago sería `max(3100 − 3500, 0)`, es decir, **\$0**; la opción vence sin valor, perdéis vuestros \$60 de prima, y el escritor se queda el 100% de su colateral.
+
+<Categorize
+  client:visible
+  question="Clasificad cada propiedad bajo el diseño de liquidación que describe"
+  buckets={['Europea liquidada en efectivo (predeterminado on-chain)', 'Americana de entrega física (estilo TradFi)']}
+  items={[
+    { text: 'Ejercicio solo en el timestamp de vencimiento', bucket: 'Europea liquidada en efectivo (predeterminado on-chain)' },
+    { text: 'Paga max(spot − strike, 0) en una stablecoin', bucket: 'Europea liquidada en efectivo (predeterminado on-chain)' },
+    { text: 'Necesita solo una lectura de oráculo al vencimiento', bucket: 'Europea liquidada en efectivo (predeterminado on-chain)' },
+    { text: 'Ningún activo cambia de manos de verdad', bucket: 'Europea liquidada en efectivo (predeterminado on-chain)' },
+    { text: 'Se puede ejercer en cualquier momento antes del vencimiento', bucket: 'Americana de entrega física (estilo TradFi)' },
+    { text: 'Entrega el subyacente real al ejercer', bucket: 'Americana de entrega física (estilo TradFi)' },
+    { text: 'Requiere lógica de asignación / entrega', bucket: 'Americana de entrega física (estilo TradFi)' },
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+<Callout variant="info" title="Por qué efectivo + europea es el predeterminado on-chain">
+Una blockchain es estupenda en una cosa: leer un número y hacer aritmética determinista sobre él en un bloque conocido. La liquidación europea en efectivo es *exactamente* eso — un timestamp, un precio de oráculo, una resta. Todo lo demás (ejercicio anticipado, entrega física, asignación) añade ramificaciones, más lecturas de oráculo y más formas de que un atacante o una transacción atascada rompan cosas.
+</Callout>
+
+## Por qué valorar una opción on-chain es genuinamente difícil
+
+Dad un paso atrás y comparad las dos operaciones que se le piden a la cadena.
+
+**Intercambiar dos tokens** es *determinista y autocontenido.* El precio sale de las propias reservas del pool vía $x \cdot y = k$. Sin datos externos, sin pronóstico — solo reservas y aritmética. La curva de abajo *es* el precio; vender más X os desliza por ella, y podéis calcular el output exacto antes de firmar. Nada de mañana importa.
+
+<ConstantProductCurve
+  client:visible
+  title="El caso fácil: un swap es una curva fija y autocontenida"
+  caption="Intercambiar es determinista: las propias reservas del pool definen el precio vía x·y = k. Sin oráculo, sin pronóstico — deslizaos por la curva y conocéis el output exacto. Una opción no tiene tal curva autocontenida, porque su valor depende de una volatilidad PROSPECTIVA que la cadena no puede derivar de su propio estado."
+/>
+
+**Valorar una opción** necesita tres inputs que la cadena no puede conjurar de su propio estado:
+
+1. **Un precio spot en vivo.** Black-Scholes necesita el precio actual del subyacente, $S$. Una blockchain no tiene ni idea de cuánto cuesta el ETH — debe importar ese número de un **oráculo**, una fuente de precios externa empujada on-chain (p. ej. Chainlink, o un TWAP leído de un pool de DEX). Y un oráculo es un *objetivo*: si un atacante puede empujar el precio reportado, puede acuñar o liquidar opciones a valores fraudulentos. La liquidación en efectivo lo empeora — el pago entero depende de un número en un bloque.
+2. **Un input de volatilidad implícita.** El valor de la opción está dominado por $\sigma$, la volatilidad futura esperada — una cantidad *prospectiva* que, por definición, no está en ningún dato histórico on-chain. El protocolo tiene que *obtener o adivinar* una superficie de vol, almacenarla y mantenerla fresca. Vol obsoleta o manipulada = opciones mal valoradas que los arbitrajistas (o atacantes) drenan.
+3. **Las griegas, calculadas en gas caro.** Black-Scholes implica la CDF normal $N(d_1)$, $N(d_2)$, logaritmos, exponenciales y una raíz cuadrada. Cada una de esas es costosa de calcular en la EVM (la Ethereum Virtual Machine), donde pagáis **gas** — una comisión — por cada operación. Los protocolos recurren a aproximaciones polinómicas, tablas de consulta y cómputo off-chain con verificación on-chain solo para hacer asequible una única cotización.
+
+Así que: un swap es una curva cerrada que podéis evaluar casi gratis; una opción es un cómputo prospectivo, hambriento de datos y manipulable. *Eso* es por qué las opciones on-chain van años de ingeniería por detrás de los DEX de spot.
+
+<MatchConcepts
+  client:visible
+  question="Emparejad cada ingrediente de valoración con el problema on-chain que crea"
+  pairs={[
+    { term: 'Precio spot en vivo (S)', definition: 'Debe importarse de un oráculo — una fuente externa que se convierte en objetivo de manipulación' },
+    { term: 'Volatilidad implícita (σ)', definition: 'Un input prospectivo que no está en el histórico on-chain; hay que obtenerlo/almacenarlo y mantenerlo fresco' },
+    { term: 'Griegas vía Black-Scholes (N(d₁), logs, exp)', definition: 'Caro de calcular en gas en la EVM; necesita aproximaciones o matemáticas off-chain' },
+    { term: 'Un swap de tokens de producto constante', definition: 'Determinista y autocontenido — el precio sale de las propias reservas del pool, sin pronóstico necesario' },
+  ]}
+  instructions="Elige un término y luego su definición."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+Estos tres puntos de presión — el oráculo, el input de vol y el coste del cómputo — son la columna vertebral del resto de este curso. La lección 4 disecciona el diseño de oráculos y su manipulación; la lección 6 aborda cómo los protocolos obtienen y estabilizan de verdad una superficie de volatilidad on-chain.
+
+<Quiz
+  client:visible
+  title="Punto de control: fundamentos de las opciones on-chain"
+  questions={[
+    {
+      question: "Un protocolo acuña posiciones de opción como 'oTokens' ERC-20. ¿Cuál es la consecuencia práctica de que una opción sea un token fungible?",
+      options: [
+        { text: "Poseer/transferir el token ES poseer/transferir la posición de opción — no hace falta registro central", correct: true },
+        { text: "La opción nunca se puede ejercer, solo negociar", correct: false },
+        { text: "La prima se reinvierte automáticamente", correct: false },
+        { text: "Cada opción debe ser de estilo americano", correct: false },
+      ],
+      explanation: "Tokenizar la opción significa que el saldo de la wallet es la posición de registro. La compráis, vendéis o transferís como cualquier ERC-20; la liquidación la maneja luego el contrato leyendo un oráculo.",
+    },
+    {
+      question: "Escribís una cash-secured put de $4.000 totalmente colateralizada sobre 1 ETH y cobráis $120 de prima. ¿Cuánto capital se bloquea, y cuál es el rendimiento mensual sobre ese capital bloqueado?",
+      options: [
+        { text: "$4.000 bloqueados; alrededor del 3,0% mensual", correct: true },
+        { text: "$120 bloqueados; alrededor del 100% mensual", correct: false },
+        { text: "$400 bloqueados (10% de margen); alrededor del 30% mensual", correct: false },
+        { text: "Nada bloqueado; el rendimiento es indefinido", correct: false },
+      ],
+      explanation: "Una put totalmente colateralizada bloquea el strike completo en stablecoins: $4.000. Rendimiento sobre el capital bloqueado = 120 / 4.000 = 3,0% en el mes. La respuesta de $400 / 30% es el caso del margen de cartera de TradFi — no es como funciona la DeFi de primera generación.",
+    },
+    {
+      question: "¿Por qué es la liquidación europea en efectivo el predeterminado on-chain en lugar de la liquidación física americana?",
+      options: [
+        { text: "Solo necesita una lectura de oráculo en un único timestamp de vencimiento y paga una simple diferencia en efectivo — gas y superficie de ataque mínimos", correct: true },
+        { text: "Porque los reguladores prohíben la entrega física en DeFi", correct: false },
+        { text: "Porque la liquidación en efectivo siempre paga más al tenedor", correct: false },
+        { text: "Porque las opciones americanas no se pueden tokenizar", correct: false },
+      ],
+      explanation: "Europea = un bloque de liquidación; efectivo = un precio de oráculo y una resta. El ejercicio anticipado americano y la entrega física añaden ramificaciones, más lecturas de oráculo y más formas de romperse — así que se evitan on-chain.",
+    },
+    {
+      question: "¿Qué único hecho explica mejor por qué valorar una opción on-chain es más difícil que intercambiar dos tokens?",
+      options: [
+        { text: "El precio de una opción depende de un input prospectivo (la volatilidad implícita) y de un oráculo de spot externo, mientras que el precio de un swap sale deterministamente de las propias reservas del pool", correct: true },
+        { text: "Las opciones usan números más grandes que los swaps", correct: false },
+        { text: "Los swaps son ilegales en la mayoría de cadenas", correct: false },
+        { text: "Las opciones nunca vencen, así que son más difíciles de liquidar", correct: false },
+      ],
+      explanation: "Un swap es autocontenido: x·y = k da el precio solo desde las reservas. Una opción necesita spot importado (oráculo = objetivo de manipulación), vol prospectiva (no está en el histórico on-chain) y griegas caras en gas — nada de lo cual la cadena puede derivar de sí misma.",
+    },
+  ]}
+  questionLabel="Pregunta"
+  ofLabel="de"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  nextLabel="Siguiente"
+  backLabel="Atrás"
+  checkLabel="Comprobar"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+/>
+
+<Callout variant="success" title="Ideas clave">
+- Una opción on-chain es un **smart contract**: acuñada como un **oToken** ERC-20, con la liquidación forzada por código que lee un **oráculo**, no por una cámara de compensación.
+- Las opciones DeFi de primera generación están **completamente colateralizadas** — una call escrita bloquea el **subyacente** completo, una put escrita el **strike** completo en stablecoins. Sin margen de cartera, sin compensación. Ese es el **impuesto de la ineficiencia de capital** que limita el rendimiento-por-dólar-bloqueado. Los diseños con colateral parcial son la frontera arriesgada.
+- Dos arquitecturas de valoración: **vol cotizada por AMM** (pool siempre activo, los LP cargan las griegas, valora a partir de una superficie de vol almacenada) frente a **libros de órdenes** (creadores profesionales emiten cotizaciones, más ajustados cuando están presentes). Distintos ajustes de los mandos liquidez / capital / quién-carga-el-riesgo.
+- El predeterminado on-chain es **europea + liquidada en efectivo**: un timestamp de vencimiento, una lectura de oráculo, una resta `max(S − K, 0)`.
+- Valorar una opción on-chain es difícil porque necesita un **oráculo de spot en vivo**, un **input de vol prospectivo** y **griegas caras en gas** — a diferencia de un swap, cuyo precio es una curva determinista y autocontenida. Esos tres puntos de presión impulsan el resto del curso.
+</Callout>

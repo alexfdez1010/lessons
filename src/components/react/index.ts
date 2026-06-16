@@ -745,3 +745,10 @@ export type { ExpectedValueDialProps } from '@/components/react/ExpectedValueDia
 
 export { AsymmetryPayoff, default as AsymmetryPayoffDefault } from '@/components/react/AsymmetryPayoff';
 export type { AsymmetryPayoffProps } from '@/components/react/AsymmetryPayoff';
+
+// DeFi options & on-chain volatility islands
+export { DovPayoff, default as DovPayoffDefault } from '@/components/react/DovPayoff';
+export type { DovPayoffProps } from '@/components/react/DovPayoff';
+
+export { OnchainVol, default as OnchainVolDefault } from '@/components/react/OnchainVol';
+export type { OnchainVolProps } from '@/components/react/OnchainVol';

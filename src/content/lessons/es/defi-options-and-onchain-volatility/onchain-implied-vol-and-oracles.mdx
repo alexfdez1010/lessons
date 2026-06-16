@@ -1,0 +1,349 @@
+---
+title: "Vol implícita on-chain y oráculos"
+description: "De dónde sale siquiera el número de volatilidad on-chain: superficies de vol parametrizadas por el AMM e índices estilo DVOL, el problema del oráculo perezoso de muestreo-y-retención, y cómo una lectura de vol implícita rancia se convierte en el almuerzo gratis de un arbitrajista."
+topic: "es/defi-options-and-onchain-volatility"
+order: 4
+minutes: 16
+updated: 2026-06-16
+---
+
+import { MCQ, Quiz, FillBlank, MatchConcepts, Categorize, Callout, VolSmile, OnchainVol } from '@/components/react';
+
+Podéis derivar cada griega, ajustar una superficie de vol impecable y construir un swap
+de varianza que haría asentir con aprobación a un quant del CBOE — pero en el momento en
+que ponéis esa matemática **en una blockchain**, un humilde input decide en silencio si
+vuestro contrato es un mercado justo o una piñata: el **número de volatilidad que lee**.
+Fuera de la cadena, la vol implícita es una cosa viva que late y se actualiza con cada
+tick. On-chain, es un número que alguien *anotó hace unos bloques* y que un contrato
+inteligente trata ahora como palabra divina. Esta lección va de dónde sale ese número, por
+qué siempre está un poco (o mucho) equivocado, y quién se lucra de la diferencia.
+
+<MCQ
+  client:visible
+  pretest
+  question="Un AMM de opciones on-chain necesita un input de volatilidad implícita para cotizar sus precios. ¿Cuál es el obstáculo más fundamental para alimentarlo con un número de vol en vivo y preciso?"
+  options={[
+    { text: "Solidity no puede hacer la matemática de coma flotante que requiere Black–Scholes", correct: false, explanation: "Las librerías de coma fija resuelven la matemática sin problema. La parte difícil no es calcular el precio — es conseguir un input fresco con el que calcularlo." },
+    { text: "Una blockchain no tiene un feed nativo de datos de mercado que se actualice de forma continua — un valor debe ser escrito on-chain por un oráculo, y solo cada pocos bloques", correct: true, explanation: "Exacto. Las cadenas son deterministas y se actualizan en bloques discretos; no pueden 'ver' un mercado en vivo. Cada número externo, la vol incluida, llega vía una escritura de oráculo y luego queda congelado hasta la siguiente." },
+    { text: "Publicar volatilidad implícita on-chain es ilegal en la mayoría de jurisdicciones", correct: false, explanation: "No existe tal norma. El problema es puramente arquitectónico — bloques discretos y ningún feed de mercado nativo." },
+    { text: "La volatilidad no se puede expresar como un número, solo como una distribución", correct: false, explanation: "La VI es un único número anualizado por strike/vencimiento. Representarla no es el problema; mantenerla fresca sí." },
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+/>
+
+## Una opción necesita un input de volatilidad — entonces, ¿de dónde sale la vol on-chain?
+
+Valorar cualquier opción requiere un input de volatilidad implícita — es el único
+parámetro de Black–Scholes que no podéis observar directamente, y es sobre lo que discute
+todo el mercado. Así que un protocolo de opciones on-chain tiene que sacar ese número de
+*algún sitio*. Hay tres fuentes, y todas intercambian frescura por confianza:
+
+| Fuente | Cómo funciona | Frescura | Supuesto de confianza |
+|---|---|---|---|
+| **(a) Parámetros del AMM fijados por gobernanza/keeper** | El protocolo almacena una superficie de vol; un voto de la DAO o un bot **keeper** permisionado la actualiza | Lenta (horas o días, o cuando el keeper se dispara) | Confiar en que el keeper/gobernanza no sea perezoso ni malvado |
+| **(b) Feed de oráculo de vol implícita** | Un índice off-chain (p. ej. un número estilo DVOL) es empujado on-chain por una red de oráculos | Media (cada pocos bloques) | Confiar en los datos del oráculo + su cadencia de actualización |
+| **(c) Derivada de precios de opciones on-chain** | Despejar la VI a partir de los propios precios de opciones negociadas del protocolo | Tan fresca como lo sea la negociación — pero circular y poco profunda | Confiar en que la liquidez on-chain sea bastante profunda para tener sentido |
+
+Cada una tiene su modo de fallo. Los parámetros fijados por gobernanza están **rancios por
+diseño** — nadie revota la superficie a mitad de un crack. Un feed de oráculo es más fresco
+pero solo tanto como su calendario de escritura. Y derivar la VI de vuestro propio y escaso
+flujo de órdenes on-chain es gloriosamente circular: valoráis opciones a partir de precios
+que a su vez se valoraron a partir de vuestra vol posiblemente-equivocada. La mayoría de
+protocolos reales usan una mezcla, apoyándose en (a) o (b) con salvaguardas.
+
+<Callout variant="info" title="El tema recurrente">
+Fuera de la cadena, la vol implícita es un verbo — se la recotiza constantemente. On-chain,
+es un sustantivo — un valor almacenado. Cada problema de esta lección brota de esa única
+degradación gramatical.
+</Callout>
+
+## Superficies de vol on-chain y el skew
+
+Un protocolo que cotiza muchos strikes y vencimientos no puede almacenar un número distinto
+para cada uno — el gas hace eso absurdo. En su lugar almacena una **superficie
+parametrizada**: una fórmula compacta del tipo
+
+$$\text{IV}(m, T) = \text{baseIV}(T) + \text{skew}(T)\cdot(1 - m)$$
+
+donde $m = K/S$ es el moneyness, $\text{baseIV}(T)$ es la vol at-the-money para cada
+vencimiento $T$, y $\text{skew}(T)$ es un término de pendiente. A veces se añade un término
+de curvatura para las alas. La superficie entera puede ser solo un puñado de números
+almacenados por vencimiento — barato de escribir, barato de leer.
+
+<VolSmile client:visible />
+
+La forma que más importa en cripto es el **skew**. Los índices de renta variable tienen una
+famosa mueca inclinada a la izquierda (todos quieren seguro de crack sobre el S&P). Cripto
+muestra típicamente **también un skew rico a la baja** — puts pujadas al alza porque el
+activo puede desplomarse de golpe con violencia — pero en rallies alcistas eufóricos el skew
+puede voltearse y las **calls** se encarecen (seguro de FOMO al alza). En cualquier caso, la
+superficie on-chain tiene que capturar esto con *muy pocos parámetros*, porque cada
+parámetro es un slot de almacenamiento por el que alguien paga gas para actualizar.
+
+Esa tosquedad es la trampa. Una mesa off-chain real podría ajustar docenas de strikes con
+una superficie SVI suave; un AMM on-chain podría tener **una vol base y una pendiente de
+skew por vencimiento**. Es una foto de baja resolución de un mercado de alta resolución —
+está bien con buen tiempo, pierde detalle en una tormenta.
+
+<FillBlank
+  client:visible
+  question="Completad el trade-off estructural de una superficie de vol on-chain."
+  text="Una superficie on-chain almacena solo unos pocos parámetros por vencimiento porque cada valor almacenado cuesta {{gas|comisiones de gas}} escribir. Eso hace que la superficie sea {{tosca|de baja resolución|baja resolución}}, así que aproxima la verdadera sonrisa en lugar de ajustarla con exactitud."
+  explanation="Una superficie on-chain almacena pocos parámetros porque escribir cada valor cuesta GAS, lo que la deja TOSCA / de baja resolución — aproxima la sonrisa real en vez de ajustarla exactamente."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+/>
+
+<MCQ
+  client:visible
+  question="En una superficie de vol cripto típica, ¿qué afirmación sobre el skew es más exacta?"
+  options={[
+    { text: "Cripto nunca muestra skew porque cotiza 24/7", correct: false, explanation: "La negociación ininterrumpida no aplana el skew; tanto el miedo al crack como el FOMO doblan la superficie." },
+    { text: "Cripto suele cargar un rico skew a la baja (put), pero el skew puede voltearse hacia el lado call en rallies eufóricos", correct: true, explanation: "La protección a la baja normalmente está pujada, pero un rally alcista parabólico puede convertir las calls al alza en el ala cara — la superficie es dinámica." },
+    { text: "El skew de cripto es siempre idéntico al skew del índice S&P 500", correct: false, explanation: "Riman (ambos pujan la baja) pero el de cripto suele ser más pronunciado y puede invertirse durante la manía." },
+    { text: "El skew solo existe para vencimientos de más de un año", correct: false, explanation: "Las opciones cripto de corto plazo a menudo muestran el skew más pronunciado de todos." },
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+/>
+
+## DVOL y los índices de volatilidad on-chain
+
+El mercado cripto quería su propio "VIX," y Deribit lo concedió con **DVOL** — un índice de
+volatilidad implícita prospectiva a 30 días para BTC y ETH. La construcción es la misma
+receta sin modelo, estilo swap de varianza, que aprendisteis para el VIX: tomáis una **tira
+de opciones out-of-the-money** entre strikes para los vencimientos relevantes, integráis sus
+precios para extraer la varianza esperada del mercado, luego anualizáis y la cotizáis como
+un único número de volatilidad.
+
+Comprobación numérica rápida de las unidades: si una tira de varianza a 30 días implica una
+varianza anualizada de $\sigma^2 = 0.64$, entonces DVOL marca
+
+$$\sigma = \sqrt{0.64} = 0.80 = 80\%.$$
+
+Ese 80% es un número *anualizado* — el movimiento esperado a 30 días es de aproximadamente
+$80\% \times \sqrt{30/365} \approx 23\%$. (Los números de vol de cripto parecen
+aterradores al lado de los habituales valores de entre diez y veinte del VIX precisamente
+porque el subyacente es más salvaje.)
+
+¿Para qué sirve DVOL? Tres cosas, y escalan:
+
+1. **Una referencia** — un único "la vol de BTC está en 55" cotizable que podéis poner en un
+   panel o una nota de investigación.
+2. **Un negociable** — Deribit lista futuros sobre DVOL, así que podéis tomar una visión
+   limpia sobre la vol-de-la-vol sin construir vosotros mismos una tira de opciones.
+3. **Un input de oráculo** — el empuje en vivo para llevar un índice estilo DVOL **on-chain**
+   de modo que los protocolos puedan leer una vol de mercado creíble en lugar de una
+   conjetura de gobernanza. Este es el sueño y el peligro: un número de vol real, implícito
+   por el mercado, es mucho mejor que un parámetro almacenado rancio — *pero solo si el
+   oráculo que lo entrega es fresco.* Lo que nos lleva al problema entero.
+
+<MatchConcepts
+  client:visible
+  question="Emparejad cada concepto de vol on-chain con lo que realmente es"
+  pairs={[
+    { term: "DVOL", definition: "Un índice de vol implícita prospectiva a 30 días para cripto, construido a partir de una tira de opciones OTM — el 'VIX' de cripto" },
+    { term: "Superficie parametrizada", definition: "Una fórmula compacta (vol base + skew por vencimiento) que un AMM almacena para poder cotizar muchos strikes de forma barata" },
+    { term: "Keeper", definition: "Un bot permisionado que escribe periódicamente parámetros de vol frescos en el contrato" },
+    { term: "Escritura de oráculo", definition: "La transacción on-chain discreta que estampa un nuevo valor externo que los contratos leen hasta la siguiente" },
+  ]}
+  explanation="DVOL es el VIX de cripto (tira OTM a 30 días); la superficie parametrizada es la fórmula compacta vol base + skew que un AMM almacena; el keeper es el bot que escribe vol fresca; y la escritura de oráculo es la transacción discreta que estampa el valor que los contratos leen hasta la próxima."
+  instructions="Elige un término y luego su definición."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+## El problema del oráculo: latencia, ranciedad, manipulación
+
+Aquí está el quid. Una blockchain **no puede transmitir en streaming** un número de vol en
+vivo. Se actualiza en bloques discretos, y los datos externos solo entran a través de una
+**escritura de oráculo** — una transacción que estampa un valor en almacenamiento. Entre
+escrituras, cada contrato lee ese valor *congelado*. Así que la vol implícita on-chain es,
+estructuralmente, una señal de **muestreo-y-retención** (sample-and-hold): sigue a la
+realidad en el momento de cada escritura, y luego se queda plana hasta la siguiente.
+
+Jugad con la cadencia de abajo. La línea azul suave es la vol verdadera, en movimiento
+continuo, que ve una mesa off-chain; la línea naranja escalonada es lo que el oráculo ha
+escrito de verdad on-chain; la banda sombreada es el **hueco de ranciedad** entre ambas.
+
+<OnchainVol
+  client:visible
+  title="Vol on-chain: la verdadera frente al oráculo de muestreo-y-retención"
+  trueLabel="Vol verdadera (off-chain)"
+  oracleLabel="Vol del oráculo (on-chain)"
+  gapLabel="Hueco de ranciedad"
+  fastLabel="Cada 3 bloques"
+  slowLabel="Cada 6 bloques"
+  timeLabel="Bloques"
+  volLabel="Volatilidad implícita"
+  maxGapLabel="Hueco máximo"
+  note="La línea azul suave es la vol verdadera y en movimiento continuo; la línea naranja escalonada es lo que el oráculo ha escrito on-chain. El hueco sombreado se ensancha justo durante el pico — exactamente cuando una vol equivocada cuesta más."
+  percentSuffix="%"
+/>
+
+Fijaos en *dónde* es más ancho el hueco: no en los tramos de calma, sino justo en mitad del
+pico. Cuando la vol se arrastra de lado en los 50 y pico bajos, un valor retenido durante
+tres o seis bloques es básicamente correcto — nadie sale herido. Pero cuando la vol salta de
+55 a 118 durante un crack, el oráculo sigue sirviendo el **número bajo previo al crack**
+durante varios bloques. Cuanto más lenta la cadencia de actualización (alternad a cada 6
+bloques), más ancho y largo ese hueco. La ranciedad no es un impuesto constante; es una
+**factura que vence exactamente cuando la volatilidad es más valiosa.**
+
+Y "ranciedad" es el fallo *honesto*. El primo malicioso es la **manipulación**: si el
+oráculo deriva la vol de una fuente on-chain poco profunda, un atacante puede empujar esa
+fuente — un zarpazo financiado con flash-loan sobre un pool somero, o llenar un bloque de
+operaciones desequilibradas — de modo que el contrato lea una vol elegida por el atacante.
+Latencia, ranciedad y manipulación son tres caras del mismo defecto: **el número on-chain es
+una aproximación retardada y manipulable del real.**
+
+<Categorize
+  client:visible
+  question="Clasificad cada situación según lo peligrosa que es ahora mismo la ranciedad del oráculo"
+  buckets={["Mayormente inofensivo", "Peligroso"]}
+  items={[
+    { text: "La vol lleva plana en 50 durante una hora; el oráculo escribió por última vez hace 4 bloques", bucket: "Mayormente inofensivo" },
+    { text: "Una cascada de liquidaciones acaba de duplicar la vol realizada en dos bloques; el oráculo no se actualizará en 5 más", bucket: "Peligroso" },
+    { text: "Fin de semana tranquilo, sin catalizadores, cadencia de actualización de 6 bloques", bucket: "Mayormente inofensivo" },
+    { text: "Un dato de IPC sorpresa golpea y el mercado salta; el oráculo aún muestra la vol previa al dato", bucket: "Peligroso" },
+    { text: "La vol deriva lentamente a la baja a lo largo del día con escrituras de oráculo frecuentes", bucket: "Mayormente inofensivo" },
+    { text: "Un atacante usa flash-loans para dar un zarpazo al pool fino que el oráculo de vol muestrea", bucket: "Peligroso" },
+  ]}
+  explanation="La ranciedad es inofensiva cuando la vol está plana y el oráculo escribe a menudo, pero peligrosa cuando la vol salta de golpe (cascada, dato sorpresa) y el oráculo aún no se ha actualizado — o cuando un atacante manipula la fuente fina que el oráculo muestrea."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+<Callout variant="warning" title="Rancio no significa equivocado-de-media — significa equivocado-cuando-importa">
+Un oráculo que acierta el 95% del tiempo puede aun así ser ruinoso, porque el 5% en que está
+rancio está perfectamente correlacionado con los momentos — picos, saltos, cascadas — en que
+estar equivocado es más caro. El error medio es la métrica equivocada; **el error durante el
+pico** es el que vacía la bóveda.
+</Callout>
+
+## Una lectura de vol rancia es un almuerzo gratis para un arbitrajista
+
+Pongamos números al daño. Supongamos que un AMM on-chain está vendiendo una call de BTC
+at-the-money a 7 días, y su vol de oráculo está atascada en el **55% previo al crack**
+mientras la vol verdadera del mercado ha saltado al **110%**.
+
+El valor aproximado de una opción at-the-money escala casi linealmente con la vol en
+horizontes cortos: $\text{precio} \approx 0.4 \cdot S \cdot \sigma \cdot \sqrt{T}$. Con un
+spot $S = 60{,}000$ y $T = 7/365 \approx 0.0192$ años, $\sqrt{T} \approx 0.1385$:
+
+| Cotización | Vol usada | Valor de la call |
+|---|---|---|
+| **AMM (oráculo rancio)** | 55% | $0.4 \times 60{,}000 \times 0.55 \times 0.1385 \approx 1{,}828$ → **\$1.828** |
+| **Justa (mercado verdadero)** | 110% | $0.4 \times 60{,}000 \times 1.10 \times 0.1385 \approx 3{,}656$ → **\$3.656** |
+
+El AMM está vendiendo por **\$1.828** una opción que de verdad vale **\$3.656** — un
+**descuento de \$1.828, cerca del 50% de rebaja.** Eso no es una errata, es una invitación.
+Un arbitrajista compra la call infravalorada al AMM, y o bien vende el riesgo idéntico
+off-chain a la vol justa del 110% o simplemente mantiene una posición por la que pagó la
+mitad de precio. El arbitrajista se embolsa el spread; los **LPs / la bóveda** del otro lado
+vendieron seguro barato hacia un huracán y se comen la pérdida.
+
+Esto es **selección adversa** de manual — el temido **flujo tóxico**. Las únicas
+contrapartes que corren a operar contra una cotización rancia son las que *saben* que está
+rancia. El AMM no recibe una porción representativa del mercado; recibe específicamente las
+operaciones en las que está en el lado perdedor. Con el tiempo eso es un goteo constante de
+valor saliendo del pool, pagado por quien lo aportó.
+
+¿Y quién lo aportó? A menudo una **DOV** (DeFi Options Vault) llena de depositantes
+corrientes que pulsaron "depositar y ganar rendimiento". Nunca ven el oráculo; solo observan
+cómo su bóveda rinde por debajo durante exactamente las semanas volátiles en que su
+estrategia de vol corta se suponía que iba a ganar más prima. El hueco de ranciedad es una
+transferencia silenciosa de los depositantes pasivos a los arbitrajistas activos.
+
+<Callout variant="info" title="Anticipo — lección 6">
+El arbitraje de oráculo rancio es la fuga del *momento-de-cotización*. Hay una segunda fuga,
+más desagradable, en el *momento-de-liquidación*: cuando una opción expira, *qué* precio se
+usa para liquidarla puede ser empujado por quien controle el orden de los bloques. Eso es MEV
+en la liquidación — el tema de la lección 6.
+</Callout>
+
+<Quiz
+  client:visible
+  title="Pon a prueba tu dominio del arbitraje de vol rancia"
+  questions={[
+    {
+      question: "La vol salta del 50% al 100% pero el AMM on-chain sigue cotizando opciones a partir de un oráculo rancio del 50%. ¿Qué pasa?",
+      options: [
+        { text: "Las opciones del AMM están ahora sobrevaloradas, así que los traders lo evitan", correct: false, explanation: "Es lo contrario — menor vol significa menores precios de opción, así que el AMM está vendiendo demasiado barato." },
+        { text: "Las opciones del AMM están infravaloradas; los arbitrajistas las compran y los LPs/la bóveda se comen la pérdida", correct: true, explanation: "Vol barata significa opciones baratas. Los traders informados compran el descuento, y el pool que vendió seguro barato hacia un pico absorbe la pérdida." },
+        { text: "Nada — el contrato inteligente se autocorrige a la nueva vol", correct: false, explanation: "No puede. Lee solo el último valor de oráculo escrito hasta la próxima escritura." },
+        { text: "El arbitrajista pierde dinero porque la vol es impredecible", correct: false, explanation: "El arbitrajista no está adivinando la vol — está operando contra un precio que se sabe rancio, lo que es casi sin riesgo." },
+      ],
+    },
+    {
+      question: "¿Por qué se llama a esto 'flujo tóxico' o 'selección adversa' contra el protocolo?",
+      options: [
+        { text: "Porque las operaciones vienen de carteras anónimas", correct: false, explanation: "El anonimato no es el problema; lo es la selección de quién opera." },
+        { text: "Porque las únicas personas deseosas de operar la cotización rancia son las que saben que está equivocada, así que el protocolo recibe sistemáticamente el lado perdedor", correct: true, explanation: "Esa es la definición de selección adversa: el conjunto de contrapartes se filtra hasta dejar exactamente a los traders informados a los que el AMM menos querría enfrentarse." },
+        { text: "Porque las comisiones de gas son altas", correct: false, explanation: "El gas no tiene relación con la fuga de valor direccional." },
+        { text: "Porque el protocolo no cobra comisiones", correct: false, explanation: "Incluso con comisiones, una valoración errónea del 50% de descuento empequeñece cualquier comisión razonable." },
+      ],
+    },
+    {
+      question: "Un AMM on-chain vende una call por $1.800 usando una vol rancia del 55%; el valor justo a la vol verdadera del 110% es $3.600. ¿Cómo de grande es la fuga por opción hacia el arbitrajista?",
+      options: [
+        { text: "Sobre $1.800 — el AMM regaló aproximadamente la mitad del valor de la opción", correct: true, explanation: "$3.600 − $1.800 = $1.800, un descuento de ~50% entregado directamente al comprador informado." },
+        { text: "Cero — la operación es justa porque ambos usaron Black–Scholes", correct: false, explanation: "Mismo modelo, input equivocado. El hueco de vol 55% frente a 110% es la fuga entera." },
+        { text: "$3.600 — el arbitrajista se queda con todo el valor de la opción", correct: false, explanation: "Pagó $1.800 por ella; la fuga es el descuento, no el valor completo." },
+        { text: "Depende solo del gas", correct: false, explanation: "El gas es un error de redondeo al lado de una valoración errónea de $1.800." },
+      ],
+    },
+  ]}
+  questionLabel="Pregunta"
+  ofLabel="de"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  nextLabel="Siguiente"
+  backLabel="Atrás"
+  checkLabel="Comprobar"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+/>
+
+<MCQ
+  client:visible
+  allowMultiple
+  question="Seleccionad TODA mitigación que de verdad reduzca el arbitraje de vol rancia contra un protocolo de opciones on-chain. (Más de una es correcta.)"
+  options={[
+    { text: "Actualizar el oráculo de vol con más frecuencia (intervalo de muestreo-y-retención más corto)", correct: true, explanation: "Retenciones más cortas implican una banda de ranciedad más estrecha — el hueco durante un pico se encoge." },
+    { text: "Ampliar los spreads cotizados / añadir un colchón de vol cuando la vol realizada reciente esté subiendo", correct: true, explanation: "Acolchar la cotización cuando las condiciones son turbulentas hace el precio rancio menos explotable, a costa de competitividad en tiempos de calma." },
+    { text: "Retirar liquidez o pausar las cotizaciones durante eventos de vol extrema (cortacircuitos)", correct: true, explanation: "Si no podéis valorarlo con frescura, negarse a operar bate a operar a un precio que se sabe equivocado." },
+    { text: "Obtener la vol de un índice más profundo y difícil de manipular en vez de un pool fino on-chain", correct: true, explanation: "Datos fuente robustos resisten la cara de manipulación del problema del oráculo." },
+    { text: "Asumir que la vol es constante para que el oráculo nunca necesite actualizarse", correct: false, explanation: "Eso garantiza la máxima ranciedad durante cada pico — lo opuesto exacto de una solución." },
+    { text: "Decir a los depositantes que la bóveda está libre de riesgo", correct: false, explanation: "Eso no es una mitigación, es una tergiversación; el riesgo de selección adversa es real." },
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+/>
+
+<Callout variant="success" title="Ideas clave">
+- Una opción on-chain necesita un **input de VI**, y solo puede venir de tres
+  sitios: **parámetros del AMM fijados por gobernanza/keeper**, un **feed de oráculo de
+  vol**, o vol **derivada de precios on-chain** — cada uno intercambiando frescura por
+  confianza.
+- Los protocolos almacenan una **superficie parametrizada tosca** (vol base + skew por
+  vencimiento) porque cada parámetro cuesta gas; el skew de cripto suele ser rico a la
+  baja pero puede voltearse hacia las calls en una manía.
+- **DVOL** es el VIX de cripto — un índice de vol implícita a 30 días, sin modelo, a partir
+  de una tira de opciones OTM — y el premio es llevar tal índice **on-chain** como
+  referencia de oráculo negociable.
+- El defecto fatal es la **ranciedad de muestreo-y-retención**: una cadena no puede
+  transmitir la vol en streaming, así que un oráculo la escribe cada pocos bloques y los
+  contratos leen el valor congelado. El hueco es inofensivo en mercados tranquilos y **más
+  ancho exactamente durante un pico**.
+- Una vol baja rancia hace que el AMM **venda opciones ~50% demasiado baratas**; los
+  arbitrajistas recogen el descuento como **flujo tóxico**, y los **depositantes de DOV**
+  se comen la pérdida en silencio. (Siguiente: MEV en la *liquidación*, lección 6.)
+</Callout>

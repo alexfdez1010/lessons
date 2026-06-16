@@ -56,25 +56,6 @@ export interface UpcomingCourse {
  */
 export const upcomingCourses: UpcomingCourse[] = [
   {
-    slug: 'defi-options-and-onchain-volatility',
-    icon: '🌀',
-    difficulty: 'expert',
-    order: 5,
-    accent: 'brand',
-    title: {
-      en: 'DeFi Options & On-chain Volatility',
-      es: 'Opciones DeFi y Volatilidad On-chain',
-    },
-    description: {
-      en: 'Volatility goes on-chain: option vaults and their short-vol risk, on-chain implied vol, and perp funding as a vol signal.',
-      es: 'La volatilidad va on-chain: vaults de opciones y su riesgo short-vol, volatilidad implícita on-chain y el funding de perps como señal.',
-    },
-    dependencies: ['volatility-trading', 'defi-derivatives-perps'],
-    tags: ['defi', 'derivatives'],
-    buildNotes:
-      'Volatility goes on-chain: on-chain options protocols, DeFi option vaults (covered-call / put-selling strategies) and their structural short-vol risk, on-chain implied vol & oracles, perp funding as a vol/skew signal, settlement and liquidity frictions vs TradFi desks. Islands: dov-payoff + onchain-vol.',
-  },
-  {
     slug: 'history-of-finance',
     icon: '📜',
     difficulty: 'intermediate',

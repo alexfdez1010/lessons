@@ -1,0 +1,286 @@
+---
+title: "On-chain Options Protocols"
+description: "How an option becomes a smart contract: full collateralization and its capital cost, AMM-quoted vol versus on-chain order books, European cash-settled versus physically-settled designs, and why pricing an option on-chain is so much harder than swapping two tokens."
+topic: "en/defi-options-and-onchain-volatility"
+order: 1
+minutes: 16
+updated: 2026-06-16
+---
+
+import { MCQ, Quiz, FillBlank, MatchConcepts, Categorize, Callout, OptionPayoff, OrderbookVsAmm, ConstantProductCurve } from '@/components/react';
+
+You already know what an option *is*: the right (not the obligation) to buy (call) or sell (put) an underlying at a fixed strike, for which the buyer pays a premium, and whose value is governed by the Greeks. You know how an AMM swaps two tokens along a curve. This lesson is about the collision of those two worlds — what happens when you try to encode an option as a **smart contract** and let a blockchain, rather than a clearinghouse, enforce it.
+
+Spoiler: the math is the easy part. The hard part is that a blockchain is a deterministic machine that can't look up a price, doesn't trust anyone, and charges you rent (gas) for every multiplication. An options protocol has to manufacture, on-chain, the three things a TradFi desk takes for granted: a price feed, a volatility input, and a counterparty who won't run.
+
+<MCQ
+  client:visible
+  pretest
+  question="Before we start: in most DeFi options protocols, when you WRITE (sell) a call option on 1 ETH, what does the protocol require you to lock up as collateral until expiry?"
+  options={[
+    { text: "A small margin deposit (say 15–20% of the notional), like a TradFi futures account", correct: false },
+    { text: "The full 1 ETH the call is written on", correct: true },
+    { text: "Nothing — your wallet's total balance is the collateral", correct: false },
+    { text: "The option's premium, held in escrow", correct: false },
+  ]}
+  explanation="Most on-chain options are FULLY collateralized: a written call locks the whole underlying (1 ETH), a written put locks the full strike in stablecoins. There is no clearinghouse to chase a defaulter, so the contract pre-funds every possible payout. That safety has a price — capital inefficiency — which is the through-line of this lesson."
+/>
+
+## From option contract to smart contract
+
+In TradFi, an option is a legal contract standardized by an exchange and guaranteed by a **clearinghouse** — a central counterparty that steps between buyer and seller, collects margin, and makes you whole if the other side defaults. The clearinghouse is the trust layer.
+
+On-chain, there is no clearinghouse. There's just code. So a DeFi options protocol turns each option into a **token** — typically an ERC-20 (the fungible token standard on Ethereum, the same standard a stablecoin or a governance token uses). The original design, popularized by Opyn, called these **oTokens**: one ERC-20 per unique option *series* (one underlying + one strike + one expiry + call/put). Holding the token *is* holding the option; transferring it transfers the position; there's no DTCC entry, just a balance in your wallet.
+
+The lifecycle has three actors, all enforced by the contract:
+
+1. **The writer (seller)** deposits collateral into the contract and, in exchange, the contract **mints** oTokens to them. The writer now has a short option position plus a pile of locked collateral.
+2. **The buyer** acquires the oToken (buys it on an AMM or order book) by paying premium. They now hold a long option.
+3. **At expiry**, the contract reads the settlement price from an **oracle** (an on-chain price feed — more on its peril later) and computes the payout deterministically. The buyer redeems their oToken for any intrinsic value; the writer reclaims whatever collateral is left.
+
+No human signs off. No clearinghouse calls anyone. The collateral was locked up front *precisely because* nobody can be chased afterward.
+
+### Worked example: minting a covered call
+
+A **covered call** is the canonical safe write: you own the underlying and sell a call against it, collecting premium in exchange for capping your upside. It's "covered" because if the call is exercised, you simply hand over the coins you already own — no scramble.
+
+Say ETH spot is \$3,000. You hold 1 ETH and want yield on it. You mint a 1-month, \$3,500-strike covered call:
+
+| Step | What happens on-chain |
+|---|---|
+| Deposit | You send 1 ETH into the options contract as collateral |
+| Mint | The contract mints you 1 oToken: "ETH \$3,500 call, expiry 30d" |
+| Sell | You sell that oToken on the protocol's market for, say, \$60 premium |
+| Outcome A (ETH < \$3,500 at expiry) | Call expires worthless; you reclaim your 1 ETH; you keep the \$60. Yield earned. |
+| Outcome B (ETH ≥ \$3,500 at expiry) | Buyer exercises; the contract pays them `spot − 3,500` out of your collateral; you keep the \$60 but your ETH was effectively sold at \$3,500. |
+
+Your 1 ETH was *locked the entire month*. You couldn't lend it, stake it, or use it elsewhere. That idle capital is the whole story of the next section.
+
+<OptionPayoff
+  client:visible
+  title="Covered call: long 1 ETH + short 1 call at $3,500"
+  legs={[
+    { type: 'call', position: 'short', strike: 3500, premium: 60, label: 'Short $3,500 call (premium $60)' },
+  ]}
+  spotMax={5000}
+  caption="The short-call leg alone: you collect $60 of premium (your max gain) and your payoff turns negative above $3,500. Because you also hold the ETH, the long-stock leg offsets that downside — the 'covered' part — but the collateral for the short call is the ETH itself, locked until expiry."
+/>
+
+## Full collateralization and the capital-inefficiency tax
+
+Here is the rule that defines first-generation DeFi options: **they are fully collateralized.** Every dollar the option could ever pay out is pre-funded and frozen in the contract.
+
+- **Write a call** → lock the full **underlying** (1 ETH per ETH-call), because if it's exercised you must deliver, and a call's payoff is unbounded above.
+- **Write a put** → lock the full **strike in stablecoins** (\$3,500 per \$3,500 put on 1 ETH), because the worst case is the underlying going to zero and you owing the entire strike.
+
+Compare that to TradFi. There, a market maker runs on **portfolio margin** (SPAN, the CME's "Standard Portfolio Analysis of Risk"): the broker stress-tests your *whole book* across price and vol shocks, lets winning and losing positions **net** against each other, and requires only enough margin to cover the worst plausible scenario — often a few percent of notional. A desk can be short a thousand options backed by a sliver of capital, because the clearinghouse trusts (and surveils) it.
+
+A smart contract trusts nobody and can liquidate nobody after the fact (the writer might be an anonymous wallet that vanishes). So it demands 100% up front. No netting, no portfolio margin, no IOUs.
+
+### Worked example: capital locked per \$1 of premium
+
+Let's quantify the "tax." Take that 1-ETH covered call: lock **\$3,000** of ETH to earn **\$60** of premium over a month.
+
+$$
+\text{Capital efficiency} = \frac{\text{premium}}{\text{collateral locked}} = \frac{60}{3000} = 2.0\%\ \text{per month}
+$$
+
+Annualize it (ignoring compounding for clarity): $2.0\% \times 12 = 24\%$ gross yield on the locked ETH. Not bad — but every cent of that ETH sat idle to earn it.
+
+Now the put side. Write one \$3,500 put on ETH, collect \$90 premium:
+
+| Design | Collateral locked | Premium | Monthly yield on collateral |
+|---|---|---|---|
+| Fully-collateralized put (DeFi) | \$3,500 (full strike, in stablecoins) | \$90 | $90 / 3500 = 2.6\%$ |
+| Portfolio-margined put (TradFi, ~10% margin) | \$350 | \$90 | $90 / 350 = 25.7\%$ |
+
+Same option, same premium, **10× the locked capital** in DeFi — so one-tenth the return on capital. This is the **capital-inefficiency tax**, and it's why on-chain option yields, expressed *per dollar of premium*, look generous while yields *per dollar locked* look thin. It also caps how aggressively writers can supply, which thins liquidity and widens spreads.
+
+<Callout variant="warning" title="Full collateral ≠ no risk">
+Fully collateralized means the writer can never default on the buyer — the payout is pre-funded. It does NOT mean the writer can't lose money. A covered-call writer still gives up all upside above the strike; a cash-secured put writer still eats the full downside if the underlying craters. Collateralization protects the *counterparty*, not the *writer's P&L*.
+</Callout>
+
+The frontier is **partial-collateral / margined designs**: protocols that let writers post less than 100% by adding on-chain risk engines, cross-position netting, and automated liquidations (the same machinery you met in the perps lesson). It's powerful and dangerous — under-collateralization plus a manipulable oracle is exactly how on-chain blowups happen. Lessons later in this course dig into those liquidation mechanics.
+
+<FillBlank
+  client:visible
+  question="Collateral rules"
+  text="To write a call fully collateralized, lock the full {{underlying|premium|strike}}; to write a put, lock the full {{strike|underlying|delta}} in stablecoins. DeFi can't use TradFi portfolio margin because a smart contract cannot {{trust|tax|hedge}} an anonymous writer to pay later."
+  explanation="A written call locks the underlying (a call can be exercised against you, delivering the asset); a written put locks the full strike in stablecoins (worst case is the underlying going to zero). No portfolio margin, because the contract can't trust an anonymous wallet to settle a debt after the fact."
+/>
+
+## Quoting volatility: AMM vs order book
+
+You can encode the *settlement* of an option in a contract easily enough. The genuinely hard problem is the *price* before expiry — what should this option trade for *right now*? Two architectures have emerged, mirroring the spot-market split you already know.
+
+**(a) AMM-quoted vol** (Lyra, Premia, early Dopex). An automated market maker prices options off an on-chain **volatility surface** (the protocol's stored implied-vol curve across strikes and expiries) plus a pricing model (Black-76 / Black-Scholes baked into the contract). Liquidity providers deposit into a single pool that is the counterparty to *every* trade. When you buy a call, the AMM:
+
+1. plugs spot (from an oracle), the surface's IV, and time-to-expiry into its model to get a fair value,
+2. adds a spread, and skews the quote based on the **net delta** the pool already carries — if the pool is already very long the market, it charges you more to make it longer, nudging itself back toward neutral,
+3. fills you instantly from the pool. LPs collect fees but inherit the pool's aggregate Greeks and must be hedged (often via perps — hello, prior course).
+
+**(b) Order books** (Aevo, and Deribit as the centralized reference that on-chain books imitate). Professional **market makers** stream live bid/ask quotes at many strikes; you trade against a resting order, not a formula. This is how essentially all TradFi options liquidity works. On-chain, the matching may be off-chain (for speed and gas) with on-chain settlement — a hybrid.
+
+<OrderbookVsAmm
+  client:visible
+  title="Pricing an option: pooled AMM vs streamed order book"
+  rows={[
+    { aspect: 'Who quotes the option', orderbook: 'Market makers stream live bid/ask at each strike', amm: 'A formula prices off a stored vol surface + oracle spot' },
+    { aspect: 'Counterparty', orderbook: 'Whichever maker’s resting quote you hit', amm: 'A shared LP pool — always there' },
+    { aspect: 'Who bears the Greeks', orderbook: 'Each maker manages their own book', amm: 'LPs inherit the pool’s net delta/vega and must hedge it' },
+    { aspect: 'Capital efficiency', orderbook: 'Makers can post tight, cancel instantly', amm: 'Pooled collateral, often fully locked — thinner' },
+    { aspect: 'Liquidity quality', orderbook: 'Deep & tight WHEN makers are present', amm: 'Always-on but spreads widen with pool risk' },
+    { aspect: 'Best when', orderbook: 'Active, liquid names with pro makers', amm: '24/7 long-tail markets, passive LPs' },
+  ]}
+  caption="Same job — put a price on the option — done by two machines: a queue of professional makers' quotes, or a pool plus a pricing formula. The AMM always quotes but the LPs eat the inventory risk; the order book can be tighter but only when someone has posted."
+/>
+
+There's no free lunch. The order book gives tight spreads when makers show up — and an empty book when they don't. The AMM is *always* on, but its LPs are passive and end up holding a lumpy bag of Greeks they didn't choose, so the AMM defends itself with wider, skewed quotes. Capital efficiency, liquidity depth, and who-holds-the-risk are the three dials, and every protocol picks a different setting.
+
+<MCQ
+  client:visible
+  allowMultiple
+  question="Select EVERY statement that is true about an AMM-quoted options protocol (vs an order book)."
+  options={[
+    { text: "It can quote a price even when no other trader is online, because the pool is the counterparty", correct: true },
+    { text: "Its LPs passively inherit the pool's net Greeks and typically must hedge them externally", correct: true },
+    { text: "It needs a live spot oracle and a stored implied-vol surface to compute a quote", correct: true },
+    { text: "It guarantees tighter spreads than a deep order book at all times", correct: false },
+    { text: "It skews quotes to push the pool's net delta back toward neutral", correct: true },
+  ]}
+  explanation="An AMM is always-on (pool counterparty), prices off an oracle spot + a vol surface, skews to manage its net delta, and hands LPs the residual Greeks to hedge. What it does NOT do is guarantee tighter spreads than a deep book — when real makers are present and competing, an order book can be far tighter; the AMM widens to protect passive LPs."
+/>
+
+## Settlement designs: European cash-settled vs physically-settled
+
+Two independent design axes decide *how* an on-chain option pays out.
+
+**Exercise style — European vs American.** A **European** option can only be exercised *at expiry*; an **American** one can be exercised *any time up to* expiry. On-chain, European dominates, because American early-exercise means the contract must be ready to settle at an arbitrary block — more oracle reads, more gas, more attack surface. One fixed settlement timestamp is vastly simpler to encode and to oracle.
+
+**Settlement type — cash vs physical.** A **physically-settled** option *delivers the asset*: exercise a call and you actually receive 1 ETH for \$3,500. A **cash-settled** option *pays the difference in cash*: exercise the same call and you just receive `spot − 3,500` in a stablecoin — no ETH changes hands. Cash settlement needs only a single trusted number at expiry — the **oracle settlement price** — making it perfectly suited to a blockchain that reads a feed and does arithmetic.
+
+So the on-chain default is overwhelmingly **European + cash-settled**: one expiry timestamp, one oracle read, one subtraction, done. (Physically-settled designs exist — they're appealing for covered calls where you genuinely want to deliver coins you already hold — but they add transfer logic and delivery edge cases.)
+
+| Axis | Option A | Option B | On-chain favorite & why |
+|---|---|---|---|
+| Exercise | European (at expiry only) | American (any time) | **European** — one settlement block, fewer oracle reads, smaller attack surface |
+| Settlement | Cash (pay the difference) | Physical (deliver the asset) | **Cash** — needs only one oracle price; pure arithmetic, no delivery logic |
+
+### Worked example: cash-settling a European call
+
+You hold the \$3,500 European call from earlier. Expiry block arrives. The oracle reports the ETH settlement price at **\$3,900**.
+
+$$
+\text{Payout} = \max(S_{\text{settle}} - K,\ 0) = \max(3900 - 3500,\ 0) = 400
+$$
+
+The contract pays you **\$400** in USDC out of the writer's locked collateral. No ETH is delivered, no exercise notice, no assignment lottery — just `max(3900 − 3500, 0)` evaluated once, on-chain, at one timestamp. The writer reclaims their remaining collateral. Net of the \$60 premium you paid, your profit is `400 − 60`, i.e. **\$340**.
+
+Had the oracle reported \$3,100 instead, the payout would be `max(3100 − 3500, 0)`, i.e. **\$0**; the option expires worthless, you lose your \$60 premium, and the writer keeps 100% of their collateral.
+
+<Categorize
+  client:visible
+  question="Sort each property under the settlement design it describes"
+  buckets={['European cash-settled (on-chain default)', 'American physically-settled (TradFi-style)']}
+  items={[
+    { text: 'Exercise only at the expiry timestamp', bucket: 'European cash-settled (on-chain default)' },
+    { text: 'Pays max(spot − strike, 0) in a stablecoin', bucket: 'European cash-settled (on-chain default)' },
+    { text: 'Needs just one oracle read at expiry', bucket: 'European cash-settled (on-chain default)' },
+    { text: 'No asset actually changes hands', bucket: 'European cash-settled (on-chain default)' },
+    { text: 'Can be exercised any time before expiry', bucket: 'American physically-settled (TradFi-style)' },
+    { text: 'Delivers the actual underlying on exercise', bucket: 'American physically-settled (TradFi-style)' },
+    { text: 'Requires assignment / delivery logic', bucket: 'American physically-settled (TradFi-style)' },
+  ]}
+/>
+
+<Callout variant="info" title="Why cash + European is the on-chain default">
+A blockchain is great at one thing: reading a number and doing deterministic arithmetic on it at a known block. European cash settlement is *exactly* that — one timestamp, one oracle price, one subtraction. Everything else (early exercise, physical delivery, assignment) adds branches, more oracle reads, and more ways for an attacker or a stuck transaction to break things.
+</Callout>
+
+## Why pricing an option on-chain is genuinely hard
+
+Step back and compare the two operations the chain is being asked to do.
+
+**Swapping two tokens** is *deterministic and self-contained.* The price comes from the pool's own reserves via $x \cdot y = k$. No outside data, no forecast — just reserves and arithmetic. The curve below *is* the price; selling more X slides you along it, and you can compute the exact output before you sign. Nothing about tomorrow matters.
+
+<ConstantProductCurve
+  client:visible
+  title="The easy case: a swap is a fixed, self-contained curve"
+  caption="Swapping is deterministic: the pool's own reserves define the price via x·y = k. No oracle, no forecast — slide along the curve and you know the exact output. An option has no such self-contained curve, because its value depends on FORWARD-LOOKING volatility the chain cannot derive from its own state."
+/>
+
+**Pricing an option** needs three inputs the chain cannot conjure from its own state:
+
+1. **A live spot price.** Black-Scholes needs the current underlying price, $S$. A blockchain has no idea what ETH costs — it must import that number from an **oracle**, an external price feed pushed on-chain (e.g. Chainlink, or a TWAP read off a DEX pool). And an oracle is a *target*: if an attacker can nudge the reported price, they can mint or settle options at fraudulent values. Cash settlement makes this worse — the entire payout hinges on one number at one block.
+2. **An implied-volatility input.** Option value is dominated by $\sigma$, expected future volatility — a *forward-looking* quantity that, by definition, isn't in any historical on-chain data. The protocol has to *source or guess* a vol surface, store it, and keep it fresh. Stale or manipulated vol = mispriced options that arbitrageurs (or attackers) drain.
+3. **Greeks, computed in expensive gas.** Black-Scholes involves the normal CDF $N(d_1)$, $N(d_2)$, logs, exponentials, and a square root. Every one of those is costly to compute on the EVM (the Ethereum Virtual Machine), where you pay **gas** — a fee — for each operation. Protocols resort to polynomial approximations, lookup tables, and off-chain computation with on-chain verification just to make a single quote affordable.
+
+So: a swap is a closed curve you can evaluate for almost free; an option is a forward-looking, data-hungry, manipulable computation. *That* is why on-chain options lag spot DEXs by years of engineering.
+
+<MatchConcepts
+  client:visible
+  question="Match each pricing ingredient to the on-chain problem it creates"
+  pairs={[
+    { term: 'Live spot price (S)', definition: 'Must be imported from an oracle — an external feed that becomes a manipulation target' },
+    { term: 'Implied volatility (σ)', definition: 'A forward-looking input not present in on-chain history; must be sourced/stored and kept fresh' },
+    { term: 'Greeks via Black-Scholes (N(d₁), logs, exp)', definition: 'Expensive to compute in gas on the EVM; needs approximations or off-chain math' },
+    { term: 'A constant-product token swap', definition: 'Deterministic and self-contained — price comes from the pool’s own reserves, no forecast needed' },
+  ]}
+/>
+
+These three pressure points — the oracle, the vol input, and the cost of computation — are the spine of the rest of this course. Lesson 4 dissects oracle design and manipulation; lesson 6 tackles how protocols actually source and stabilize an on-chain volatility surface.
+
+<Quiz
+  client:visible
+  title="Checkpoint: on-chain options foundations"
+  questions={[
+    {
+      question: "A protocol mints option positions as ERC-20 'oTokens'. What is the practical consequence of an option being a fungible token?",
+      options: [
+        { text: "Holding/transferring the token IS holding/transferring the option position — no central registry needed", correct: true },
+        { text: "The option can never be exercised, only traded", correct: false },
+        { text: "The premium is automatically reinvested", correct: false },
+        { text: "Each option must be American-style", correct: false },
+      ],
+      explanation: "Tokenizing the option means the wallet balance is the position of record. You buy, sell, or transfer it like any ERC-20; settlement is handled later by the contract reading an oracle.",
+    },
+    {
+      question: "You write a fully-collateralized $4,000 cash-secured put on 1 ETH and collect $120 premium. How much capital is locked, and what's the monthly yield on that locked capital?",
+      options: [
+        { text: "$4,000 locked; about 3.0% monthly", correct: true },
+        { text: "$120 locked; about 100% monthly", correct: false },
+        { text: "$400 locked (10% margin); about 30% monthly", correct: false },
+        { text: "Nothing locked; yield is undefined", correct: false },
+      ],
+      explanation: "A fully-collateralized put locks the full strike in stablecoins: $4,000. Yield on locked capital = 120 / 4,000 = 3.0% for the month. The $400 / 30% answer is the TradFi portfolio-margin case — not how first-gen DeFi works.",
+    },
+    {
+      question: "Why is European cash settlement the on-chain default rather than American physical settlement?",
+      options: [
+        { text: "It needs just one oracle read at a single expiry timestamp and pays a simple cash difference — minimal gas and attack surface", correct: true },
+        { text: "Because regulators ban physical delivery in DeFi", correct: false },
+        { text: "Because cash settlement always pays the holder more", correct: false },
+        { text: "Because American options can't be tokenized", correct: false },
+      ],
+      explanation: "European = one settlement block; cash = one oracle price and one subtraction. American early-exercise and physical delivery add branches, more oracle reads, and more ways to break — so they're avoided on-chain.",
+    },
+    {
+      question: "Which single fact best explains why pricing an option on-chain is harder than swapping two tokens?",
+      options: [
+        { text: "An option's price depends on a forward-looking input (implied volatility) and an external spot oracle, while a swap's price comes deterministically from the pool's own reserves", correct: true },
+        { text: "Options use bigger numbers than swaps", correct: false },
+        { text: "Swaps are illegal on most chains", correct: false },
+        { text: "Options never expire, so they're harder to settle", correct: false },
+      ],
+      explanation: "A swap is self-contained: x·y = k gives the price from reserves alone. An option needs imported spot (oracle = manipulation target), forward-looking vol (not in on-chain history), and gas-expensive Greeks — none of which the chain can derive from itself.",
+    },
+  ]}
+/>
+
+<Callout variant="success" title="Key takeaways">
+- An on-chain option is a **smart contract**: minted as an ERC-20 **oToken**, with settlement enforced by code reading an **oracle**, not by a clearinghouse.
+- First-gen DeFi options are **fully collateralized** — a written call locks the full **underlying**, a written put the full **strike** in stablecoins. No portfolio margin, no netting. That's the **capital-inefficiency tax** that caps yields-per-dollar-locked. Partial-collateral designs are the risky frontier.
+- Two pricing architectures: **AMM-quoted vol** (always-on pool, LPs hold the Greeks, prices off a stored vol surface) vs **order books** (pro makers stream quotes, tighter when present). Different settings of the liquidity / capital / who-holds-the-risk dials.
+- The on-chain default is **European + cash-settled**: one expiry timestamp, one oracle read, one `max(S − K, 0)` subtraction.
+- Pricing an option on-chain is hard because it needs a **live spot oracle**, a **forward-looking vol input**, and **gas-expensive Greeks** — unlike a swap, whose price is a deterministic, self-contained curve. Those three pressure points drive the rest of the course.
+</Callout>

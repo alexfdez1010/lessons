@@ -1,0 +1,334 @@
+---
+title: "DeFi Option Vaults"
+description: "El boom de los productos estructurados: vaults de call cubierta y de put con garantía que auto-rolan cada época, venden opciones mediante una subasta semanal y entregan al depositante un rendimiento de portada — qué es ese rendimiento de verdad, quién compra el otro lado, y el payoff de vender el rally a cambio de prima."
+topic: "es/defi-options-and-onchain-volatility"
+order: 2
+minutes: 17
+updated: 2026-06-16
+---
+
+import { MCQ, Quiz, FillBlank, MatchConcepts, Categorize, Callout, DovPayoff } from '@/components/react';
+
+En la Lección 1 aprendisteis cómo se acuña, se colateraliza y se liquida en efectivo una sola opción on-chain. Ese es el ingrediente crudo. Esta lección va sobre la **fábrica** que convirtió las opciones en un producto minorista: el **DeFi Option Vault (DOV)** — la ola de productos estructurados que, en su pico de 2021–2022, atrajo miles de millones de dólares hacia smart contracts cuyo único trabajo era *vender opciones cada semana y pagarte la prima*.
+
+El reclamo era irresistible: depositas ETH, haces un clic, y ganas un "rendimiento" de dos cifras mientras duermes. Sin pantallas, sin griegas, sin rolar. Abramos el capó y veamos exactamente qué está girando ahí dentro — y anotemos discretamente quién está al otro lado de la operación. (El ajuste de cuentas completo con ese otro lado es la Lección 3.)
+
+<MCQ
+  client:visible
+  pretest
+  question="Un DeFi option vault anuncia un '20% APY' sobre el ETH depositado. Antes de seguir leyendo, ¿cuál es vuestra mejor conjetura sobre de dónde sale ese rendimiento?"
+  options={[
+    { text: "Intereses pagados por prestatarios, como en un mercado de préstamos", correct: false, explanation: "No hay ningún préstamo. Un DOV no es Aave — nadie está pidiendo prestado contra vuestro ETH." },
+    { text: "Recompensas de staking por asegurar una cadena de prueba de participación", correct: false, explanation: "Los vaults sencillos no hacen staking; el ETH se queda como colateral. (Algunos híbridos apilan staking encima, pero no es de ahí de donde viene el rendimiento de las opciones.)" },
+    { text: "Prima que el vault cobra por vender opciones a otros traders", correct: true, explanation: "Exacto. El 'rendimiento' es ingreso por VENDER opcionalidad cada semana. Es un pago por asumir riesgo, no un cupón sin riesgo — la razón entera por la que existe la Lección 3." },
+    { text: "Emisiones del token del protocolo impresas para subvencionar a los depositantes", correct: false, explanation: "Los incentivos en tokens se solían apilar encima durante el mercado alcista, pero el rendimiento central y sostenible es la prima de las opciones. No confundáis la subvención con el motor." },
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+/>
+
+## Qué es un DeFi option vault
+
+Un **DeFi option vault** es un smart contract que **agrupa los fondos de muchos depositantes y ejecuta en su nombre una sola estrategia automatizada de venta de opciones**, rolándola en un calendario fijo. Pensadlo como un fondo indexado, salvo que en lugar de tener acciones *escribe la misma operación de opciones cada semana* y distribuye lo recaudado.
+
+Tres propiedades definen el género:
+
+- **Agrupado y tokenizado.** Depositáis un activo (ETH, BTC, una stablecoin) y recibís **participaciones del vault** — un token ERC-20 que representa vuestra porción del bote. El valor de vuestra participación crece a medida que se acumulan las primas. Podéis canjear el token por vuestro derecho proporcional.
+- **Automatizado y auto-rolante.** Cada **época** (casi siempre **semanal**, con vencimiento el viernes a las 08:00 UTC por la convención de la era temprana de los Ribbon/Theta vaults) el contrato abre una posición de opciones fresca, la vende, cobra la prima, espera al vencimiento, liquida, y luego **inmediatamente abre la posición de la semana siguiente con el mismo capital más la prima**. Ningún humano acciona una palanca. El vault es una rueda de hámster que os paga por mantenerla girando.
+- **Un clic, sin gestión.** El reclamo entero es *poner y olvidar*. Nunca elegís un strike, nunca cronometráis un rolo, nunca cubrís. La lógica de la estrategia — cuán out of the money vender, cómo ejecutar la subasta — está horneada en el contrato y (en versiones posteriores) en la gobernanza.
+
+Los nombres de portada: **Ribbon Finance** (después Aevo) popularizó los Theta Vaults; le siguieron **StakeDAO**, **Friktion** (Solana), **Dopex** y **ThetaNuts**. Distintas cadenas, mismo esqueleto: *agrupar → vender opción → cobrar prima → rolar → repetir*.
+
+<Callout variant="info" title="¿Por qué 'Theta Vault'?">
+**Theta** es la griega de la decadencia temporal — cuánto valor pierde una opción cada día solo por el tic-tac del reloj. Un vault que está **corto** de opciones está **largo de theta**: *cobra* esa decadencia a medida que la opción que vendió se derrite hacia el cero. El nombre es una apuesta a que, la mayoría de las semanas, la decadencia temporal le gana al movimiento del subyacente. La mayoría de las semanas. Guardad esa idea.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Completad la definición central."
+  text="Un DOV agrupa el capital de los depositantes, emite una {{participación|obligación|deuda}} tokenizada, y cada {{época|festivo|halving}} vende automáticamente una opción y {{rola|quema|bloquea}} la posición hacia el siguiente periodo."
+  explanation="Un DOV emite una participación tokenizada del vault y cada época (normalmente una semana) vende automáticamente una opción y rola la posición al siguiente periodo — venta de prima recurrente y sin manos."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+/>
+
+## El vault de call cubierta
+
+El producto estrella. Un **vault de call cubierta** mantiene el activo subyacente y **vende una call out-of-the-money (OTM)** contra él cada época.
+
+"Cubierta" significa que la call está respaldada por el propio activo — si el precio se dispara por encima del strike y la call se ejerce, el vault simplemente entrega (o liquida en efectivo contra) el ETH que ya tiene. Sin exposición desnuda, sin margin call. A cambio de esa prima, el vault **renuncia a todo el recorrido alcista por encima del strike** mientras **se queda el 100% del recorrido bajista** de mantener el activo. Es la forma clásica de short-vol: un poco extra en mercados tranquilos, un techo duro en un rally, y todo el hueco del ascensor por debajo.
+
+Jugad con el equilibrio. Tirad del strike hacia el spot y la prima se hincha pero el techo se aprieta; empujadlo hacia fuera y cobráis menos pero os quedáis más del rally:
+
+<DovPayoff
+  client:visible
+  title="Payoff del vault de call cubierta — vende el rally, quédate el crash"
+  callLabel="Vault de call cubierta"
+  putLabel="Vault de put con garantía"
+  strikeLabel="Strike"
+  spotAxisLabel="Precio del subyacente al vencimiento"
+  pnlLabel="Beneficio / pérdida"
+  premiumStatLabel="Prima cobrada"
+  capStatLabel="Tope de ganancia"
+  breakevenLabel="Punto de equilibrio"
+  callNote="Un vault de call cubierta mantiene el activo y vende una call OTM cada época. Por encima del strike, tu ganancia queda CONGELADA en el strike (más la prima): renuncias al rally a cambio de una prima fija. Por debajo del strike, sufres toda la caída del activo amortiguada solo por esa prima fina. Es una posición clásica corta de volatilidad: gana en mercados tranquilos y va por detrás de mantener el activo en cualquier rally violento."
+  putNote="Un vault de put con garantía mantiene stablecoins y vende una put OTM cada época. Por encima del strike, solo cobras una prima fija — un rendimiento limpio sobre el efectivo ocioso. Por debajo del strike, te asignan: te ves forzado a comprar el activo en caída al precio del strike, ahora por encima del mercado. También es una posición corta de volatilidad: cobra primas pequeñas y constantes y paga un siniestro grande cuando llega el crash."
+  currencyPrefix="$"
+/>
+
+### Ejemplo resuelto — una semana en la vida de un vault de call cubierta
+
+Digamos que depositáis **1 ETH a un spot de \$2.000**, así que vuestra apuesta vale **\$2.000**. El vault vende una call a una semana con strike en **\$2.200** (10% OTM) y la subasta liquida la prima en **\$30** (1,5% del nocional por la semana). El viernes puede ir de tres maneras:
+
+| Precio del ETH el viernes | Valor del activo | + Prima retenida | Total del vault | vs. solo mantener 1 ETH |
+|---|---|---|---|---|
+| **\$2.000 (plano)** | \$2.000 | \$30 | **\$2.030** | **+\$30** — la prima es pura propina |
+| **\$2.500 (sube, pasa el strike)** | \$2.200 (limitado al strike) | \$30 | **\$2.230** | **−\$270** — renunciasteis a \$300 de rally, os quedasteis \$30 |
+| **\$1.600 (baja)** | \$1.600 | \$30 | **\$1.630** | **+\$30** — la prima es un colchón fino, igual os comisteis la caída de \$400 |
+
+El patrón es brutalmente claro. Cuando el mercado va **a ninguna parte**, ganáis la prima — el mejor caso para una call cubierta. Cuando **se dispara**, vuestra ganancia queda *congelada en el strike* y miráis desde detrás del cristal cómo el ETH se aleja corriendo. Cuando **se desploma**, los \$30 de prima son una tirita sobre una herida de \$400. Os pagan por tener razón sobre el *aburrimiento* y os castigan por equivocaros sobre un rally.
+
+<MCQ
+  client:visible
+  question="Un vault de call cubierta vende una call con strike un 10% por encima del spot por una prima del 1,5%. El ETH se duplica entonces en una semana. Comparado con simplemente mantener ETH, el depositante del vault…"
+  options={[
+    { text: "Bate a mantener, porque la prima compone en la subida", correct: false, explanation: "La prima es fija y minúscula al lado de un movimiento del 100%. El techo domina." },
+    { text: "Iguala a mantener exactamente — la call simplemente expira", correct: false, explanation: "Con una duplicación, la call está profundamente in the money. El recorrido alcista queda limitado al strike; el vault rinde muchísimo peor." },
+    { text: "Rinde dramáticamente peor — las ganancias quedan limitadas cerca del strike mientras la prima es un error de redondeo", correct: true, explanation: "Este es el modo de fallo característico: las calls cubiertas rinden peor en los rallies violentos. Vendisteis el cohete por calderilla." },
+    { text: "Pierde dinero directamente", correct: false, explanation: "El vault sigue ganando (hasta el strike más la prima) — simplemente gana mucho menos que mantener. Rendimiento inferior, no pérdida." },
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+/>
+
+## El vault de put con garantía
+
+La imagen especular, y la otra mitad de todo menú de DOV. Un **vault de put con garantía** mantiene **stablecoins** y **vende una put OTM** por debajo del spot cada época. "Con garantía" (cash-secured) significa que las stablecoins respaldan por completo la obligación: si el precio cae por debajo del strike y la put se ejerce, el vault usa su efectivo para **comprar el activo al strike** — es *asignado*.
+
+Cambiad el interruptor en el mismo gráfico de arriba a **Vault de put con garantía**, o leed el modo put directamente:
+
+<DovPayoff
+  client:visible
+  title="Payoff del vault de put con garantía — te pagan por comprar la caída (te guste o no)"
+  callLabel="Vault de call cubierta"
+  putLabel="Vault de put con garantía"
+  strikeLabel="Strike"
+  spotAxisLabel="Precio del subyacente al vencimiento"
+  pnlLabel="Beneficio / pérdida"
+  premiumStatLabel="Prima cobrada"
+  capStatLabel="Tope de ganancia"
+  breakevenLabel="Punto de equilibrio"
+  callNote="Un vault de call cubierta mantiene el activo y vende una call OTM cada época. Por encima del strike, tu ganancia queda CONGELADA en el strike (más la prima): renuncias al rally a cambio de una prima fija. Por debajo del strike, sufres toda la caída del activo amortiguada solo por esa prima fina. Es una posición clásica corta de volatilidad: gana en mercados tranquilos y va por detrás de mantener el activo en cualquier rally violento."
+  putNote="Un vault de put con garantía mantiene stablecoins y vende una put OTM cada época. Por encima del strike, solo cobras una prima fija — un rendimiento limpio sobre el efectivo ocioso. Por debajo del strike, te asignan: te ves forzado a comprar el activo en caída al precio del strike, ahora por encima del mercado. También es una posición corta de volatilidad: cobra primas pequeñas y constantes y paga un siniestro grande cuando llega el crash."
+  currencyPrefix="$"
+/>
+
+Por encima del strike no pasa nada salvo que os embolsáis una prima fija — un rendimiento limpio sobre stablecoins ociosas. Por debajo del strike os veis forzados a comprar un activo en caída a un precio ahora por encima del mercado, y luego lo cabalgáis el resto del camino hacia abajo. Es, funcionalmente, **vender seguro contra crashes**: cobráis primas pequeñas y constantes y de vez en cuando pagáis un siniestro grande.
+
+### Ejemplo resuelto — vender una put en la caída
+
+Depositáis **\$2.000 en USDC**. El spot del ETH está en \$2.000. El vault vende una put a una semana con strike en **\$1.800** (10% OTM) por una prima de **\$25**. Desenlaces:
+
+| Precio del ETH el viernes | ¿Put asignada? | Qué tenéis | Neto vs. \$2.000 de inicio |
+|---|---|---|---|
+| **\$2.100 (sube)** | No | \$2.000 USDC + \$25 | **+\$25** — rendimiento plano, os quedáis el efectivo |
+| **\$1.850 (baja, por encima del strike)** | No | \$2.000 USDC + \$25 | **+\$25** — aún a salvo, prima retenida |
+| **\$1.500 (crash, por debajo del strike)** | **Sí** | ETH comprado a \$1.800, ahora vale \$1.500, + \$25 | **−\$275** — asignados a \$1.800, comiéndoos una pérdida en papel de \$300 menos la prima |
+
+El punto de equilibrio de la asignación es **strike − prima = \$1.800 − \$25 = \$1.775**. Por debajo de eso, estáis bajo el agua en la compra forzada. La put con garantía es la call cubierta con otro sombrero: ambas están **cortas de volatilidad**, ambas **cosechan prima en mercados tranquilos**, y ambas **os entregan la cola entera** cuando el movimiento es grande y en vuestra contra.
+
+<Categorize
+  client:visible
+  question="Clasificad cada rasgo en el vault correcto"
+  instructions="Ambos vaults están cortos de volatilidad, pero su fontanería difiere. Colocad cada característica."
+  buckets={['Vault de call cubierta', 'Vault de put con garantía']}
+  items={[
+    { text: "Mantiene el activo subyacente (p. ej. ETH)", bucket: 'Vault de call cubierta' },
+    { text: "Mantiene stablecoins como colateral", bucket: 'Vault de put con garantía' },
+    { text: "Limita tu recorrido alcista por encima del strike", bucket: 'Vault de call cubierta' },
+    { text: "Te fuerza a comprar el activo si se desploma", bucket: 'Vault de put con garantía' },
+    { text: "Vende una call OTM cada época", bucket: 'Vault de call cubierta' },
+    { text: "Vende una put OTM cada época", bucket: 'Vault de put con garantía' },
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+/>
+
+<MCQ
+  client:visible
+  allowMultiple
+  question="¿Qué afirmaciones son CIERTAS de AMBOS, el vault de call cubierta y el de put con garantía? (Seleccionad todas las que apliquen.)"
+  options={[
+    { text: "El vault está neto CORTO de una opción y cobra prima", correct: true, explanation: "Ambos venden opciones — short vol, largo de theta. Esta es la verdad unificadora de toda la categoría DOV." },
+    { text: "El peor caso para el depositante es una pérdida grande en un movimiento adverso fuerte", correct: true, explanation: "La call cubierta se come el recorrido bajista del activo; la put con garantía se come el crash tras la asignación. Ambas cargan con la cola entera." },
+    { text: "El depositante gana más cuando el subyacente se mueve violentamente", correct: false, explanation: "Al revés. Las estrategias short-vol ganan en mercados TRANQUILOS y sufren en los violentos." },
+    { text: "El ingreso por prima es mayor cuando la volatilidad implícita es alta", correct: true, explanation: "Las opciones se valoran a partir de la IV; una IV más rica significa primas más gordas para el vendedor. Los vaults ganan más cuando el mercado tiene miedo — y ahí es también cuando la cola es más peligrosa." },
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+/>
+
+## De dónde sale de verdad el "rendimiento"
+
+Aquí está el reencuadre más importante de toda esta lección. El número en la portada del vault — "18% APY", "24% APY" — **no es interés** y **no son recompensas de staking**. Es **prima de opciones**: el precio que otros traders pagan por *comprar* la opcionalidad que vuestro vault está *vendiendo*. No sois un prestamista cobrando un cupón; sois un **asegurador suscribiendo pólizas y cobrando primas**.
+
+Esa distinción cambia todo sobre cómo leer el APY de portada. Construyamos el número desde cero.
+
+### De una prima semanal a un APY anualizado
+
+Supongamos que un vault de call cubierta cobra **0,4% del nocional en prima cada semana** — una cifra realista para una call semanal OTM en volatilidad moderada. Hay **52 épocas en un año**, y la prima **compone** (la prima de cada semana se redeposita y gana la siguiente). El rendimiento anualizado es:
+
+$$
+\text{APY} = (1 + 0.004)^{52} - 1
+$$
+
+Recorred la aritmética:
+
+- $1 + 0.004 = 1.004$
+- $1.004^{52}$ — elevad a la potencia 52. Usando $\ln$: $52 \times \ln(1.004) = 52 \times 0.003992 = 0.2076$, así que $1.004^{52} = e^{0.2076} \approx 1.2307$.
+- Restad 1: $1.2307 - 1 = 0.2307$.
+
+Así que un humilde **0,4% por semana compone hasta aproximadamente un 23% de APY**. Esa es la magia — y el espejismo — del número de portada. Unas pocas décimas de porcentaje por semana, vestidas de ropa anualizada, parecen una fortuna.
+
+| Prima semanal | Simple (×52) | APY compuesto $(1+r)^{52}-1$ |
+|---|---|---|
+| 0,2% | 10,4% | **10,9%** |
+| 0,4% | 20,8% | **23,1%** |
+| 0,6% | 31,2% | **36,6%** |
+| 1,0% | 52,0% | **67,8%** |
+
+Fijaos en que el APY asume que **cobráis cada semana sin una sola época perdedora**. Esa es la trampa enterrada en la matemática: la portada es una proyección *bruta y sin pérdidas*. Una semana en la que el activo atraviese el strike y el retorno realizado de esa época puede ser profundamente negativo, arrastrando el rendimiento de verdad logrado muy por debajo del folleto.
+
+<Callout variant="warning" title="Este rendimiento es el pago por vender opcionalidad — no es dinero gratis">
+Cada dólar de prima es compensación por el riesgo que acabáis de asumir: el rally limitado, la compra forzada de la caída, la cola entera. Un APY alto es la forma del mercado de decir *"esto es arriesgado ahora mismo."* **La Lección 3 disecciona exactamente por qué esta posición estructural de short-vol puede, calladamente, devolver años de prima en una sola mala semana.** Por ahora, interiorizad esto: el rendimiento es el *precio del riesgo*, no una recompensa por ser listos.
+</Callout>
+
+<MCQ
+  client:visible
+  question="Un vault cobra un 0,5% de prima por semana. ¿Qué APY compuesto implica eso aproximadamente, asumiendo que no hay semanas perdedoras?"
+  options={[
+    { text: "Alrededor del 6%", correct: false, explanation: "Demasiado bajo — eso apenas supera la tasa semanal simple, no 52 de ellas compuestas." },
+    { text: "Alrededor del 26%", correct: false, explanation: "Cerca de la suma simple (0,5% × 52 = 26%), pero la composición lo empuja más arriba." },
+    { text: "Alrededor del 30%", correct: true, explanation: "(1.005)^52 − 1 ≈ 1.296 − 1 ≈ 0.296, así que aproximadamente un 30%. La composición añade ~4 puntos sobre el 26% simple." },
+    { text: "Alrededor del 52%", correct: false, explanation: "Eso necesitaría ~1% por semana. No dupliquéis la tasa." },
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+/>
+
+<FillBlank
+  client:visible
+  question="Enunciad el reencuadre en una línea."
+  text="El rendimiento anunciado de un DOV es {{prima|interés|dividendo}} de opciones, que es el pago por vender {{volatilidad|liquidez|tokens}} — no interés, staking ni dinero gratis."
+  explanation="El rendimiento es prima de opciones, es decir, el pago por vender volatilidad (opcionalidad). Es compensación por riesgo, no interés, recompensa de staking ni dinero gratis."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+/>
+
+## La subasta semanal y la contraparte
+
+Un vault que quiere *vender* una opción cada semana tiene que encontrar a alguien que la *compre*. Ahí es donde entra la **subasta semanal** — el momento que determina si vuestra prima es gorda o fina.
+
+Después de que se acuñan las opciones de una época, el vault pone todo el lote a la venta en una **subasta competitiva**. Los primeros Ribbon vaults usaban subastas RFQ alojadas por **Paradigm**; diseños posteriores se movieron a **subastas on-chain holandesas o de puja sellada** (p. ej. subastas por lotes al estilo Gnosis). La mecánica varía, pero el objetivo es idéntico: **dejar que compradores profesionales pujen unos contra otros para que el vault venda al mejor precio disponible.**
+
+¿Quién se presenta a pujar?
+
+- **Creadores de mercado y mesas de opciones.** Los compradores dominantes. Quieren este inventario porque pueden **cubrirlo** — comprar las calls del vault y delta-hedgearlas en el mercado de perps/spot, o **almacenar** el riesgo si tienen un libro que lo compensa. Para ellos, un flujo semanal predecible de opciones OTM de un vault es un suministro al por mayor que pueden reempaquetar.
+- **Fondos de volatilidad** tomando el lado **long-vol**: piensan que el vault está *infravalorando* la opción y quieren poseer opcionalidad barata antes de un movimiento.
+
+Crucialmente, **el vault es un vendedor estructural e insensible al precio** — tiene que vender cada semana, en cualquier mercado, porque el contrato lo dice. Eso es un regalo para los compradores. Un vendedor motivado y programado que *tiene* que operar es justo a quien un creador de mercado adora enfrentarse.
+
+### Por qué el precio de subasta es vuestro rendimiento
+
+El precio de liquidación de la subasta **es** la prima, que **es** el rendimiento bruto del depositante. Así que la calidad de la subasta fluye directa a vuestro retorno:
+
+- Una **subasta profunda y competitiva** con muchos pujadores empuja el precio de liquidación hacia el valor justo — los depositantes reciben la prima completa que vale la opción.
+- Una **subasta fina o mal diseñada** (pocos pujadores, un mecanismo torpe, una mala semana) liquida **por debajo del valor justo** — la opción se vende barata, el vault está **infrapagado**, y esa prima perdida desaparece *permanentemente* de los retornos del depositante.
+
+Dicho de otro modo, la ventaja del depositante puede fugarse en la subasta. Podéis tener exactamente la posición short-vol correcta y aun así ganar menos de lo que deberíais porque la opción se vendió con descuento a un avispado creador de mercado. La estrategia solo es tan buena como el precio al que opera.
+
+<Callout variant="info" title="Un modelo mental de mayorista frente a minorista">
+Imaginad el vault como un agricultor que *tiene* que vender la cosecha cada viernes, llueva o haga sol, y los creadores de mercado como los compradores del mercado mayorista que lo saben. La competencia entre compradores mantiene el precio honesto; un mercado adormilado con un solo comprador deja que ese comprador ponga el precio. La subasta es el suelo del mercado — y el depositante es el agricultor que nunca puede guardarse la cosecha para un día mejor.
+</Callout>
+
+<MatchConcepts
+  client:visible
+  title="Emparejad cada concepto de subasta con su significado"
+  pairs={[
+    { term: "Precio de liquidación", definition: "La prima que el vault recibe de verdad — y por tanto el rendimiento bruto del depositante para la época." },
+    { term: "Creador de mercado (comprador)", definition: "La contraparte profesional que compra las opciones del vault para cubrir o almacenar el riesgo." },
+    { term: "Vendedor insensible al precio", definition: "El vault, que tiene que vender cada época sin importar las condiciones del mercado porque el contrato lo manda." },
+    { term: "Subasta fina", definition: "Pocos pujadores o un mecanismo débil, que liquida por debajo del valor justo y recorta calladamente los retornos del depositante." },
+  ]}
+  instructions="Elige un término y luego su definición."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+/>
+
+<Quiz
+  client:visible
+  title="Mecánica de los vaults — comprobación rápida"
+  questions={[
+    {
+      question: "¿Por qué le importa tan directamente el precio de liquidación de la subasta a un depositante de un DOV?",
+      options: [
+        { text: "Fija el strike de la opción de la semana siguiente", correct: false, explanation: "El strike lo elige la estrategia del vault, no la subasta. La subasta fija el PRECIO." },
+        { text: "ES la prima, que es el rendimiento bruto del depositante para la época", correct: true, explanation: "Precio de liquidación = prima = rendimiento. Una subasta débil baja los retornos de forma permanente." },
+        { text: "Determina la comisión de gestión del vault", correct: false, explanation: "Las comisiones son un parámetro separado del protocolo, sin relación con el precio de subasta." },
+        { text: "Decide si el vault mantiene ETH o stablecoins", correct: false, explanation: "Eso lo fija el tipo de vault (call vs put), no la subasta." },
+      ],
+    },
+    {
+      question: "Los creadores de mercado son compradores ávidos de las opciones del vault principalmente porque…",
+      options: [
+        { text: "Apuestan a que los depositantes del vault perderán dinero", correct: false, explanation: "Los CM no están librando una venganza; están gestionando un libro. Cubren o almacenan el riesgo, a menudo de forma neutral." },
+        { text: "Pueden cubrir o almacenar el inventario semanal predecible a un precio que ayudan a fijar", correct: true, explanation: "Un vendedor programado e insensible al precio es suministro al por mayor que los CM pueden cubrir o absorber en un libro compensatorio." },
+        { text: "Comprar opciones siempre está libre de riesgo", correct: false, explanation: "Aquí nada está libre de riesgo. Asumen la opcionalidad y la gestionan activamente." },
+        { text: "El protocolo les paga por participar", correct: false, explanation: "Participan porque el inventario les es útil, no por una subvención." },
+      ],
+    },
+    {
+      question: "¿Qué capta mejor lo que es fundamentalmente el 'rendimiento' de un DOV?",
+      options: [
+        { text: "Intereses por prestar el activo depositado", correct: false, explanation: "En un DOV simple no ocurre ningún préstamo." },
+        { text: "Compensación por vender opcionalidad — prima por asumir un riesgo de recorrido limitado / cola entera", correct: true, explanation: "El rendimiento es el precio del riesgo que suscribís, semana tras semana." },
+        { text: "Un cupón fijo garantizado por el protocolo", correct: false, explanation: "Nada está garantizado; una época perdedora puede borrar semanas de prima." },
+        { text: "Recompensas de staking de la cadena subyacente", correct: false, explanation: "Los vaults simples no hacen staking; el rendimiento es prima de opciones." },
+      ],
+    },
+  ]}
+  questionLabel="Pregunta"
+  ofLabel="de"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  nextLabel="Siguiente"
+  backLabel="Atrás"
+  checkLabel="Comprobar"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+/>
+
+<Callout variant="success" title="Conclusiones — la mecánica de los DeFi Option Vaults">
+- Un **DOV** agrupa a los depositantes en una participación tokenizada y **auto-rola una sola estrategia de venta de opciones cada época** (normalmente semanal). Poner y olvidar, sin griegas requeridas.
+- Un **vault de call cubierta** mantiene el activo y vende una call OTM: **limita el recorrido alcista por encima del strike, se queda todo el recorrido bajista**, y os paga prima por renunciar al rally.
+- Un **vault de put con garantía** mantiene stablecoins y vende una put OTM: gana una prima fija hasta que el precio se desploma a través del strike, y entonces le **asignan el activo** y se come el drawdown. Ambos vaults están **cortos de volatilidad, largos de theta**.
+- El **APY anunciado es prima de opciones**, no interés ni staking. Un modesto **0,4%/semana compone hasta ~23% de APY** $(1.004^{52}-1)$ — pero solo si *todas* las semanas ganan.
+- Cada época las opciones se venden en una **subasta competitiva** a **creadores de mercado**, que cubren o almacenan el riesgo. El **precio de liquidación es vuestro rendimiento**, así que una subasta fina infrapaga calladamente a los depositantes.
+- El rendimiento es el **precio del riesgo** — pago por ser un vendedor estructural de short-vol. **Próxima lección: por qué esa posición corta estructural es más peligrosa de lo que admite el folleto.**
+</Callout>

@@ -55,3 +55,4 @@ MDX landed):
 - [x] **Counterparty Risk & XVA** (`counterparty-risk-and-xva`, expert) — built 2026-06-14.
 - [x] **Systematic & Statistical Arbitrage** (`systematic-and-statistical-arbitrage`, expert) — built 2026-06-15.
 - [x] **Mental Models for Finance** (`mental-models-for-finance`, beginner) — built 2026-06-16.
+- [x] **DeFi Options & On-chain Volatility** (`defi-options-and-onchain-volatility`, expert) — built 2026-06-16.

@@ -1,0 +1,307 @@
+---
+title: "On-chain Implied Vol & Oracles"
+description: "Where the volatility number even comes from on-chain: AMM-parameterized vol surfaces and DVOL-style indices, the laggy sample-and-held oracle problem, and how a stale implied-vol read turns into an arbitrageur's free lunch."
+topic: "en/defi-options-and-onchain-volatility"
+order: 4
+minutes: 16
+updated: 2026-06-16
+---
+
+import { MCQ, Quiz, FillBlank, MatchConcepts, Categorize, Callout, VolSmile, OnchainVol } from '@/components/react';
+
+You can derive every Greek, fit a flawless vol surface, and build a variance swap
+that would make a CBOE quant nod approvingly — but the moment you put that math
+**on a blockchain**, one quiet little input decides whether your contract is a
+fair market or a piñata: the **volatility number it reads**. Off-chain, implied
+vol is a living, breathing thing that updates with every tick. On-chain, it's a
+number someone *wrote down a few blocks ago* and a smart contract is now treating
+as gospel. This lesson is about where that number comes from, why it's always a
+little (or a lot) wrong, and who profits from the difference.
+
+<MCQ
+  client:visible
+  pretest
+  question="An on-chain options AMM needs an implied-volatility input to price its quotes. What is the most fundamental obstacle to feeding it a live, accurate vol number?"
+  options={[
+    { text: "Solidity cannot do the floating-point math required for Black–Scholes" },
+    { text: "A blockchain has no native, continuously-updating feed of market data — a value must be written on-chain by an oracle, and only every few blocks", correct: true },
+    { text: "Implied volatility is illegal to publish on-chain in most jurisdictions" },
+    { text: "Volatility cannot be expressed as a number, only as a distribution" },
+  ]}
+  explanation="Chains are deterministic and update in discrete blocks; they can't 'see' a live market, so every external number — including vol — arrives via an oracle write and then sits frozen until the next one. The tempting Solidity answer is wrong because fixed-point libraries handle the math fine: the hard part isn't computing the price but sourcing a fresh input. The legal and 'can't be a number' options are red herrings — there's no such rule, and IV is just a single annualized number per strike/expiry; the real issue is purely architectural and about freshness."
+/>
+
+## An option needs a volatility input — so where does on-chain vol come from?
+
+Pricing any option requires an implied-volatility input — it's the one Black–Scholes
+parameter you can't observe directly, and it's what the whole market argues about.
+So an on-chain options protocol has to get that number from *somewhere*. There are
+three sources, and they trade off freshness against trust:
+
+| Source | How it works | Freshness | Trust assumption |
+|---|---|---|---|
+| **(a) Governance/keeper-set AMM params** | The protocol stores a vol surface; a DAO vote or a permissioned **keeper** bot updates it | Slow (hours to days, or whenever the keeper fires) | Trust the keeper/governance not to be lazy or evil |
+| **(b) Oracle feed of implied vol** | An off-chain index (e.g. a DVOL-style number) is pushed on-chain by an oracle network | Medium (every few blocks) | Trust the oracle's data + update cadence |
+| **(c) Derived from on-chain option prices** | Back out IV from the protocol's own traded option prices | As fresh as trading is — but circular and thin | Trust that on-chain liquidity is deep enough to be meaningful |
+
+Each has a failure mode. Governance-set params are **stale by design** — nobody
+re-votes the surface mid-crash. An oracle feed is fresher but only as fresh as its
+write schedule. And deriving IV from your own thin on-chain order flow is
+gloriously circular: you price options off prices that were themselves priced off
+your possibly-wrong vol. Most real protocols use a blend, leaning on (a) or (b)
+with guardrails.
+
+<Callout variant="info" title="The recurring theme">
+Off-chain, implied vol is a verb — it's constantly being re-quoted. On-chain,
+it's a noun — a stored value. Every problem in this lesson flows from that one
+grammatical demotion.
+</Callout>
+
+## On-chain vol surfaces and the skew
+
+A protocol that quotes many strikes and expiries can't store a separate number for
+every one — gas makes that absurd. Instead it stores a **parameterized surface**:
+a compact formula like
+
+$$\text{IV}(m, T) = \text{baseIV}(T) + \text{skew}(T)\cdot(1 - m)$$
+
+where $m = K/S$ is moneyness, $\text{baseIV}(T)$ is the at-the-money vol for each
+expiry $T$, and $\text{skew}(T)$ is a slope term. Sometimes a curvature term gets
+added for the wings. The whole surface might be just a handful of stored numbers
+per expiry — cheap to write, cheap to read.
+
+<VolSmile client:visible />
+
+The shape that matters most in crypto is the **skew**. Equity indices have a
+famous left-leaning smirk (everyone wants crash insurance on the S&P). Crypto
+typically shows a **rich downside skew too** — puts bid up because the asset can
+gap down violently — but in euphoric bull runs the skew can flip and **calls**
+get expensive (FOMO insurance to the upside). Either way, the on-chain surface has
+to capture this with *very few parameters*, because every parameter is a storage
+slot someone pays gas to update.
+
+That coarseness is the catch. A real off-chain desk might fit dozens of strikes
+with a smooth SVI surface; an on-chain AMM might have **one base vol and one skew
+slope per expiry**. It's a low-resolution photo of a high-resolution market — fine
+in calm weather, lossy in a storm.
+
+<FillBlank
+  client:visible
+  question="Fill in the structural trade-off of an on-chain vol surface."
+  text="An on-chain surface stores only a few parameters per expiry because every stored value costs {{gas|trust|latency}} to write. That makes the surface {{coarse|exact|continuous}}, so it approximates the true smile rather than fitting it exactly."
+/>
+
+<MCQ
+  client:visible
+  question="In a typical crypto vol surface, which statement about skew is most accurate?"
+  options={[
+    { text: "Crypto never shows skew because it trades 24/7" },
+    { text: "Crypto usually carries a rich downside (put) skew, but skew can flip to the call side in euphoric rallies", correct: true },
+    { text: "Crypto skew is always identical to S&P 500 index skew" },
+    { text: "Skew only exists for expiries longer than one year" },
+  ]}
+  explanation="Downside protection is normally bid up, but a parabolic bull run can make upside calls the expensive wing — the surface is dynamic, so the flip-to-call answer is right. 'Identical to S&P 500 skew' is the tempting trap: the two rhyme (both bid downside) but crypto's is often steeper and can invert during mania. Round-the-clock trading doesn't flatten skew (crash fear and FOMO both bend it), and short-dated crypto options often show the steepest skew of all, so the 'never' and 'only long expiries' options are wrong."
+/>
+
+## DVOL and on-chain volatility indices
+
+The crypto market wanted its own "VIX," and Deribit obliged with **DVOL** — a
+30-day forward-looking implied-volatility index for BTC and ETH. The construction
+is the same model-free, variance-swap-style recipe you learned for the VIX: take a
+**strip of out-of-the-money options** across strikes for the relevant expiries,
+integrate their prices to extract the market's expected variance, then annualize
+and quote it as a single volatility number.
+
+Quick numeric sanity check on the units: if a 30-day variance strip implies an
+annualized variance of $\sigma^2 = 0.64$, then DVOL reads
+
+$$\sigma = \sqrt{0.64} = 0.80 = 80\%.$$
+
+That 80% is an *annualized* number — the 30-day expected move is roughly
+$80\% \times \sqrt{30/365} \approx 23\%$. (Crypto vol numbers look terrifying next
+to the VIX's usual teens-to-twenties precisely because the underlying is wilder.)
+
+What's DVOL *for*? Three things, and they escalate:
+
+1. **A reference** — a single quotable "BTC vol is at 55" you can put in a
+   dashboard or a research note.
+2. **A tradable** — Deribit lists DVOL futures, so you can take a clean view on
+   vol-of-vol without legging into a strip of options yourself.
+3. **An oracle input** — the live push to bring a DVOL-style index **on-chain** so
+   protocols can read a credible market vol instead of a governance guess. This is
+   the dream and the danger: a real, market-implied vol number is far better than a
+   stale stored parameter — *but only if the oracle delivering it is fresh.* Which
+   brings us to the whole problem.
+
+<MatchConcepts
+  client:visible
+  title="Match each on-chain vol concept to what it actually is"
+  pairs={[
+    { term: "DVOL", definition: "A 30-day forward-looking implied-vol index for crypto, built from an OTM option strip — the crypto 'VIX'" },
+    { term: "Parameterized surface", definition: "A compact formula (base IV + skew per expiry) an AMM stores so it can quote many strikes cheaply" },
+    { term: "Keeper", definition: "A permissioned bot that periodically writes fresh vol parameters into the contract" },
+    { term: "Oracle write", definition: "The discrete on-chain transaction that stamps a new external value contracts then read until the next one" },
+  ]}
+/>
+
+## The oracle problem: latency, staleness, manipulation
+
+Here's the crux. A blockchain **cannot stream** a live vol number. It updates in
+discrete blocks, and external data only enters through an **oracle write** — a
+transaction that stamps a value into storage. Between writes, every contract reads
+that *frozen* value. So on-chain implied vol is, structurally, a
+**sample-and-hold** signal: it tracks reality at the moment of each write, then
+flatlines until the next one.
+
+Play with the cadence below. The smooth blue line is the true, continuously-moving
+vol an off-chain desk sees; the stepped orange line is what the oracle has actually
+written on-chain; the shaded band is the **staleness gap** between them.
+
+<OnchainVol client:visible />
+
+Notice *where* the gap is widest: not in the calm stretches, but right in the
+middle of the spike. When vol is crawling sideways in the low 50s, a value held
+for three or six blocks is basically correct — nobody gets hurt. But when vol gaps
+from 55 to 118 during a crash, the oracle is still serving the **pre-crash low
+number** for several blocks. The slower the update cadence (toggle to every 6
+blocks), the wider and longer that gap. Staleness isn't a constant tax; it's a
+**bill that comes due exactly when volatility is most valuable.**
+
+And "staleness" is the *honest* failure. The malicious cousin is **manipulation**:
+if the oracle derives vol from a thin on-chain source, an attacker can push that
+source around — a flash-loan-funded shove on a shallow pool, or stuffing one block
+with lopsided trades — so the contract reads a vol the attacker chose. Latency,
+staleness, and manipulation are three faces of the same flaw: **the on-chain number
+is a delayed, gameable approximation of the real one.**
+
+<Categorize
+  client:visible
+  title="Sort each situation by how dangerous the oracle's staleness is right now"
+  buckets={["Mostly harmless", "Dangerous"]}
+  items={[
+    { text: "Vol has been flat at 50 for an hour; oracle last wrote 4 blocks ago", bucket: "Mostly harmless" },
+    { text: "A liquidation cascade just doubled realized vol in two blocks; oracle won't update for 5 more", bucket: "Dangerous" },
+    { text: "Quiet weekend, no catalysts, 6-block update cadence", bucket: "Mostly harmless" },
+    { text: "A surprise CPI print hits and the market gaps; oracle still shows the pre-print vol", bucket: "Dangerous" },
+    { text: "Vol drifting slowly lower over the day with frequent oracle writes", bucket: "Mostly harmless" },
+    { text: "Attacker flash-loans a shove on the thin pool the vol oracle samples", bucket: "Dangerous" },
+  ]}
+/>
+
+<Callout variant="warning" title="Stale doesn't mean wrong-on-average — it means wrong-when-it-counts">
+An oracle that's correct 95% of the time can still be ruinous, because the 5% when
+it's stale is perfectly correlated with the moments — spikes, gaps, cascades —
+when being wrong is most expensive. Average error is the wrong metric; **error
+during the spike** is the one that empties the vault.
+</Callout>
+
+## A stale vol read is a free lunch for an arbitrageur
+
+Let's put numbers on the damage. Suppose an on-chain AMM is selling a 7-day BTC
+at-the-money call, and its oracle vol is stuck at the **pre-crash 55%** while the
+true market vol has gapped to **110%**.
+
+A rough at-the-money option value scales nearly linearly with vol over short
+horizons: $\text{price} \approx 0.4 \cdot S \cdot \sigma \cdot \sqrt{T}$. With
+a spot $S = 60{,}000$ and $T = 7/365 \approx 0.0192$ years, $\sqrt{T} \approx 0.1385$:
+
+| Quote | Vol used | Call value |
+|---|---|---|
+| **AMM (stale oracle)** | 55% | $0.4 \times 60{,}000 \times 0.55 \times 0.1385 \approx 1{,}828$ → **\$1,828** |
+| **Fair (true market)** | 110% | $0.4 \times 60{,}000 \times 1.10 \times 0.1385 \approx 3{,}656$ → **\$3,656** |
+
+The AMM is selling for **\$1,828** an option that's truly worth **\$3,656** — a
+**\$1,828 discount, about 50% off.** That is not a typo, it's an invitation. An
+arbitrageur buys the underpriced call from the AMM, and either sells the identical
+risk off-chain at the fair 110% vol or simply holds a position they paid half-price
+for. The arbitrageur pockets the spread; the **LPs / vault** on the other side
+sold cheap insurance into a hurricane and eat the loss.
+
+This is textbook **adverse selection** — the dreaded **toxic flow**. The only
+counterparties who rush to trade against a stale quote are the ones who *know* it's
+stale. The AMM doesn't get a representative slice of the market; it gets
+specifically the trades where it's on the losing side. Over time that's a steady
+drip of value out of the pool, paid by whoever supplied it.
+
+And who supplied it? Often a **DOV** (DeFi Options Vault) full of ordinary
+depositors who clicked "deposit and earn yield." They never see the oracle; they
+just watch their vault underperform during exactly the volatile weeks when their
+short-vol strategy was supposed to earn the most premium. The staleness gap is a
+silent transfer from passive depositors to active arbitrageurs.
+
+<Callout variant="info" title="Foreshadowing — lesson 6">
+Stale-oracle arbitrage is the *quoting-time* leak. There's a second, nastier leak
+at **settlement time**: when an option expires, *which* price gets used to settle
+it can be nudged by whoever controls block ordering. That's MEV at settlement —
+the subject of lesson 6.
+</Callout>
+
+<Quiz
+  client:visible
+  title="Stress-test your grip on stale-vol arbitrage"
+  questions={[
+    {
+      question: "Vol spikes from 50% to 100% but the on-chain AMM still quotes options off a stale 50% oracle. What happens?",
+      options: [
+        { text: "The AMM's options are now overpriced, so traders avoid it" },
+        { text: "The AMM's options are underpriced; arbitrageurs buy them and the LPs/vault take the loss", correct: true },
+        { text: "Nothing — the smart contract auto-corrects to the new vol" },
+        { text: "The arbitrageur loses money because vol is unpredictable" },
+      ],
+      explanation: "Cheap vol means cheap options, so the stale 50% read leaves the AMM underpriced: informed traders buy the discount and the pool that sold cheap insurance into a spike absorbs the loss. 'Overpriced' is exactly backwards — lower vol means lower prices. The contract can't auto-correct (it reads only the last written oracle value until the next write), and the arbitrageur isn't guessing vol but trading against a known-stale price, which is close to riskless.",
+    },
+    {
+      question: "Why is this called 'toxic flow' or 'adverse selection' against the protocol?",
+      options: [
+        { text: "Because the trades come from anonymous wallets" },
+        { text: "Because the only people eager to trade the stale quote are the ones who know it's wrong, so the protocol systematically gets the losing side", correct: true },
+        { text: "Because the gas fees are high" },
+        { text: "Because the protocol charges no fees" },
+      ],
+      explanation: "Adverse selection means the counterparty pool is filtered down to exactly the informed traders the AMM would least like to face — the ones who know the quote is stale. Anonymity isn't the issue; the selection of who trades is. Gas is unrelated to the directional value leak, and even with fees a 50%-off mispricing dwarfs any reasonable fee, so those options miss the point.",
+    },
+    {
+      question: "An on-chain AMM sells a call for $1,800 using a stale 55% vol; fair value at the true 110% vol is $3,600. How big is the per-option leak to the arbitrageur?",
+      options: [
+        { text: "About $1,800 — the AMM gave away roughly half the option's value", correct: true },
+        { text: "Zero — the trade is fair because both used Black–Scholes" },
+        { text: "$3,600 — the arbitrageur keeps the whole option value" },
+        { text: "It depends on gas only" },
+      ],
+      explanation: "The leak is the discount: $3,600 − $1,800 = $1,800, a ~50% markdown handed straight to the informed buyer. 'Zero / fair because both used Black–Scholes' is the trap — it's the same model with the wrong 55% vs 110% vol input, which is the entire leak. The arbitrageur paid $1,800 so they don't keep the full $3,600, and gas is rounding error next to an $1,800 mispricing.",
+    },
+  ]}
+/>
+
+<MCQ
+  client:visible
+  allowMultiple
+  question="Select EVERY mitigation that genuinely reduces stale-vol arbitrage against an on-chain options protocol. (More than one is correct.)"
+  options={[
+    { text: "Update the vol oracle more frequently (shorter sample-and-hold interval)", correct: true },
+    { text: "Widen quoted spreads / add a vol buffer when recent realized vol is rising", correct: true },
+    { text: "Pull liquidity or pause quoting during extreme vol events (circuit breaker)", correct: true },
+    { text: "Source vol from a deeper, harder-to-manipulate index rather than a thin on-chain pool", correct: true },
+    { text: "Assume vol is constant so the oracle never needs updating" },
+    { text: "Tell depositors the vault is risk-free" },
+  ]}
+  explanation="The four genuine fixes all attack the staleness or manipulation gap: shorter holds narrow the staleness band during a spike; a vol buffer when realized vol is rising makes the stale price less exploitable; a circuit breaker means refusing to trade beats trading at a known-wrong price; and a deeper, harder-to-manipulate index resists the manipulation face of the oracle problem. The two traps do the opposite — assuming vol is constant guarantees maximal staleness during every spike, and telling depositors the vault is risk-free is a misrepresentation, not a mitigation, since the adverse-selection risk is real."
+/>
+
+<Callout variant="success" title="Key takeaways">
+- An on-chain option needs an **IV input**, and it can only come from three
+  places: **governance/keeper-set AMM params**, an **oracle vol feed**, or vol
+  **derived from on-chain prices** — each trading freshness against trust.
+- Protocols store a **coarse parameterized surface** (base IV + skew per expiry)
+  because every parameter costs gas; crypto's skew is usually rich on the
+  downside but can flip to calls in a mania.
+- **DVOL** is the crypto VIX — a 30-day model-free implied-vol index from an OTM
+  option strip — and the prize is bringing such an index **on-chain** as a
+  tradable oracle reference.
+- The fatal flaw is **sample-and-hold staleness**: a chain can't stream vol, so an
+  oracle writes it every few blocks and contracts read the frozen value. The gap
+  is harmless in calm markets and **widest exactly during a spike**.
+- A stale low vol makes the AMM **sell options ~50% too cheap**; arbitrageurs
+  scoop the discount as **toxic flow**, and **DOV depositors** quietly eat the
+  loss. (Next: MEV at *settlement*, lesson 6.)
+</Callout>
