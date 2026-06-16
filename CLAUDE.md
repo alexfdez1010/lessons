@@ -174,7 +174,7 @@ Two operations are meant to be one-liners:
   the eventual topic slug so the graduation is clean.
 
 The daily autonomous agent builds the **lowest-`order`** entry, then removes it;
-see `ROADMAP.md` for the full contract.
+the full agent contract lives in the header comment of `src/lib/upcoming.ts`.
 
 ## Authoring content
 

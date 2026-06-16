@@ -23,7 +23,7 @@
 #   * Both the normal path and the startup-recovery path converge on the SAME
 #     deterministic flow: validate -> (bounded repair loop) -> commit -> push ->
 #     verify. Red code is never published.
-#   * If a previous run left a dirty tree, we do NOT start a new roadmap item --
+#   * If a previous run left a dirty tree, we do NOT start a new upcoming course --
 #     we finish the stranded work and land it.
 #   * Push/fetch use bounded retries; the run only succeeds once HEAD is verified
 #     reachable from origin/main and the tree is clean. A normal run additionally
@@ -278,7 +278,7 @@ validate_and_finalize() {
 # all of that. None may launch background or detached processes.
 # ---------------------------------------------------------------------------
 PROMPT='Run one autonomous lesson-building session for this repository.
-Read CLAUDE.md, ROADMAP.md, and the relevant skills in .claude/skills first, then follow
+Read CLAUDE.md and the relevant skills in .claude/skills first, then follow
 them completely. The build queue is DATA in `src/lib/upcoming.ts` (the `upcomingCourses`
 array), NOT a markdown checklist. Implement exactly the entry with the LOWEST `order`,
 from top to bottom, including its complete English and Spanish content. Use that entry'\''s
@@ -300,12 +300,13 @@ IMPORTANT -- you are running inside a wrapper that owns ALL validation and publi
 - NEVER launch background or detached processes (no trailing `&`, no `run_in_background`,
   no nohup/setsid/disown). Run only short foreground commands and wait for each to exit.
 
-Your job ends when the implementation (MDX content, components, ROADMAP.md checkmark) is
+Your job ends when the implementation (MDX content, components, and the `upcomingCourses`
+entry removal in `src/lib/upcoming.ts`) is
 written to the working tree. When it is complete, simply stop and exit, leaving all your
 changes uncommitted in the working tree for the wrapper to validate and publish.'
 
 RESCUE_PROMPT='A previous autonomous session for this repository exited while leaving
-uncommitted or untracked changes in the working tree. Do NOT start any new roadmap item or
+uncommitted or untracked changes in the working tree. Do NOT start any new upcoming course or
 any new lesson. Your ONLY job is to finish the work that is already present in the working
 tree so it is consistent and complete.
 
@@ -331,8 +332,8 @@ and it FAILED. The full validation output is appended to this log file:
   $LOG
 
 Read the most recent validation errors at the END of that log file, then fix ONLY the
-pending working-tree changes so that validation will pass. Do NOT start any new roadmap
-item or new lesson, and never discard, revert, or overwrite changes you did not create.
+pending working-tree changes so that validation will pass. Do NOT start any new upcoming
+course or new lesson, and never discard, revert, or overwrite changes you did not create.
 
 IMPORTANT -- you are running inside a wrapper that owns ALL validation and publishing:
 - Do NOT run \`bun run pre-commit\`, \`bun run build\`, \`bun run check\`, \`og:generate\`,
@@ -353,11 +354,11 @@ git checkout main >>"$LOG" 2>&1 || fail "could not checkout main"
 # ---------------------------------------------------------------------------
 # 1. Startup recovery. If the tree is already dirty, a previous run crashed
 #    mid-flight: finish that stranded work FIRST instead of starting a new
-#    roadmap item on top of a dirty tree. Do not pull onto a dirty tree.
+#    upcoming course on top of a dirty tree. Do not pull onto a dirty tree.
 #    Converges through the SAME validate/finalize/push flow as a normal run.
 # ---------------------------------------------------------------------------
 if tree_dirty; then
-  log "startup: working tree is NOT clean -- entering recovery mode (no new roadmap item this run)"
+  log "startup: working tree is NOT clean -- entering recovery mode (no new upcoming course this run)"
   dump_status
   # Stranded changes may touch the lockfile, so install non-frozen.
   log "startup: installing dependencies (non-frozen) for the rescue session and validation"

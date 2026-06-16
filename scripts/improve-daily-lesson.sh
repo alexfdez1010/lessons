@@ -316,8 +316,9 @@ Read these first, in order:
      counts, timeouts, validation failures, wall-clock). This is your evidence base.
   2. The raw run logs under \`.daily-lesson-logs/*.log\` (builder runs; ignore improve-*.log)
      for any run the digest flags as slow, repeated-repair, timed-out, or recovery-mode.
-  3. \`scripts/daily-lesson.sh\` (the builder wrapper + its session prompts), \`ROADMAP.md\`,
-     \`CLAUDE.md\`, and \`docs/daily-lesson-automation.md\`.
+  3. \`scripts/daily-lesson.sh\` (the builder wrapper + its session prompts),
+     \`src/lib/upcoming.ts\` (the \`upcomingCourses\` build queue), \`CLAUDE.md\`, and
+     \`docs/daily-lesson-automation.md\`.
 
 Your goal: make future autonomous runs FASTER and MORE EFFECTIVE while NEVER weakening any
 correctness gate. Look for evidence-backed wins such as: recurring validation failures the

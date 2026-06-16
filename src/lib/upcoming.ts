@@ -1,10 +1,10 @@
 /**
  * Upcoming courses — the build queue, as PURE data (no astro:content imports,
- * so it is safe to import from anywhere). This is the structured successor to
- * the old free-text queue in `ROADMAP.md`: each entry is a finance course that
- * is *planned but not yet built*. The catalog renders these as dimmed
+ * so it is safe to import from anywhere). This file is the SINGLE SOURCE OF
+ * TRUTH for "what gets built next": each entry is a finance course that is
+ * *planned but not yet built*. The catalog renders these as dimmed
  * "Coming soon" nodes on the dependency graph, wired to their prerequisites
- * exactly like real courses.
+ * exactly like real courses, and on the `/upcoming` page.
  *
  * Two operations are meant to be trivial:
  *
@@ -16,8 +16,20 @@
  *     record; an upcoming entry only describes what is still missing. (Keeping
  *     a slug in both places would draw the node twice.)
  *
- * The autonomous daily agent builds the lowest-`order` entry, then removes it.
- * See `ROADMAP.md` for the full agent contract.
+ * ── Autonomous daily-agent contract (`scripts/daily-lesson.sh`) ──────────────
+ * The daily agent builds the LOWEST-`order` entry, then DELETES that entry.
+ *
+ *   • Build strictly within the finance scope in CLAUDE.md (quantitative
+ *     finance, crypto, DeFi). One topic per run, en + es twin.
+ *   • Go in order: build the lowest-`order` upcoming entry first. Never build
+ *     something easier than the most recently built course (keep the ramp
+ *     monotone).
+ *   • Use the entry's `buildNotes` as the build brief, its `dependencies`/`tags`
+ *     for catalog wiring, and keep the same `slug` for the topic MDX so it
+ *     graduates cleanly.
+ *   • After building, REMOVE its entry here (the topic MDX is now the record).
+ *   • When fewer than 3 entries remain, APPEND the next harder topics (each one
+ *     notch up) so the queue never empties.
  */
 
 import type { Difficulty } from '@/lib/catalog-filter';
