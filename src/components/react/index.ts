@@ -47,6 +47,9 @@ export type { LedgerRevealProps, LedgerField } from '@/components/react/LedgerRe
 export { MatchConcepts, default as MatchConceptsDefault } from '@/components/react/MatchConcepts';
 export type { MatchConceptsProps, MatchPair } from '@/components/react/MatchConcepts';
 
+export { JointStockShare, default as JointStockShareDefault } from '@/components/react/JointStockShare';
+export type { JointStockShareProps, ShareInvestor } from '@/components/react/JointStockShare';
+
 export { PrivacyDial, default as PrivacyDialDefault } from '@/components/react/PrivacyDial';
 export type { PrivacyDialProps } from '@/components/react/PrivacyDial';
 

@@ -68,25 +68,6 @@ export interface UpcomingCourse {
  */
 export const upcomingCourses: UpcomingCourse[] = [
   {
-    slug: 'history-of-finance',
-    icon: '📜',
-    difficulty: 'intermediate',
-    order: 6,
-    accent: 'accent',
-    title: {
-      en: 'History of Finance',
-      es: 'Historia de las Finanzas',
-    },
-    description: {
-      en: 'Where financial products came from — from Hammurabi and the VOC to tulip mania, Dojima rice, and modern ETFs.',
-      es: 'De dónde vienen los productos financieros — de Hammurabi y la VOC a la tulipomanía, el arroz de Dojima y los ETFs modernos.',
-    },
-    dependencies: ['history-of-money', 'stock-markets-and-funds'],
-    tags: ['investing-basics'],
-    buildNotes:
-      "Where financial products came from (the story history-of-money doesn't tell): ancient lending & interest and the Code of Hammurabi, Italian merchant banks + double-entry bookkeeping + bills of exchange, the first government bonds (Venetian prestiti), the Amsterdam joint-stock company & the world's first stock exchange (VOC, 1602), tulip mania as the first derivatives bubble, Dojima rice & the first futures market, Lloyd's & the birth of insurance, central banks (Bank of England 1694), mutual funds → index funds → ETFs, and the rise of modern derivatives & securitization. Focus on why each product was invented and what problem it solved. Islands: product-timeline + joint-stock-share.",
-  },
-  {
     slug: 'machine-learning-for-alpha',
     icon: '🧠',
     difficulty: 'expert',
