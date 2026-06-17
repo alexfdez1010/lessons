@@ -1,0 +1,411 @@
+---
+title: "Sobreajuste del backtest y el Sharpe desinflado"
+description: "La trampa del contraste múltiple que vuelve falsos a la mayoría de los backtests publicados: por qué la mejor de muchas estrategias probadas está inflada por la suerte, cómo el Sharpe máximo esperado bajo la hipótesis nula crece con el número de pruebas, y las herramientas que contraatacan: los ratios de Sharpe probabilístico y desinflado, la probabilidad de sobreajuste del backtest y la longitud mínima de backtest."
+topic: "es/machine-learning-for-alpha"
+order: 4
+minutes: 16
+updated: 2026-06-17
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, DeflatedSharpe, TsOverfitCurve, SamplingHistogram, MonteCarloConverge } from '@/components/react';
+
+He aquí un secretillo sucio de las finanzas cuantitativas: la mayoría de los backtests que verás en tu vida son **descubrimientos falsos**. No fraudulentos: falsos. El investigador era honesto, el código era correcto, la curva de capital de verdad subía a 45 grados. Y aun así la estrategia **no tenía ninguna ventaja en absoluto**. ¿Cómo? Probaron mil cosas y te enseñaron la que mejor pintaba, igual que un "vidente" que lanza una moneda delante de 1.024 personas, por pura aritmética, encontrará a diez que la vieron salir cara diez veces seguidas y que ahora creen estar presenciando magia.
+
+Este es el **problema del contraste múltiple**, y es la mayor razón individual por la que las estrategias de trading publicadas mueren en cuanto el dinero real las toca. Es especialmente despiadado en el aprendizaje automático, donde un solo `GridSearchCV` prueba en silencio diez mil configuraciones y te entrega la ganadora con cara de póker. Esta lección va de pillar la mentira. Veremos cómo el listón que un backtest *debe* superar sube con cada cosa de más que probaste, y conoceremos las herramientas (el **ratio de Sharpe desinflado**, la **probabilidad de sobreajuste del backtest**, la **longitud mínima de backtest**) que ponen un número a "¿esto es real, o simplemente tuve suerte 1.024 veces?".
+
+<MCQ
+  client:visible
+  pretest
+  pretestLabel="Antes de leer — adivina"
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  question="Un investigador prueba 2.000 variantes de estrategia sobre los mismos 10 años de datos y reporta la mejor, que tiene un ratio de Sharpe en el backtest de 1,8. Ninguna de las 2.000 variantes tiene ventaja real alguna. ¿Cuál es el estado más probable de ese Sharpe de 1,8?"
+  options={[
+    { text: "Es plausiblemente fruto de la suerte: la mejor de 2.000 estimaciones ruidosas está inflada incluso cuando toda ventaja real es cero.", correct: true },
+    { text: "Es una ventaja fiable, porque 1,8 es demasiado alto para darse por azar en cualquier backtest individual." },
+    { text: "Carece de sentido solo si el código tenía un fallo de anticipación; sin fallos, un Sharpe de 1,8 es real." },
+    { text: "Es exactamente el Sharpe verdadero, ya que un backtest es una estimación insesgada del rendimiento en vivo." }
+  ]}
+  explanation="Cuando te quedas con la MEJOR de muchas pruebas, estás muestreando el máximo de una distribución ruidosa, y el máximo se desplaza hacia arriba con el número de pruebas aunque la ventaja real de cada estrategia sea cero. Un Sharpe de 1,8 suena impresionante en aislamiento, pero como la mejor de 2.000 intentos puede caer enteramente dentro del rango que produce la pura suerte. Esa brecha es lo que mide el ratio de Sharpe desinflado, y es el tema central de esta lección."
+/>
+
+## La trampa del contraste múltiple
+
+**Analogía.** Compra 2.000 boletos de lotería y uno de ellos premia. ¿Te convierte eso en un genio eligiendo loterías? Obviamente no: compraste tantos boletos que *alguno* tenía que tocar, y ahora lo señalas y lo llamas habilidad. Un barrido de backtests es exactamente esto. Cada variante de estrategia es un boleto; los datos son el sorteo; la "ganadora" es el boleto que por casualidad encajó con el ruido de *esta historia concreta*. Enseña solo a la ganadora y esconde a las 1.999 perdedoras, y un montón de suerte parece genialidad.
+
+**Definición.** El problema del **contraste múltiple** (o **data-snooping** / **sesgo de selección**): cuando evalúas muchas hipótesis sobre los mismos datos y reportas solo la mejor, el resultado reportado está sesgado al alza, porque has *seleccionado sobre el ruido*. Los estadísticos llaman al riesgo de obtener al menos un falso positivo a lo largo de una familia de contrastes la **tasa de error por familia** (family-wise error rate), y se dispara con el número de contrastes. Corre un contraste con una tasa de falso positivo del 5% y estás bien; corre 100 contrastes independientes y la probabilidad de *al menos una* "ganadora" espuria es $1 - 0.95^{100} \approx 99.4\%$. Prácticamente garantizado.
+
+La versión popular es más cruda: **"si torturas los datos el tiempo suficiente, confesarán cualquier cosa"**. La tortura en la investigación cuantitativa rara vez es deliberada. Se esconde en:
+
+- **Búsqueda en rejilla.** Un `GridSearchCV` sobre 5 hiperparámetros con 8 valores cada uno son $8^5 = 32{,}768$ pruebas silenciosas. Tú ves un número; la máquina probó decenas de miles.
+- **Barridos de variables.** Probar 50 variables candidatas y quedarte con las 5 que "funcionan" es una selección sobre $\binom{50}{5} \approx 2.1$ millones de subconjuntos.
+- **La memoria del investigador.** Incluso a mano, "déjame probar una ventana de 20 días… no, de 50… quizá añadir un stop-loss…" es contraste múltiple sin fichero de registro. Estas son las pruebas más peligrosas porque están **sin contar**.
+
+<Callout variant="warning" title="Las pruebas que olvidas siguen siendo pruebas">
+La parte más letal del contraste múltiple es que el número de pruebas $N$ en todas las fórmulas de abajo es el número de cosas que *realmente probaste*, no el número que *apuntaste*. Ajustar a mano una ventana de 10 a 200 días son ~190 pruebas. Leer un artículo, copiar sus parámetros "ganadores" y contrastarlos es heredar *toda su* búsqueda. La contabilidad honesta de $N$ es el número más difícil e importante de esta lección, y el que más les gusta minimizar a los investigadores.
+</Callout>
+
+**Ejemplo resuelto — 100 estrategias con ventaja literalmente cero.** Supón que construyes 100 estrategias cuyo ratio de Sharpe *verdadero* es exactamente 0: puras tiradas de moneda, ninguna ventaja en absoluto. Haz el backtest de cada una sobre $T$ años de datos. Una sola estimación de Sharpe de una estrategia con cero verdadero no es exactamente 0; es ruidosa, dispersa alrededor de 0 con un error típico de aproximadamente $1/\sqrt{T}$ (en unidades anualizadas, más precisamente unos $\sqrt{(1 + \tfrac{1}{2}\text{SR}^2)/T} \approx 1/\sqrt{T}$ cuando el SR verdadero está cerca de 0). Con, digamos, $T = 5$ años el error típico es de aproximadamente $1/\sqrt{5} \approx 0.45$.
+
+Ahora toma el **máximo** de 100 extracciones de una distribución de media 0 y desviación típica 0,45. El máximo de 100 normales estándar se sitúa en torno a $+2.5$ desviaciones típicas, así que la mejor de tus 100 estrategias de ventaja cero registrará un Sharpe de aproximadamente $2.5 \times 0.45 \approx 1.1$. **Un Sharpe de 1,1, de una estrategia con ventaja demostrablemente cero.** Será la curva de capital más bonita del mazo, y es 100% ruido.
+
+| Lo que mides | Una estrategia de ventaja cero | Mejor de 100 estrategias de ventaja cero |
+|---|---|---|
+| Sharpe verdadero | 0 | 0 (todas y cada una) |
+| Sharpe esperado en el backtest | ≈ 0 | ≈ +1,1 |
+| Lo que *parece* | Fiasco evidente | "Nuestra señal estrella" |
+
+<TsOverfitCurve
+  client:visible
+  caption="Sube el número de variantes que pruebas (o de parámetros del modelo) y la curva del backtest DENTRO DE MUESTRA marcha sin cesar hacia arriba: está memorizando el ruido de esta historia concreta. La curva FUERA DE MUESTRA (en vivo) dice la verdad: sube hasta un punto óptimo y luego cae por un precipicio a medida que la complejidad extra ajusta rarezas que no se repetirán. La brecha que se ensancha entre ambas es el sobreajuste que pagarás con dinero real. La mejor estrategia dentro de muestra casi nunca es la mejor estrategia en vivo: es la que mejor memorizó el pasado."
+/>
+
+### Cuándo preocuparse más
+
+Preocúpate al máximo por la trampa del contraste múltiple siempre que el espacio de búsqueda sea grande y los datos estén fijos y sean cortos: barridos de hiperparámetros de ML, minería de variables y cualquier discurso de "probamos todas las combinaciones". Preocúpate menos cuando tengas una hipótesis económica fuerte contrastada *una sola vez* sobre datos que nunca habías visto: ese es un único contraste honesto. El número que separa ambos casos es $N$, el recuento de cosas distintas que probaste. Todo lo que sigue va de convertir ese $N$ en un listón justo.
+
+## El Sharpe máximo esperado bajo la hipótesis nula
+
+Así que la mejor de muchos backtests ruidosos está inflada. La pregunta obvia: *¿en cuánto?* Si podemos calcular cuán alto es el Sharpe que produce la pura suerte cuando pruebas $N$ estrategias, obtenemos un **listón**: una barrera mínima que tu mejor Sharpe observado debe superar antes de que merezca siquiera una segunda mirada.
+
+**Analogía.** Imagina a $N$ personas, cada una lanzando una moneda justa 100 veces y anotando su racha de caras más larga. Con $N = 1$ persona, la racha más larga esperada es modesta. Con $N = 1{,}000$ personas, *alguien* clavará una racha de 12 caras, no porque tenga habilidad, sino porque le diste mil oportunidades a la suerte. La racha récord esperada **crece con $N$**. El Sharpe máximo esperado es la misma idea: más pruebas, "récord" esperado más alto, todo bajo la hipótesis nula de ventaja verdadera cero.
+
+**Definición / fórmula.** Bailey y López de Prado derivaron el **ratio de Sharpe máximo esperado bajo la hipótesis nula** (Sharpe verdadero = 0) a lo largo de $N$ pruebas independientes. Si las estimaciones de Sharpe de las pruebas tienen una dispersión (desviación típica) de $\sigma_{\text{SR}}$, entonces:
+
+$$E[\max \text{SR}] \approx \sigma_{\text{SR}} \left[ (1 - \gamma)\,\Phi^{-1}\!\left(1 - \tfrac{1}{N}\right) + \gamma\,\Phi^{-1}\!\left(1 - \tfrac{1}{N\,e}\right) \right]$$
+
+En palabras: escala la **dispersión de las pruebas** $\sigma_{\text{SR}}$ (lo dispersas que están las estimaciones de Sharpe de tus estrategias) por un factor que crece con el número de pruebas $N$. Aquí $\Phi^{-1}$ es la **función de distribución acumulada normal estándar inversa** (la función cuantil: convierte una probabilidad en la puntuación z por debajo de la cual queda esa fracción de una normal), $\gamma \approx 0.5772$ es la **constante de Euler–Mascheroni** y $e$ es el número de Euler. Todo el corchete se comporta como $\sqrt{2 \ln N}$ para $N$ grande, así que el listón sube con la **raíz cuadrada del logaritmo** de cuántas cosas probaste. Crecimiento lento, pero implacable, y nunca se detiene.
+
+La moraleja: tu **mejor Sharpe observado** tiene que superar esta curva ascendente para contar como real. La cantidad
+
+$$\text{Ventaja desinflada} = \text{SR}_{\text{observado}} - E[\max \text{SR}]$$
+
+es lo que queda tras restar la parte que la suerte podría explicar. Si es cero o negativa, tu ganadora es indistinguible del ruido.
+
+**Ejemplo resuelto.** Las estimaciones de Sharpe de tus estrategias están dispersas con $\sigma_{\text{SR}} = 0.5$, y probaste $N = 1{,}000$ configuraciones. Sustituye:
+
+- $\Phi^{-1}(1 - 1/1000) = \Phi^{-1}(0.999) \approx 3.09$
+- $\Phi^{-1}(1 - 1/(1000 e)) = \Phi^{-1}(0.999632) \approx 3.37$
+- Corchete $\approx (1 - 0.577)(3.09) + (0.577)(3.37) \approx 0.423 \times 3.09 + 0.577 \times 3.37 \approx 1.31 + 1.94 \approx 3.25$
+- $E[\max \text{SR}] \approx 0.5 \times 3.25 \approx \mathbf{1.6}$
+
+Así que la pura suerte, a lo largo de 1.000 pruebas de ventaja cero, *espera* entregarte un mejor Sharpe de aproximadamente **1,6**. Si tu reluciente ganadora registra un Sharpe observado de **1,5**, queda *por debajo* del listón de la suerte: su ventaja desinflada es $1.5 - 1.6 = -0.1$, y es **indistinguible de la suerte**. La rechazarías. Para ser creíble con $N = 1{,}000$, tendrías que superar ~1,6 con margen de sobra.
+
+<DeflatedSharpe
+  client:visible
+  title="El listón de la suerte: el Sharpe desinflado interactivo"
+  trialsLabel="Pruebas"
+  observedLabel="Mejor Sharpe observado"
+  hurdleLabel="Listón de la suerte E[máx SR]"
+  deflatedLabel="Ventaja desinflada"
+  sharpeAxisLabel="Ratio de Sharpe"
+  dispersionLabel="Dispersión de las pruebas (σ_SR)"
+  caption="Esta es la trampa hecha interactiva. La curva ascendente de acento es el listón de la suerte: el Sharpe MÁXIMO esperado a lo largo de N pruebas bajo la hipótesis nula de ventaja verdadera cero, trazado frente a N en un eje logarítmico. Sube las 'pruebas' y observa cómo trepa el listón (crecimiento implacable √(2 ln N)). Pon la dispersión de las pruebas en 0,5 y N en 1000 y el listón aterriza cerca de 1,6: ahora desliza el mejor Sharpe observado a 1,5 y la ficha de ventaja desinflada se vuelve negativa: tu preciado backtest está por debajo de lo que produce la suerte por sí sola. Solo es creíble un Sharpe observado que supere la curva en TU N. Esta única imagen es la razón por la que el mismo Sharpe significa 'genial' tras un contraste honesto y 'nada' tras mil."
+/>
+
+<MCQ
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  question="Dos investigadores reportan cada uno un Sharpe de backtest de 1,5 con la misma dispersión de pruebas. El investigador A contrastó UNA estrategia preregistrada; el investigador B se quedó con la mejor de 1.000 corridas de búsqueda en rejilla (listón de la suerte ≈ 1,6). ¿Qué resultado es más creíble, y por qué?"
+  options={[
+    { text: "El de A: con N=1 el listón de la suerte es ~0, así que un 1,5 lo supera con holgura; el 1,5 de B está por debajo del listón de 1,6 de las 1.000 pruebas, así que es indistinguible de la suerte.", correct: true },
+    { text: "El de B: contrastar 1.000 variantes es más exhaustivo, así que el 1,5 superviviente ha sido sometido a más estrés y es más robusto." },
+    { text: "Idénticos: un Sharpe de 1,5 es un Sharpe de 1,5; el número de pruebas que hay detrás no puede cambiar lo que la estrategia ganará en vivo." },
+    { text: "Ninguno es creíble: cualquier Sharpe por debajo de 2,0 carece de sentido estadístico, sin importar cómo se obtuvo." }
+  ]}
+  explanation="El mismo Sharpe observado significa cosas enormemente distintas según N. El único contraste de A se enfrenta a un listón casi cero, así que 1,5 es una señal real. B seleccionó el máximo de 1.000 estimaciones ruidosas, cuyo valor esperado bajo la hipótesis nula ya es ~1,6, así que el 1,5 de B ni siquiera bate a la suerte. Números observados idénticos, veredictos opuestos. Esta es la razón entera de que los Sharpe brutos de backtest no informen de nada sin N."
+/>
+
+## El ratio de Sharpe probabilístico (PSR)
+
+El listón de arriba nos dice a qué altura poner la barrera. Pero hay un segundo problema escondido en *cualquier* ratio de Sharpe, incluso uno solo y honesto: un Sharpe es una **estimación** a partir de un historial finito, y cuánto confiamos en él depende de **cuán largo** es el historial y **qué forma** tienen los rendimientos.
+
+**Analogía.** Dos bateadores batean ambos .350 esta temporada. Uno tiene 600 turnos al bate; el otro, 30. Misma media, confianza radicalmente distinta: 30 turnos podrían ser una buena racha, 600 no. Un ratio de Sharpe de 6 meses de rendimientos es el bateador de 30 turnos. El **ratio de Sharpe probabilístico** es la herramienta que dice, en esencia: "con estos datos y estos rendimientos, ¿cuánta confianza tengo en que la habilidad verdadera está por encima de cierto punto de referencia?".
+
+**Definición.** El **ratio de Sharpe probabilístico (PSR)** es la *probabilidad de que el ratio de Sharpe verdadero supere un punto de referencia elegido* $\text{SR}^*$, dado un Sharpe observado $\widehat{\text{SR}}$, una longitud de historial $T$ y los momentos superiores de la distribución de rendimientos:
+
+$$\text{PSR}(\text{SR}^*) = \Phi\!\left( \frac{(\widehat{\text{SR}} - \text{SR}^*)\,\sqrt{T - 1}}{\sqrt{1 - \hat{\gamma}_3\,\widehat{\text{SR}} + \frac{\hat{\gamma}_4 - 1}{4}\,\widehat{\text{SR}}^2}} \right)$$
+
+No te asustes con el denominador: es simplemente el **error típico de la estimación de Sharpe**, y hace todo el trabajo pesado. Lee las piezas:
+
+- **Historial más largo ($T$) → más confianza.** $T$ aparece como $\sqrt{T-1}$ en el numerador, así que duplicar tu historial encoge el ruido y empuja el PSR hacia la certeza. El bateador de 600 turnos.
+- **La asimetría $\hat{\gamma}_3$ importa.** La asimetría mide la falta de simetría. La **asimetría negativa** (el rendimiento que de vez en cuando se desploma: vender seguros, recoger céntimos delante de una apisonadora) *aumenta* el denominador, **bajando** el PSR. El ratio de Sharpe favorece a las estrategias que acumulan en silencio pequeñas ganancias y rara vez revientan, hasta que lo hacen. El PSR las penaliza por ello.
+- **La curtosis $\hat{\gamma}_4$ importa.** La curtosis mide las colas gruesas. El **exceso de curtosis** ($\hat{\gamma}_4 - 3 > 0$, colas gruesas) *también* aumenta el denominador y **baja** el PSR. Las grandes sorpresas en cualquier dirección significan que tu estimación de Sharpe es más endeble de lo que asumen las matemáticas de la distribución normal.
+
+**Ejemplo resuelto.** Una estrategia registra $\widehat{\text{SR}} = 1.0$ (anualizado) a lo largo de $T = 36$ meses, con punto de referencia $\text{SR}^* = 0$. Si los rendimientos fueran perfectamente normales ($\hat{\gamma}_3 = 0$, $\hat{\gamma}_4 = 3$), el denominador es 1 y PSR $= \Phi(1.0 \times \sqrt{35}) = \Phi(5.9) \approx 99.99\%$: sólido como una roca. Ahora supón que los rendimientos son feos: asimetría $\hat{\gamma}_3 = -1.5$ y un exceso de curtosis que lleva $\hat{\gamma}_4 = 8$. El denominador se hincha hasta $\sqrt{1 - (-1.5)(1.0) + \frac{8-1}{4}(1.0)^2} = \sqrt{1 + 1.5 + 1.75} = \sqrt{4.25} \approx 2.06$. Ahora PSR $= \Phi(1.0 \times \sqrt{35} / 2.06) = \Phi(2.87) \approx 99.8\%$: todavía bueno, pero el *mismo* Sharpe observado es notablemente menos certero una vez que tienes en cuenta los rendimientos desequilibrados y de colas gruesas. Estira más los momentos y la confianza sigue desangrándose.
+
+<SamplingHistogram
+  client:visible
+  normalLabel="Normal (colas finas)"
+  fatTailLabel="Colas gruesas (Student-t)"
+  drawLabel="Extraer muestras"
+  samplesLabel="Muestras"
+  densityLabel="Densidad"
+  caption="Alterna entre la Normal de colas finas y la distribución de colas gruesas (Student-t), y luego extrae miles de muestras. Las extracciones de la Normal se pegan al centro; la versión de colas gruesas lanza extremos lejanísimos mucho más a menudo: esos son los desplomes y picos raros que arruinan una estimación de Sharpe. El denominador de la fórmula del PSR se infla justo cuando tus rendimientos se parecen a la curva de colas gruesas, y por eso un Sharpe alto construido sobre rendimientos no normales merece menos confianza de la que sugiere el número del titular."
+/>
+
+<FillBlank
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+  question="Rellena cómo responde el PSR a la longitud del historial y a la forma de los rendimientos."
+  text="Manteniendo fijo el Sharpe observado, un historial más largo {{sube|baja|no cambia}} el PSR, porque más datos encogen el error típico. La asimetría negativa {{baja|sube|fija}} el PSR, y las colas gruesas (exceso de curtosis positivo) también lo {{bajan|suben|ignoran}}: ambas inflan el denominador, haciendo que un Sharpe dado sea menos fiable."
+  explanation="El PSR sube con la raíz cuadrada de la longitud del historial: más datos, más confianza. Tanto la asimetría negativa como las colas gruesas agrandan el error típico de la estimación de Sharpe (el denominador), así que bajan el PSR. Un Sharpe alto sobre rendimientos cortos, desequilibrados y de colas gruesas es mucho más endeble que el mismo Sharpe sobre un historial largo y bien comportado."
+/>
+
+## El ratio de Sharpe desinflado (DSR)
+
+Ahora fusionamos las dos ideas. El PSR pregunta "¿está el Sharpe verdadero por encima del punto de referencia $\text{SR}^*$?", pero dejaba $\text{SR}^*$ como una elección libre, normalmente fijada en 0. El **ratio de Sharpe desinflado** hace la jugada *brillante* de fijar ese punto de referencia en el **máximo esperado bajo la hipótesis nula**: el mismísimo listón de la suerte que calculamos antes. Dicho de otro modo: no preguntes "¿está mi Sharpe por encima de cero?". Pregunta "¿está mi Sharpe por encima de lo que la *mejor de todas mis pruebas* produciría solo por suerte?".
+
+**Definición.** El **ratio de Sharpe desinflado (DSR)** es el PSR evaluado frente al punto de referencia ajustado por contraste múltiple:
+
+$$\text{DSR} = \text{PSR}\big(\text{SR}^* = E[\max \text{SR}]\big) = \Phi\!\left( \frac{(\widehat{\text{SR}} - E[\max \text{SR}])\,\sqrt{T - 1}}{\sqrt{1 - \hat{\gamma}_3\,\widehat{\text{SR}} + \frac{\hat{\gamma}_4 - 1}{4}\,\widehat{\text{SR}}^2}} \right)$$
+
+Funde **ambas** correcciones en un único número: desinfla por el **número de pruebas $N$** (a través del punto de referencia $E[\max \text{SR}]$, que depende de $N$ y de la dispersión de las pruebas $\sigma_{\text{SR}}$) **y** descuenta por los **historiales cortos y los rendimientos no normales** (a través de la maquinaria del PSR). La salida es una probabilidad: *la confianza en que el Sharpe verdadero de la estrategia bate lo que la suerte por sí sola habría producido a lo largo de todas tus pruebas.* Una regla práctica habitual: exige $\text{DSR} > 0.95$ antes de creerte una estrategia descubierta.
+
+**Ejemplo resuelto — reutilizando nuestro listón.** Recuerda: $\sigma_{\text{SR}} = 0.5$, $N = 1{,}000$, así que $E[\max \text{SR}] \approx 1.6$. Supón que esta vez el Sharpe observado de la configuración ganadora es un sólido $\widehat{\text{SR}} = 2.2$ a lo largo de $T = 60$ meses, con rendimientos aproximadamente normales (denominador ≈ 1). Entonces:
+
+$$\text{DSR} = \Phi\!\left( \frac{(2.2 - 1.6)\sqrt{59}}{1} \right) = \Phi(0.6 \times 7.68) = \Phi(4.6) \approx 0.999$$
+
+Un Sharpe de 2,2 que bate un listón de suerte de 1,6 a lo largo de un historial de 5 años es **creíble**: DSR ≈ 99,9%. Pero toma el caso anterior, Sharpe observado de 1,5 frente al mismo listón de 1,6: el numerador se vuelve *negativo*, $\Phi$ de un número negativo está por debajo de 0,5 y el DSR se desploma quizá hasta ~15%. Mismo recuento de pruebas, un Sharpe solo 0,7 más bajo, y el veredicto pasa de "lánzalo" a "bórralo".
+
+| Escenario | SR observado | Listón $E[\max\text{SR}]$ | $T$ (meses) | DSR | Veredicto |
+|---|---|---|---|---|---|
+| Ganadora fuerte, historial largo | 2,2 | 1,6 | 60 | ≈ 0,999 | Ventaja creíble |
+| Ganadora marginal | 1,5 | 1,6 | 60 | ≈ 0,15 | Por debajo de la suerte — rechazar |
+| Mismo SR, muchas menos pruebas | 1,5 | 0,7 (N=20) | 60 | ≈ 0,999 | Creíble — ¡N importa! |
+
+<MatchConcepts
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  allCorrectLabel="✓ Todo emparejado"
+  termsLabel="Términos"
+  definitionsLabel="Definiciones"
+  explanationLabel="Explicación"
+  question="Empareja cada herramienta con exactamente lo que corrige."
+  pairs={[
+    { term: "Sharpe máximo esperado bajo la nula", definition: "El listón de la suerte: cuán alto es el Sharpe de la mejor de N que produce el puro azar cuando toda ventaja real es cero; crece como √(2 ln N)." },
+    { term: "Ratio de Sharpe probabilístico (PSR)", definition: "Confianza en que el Sharpe verdadero bate un punto de referencia elegido, dada la longitud del historial T y la asimetría y curtosis de los rendimientos." },
+    { term: "Ratio de Sharpe desinflado (DSR)", definition: "PSR con el punto de referencia fijado en el máximo esperado bajo la nula: corrige por el número de pruebas Y por los historiales cortos y no normales a la vez." },
+    { term: "Dispersión de las pruebas (σ_SR)", definition: "La dispersión de las estimaciones de Sharpe a lo largo de las estrategias que probaste; escala la altura del listón de la suerte." }
+  ]}
+  explanation="El listón cuantifica el sesgo de selección de muchas pruebas. El PSR cuantifica la incertidumbre de estimación de datos finitos y no normales. El DSR es la unión: enchufa el listón como punto de referencia del PSR, así que una sola probabilidad captura tanto la inflación del contraste múltiple como la fragilidad de la estimación en sí."
+/>
+
+<Callout variant="tip" title="Por qué el DSR es el único número que reportar">
+Un Sharpe de backtest pelado no responde a ninguna de las preguntas que importan: ¿cuántas cosas probaste? ¿cuán largo es el historial? ¿están desequilibrados los rendimientos? El DSR pliega las tres en una sola probabilidad entre 0 y 1. Si un investigador te entrega una estrategia y *no puede* decirte su DSR (lo que significa que no puede decirte su recuento honesto de pruebas $N$), eso no es una estrategia: es un boleto de lotería con la esperanza de que no lo compruebes.
+</Callout>
+
+## Probabilidad de sobreajuste del backtest (PBO) y longitud mínima de backtest
+
+El DSR necesita que *nombres* tu recuento de pruebas $N$ y tu dispersión de pruebas. Pero ¿y si no puedes fiarte de tu propio $N$, o quieres una comprobación sin modelo? Dos herramientas más atacan el problema desde ángulos distintos.
+
+### Probabilidad de sobreajuste del backtest (PBO)
+
+**Analogía.** Estás contratando a un entrenador de ajedrez mediante un torneo. El "mejor" entrenador es quien ganó tu cuadro interno. Pero si tu cuadro era pequeño y ruidoso, el ganador puede que simplemente tuviera un sorteo fácil, y perdería contra el entrenador *mediano* en un torneo de verdad. El PBO mide exactamente eso: **con qué frecuencia la estrategia que parecía la mejor dentro de muestra resulta ser un actor por debajo de la media fuera de muestra.**
+
+**Definición.** La **probabilidad de sobreajuste del backtest (PBO)**, de la **validación cruzada combinatoriamente simétrica (CSCV)** de López de Prado, se construye sobre la misma lógica de partición combinatoria que la **CPCV** (validación cruzada combinatoria purgada) de la Lección 3. La receta: divide tu historial en $S$ trozos iguales; forma cada manera de elegir la mitad de los trozos como dentro de muestra y la mitad complementaria como fuera de muestra (eso son $\binom{S}{S/2}$ particiones simétricas). Para cada partición:
+
+1. Encuentra la estrategia que se posiciona como **la mejor dentro de muestra**.
+2. Busca el **rango fuera de muestra** de esa *misma* estrategia.
+3. Anota si cayó en la **mitad inferior** fuera de muestra (es decir, rindió por debajo de la mediana).
+
+**El PBO es la fracción de particiones en las que la campeona dentro de muestra rinde por debajo de la mediana fuera de muestra.** Un PBO cercano a 0 significa que tu proceso de selección elige ganadoras genuinas; un PBO cercano a 0,5 significa que elegir la mejor dentro de muestra no es mejor que una tirada de moneda: tu "mejor" estrategia está sobreajustada. Como usa *rangos relativos a lo largo de muchas particiones simétricas*, el PBO no necesita que confieses $N$; el sobreajuste se revela en lo mal que los rangos dentro de muestra predicen los rangos fuera de muestra.
+
+**Ejemplo resuelto.** Tienes 7 estrategias candidatas y divides el historial en $S = 8$ trozos, lo que da $\binom{8}{4} = 70$ particiones simétricas dentro/fuera. En 49 de las 70 particiones, la estrategia que se posicionó como la #1 dentro de muestra cayó en los 4 inferiores (por debajo de la mediana) fuera de muestra. PBO $= 49/70 = 0.70$. Eso es catastrófico: el 70% de las veces, tu "ganadora" es en realidad una estrategia por debajo de la media que simplemente ajustó mejor el ruido dentro de muestra. No deberías fiarte de tu selección en absoluto.
+
+<MCQ
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  question="Un proceso de investigación tiene un PBO medido de 0,50. ¿Qué te dice eso sobre la estrategia que elegirías como 'la mejor dentro de muestra'?"
+  options={[
+    { text: "Su rango dentro de muestra no lleva información sobre el rango fuera de muestra: elegir la mejor dentro de muestra es una tirada de moneda, la firma del sobreajuste.", correct: true },
+    { text: "Perderá dinero el 50% de los días que opere, así que su tasa de acierto está exactamente en el punto de equilibrio." },
+    { text: "Hay un 50% de probabilidad de que el código contenga un fallo de anticipación que necesita auditoría." },
+    { text: "La estrategia está medio sobreajustada y medio genuina, así que deberías reducir a la mitad el tamaño de su posición y desplegarla." }
+  ]}
+  explanation="PBO = 0,50 significa que la campeona dentro de muestra cae por debajo de la mediana fuera de muestra la mitad de las veces: exactamente lo que obtendrías si el rango dentro de muestra fuera aleatorio respecto al rendimiento en vivo. Es una afirmación sobre el PROCESO DE SELECCIÓN (¿predice 'la mejor en el backtest' a 'buena en vivo'?), no sobre tasas de acierto diarias ni fallos de código. Un PBO cercano a 0,5 es la huella de un pipeline de investigación sobreajustado."
+/>
+
+### Longitud mínima de backtest (MinBTL)
+
+**Analogía.** Un casino solo necesita unos pocos miles de tiradas para estar estadísticamente seguro de que su pequeña ventaja es real, porque coloca un único tipo de apuesta honesta. Un investigador que probó 1.000 estrategias necesita un historial *mucho* más largo antes de que cualquier Sharpe superviviente sea creíble: tiene que dejar atrás un listón de suerte mucho más alto. Cuanto más pescaste, mayor tiene que ser la captura antes de que te creas que no fue un lanzamiento afortunado.
+
+**Definición.** La **longitud mínima de backtest (MinBTL)** responde: *dado que probé $N$ estrategias, ¿cuántos años de datos necesito antes de que un Sharpe de (digamos) 1,0 pudiera distinguirse del listón de suerte de la mejor de $N$?* La aproximación de López de Prado, en unidades anualizadas para un Sharpe objetivo cercano a 1, es:
+
+$$\text{MinBTL} \;\approx\; \frac{2 \ln N}{\text{SR}_{\text{objetivo}}^2} \quad\text{(años)}$$
+
+La característica clave: la MinBTL **crece con $\ln N$**: cuantas más configuraciones pruebes, más largo será el historial que necesitas antes de que un Sharpe dado signifique algo. Refleja el crecimiento $\sqrt{2 \ln N}$ del listón de la suerte (elevar al cuadrado el Sharpe saca la raíz cuadrada hacia un simple $\ln N$).
+
+**Ejemplo resuelto.** Apuntando a un Sharpe de $\text{SR}_{\text{objetivo}} = 1.0$:
+
+| Pruebas $N$ | $\ln N$ | MinBTL $\approx 2\ln N$ (años) | Lectura |
+|---|---|---|---|
+| 1 | 0 | ≈ 0 | Un contraste honesto necesita poco para confirmar una ventaja de Sharpe 1 |
+| 10 | 2,30 | ≈ 4,6 | ~5 años antes de que un Sharpe de 1,0 supere la suerte de 10 pruebas |
+| 100 | 4,61 | ≈ 9,2 | ~9 años de datos necesarios |
+| 1.000 | 6,91 | ≈ 13,8 | ~14 años — más de lo que existen la mayoría de los conjuntos de datos limpios |
+
+Dale la vuelta: si probaste 1.000 cosas y solo tienes 7 años de datos, **ningún** Sharpe de 1,0 entre ellas puede creerse: careces físicamente del historial para batir el listón que tu propia búsqueda creó. O pruebas menos cosas, o consigues más datos, o exiges un Sharpe mucho más alto.
+
+<MonteCarloConverge
+  client:visible
+  trueLabel="Valor verdadero"
+  estimateLabel="Estimación"
+  samplesLabel="Observaciones"
+  runLabel="Lanzar"
+  caption="Por qué la longitud del historial es innegociable: con pocas observaciones una estimación de Sharpe rebota por todas partes, y solo a medida que la muestra crece converge hacia su valor verdadero. La MinBTL formaliza cuánta convergencia necesitas y, crucialmente, cuantas más estrategias probaste, más lejos (más datos) debes ir antes de que el Sharpe superviviente deje de confundirse con la extracción afortunada de la mejor de N."
+/>
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Comprobación rápida: probaste N = 100 configuraciones apuntando a un Sharpe de 1,0 y tienes 6 años de datos. ¿Es tu historial lo bastante largo?</summary>
+
+MinBTL $\approx 2\ln(100) / 1.0^2 = 2 \times 4.61 \approx$ **9,2 años**. Solo tienes **6**, así que *no*, tu historial es demasiado corto. Con 100 pruebas, un Sharpe de 1,0 a lo largo de 6 años no puede distinguirse del listón de suerte de la mejor de 100. Tus opciones: recopilar más historial (imposible de acelerar), recortar drásticamente el número de configuraciones que pruebas, o insistir en que la estrategia superviviente supere un Sharpe mucho más alto para que la MinBTL requerida baje (MinBTL $\propto 1/\text{SR}^2$: un Sharpe de 1,5 solo necesita $9.2/2.25 \approx 4.1$ años).
+
+</details>
+</Reveal>
+
+<Callout variant="warning" title="Trampa — el conjunto de datos demasiado corto para justificar tu búsqueda">
+Hay aquí un corolario brutal: para conjuntos de datos de historial corto (cripto, un factor nuevo, un mercado emergente), las matemáticas de la MinBTL pueden demostrar que *ninguna cantidad de búsqueda* dará jamás un resultado fiable. Si tienes 4 años de datos y tu búsqueda implica una MinBTL de 10 años, no puedes investigar tu camino hacia la confianza: la respuesta honesta es "este conjunto de datos no puede sostener una estrategia descubierta con este recuento de pruebas". La mayoría de los investigadores responden minimizando $N$ hasta que las matemáticas dicen que sí. No seas como la mayoría de los investigadores.
+</Callout>
+
+<Categorize
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  instructions="Coloca cada elemento en su grupo."
+  question="Clasifica cada herramienta según el modo de fallo concreto que está diseñada para pillar."
+  buckets={["Sesgo de selección por probar muchas estrategias", "Incertidumbre de estimación por datos finitos / no normales"]}
+  items={[
+    { text: "Sharpe máximo esperado bajo la nula", bucket: "Sesgo de selección por probar muchas estrategias" },
+    { text: "Probabilidad de sobreajuste del backtest (PBO)", bucket: "Sesgo de selección por probar muchas estrategias" },
+    { text: "Longitud mínima de backtest (MinBTL)", bucket: "Sesgo de selección por probar muchas estrategias" },
+    { text: "Ratio de Sharpe probabilístico (PSR)", bucket: "Incertidumbre de estimación por datos finitos / no normales" },
+    { text: "Ajuste de asimetría y curtosis en el error típico del Sharpe", bucket: "Incertidumbre de estimación por datos finitos / no normales" }
+  ]}
+  explanation="El listón del máximo esperado, el PBO y la MinBTL atacan todos el problema de contraste múltiple / selección: son funciones del recuento de pruebas N. El PSR y su ajuste de asimetría/curtosis atacan a otra bestia: cuán incierta es una sola estimación de Sharpe dados datos limitados, desequilibrados y de colas gruesas. El DSR (no listado) es especial porque abarca AMBAS columnas a la vez."
+/>
+
+## Juntándolo todo
+
+La mayoría de los backtests son falsos porque los investigadores seleccionan la mejor de muchas pruebas ruidosas y te enseñan solo a la ganadora. Las soluciones arrancan todas de un número honesto ($N$, el recuento de cosas que realmente probaste) y preguntan si tu resultado bate lo que la suerte por sí sola produce con ese $N$:
+
+- El **Sharpe máximo esperado bajo la hipótesis nula** es el **listón de la suerte**: sube como $\sqrt{2\ln N}$, escalado por la dispersión de las pruebas $\sigma_{\text{SR}}$. Tu mejor Sharpe observado debe superarlo.
+- El **ratio de Sharpe probabilístico (PSR)** descuenta un Sharpe por un **historial corto** y por la **asimetría negativa / colas gruesas**: las condiciones que vuelven poco fiable un Sharpe alto.
+- El **ratio de Sharpe desinflado (DSR)** es la piedra angular: el PSR contrastado contra el listón de la suerte, así que corrige por el número de pruebas *y* por la fragilidad de la estimación en una sola probabilidad. Exige DSR > 0,95.
+- La **probabilidad de sobreajuste del backtest (PBO)** usa particiones combinatorias (la lógica de la CPCV de la Lección 3) para medir con qué frecuencia tu campeona dentro de muestra rinde por debajo de la mediana fuera de muestra: una alarma de sobreajuste sin modelo.
+- La **longitud mínima de backtest (MinBTL)** crece con $\ln N$: cuanto más buscaste, más largo será el historial que necesitas antes de que cualquier Sharpe sea creíble, y a veces los datos son simplemente demasiado cortos para justificar la búsqueda.
+
+<MindMap
+  client:visible
+  eyebrow="Visión de conjunto"
+  outlineLabel="Esquema"
+  title="Combatir el sobreajuste del backtest de un vistazo"
+  caption="Desde la trampa del contraste múltiple hasta el listón de la suerte y el DSR, el PBO y la MinBTL: cada herramienta ligada a N, el recuento honesto de pruebas."
+  root={{
+    label: 'Sobreajuste del backtest',
+    children: [
+      { label: 'La trampa', children: [
+        { label: 'La mejor de N pruebas ruidosas está inflada por la suerte' },
+        { label: 'El error por familia se dispara con N' },
+        { label: 'La búsqueda en rejilla = miles de pruebas silenciosas' },
+        { label: 'Las pruebas sin contar son las más letales' }
+      ]},
+      { label: 'El listón de la suerte', children: [
+        { label: 'E[máx SR] bajo la nula, ventaja real = 0' },
+        { label: 'Crece como √(2 ln N), escalado por σ_SR' },
+        { label: 'El SR observado debe superarlo' }
+      ]},
+      { label: 'PSR', children: [
+        { label: 'P(SR verdadero > referencia) dados T y momentos' },
+        { label: 'Mayor T → más confianza' },
+        { label: 'Asimetría negativa y colas gruesas → menor PSR' }
+      ]},
+      { label: 'DSR', children: [
+        { label: 'PSR con referencia = E[máx SR]' },
+        { label: 'Corrige por N Y por datos cortos/no normales' },
+        { label: 'Exige DSR > 0,95' }
+      ]},
+      { label: 'PBO y MinBTL', children: [
+        { label: 'PBO: ¿la mejor dentro de muestra cae bajo la mediana fuera?' },
+        { label: 'Particiones combinatorias (lógica CPCV)' },
+        { label: 'La MinBTL crece con ln N' },
+        { label: 'Los datos cortos pueden serlo demasiado para confirmar' }
+      ]}
+    ]
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Sharpe desinflado y sobreajuste: fíjalo"
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  nextLabel="Siguiente"
+  seeResultsLabel="Ver resultados"
+  backLabel="Atrás"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  completeTitleLabel="Cuestionario completado"
+  correctCountLabel="correctas"
+  gateLabel="Comprueba tu respuesta para continuar."
+  questions={[
+    {
+      question: "Probaste N = 1.000 configuraciones con dispersión de pruebas σ_SR = 0,5, dando un listón de suerte E[máx SR] ≈ 1,6. Tu mejor estrategia registra un Sharpe observado de 1,4. ¿Cuál es su ventaja desinflada, y cuál es el veredicto?",
+      options: [
+        { text: "Alrededor de −0,2: el Sharpe observado está por debajo del listón, así que el resultado es indistinguible de la suerte y debe rechazarse.", correct: true },
+        { text: "Alrededor de +1,4: la ventaja desinflada es simplemente el Sharpe observado, ya que el listón solo aplica por encima de 2,0." },
+        { text: "Alrededor de +1,6: el listón se suma al Sharpe observado para dar la verdadera ventaja desinflada." },
+        { text: "Alrededor de +0,2: la estrategia supera el listón con holgura y debe desplegarse a tamaño completo." }
+      ],
+      explanation: "Ventaja desinflada = SR observado − E[máx SR] = 1,4 − 1,6 = −0,2. Una ventaja desinflada negativa significa que tu ganadora de la mejor de 1.000 queda por debajo de lo que produce la pura suerte, así que es ruido, no alfa. El listón se RESTA, no se suma, y aplica a todos los niveles de Sharpe, no solo por encima de 2."
+    },
+    {
+      question: "Dos estrategias muestran el mismo Sharpe observado de 1,2 a lo largo de la misma longitud de historial. La estrategia A tiene rendimientos casi normales; la estrategia B tiene fuerte asimetría negativa y colas gruesas. ¿Cómo se comparan sus PSR?",
+      options: [
+        { text: "El PSR de A es más alto: la asimetría negativa y las colas gruesas inflan el error típico del Sharpe, bajando la confianza de B para el Sharpe observado idéntico.", correct: true },
+        { text: "El PSR de B es más alto: las colas gruesas significan que son posibles mayores ganancias, lo que sube la confianza en el Sharpe." },
+        { text: "Son idénticos: el PSR depende solo del Sharpe observado y de la longitud del historial, nunca de la forma de los rendimientos." },
+        { text: "Ninguna tiene un PSR definido, porque el PSR requiere rendimientos perfectamente normales para calcularse." }
+      ],
+      explanation: "El denominador del PSR es el error típico del Sharpe, que crece con la asimetría negativa y el exceso de curtosis. Así que la estrategia B, desequilibrada y de colas gruesas, recibe una banda de error más ancha y un PSR MÁS BAJO que la bien comportada estrategia A, pese al Sharpe del titular idéntico. El ratio de Sharpe favorece a las estrategias que venden riesgo de cola; el PSR recupera ese favor."
+    },
+    {
+      question: "A lo largo de 70 particiones simétricas dentro/fuera, la estrategia que se posiciona como #1 dentro de muestra cae por debajo de la mediana fuera de muestra en 56 de ellas. ¿Cuál es el PBO y qué significa?",
+      options: [
+        { text: "PBO = 56/70 = 0,80: elegir la mejor dentro de muestra es mucho peor que una tirada de moneda para predecir el rendimiento en vivo; el pipeline está gravemente sobreajustado.", correct: true },
+        { text: "PBO = 56/70 = 0,80: la estrategia será rentable el 80% de las veces que opere, así que es una ventaja fuerte." },
+        { text: "PBO = 14/70 = 0,20: solo cuentan las particiones donde se mantuvo por encima de la mediana, así que el proceso está sano." },
+        { text: "El PBO es indefinido aquí porque necesitas al menos 100 particiones para que el estadístico sea válido." }
+      ],
+      explanation: "El PBO es la fracción de particiones donde la campeona dentro de muestra rinde por debajo de la mediana fuera de muestra: 56/70 = 0,80. Un PBO de 0,80 (muy por encima de 0,5) significa que tu proceso de selección elige activamente perdedoras: la mejor dentro de muestra es de forma fiable un actor por debajo de la mediana en vivo. Es una afirmación sobre el proceso de selección, no sobre tasas de acierto diarias, y cualquier recuento positivo de particiones sirve."
+    },
+    {
+      question: "Probaste N = 1.000 configuraciones y quieres un Sharpe creíble de 1,0. Usando MinBTL ≈ 2·ln(N) / SR², ¿aproximadamente cuánto historial necesitas, y qué pasa si solo tienes 8 años?",
+      options: [
+        { text: "Alrededor de 14 años; con solo 8 careces del historial, así que ningún ganador de Sharpe 1,0 entre los 1.000 puede creerse.", correct: true },
+        { text: "Alrededor de 2 años; 8 es más que suficiente, así que cualquier ganador de Sharpe 1,0 es automáticamente creíble." },
+        { text: "Alrededor de 14 años, pero el déficit no importa porque la MinBTL es solo una orientación aproximada sin consecuencia real." },
+        { text: "Alrededor de 7 años; como 8 lo supera, el resultado queda confirmado sin importar cuántas configuraciones probaste." }
+      ],
+      explanation: "MinBTL ≈ 2·ln(1000)/1,0² = 2 × 6,91 ≈ 13,8 ≈ 14 años. Con solo 8 años te quedas muy corto, así que un Sharpe de 1,0 a lo largo de 1.000 pruebas no puede separarse del listón de suerte de la mejor de 1.000. Necesitarías más datos, muchas menos pruebas o un Sharpe mucho más alto (la MinBTL cae como 1/SR²) para alcanzar la confianza."
+    }
+  ]}
+/>
+
+Ya posees el kit de herramientas completo para la pregunta que decide si un backtest vale un dólar: *¿encontré una ventaja, o encontré la más afortunada de mis mil conjeturas?* Puedes calcular el listón de la suerte, desinflar un Sharpe por las pruebas y la longitud del historial, medir la probabilidad de que tu selección esté sobreajustada y comprobar si tus datos son siquiera lo bastante largos para plantear la pregunta.
+
+Pero fíjate en lo que cada una de estas herramientas asumió en silencio: que ya *tienes* un montón de estrategias candidatas que contrastar. ¿De dónde salen las buenas candidatas, y cómo construyes modelos cuyas ventajas sobrevivan al desinflado? Ese es el tema de la siguiente lección, **Modelos, ensamblados e importancia de variables**, donde pasamos de *auditar* estrategias a *construirlas*: los modelos de ML que generan señales, los ensamblados que las hacen robustas y los métodos de importancia de variables que te dicen *por qué* funciona un modelo, para que la ventaja que descubras sea una que el Sharpe desinflado de verdad te deje conservar.

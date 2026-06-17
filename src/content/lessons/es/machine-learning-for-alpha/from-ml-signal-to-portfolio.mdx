@@ -1,0 +1,432 @@
+---
+title: "De la señal de ML a la cartera"
+description: "Cómo plegar una previsión ruidosa de ML en el pipeline del arbitraje estadístico: convertir una predicción en una posición, combinar alfas de ML a través del motor de amplitud, pagar el rápido decaimiento de la señal con rotación y capacidad, reentrenar contra la deriva de concepto y la disciplina de despliegue que mantiene honesta una señal en vivo."
+topic: "es/machine-learning-for-alpha"
+order: 6
+minutes: 15
+updated: 2026-06-17
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, SignalDecay, DiversificationDecay, CorrelationBlender, MarketImpactCurve, PoTurnoverCost } from '@/components/react';
+
+Has pasado cinco lecciones construyendo un modelo de machine learning que *no* te miente. Etiquetaste rendimientos sin filtrar el futuro (triple barrera, metaetiquetas), validaste de forma cruzada de un modo que las series temporales no pueden hacer trampa (purga, embargo, validación cruzada purgada combinatoria), recortaste tu Sharpe por los cientos de configuraciones que probaste en secreto (el ratio de Sharpe deflactado) y mediste qué características importan de verdad (MDI/MDA). Enhorabuena: tienes una previsión.
+
+Una previsión no es una estrategia. Es una columna de números —una probabilidad, un rendimiento esperado, un ranking— y el mercado no acepta columnas de números como órdenes. En algún lugar entre "el modelo dice +0,6% la semana que viene" y "el bróker ejecuta 12.000 acciones" vive una segunda disciplina entera: la **construcción de cartera**. Aquí es donde los cuantitativos de ML se desangran sin hacer ruido, porque el modelo que parecía brillante en un cuaderno acaba *dimensionado* mal, *combinado* mal, operado *demasiado rápido* y vigilado con demasiada laxitud, y la ventaja se evapora de camino a la bolsa. Esta lección es el puente desde una predicción limpia hasta una posición honesta y en vivo, y se apoya con fuerza en el pipeline de arbitraje estadístico que ya conociste. El enemigo, una última vez, es el sobreajuste, y no se detiene en el modelo: te sigue hasta la ejecución.
+
+<MCQ
+  client:visible
+  pretest
+  question="Tu modelo de gradient boosting produce, para cada acción, una probabilidad de metaetiqueta de que una operación larga alcance su objetivo de beneficio. Las probabilidades se agrupan entre 0,48 y 0,62. ¿Cuál es la forma más defendible de convertirlas en un libro neutral al mercado?"
+  options={[
+    { text: "Ordena los nombres de forma transversal, ponte largo en el decil superior y corto en el decil inferior, y luego neutraliza la beta: conviertes una previsión débil en muchas apuestas pequeñas y cubiertas.", correct: true },
+    { text: "Ponte largo en cada nombre con probabilidad superior a 0,50 a tamaño completo, ya que el modelo dice que es más probable que ganen a que pierdan." },
+    { text: "Compra solo el único nombre de mayor probabilidad con todo el libro: concentra el capital donde el modelo está más seguro." },
+    { text: "Ignora las probabilidades y ponderalo todo por igual en largo; el modelo ya filtró el universo." }
+  ]}
+  explanation="Una probabilidad de metaetiqueta es una previsión de alfa ruidosa, no una certeza. Se aplica el manual del arbitraje estadístico: ordena de forma transversal, ponte largo/corto en los extremos para mantenerte neutral al mercado y neutraliza la beta para apostar por el SPREAD entre ganadores y perdedores previstos, no por la dirección del mercado. Ponerse largo a tamaño completo en cada nombre con p>0,5 es una gigantesca apuesta direccional; jugártelo todo en un solo nombre tira a la basura la amplitud, justo lo contrario de lo que hace que pague una señal débil."
+/>
+
+## De la predicción a la posición
+
+**Analogía.** Tu modelo es una app del tiempo que dice "62% de probabilidad de lluvia". No respondes quedándote en casa para siempre (convicción total) ni ignorándola (sin convicción): coges un paraguas *proporcional* a lo que te mojarías y a lo segura que está la app. El dimensionamiento de la posición es el paraguas: traduce una probabilidad en cuánto estás dispuesto a perder si te equivocas.
+
+**Definición.** Una *posición* es un peso con signo, en dólares (o en riesgo), $w_i$ sobre cada activo $i$. El modelo te entrega una **previsión de alfa** $\hat{\alpha}_i$: tu mejor conjetura del rendimiento en exceso del activo $i$, o una probabilidad, o un ranking. La regla de dimensionamiento es la función que mapea previsión → peso. Cinco reglas cubren casi todo lo que harás en la práctica:
+
+- **Proporcional a la previsión.** $w_i \propto \hat{\alpha}_i$. Mayor rendimiento previsto, mayor posición. Sencilla, pero confía en la magnitud de una previsión ruidosa: peligroso cuando el *nivel* del modelo está mal calibrado (cosa que los modelos de ML suelen estar).
+- **Ranking transversal → largo/corto neutral en dólares.** Tira las magnitudes, quédate solo con el *orden*. Ordena todos los nombres, ponte largo en el decil superior / corto en el inferior, dólares iguales en cada lado. Robusto frente a la mala calibración: solo necesitas que el modelo ordene, no que prediga niveles. Es la opción por defecto del arbitraje estadístico.
+- **Escalado por confianza (dimensionamiento por metaetiqueta).** Dimensiona según la *probabilidad de acierto* del modelo. Una probabilidad de metaetiqueta $p_i$ se convierte en una posición del tipo $w_i \propto (p_i - 0.5)$ o en una fracción de apuesta calibrada. Las llamadas de alta confianza reciben más capital; las de cara o cruz, casi nada.
+- **Presupuestado por riesgo.** Escala cada posición para que contribuya igual *riesgo* (volatilidad), no iguales *dólares*: $w_i \propto \hat{\alpha}_i / \sigma_i$. Un nombre volátil recibe un peso menor en dólares para el mismo mordisco de riesgo.
+- **Tope tipo Kelly suave.** El criterio de Kelly dice que apuestes una fracción proporcional a la ventaja sobre la varianza, pero el Kelly completo es brutalmente agresivo y supone que conoces tu ventaja con exactitud (no la conoces). Los profesionales usan *Kelly fraccionario* (un medio o un cuarto) y un tope duro por nombre para que una previsión demasiado confiada no pueda reventar el libro.
+
+**Ejemplo resuelto: de probabilidades de metaetiqueta a un libro neutral en beta.** Tu modelo puntúa seis acciones con la probabilidad de que una operación larga alcance su objetivo de beneficio. Ordénalas, largo en las dos primeras, corto en las dos últimas, dólares iguales (100 \$ por lado, 50 \$ por nombre), y luego comprueba la exposición al mercado:
+
+| Acción | p de metaetiqueta | Ranking | Posición bruta | Beta β |
+|---|---|---|---|---|
+| A | 0,61 | 1 | **Largo 50 \$** | 1,4 |
+| B | 0,58 | 2 | **Largo 50 \$** | 0,9 |
+| C | 0,55 | 3 | plano | 1,0 |
+| D | 0,52 | 4 | plano | 1,1 |
+| E | 0,49 | 5 | **Corto 50 \$** | 0,8 |
+| F | 0,46 | 6 | **Corto 50 \$** | 1,2 |
+
+¿Neutral en dólares? Sí: 100 \$ largo, 100 \$ corto. Pero **¿neutral en beta? No.** La exposición a beta del lado largo $= 50(1.4) + 50(0.9) = 115$ \$ de "mercado". El lado corto $= 50(0.8) + 50(1.2) = 100$ \$. Exposición neta al mercado $= 115 - 100 = +15$ \$ de beta: una inclinación larga oculta. Para neutralizar, escala las patas de modo que $\sum_{\text{largo}} w_i\beta_i = \sum_{\text{corto}} w_i\beta_i$: encoge la pata larga o agranda la corta hasta que las betas coincidan. Un libro "neutral en dólares" que no es *neutral en beta* es en secreto una pequeña apuesta direccional que aflora el peor día posible: exactamente la trampa de la lección de valor relativo, ahora disfrazada de ML.
+
+<Callout variant="warning" title="Trampa — fiarse del nivel de un modelo de ML, no solo de su ranking">
+Los clasificadores y los modelos de gradient boosting son célebremente *malos calibradores*: un modelo que produce 0,7 puede acertar solo el 0,58 de las veces. Si dimensionas proporcionalmente a la probabilidad bruta, estás apostando por números que el modelo nunca prometió que fueran precisos. O bien calibras las probabilidades (escalado de Platt, regresión isotónica) antes de dimensionar, o —más seguro— tiras los niveles y operas el *ranking*. Los rankings sobreviven a la mala calibración; los niveles no.
+</Callout>
+
+### Cuándo usarlo
+
+La construcción neutral en dólares/beta basada en rankings es el caballo de batalla cuando tu modelo es un seleccionador de acciones *transversal* y no te fías de sus magnitudes, que es la mayoría de las señales de ML. Recurre al dimensionamiento por confianza o presupuestado por riesgo cuando hayas *calibrado* el modelo de verdad y quieras expresar convicción. Reserva el Kelly suave para cuando tengas una estimación defendible de ventaja y varianza, e incluso entonces ponle un tope, porque un modelo que se equivoca sobre su propia ventaja te dimensionará directo hacia un drawdown.
+
+<FillBlank
+  client:visible
+  question="Rellena la lógica del dimensionamiento."
+  text="La probabilidad bruta de un modelo de ML suele estar {{mal calibrada|exacta|libre de riesgo}}, así que la construcción más segura tira los niveles y opera solo el {{ranking|magnitud|sello de tiempo}}. Ponerse largo en los nombres de arriba y corto en los de abajo mantiene el libro neutral en dólares, pero también debes emparejar la {{beta|cuenta de sectores|tamaño del tick}} de las patas para que sea de verdad neutral al mercado."
+  explanation="Las probabilidades de ML rara vez coinciden con las frecuencias reales (mala calibración), así que ordenar es robusto donde los niveles no lo son. Largo-arriba / corto-abajo es neutral en dólares; emparejar las betas entre patas es lo que lo hace neutral al mercado, cancelando el factor de mercado común."
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+/>
+
+## Combinar alfas de ML a través del motor de amplitud
+
+**Analogía.** Una sola señal de ML es un único dado ligeramente cargado: apenas mejor que justo. Todo el negocio cuantitativo consiste en tirar *muchos* dados, de *distintas* formas, sobre *miles* de nombres, y sumarlos. El ruido de cada uno se cancela; la astilla de verdad de cada uno se refuerza. Un solo modelo de ML nunca es la estrategia; es un dado en el cubilete.
+
+**La Ley Fundamental, otra vez.** Del curso de arbitraje estadístico: tu ratio de información es tu habilidad por apuesta multiplicada por la raíz cuadrada de cuántas apuestas *independientes* haces.
+
+$$\text{IR} \approx \text{IC} \cdot \sqrt{\text{amplitud}}$$
+
+Aquí **IC** (coeficiente de información) es la correlación entre tu previsión y el rendimiento realizado: para una sola señal de ML es humillantemente pequeña, típicamente **de 0,02 a 0,05**. Cualquier valor por encima de ~0,10 fuera de muestra debería hacerte sospechar de una fuga, no de genialidad. La **amplitud** es el número de apuestas independientes por período. Una señal de ML solitaria con IC = 0,03 operada en una sola apuesta no vale nada; esa misma señal a lo largo de 500 nombres independientes es una estrategia financiable.
+
+**Apilar alfas de ML ortogonales.** Dos modelos de ML cuyos *errores* están incorrelacionados se combinan como señales independientes: promediarlos conserva la señal completa mientras reduce a la mitad el ruido independiente, así que para dos señales ortogonales igual de buenas el IC combinado sube en un factor de $\sqrt{2}$:
+
+$$\text{IC}_{\text{combinado}} \approx \text{IC} \cdot \sqrt{2}.$$
+
+De forma más general, $n$ señales igual de buenas y mutuamente incorrelacionadas escalan el IC combinado en $\sqrt{n}$: las mismas matemáticas de diversificación $\sqrt{\cdot}$ que escalan el IR de la *cartera*, ahora aplicadas a *señales*. El truco es idéntico también: la prima solo se dispara con señales **independientes**. Dos modelos de gradient boosting entrenados sobre las mismas características de momento y valor no son dos señales: son una señal con dos semillas aleatorias, correlacionadas ~0,95, y apilarlas no te compra casi nada. El salto del IC viene de un alfa genuinamente *distinto*: un modelo sobre el desequilibrio del flujo de órdenes, un modelo sobre el sentimiento de los informes, un modelo sobre un horizonte distinto.
+
+**Ejemplo resuelto: dos señales de ML incorrelacionadas.** La señal X (un ensemble de árboles sobre características de precio/volumen) tiene IC = 0,03. La señal Y (un modelo sobre sentimiento textual) también tiene IC = 0,03, y sus errores de previsión están incorrelacionados. Pondéralas por igual:
+
+$$\text{IC}_{\text{combinado}} \approx 0.03 \times \sqrt{2} = 0.03 \times 1.414 \approx 0.042.$$
+
+Elevaste la habilidad efectiva de 0,03 a 0,042 —un salto del 41%— sin encontrar ni una sola característica nueva, solo *combinando ortogonalmente*. Ahora supón que X e Y estaban en realidad correlacionadas al 0,8 (ambas eran momento disfrazado). El $\sqrt{n}$ efectivo colapsa hacia $\sqrt{1}$, y el IC combinado apenas supera 0,03. Los mismos dos modelos, recompensas radicalmente distintas. La ortogonalidad es todo el juego, para los alfas de ML exactamente igual que para los construidos a mano.
+
+<DiversificationDecay
+  client:visible
+  title="Apilar alfas de ML: la fuerza combinada sube y luego se aplana"
+  holdingsLabel="Número de alfas apilados"
+  riskLabel="Ruido de la previsión"
+  systematicLabel="Ruido irreducible (suelo de error compartido)"
+  idiosyncraticLabel="Ruido diversificable (específico del modelo)"
+  caption="Lee 'número de posiciones' como 'número de alfas de ML apilados e independientes'. Los primeros modelos genuinamente distintos recortan el ruido de la previsión de golpe: la curva se desploma. Pero los modelos reales siempre comparten algo de error (las mismas características, el mismo régimen), así que cada uno nuevo se solapa con los que ya tienes y las ganancias se aplanan sobre un suelo. Más allá de un puñado de alfas distintos, añadir 'una semilla aleatoria más' apenas mueve la aguja: la prima √n solo cuenta las señales INDEPENDIENTES."
+/>
+
+<CorrelationBlender
+  client:visible
+  title="Por qué dos modelos de ML correlacionados son en realidad uno"
+  correlationLabel="Correlación (ρ)"
+  weightLabel="Peso en el Modelo X"
+  portfolioVolLabel="Ruido de la mezcla"
+  weightedAvgLabel="Media ponderada ingenua (sin diversificación)"
+  benefitLabel="Beneficio de la diversificación"
+  assetALabel="Modelo X"
+  assetBLabel="Modelo Y"
+  caption="Trata los dos activos como dos alfas de ML que estás mezclando. En correlación ρ ≈ 0 el ruido de la mezcla se desploma muy por debajo de la media ingenua: esa es la prima de combinación √2, información nueva de verdad. Arrastra ρ hacia +1 (dos modelos entrenados sobre las mismas características, el mismo horizonte) y el beneficio de la diversificación se evapora: la mezcla no es más segura que un solo modelo. La correlación es el asesino silencioso de la combinación de señales, para los alfas de ML exactamente igual que para los construidos a mano."
+/>
+
+<Callout variant="warning" title="Trampa — contar semillas aleatorias como amplitud">
+El error de amplitud fantasma más común en el ML cuantitativo: entrenar diez modelos sobre los mismos datos con diez semillas aleatorias y llamarlo 'diez señales'. Están correlacionados ~0,95; su amplitud efectiva apenas supera la unidad. Peor aún, el *mismo sobreajuste* infecta a los diez, así que todos fallan en el mismo régimen en el mismo momento. La amplitud real viene de *información* ortogonal —distintas características, horizontes y fuentes de datos—, no de volver a tirar los dados del optimizador.
+</Callout>
+
+<MCQ
+  client:visible
+  question="Ya operas un modelo de ML sobre características de momento de precio a 1 mes (IC ≈ 0,03). Dos modelos nuevos aterrizan en tu mesa, cada uno con IC ≈ 0,03 por separado: (A) la misma arquitectura reentrenada sobre características de momento a 3 meses, correlacionado 0,85 con lo que tienes; (B) un modelo sobre el sentimiento de las conferencias de resultados, correlacionado 0,04 con él. ¿Cuál eleva más tu IC combinado, y por qué?"
+  options={[
+    { text: "B — es casi ortogonal, así que aporta información genuinamente nueva y la prima de combinación √2 sí se aplica, empujando el IC combinado hacia ~0,042.", correct: true },
+    { text: "A — está más cerca de una señal probada, así que añadirlo es más seguro y compone la ventaja existente." },
+    { text: "Ninguno — cualquier segunda señal con el mismo IC por separado deja el IC combinado sin cambios." },
+    { text: "A — una mayor correlación con un ganador existente significa que los modelos coinciden más, lo que eleva el IC combinado." }
+  ]}
+  explanation="La prima √n supone INDEPENDENCIA. La variante de momento correlacionada al 0,85 repite una apuesta que ya tienes: no añade casi nada. El modelo de sentimiento con ρ ≈ 0,04 es casi ortogonal, así que entrega la prima de diversificación √2 y eleva el IC combinado de forma significativa. La ortogonalidad de la información, no el IC por separado ni la 'cercanía a un ganador', decide cuánto vale un nuevo alfa de ML."
+/>
+
+### Cuándo usarlo
+
+Apóyate en la amplitud siempre que cada previsión de ML sea débil (siempre lo es) pero puedas aplicarla a lo largo de cientos de nombres independientes y apilarla con alfas genuinamente *distintos*. Es el marco equivocado cuando tus 'muchos modelos' son variantes de semilla de un mismo modelo, o tus 'muchos nombres' comparten todos un factor: ahí la amplitud efectiva colapsa a un puñado y ningún recuento de titulares entrega el $\sqrt{N}$ con el que cuentas.
+
+## Capacidad y rotación
+
+**Analogía.** Una señal de ML fresca es un pescado que se estropea en horas, no en semanas: los modelos de horizonte corto a menudo predicen los *próximos días* con nitidez y luego se quedan rancios. Para capturarla debes operar rápido, y operar rápido es un torniquete que te cobra un peaje en cada paso. Opera lo suficientemente a menudo y los peajes se comen toda la pesca.
+
+**Definición — rotación y alfa neto.** La *rotación* es la fracción de la cartera que compras y vendes cada período. Las señales de ML, sobre todo las de horizonte corto, se disparan con frecuencia y exigen una rotación alta. Cada operación paga dos peajes:
+
+- **Coste de transacción** — el diferencial de compraventa más las comisiones, un peaje aproximadamente fijo por ida y vuelta.
+- **Impacto de mercado** — tu propia orden empuja el precio en tu contra. Crucialmente, el impacto crece como la **raíz cuadrada del tamaño**: $\text{impacto} \approx k\sqrt{\text{tamaño}/\text{ADV}}$, donde ADV es el volumen medio diario. Duplicar una orden *no* duplica su coste de impacto, pero este sigue subiendo, y a escala domina.
+
+Lo que de verdad ganas es **alfa neto = alfa bruto − costes**. Una señal con un Sharpe bruto precioso sobre el papel puede quedar plana o negativa después de costes. Y aquí está el remate que destruye muchas estrategias de ML: a medida que pones *más capital* a trabajar, tus órdenes crecen respecto al ADV, el impacto sube y el alfa neto *cae*. El tamaño al que el alfa neto llega a cero es tu **capacidad**: el máximo dinero que la estrategia puede gestionar antes de dejar de ganar dinero.
+
+<MarketImpactCurve
+  client:visible
+  title="Impacto de mercado: el coste crece como la raíz cuadrada del tamaño"
+  sizeLabel="Tamaño de la orden (% del ADV)"
+  sqrtLabel="Impacto real ≈ k·√tamaño"
+  linearLabel="Conjetura ingenua (lineal)"
+  costLabel="Coste de impacto (pb)"
+  participationLabel="Participación (% ADV)"
+  caption="Arrastra el tamaño de la orden. El coste de impacto (pb) crece como la RAÍZ CUADRADA de cuánto del volumen diario demandas: empinado en las primeras rebanadas, luego aplanándose, pero sin detenerse nunca. La línea discontinua es la conjetura ingenua de 'el doble de tamaño, el doble de coste'. Para una señal de ML rápida esta curva es el muro: cuanto mayor es el libro, más ADV debe mover cada reequilibrio, y más impacto resta en silencio de tu alfa bruto."
+/>
+
+**Ejemplo resuelto: alfa neto frente a tamaño, y dónde muerde la capacidad.** Una señal de ML de horizonte corto produce un alfa bruto de **40 pb por operación**. El coste por ida y vuelta es un diferencial fijo de **3 pb** más un impacto $\approx 12\sqrt{\text{participación}}$ pb, donde la participación es la orden como fracción del ADV. Sube el capital escalón a escalón para que cada reequilibrio demande más ADV:
+
+| Capital (M \$) | Participación (% ADV) | Impacto = 12√part. (pb) | Coste total = 3 + impacto | Alfa neto = 40 − coste |
+|---|---|---|---|---|
+| 10 | 1% | 1,2 | 4,2 | **+35,8 pb** |
+| 50 | 5% | 2,7 | 5,7 | **+34,3 pb** |
+| 200 | 20% | 5,4 | 8,4 | **+31,6 pb** |
+| 800 | 80% | 10,7 | 13,7 | **+26,3 pb** |
+| 2.000 | 200%* | 17,0 | 20,0 | **+20,0 pb** |
+| 5.000 | 500%* | 26,8 | 29,8 | **+10,2 pb** |
+| ~9.000 | ~900%* | ~36,0 | ~39,0 | **≈ 0 pb — capacidad** |
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">¿Por qué la participación supera el 100% (las filas con *)? ¿Puedes operar más que el volumen de un día?</summary>
+
+No en un solo día sin un impacto ruinoso. Las filas con * significan que la estrategia *necesitaría* mover múltiplos del ADV para desplegar ese capital en su horizonte objetivo, cosa que no puedes hacer barata, así que o bien repartes la orden a lo largo de muchos días (dándole tiempo a la señal para decaer, renunciando al alfa) o bien aceptas el brutal impacto que la ley de la $\sqrt{\cdot}$ acaba infligiendo. Ambas rutas empujan el alfa neto hacia cero. Esa colisión —entre el capital que quieres desplegar y el volumen que el mercado puede absorber antes de que la señal se quede rancia— *es* el techo de capacidad. Una señal rápida tiene un techo bajo precisamente porque no puede esperar a que operes con paciencia.
+
+</details>
+</Reveal>
+
+Lee la tabla de arriba abajo: una señal que vale +35,8 pb netos con 10 M \$ vale ~0 pb con ~9.000 M \$. El alfa bruto nunca cambió; los costes se lo comieron a medida que crecía el tamaño. **Una señal de papel de alto Sharpe puede ser completamente no rentable al tamaño al que quieres gestionarla.** Por esto los cuantitativos de ML deben estimar la capacidad *antes* de captar capital, no después.
+
+<PoTurnoverCost
+  client:visible
+  title="Penalización de rotación: domar la operativa lleva el alfa neto a un pico"
+  penaltyLabel="Penalización por rotación"
+  noPenaltyLabel="Sin penalización (persigue cada parpadeo)"
+  heavyPenaltyLabel="Penalización fuerte (apenas opera)"
+  grossLabel="Alfa bruto"
+  costLabel="Coste de operar"
+  netLabel="Alfa neto"
+  turnoverLabel="Rotación"
+  caption="La misma pelea en una imagen. El alfa bruto (gris) es lo que el modelo promete; el coste de operar (acento) es lo que cobra la rotación; el alfa neto (la insignia) es lo que te quedas. Un optimizador ciego al coste persigue cada parpadeo de una señal de ML rápida, acumulando una rotación enorme cuyos costes engullen la ventaja bruta: el alfa neto puede volverse NEGATIVO. Amortigua la operativa y los costes se desploman más rápido de lo que se desvanece la ventaja bruta, así que el neto sube hasta un pico. El mejor libro de ML respeta lo que cuesta operarlo, no solo lo que el modelo predice."
+/>
+
+<Callout variant="tip" title="Compromiso — el Sharpe bruto es una mentira hasta que descuentas los costes">
+Dos estrategias de ML, el mismo Sharpe bruto de 2,0. Una es una señal de valor lenta que rota 0,5× al año; la otra una señal de microestructura rápida que rota 50× al año. Después de costes la lenta conserva un Sharpe cercano a 2,0 y escala a miles de millones; la rápida neto un Sharpe de 0,4 y se satura en 50 M \$. Nunca compares señales de ML por sus números brutos: compara el Sharpe neto *a la capacidad a la que piensas gestionarla*. La rotación y la capacidad no son detalles de última hora; deciden qué señal es de verdad un negocio.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Rellena la lógica de la capacidad."
+  text="El impacto de mercado crece aproximadamente como la {{raíz cuadrada|cuadrado|logaritmo}} del tamaño de la orden respecto al volumen diario, así que los libros más grandes pagan más por operación. El alfa neto es igual al alfa bruto menos los {{costes|dividendos|impuestos}}, y el nivel de capital donde el alfa neto cae a {{cero|el alfa bruto|el tipo libre de riesgo}} es la capacidad de la estrategia."
+  explanation="Impacto ≈ k·√(tamaño/ADV): sublineal pero implacable. Alfa neto = bruto − costes; a medida que crece el tamaño, el impacto crece y el neto se encoge. La capacidad es el nivel de activos en el que el alfa neto llega a cero: más allá, la estrategia no puede ganar dinero por muy buena que sea la señal bruta."
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+/>
+
+## Decaimiento de la señal, deriva de concepto y reentrenamiento
+
+**Analogía.** Un alfa de ML es un cubito de hielo *y* un glaciar derritiéndose a la vez. El cubito de hielo es el **decaimiento**: en el momento en que el modelo se dispara, la previsión está a plena potencia y se encoge cada día que esperas. El glaciar es la **deriva de concepto**: toda la relación que el modelo aprendió —cómo las características mapean a los rendimientos— se desplaza lentamente bajo tus pies a medida que cambian los regímenes y otros fondos descubren la misma ventaja. Lo primero lo combates operando con prontitud; lo segundo lo combates *reentrenando*.
+
+**Decaimiento del alfa y el horizonte óptimo.** El poder predictivo de una señal se desvanece geométricamente con el horizonte de mantenimiento $h$:
+
+$$\text{IC}(h) = \text{IC}_0\, e^{-h/\tau}, \qquad \text{vida media} = \tau \ln 2 \approx 0.693\,\tau,$$
+
+donde $\tau$ es la constante de decaimiento en días. Las señales de ML suelen tener un $\tau$ *pequeño*: son rápidas, predicen días, no meses. El decaimiento te empuja a **operar rápido**; los costes de rotación (sección anterior) te empujan a **operar despacio**. El ganador es una joroba: el alfa neto *por día* alcanza un pico en un **horizonte de mantenimiento óptimo** $h^*$ en el medio. Decaimiento más rápido → $h^*$ antes; coste más alto → $h^*$ después.
+
+<SignalDecay
+  client:visible
+  title="Decaimiento de la señal: el horizonte óptimo está en el medio"
+  decayLabel="Constante de decaimiento (τ, días)"
+  costLabel="Coste por operación"
+  halfLifeLabel="Vida media (τ·ln2)"
+  optimalLabel="Horizonte óptimo h*"
+  icLabel="Coeficiente de información IC(h)"
+  netAlphaLabel="Alfa neto por día"
+  horizonAxisLabel="Horizonte de mantenimiento (días)"
+  caption="La curva de marca es el coeficiente de información de la señal de ML decayendo exponencialmente con el horizonte de mantenimiento (vida media τ·ln2). La curva de acento es el alfa neto POR DÍA después de costes, que tiene forma de joroba. Arrastra el control del decaimiento a la izquierda (una señal de ML más rápida y perecedera) y el horizonte óptimo h* se desliza antes: debes operarla rápido antes de que desaparezca. Arrastra el control del coste hacia arriba y h* se desliza después: una ejecución cara te obliga a mantener más tiempo para amortizar la ida y vuelta. El punto es el horizonte de reequilibrio consciente del coste: ni 'lo más rápido posible', ni 'lo más lento posible', sino el punto dulce calculado."
+/>
+
+**Ejemplo resuelto: decaimiento exponencial del IC.** Una señal de ML tiene $\tau = 6$ días. Su vida media es $6 \times 0.693 = 4.2$ días: tras apenas cuatro días la ventaja está medio ida. Tabulando $\text{IC}(h)/\text{IC}_0 = e^{-h/6}$:
+
+| Horizonte h (días) | h/τ | e^(−h/τ) | Fracción de IC₀ restante |
+|---|---|---|---|
+| 0 | 0,00 | 1,00 | 100% |
+| 4,2 | 0,69 | 0,50 | 50% (una vida media) |
+| 6 | 1,00 | 0,37 | 37% |
+| 12 | 2,00 | 0,135 | 14% (dos vidas medias) |
+| 20 | 3,33 | 0,036 | 4% |
+
+Para el día 20 la señal conserva ~4% de su mordisco: ruido. Si tu realidad de cumplimiento normativo/operaciones significa que solo puedes actuar una semana después de que el modelo se dispare, has entregado la mayor parte de la ventaja antes de colocar la operación. Mide la *curva de decaimiento*, no un único IC de titular, o citarás un número al que nunca podrás operar de verdad.
+
+**Deriva de concepto y reentrenamiento walk-forward.** El decaimiento trata de que *una previsión* se quede rancia; la **deriva de concepto** trata de que *todo el modelo* se quede rancio porque el mundo cambió. La combates **reentrenando walk-forward**: nunca entrenes una sola vez y operes para siempre. Desliza una ventana de entrenamiento hacia delante en el tiempo, reajusta y opera el *siguiente* bloque fuera de muestra, con la misma disciplina de purga y embargo de las lecciones de fuga, ahora ejecutada repetidamente. Dos estilos de ventana:
+
+| Estilo de ventana | Cómo funciona | Fortaleza | Peligro |
+|---|---|---|---|
+| **Expansiva** | Entrena con *toda* la historia hasta hoy; la ventana crece | Máximos datos; estimaciones estables | Se ancla a regímenes antiguos, quizá irrelevantes; lenta en adaptarse |
+| **Deslizante** | Entrena solo con los últimos $W$ meses; descarta lo más antiguo | Se adapta rápido a regímenes nuevos | Tira datos; más ruidosa; puede perseguir patrones efímeros |
+
+El diagnóstico más importante de todos: **vigila el IC en vivo frente al IC del backtest**. Si tu IC de backtest era 0,04 y el IC realizado en vivo del último trimestre es ~0,00, la señal o ha decaído, o ha derivado, o ha sido aglomerada hacia fuera, y ninguna frecuencia de reentrenamiento arregla una señal que el mercado ya ha arbitrado. El IC en vivo es el pulso de la estrategia.
+
+<Categorize
+  client:visible
+  question="Clasifica cada fenómeno según degrade una ÚNICA previsión (decaimiento) o TODA la relación aprendida (deriva), y la respuesta correcta."
+  buckets={["Decaimiento del alfa (una previsión se queda rancia)", "Deriva de concepto (el modelo se queda rancio)"]}
+  items={[
+    { text: "El IC de una señal se reduce a la mitad tras τ·ln2 días de mantenimiento", bucket: "Decaimiento del alfa (una previsión se queda rancia)" },
+    { text: "Se arregla operando con prontitud al horizonte consciente del coste h*", bucket: "Decaimiento del alfa (una previsión se queda rancia)" },
+    { text: "El mapeo característica→rendimiento se desplaza al cambiar el régimen", bucket: "Deriva de concepto (el modelo se queda rancio)" },
+    { text: "Se arregla reentrenando walk-forward (deslizante o expansiva)", bucket: "Deriva de concepto (el modelo se queda rancio)" },
+    { text: "Aglomeración: otros fondos aprenden la misma ventaja y la arbitran", bucket: "Deriva de concepto (el modelo se queda rancio)" },
+    { text: "Capturado por IC(h) = IC₀·e^(−h/τ) dentro de la vida de una sola operación", bucket: "Decaimiento del alfa (una previsión se queda rancia)" }
+  ]}
+  explanation="El decaimiento es el desvanecimiento de una previsión dentro de la operación, modelado por el IC(h) exponencial y combatido operando con prontitud. La deriva es la rancidez a lo largo del tiempo de todo el mapeo aprendido, causada por el cambio de régimen y la aglomeración, y combatida reentrenando walk-forward. Son relojes distintos que necesitan respuestas distintas; confundirlos lleva a reentrenar cuando deberías operar más rápido, o viceversa."
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  instructions="Coloca cada elemento en su grupo."
+/>
+
+<Callout variant="warning" title="Trampa — reentrenar no es licencia para espiar el futuro">
+El reentrenamiento walk-forward parece seguro, pero es donde la fuga vuelve a colarse. Si reajustas sobre datos que se solapan con las etiquetas de tu bloque de prueba, o te saltas el embargo entre entrenamiento y prueba, has reconstruido en silencio la fuga que te pasaste lecciones eliminando. Cada reentrenamiento debe purgar las muestras solapadas y respetar el embargo del hueco: la disciplina no se relaja solo porque lo hagas de forma programada. Y nunca dejes que los resultados en vivo 'informen' un reentrenamiento de un modo que reajuste los hiperparámetros sobre el período en vivo: eso es sobreajustar a los mismísimos datos que debían juzgarte.
+</Callout>
+
+### Cuándo usarlo
+
+Ajusta la cadencia de reentrenamiento a la velocidad de la deriva, no a una costumbre de calendario: un modelo de microestructura de deriva rápida puede necesitar reajustes deslizantes mensuales, mientras que un modelo fundamental lento puede sentarse sobre una ventana expansiva durante un año. Usa ventanas *expansivas* cuando la relación es estable y los datos escasean; usa *deslizantes* cuando los regímenes se relevan y los datos recientes son más representativos que la historia antigua. Sobre todo, deja que **IC en vivo ≈ 0** sea la alarma que anula cualquier programación: una señal muerta no necesita reentrenamiento, necesita jubilación.
+
+## Disciplina de despliegue — el enemigo del sobreajuste, una última vez
+
+**Analogía.** Has pasado el curso entero negándote a engañarte. El despliegue es el examen final donde es más fácil hacer trampa *sin querer*. Es la persona a dieta que se pesa con honestidad todo el mes y luego se sube a la báscula cuarenta veces el último día hasta que marca lo que quiere. La disciplina que protegió tu modelo en investigación debe sobrevivir al contacto con el capital real.
+
+**La lista de verificación del despliegue honesto.** Cada regla es una defensa contra una forma concreta en que la ventaja se vuelve un espejismo:
+
+- **Bloquea el conjunto de prueba.** El bloque final fuera de muestra se toca *una sola vez*, justo al final. Cada vistazo que informe un cambio lo contamina. Si lo has mirado, ya no está fuera de muestra: son datos de entrenamiento disfrazados.
+- **Opera en simulado antes que con capital.** Ejecuta la estrategia en vivo sobre datos en tiempo real con dinero *falso* primero. Esto captura la brecha entre un backtest limpio y la realidad desordenada —datos rancios, ejecuciones fallidas, costes que subestimaste— antes de que esa brecha te cueste nada.
+- **Sigue el en-vivo-frente-a-backtest sin descanso.** Representa el IC en vivo realizado y el Sharpe neto frente a lo que prometía el backtest. Un déficit persistente significa que el backtest era optimista, casi siempre por costes, fuga o sobreajuste que no detectaste.
+- **Mata la estrategia si el IC en vivo ≈ 0.** Esta es la regla más difícil de obedecer porque estás emocionalmente implicado. Pero una señal cuyo IC en vivo se ha aplanado está muerta: decaída, derivada o aglomerada hacia fuera. Córtala. La esperanza no es un modelo de riesgo.
+- **Nunca reajustes sobre el período en vivo.** En el instante en que ajustas hiperparámetros para 'arreglar' resultados en vivo decepcionantes, has sobreajustado al único conjunto de datos que debía juzgarte con honestidad. Los cambios deben validarse sobre datos *frescos* fuera de muestra, nunca sobre la cinta en vivo que intentas justificar.
+- **Dimensiona a la capacidad.** Gestiona la estrategia al nivel de activos donde el alfa neto sigue siendo sólidamente positivo, no al nivel donde el alfa neto es cero. Dejar margen de capacidad es lo que evita que el impacto se coma la ventaja en silencio.
+- **Presupuesta el recorte del Sharpe deflactado.** Probaste cientos de configuraciones; el backtest de la mejor está inflado por esa búsqueda. El *ratio de Sharpe deflactado* descuenta tu Sharpe de titular por el número de pruebas y la no normalidad de los rendimientos. Despliega esperando el número *deflactado*, no el seductor número bruto, y te llevarás una sorpresa agradable cuando los resultados en vivo aterricen cerca de él en lugar de quedar aplastado cuando se queden cortos frente a una fantasía.
+
+<MCQ
+  client:visible
+  question="A los tres meses de operar en vivo, el IC realizado de tu estrategia de ML es ~0,005 frente a un IC de backtest de 0,04, y el Sharpe neto está cerca de cero. Un compañero propone reejecutar la búsqueda de hiperparámetros 'incluyendo los datos en vivo, para adaptarse al nuevo régimen'. ¿Cuál es la respuesta disciplinada?"
+  options={[
+    { text: "Negarte — reajustar sobre el período en vivo sobreajusta a los mismísimos datos que debían juzgarte. Diagnostica decaimiento/deriva/aglomeración, y si el IC en vivo sigue cerca de cero, mata la estrategia en lugar de ajustarla a su propia decepción.", correct: true },
+    { text: "Aceptar — incluir los datos en vivo da al modelo más información, lo que solo puede mejorarlo." },
+    { text: "Aceptar, pero ajustar solo unos pocos hiperparámetros ligeramente para que el cambio sea lo bastante pequeño como para no sobreajustar." },
+    { text: "Duplicar el tamaño de la posición para compensar el déficit de rendimientos mientras el modelo se adapta." }
+  ]}
+  explanation="Reajustar sobre el período en vivo —incluso 'ligeramente'— contamina el único conjunto de datos que debía juzgar la estrategia con honestidad; es sobreajuste con otro nombre, y un retoque diminuto sigue siendo un retoque ajustado al ruido. Duplicar el tamaño hacia una señal muerta es peor. Un IC en vivo que se ha aplanado a ~0 frente a un backtest de 0,04 es la señal de decaimiento, deriva o aglomeración; el movimiento disciplinado es diagnosticar, y si sigue muerta, jubilarla. La esperanza no es un modelo de riesgo."
+/>
+
+**La síntesis de cierre.** Recorre el curso entero y un único enemigo aparece en cada paso. En la **ingeniería de características**, el sobreajuste era inventar predictores a partir de ruido. En el **etiquetado**, era filtrar el futuro a través de etiquetas solapadas. En la **validación**, era el k-fold corriente fingiendo que el tiempo no fluye en un solo sentido, derrotado por la purga y el embargo. En la **evaluación del backtest**, era la mejor de cientos de pruebas haciéndose pasar por habilidad, deflactada por el ratio de Sharpe deflactado. En la **importancia de las características**, era leer significado en un MDI inflado por características ruidosas y correlacionadas. Y aquí, en el **despliegue**, es dimensionar sobre niveles mal calibrados, contar semillas aleatorias como amplitud, ignorar costes y capacidad, reajustar sobre la cinta en vivo. El sobreajuste fue el enemigo desde la primera característica hasta la ejecución final. Toda la disciplina de este curso es una sola frase repetida en seis dialectos: *no te engañes, y desconfía especialmente cuando los resultados parezcan estupendos.*
+
+<MatchConcepts
+  client:visible
+  question="Empareja cada salvaguarda de despliegue con el fallo concreto que previene."
+  pairs={[
+    { term: "Bloquear el conjunto de prueba (tocarlo una vez)", definition: "Impide que el bloque final fuera de muestra se contamine por vistazos y se convierta en silencio en datos de entrenamiento." },
+    { term: "Operar en simulado antes que con capital", definition: "Captura la brecha entre un backtest limpio y la desordenada realidad en vivo —datos rancios, ejecuciones fallidas, costes subestimados— antes de que cueste dinero." },
+    { term: "Matar la estrategia si el IC en vivo ≈ 0", definition: "Evita verter capital en una señal que ya ha decaído, derivado o sido aglomerada hacia fuera." },
+    { term: "Nunca reajustar sobre el período en vivo", definition: "Detiene el sobreajuste a los mismísimos datos que debían juzgar la estrategia con honestidad." },
+    { term: "Presupuestar el recorte del Sharpe deflactado", definition: "Fija las expectativas en el Sharpe descontado por los cientos de configuraciones probadas, no en el inflado número de titular." }
+  ]}
+  explanation="Cada regla bloquea un camino distinto hacia engañarte a ti mismo: contaminar el conjunto de prueba, confundir un backtest limpio con la realidad en vivo, aferrarte a una señal muerta, reajustar sobre los datos que juzgan y fiarte de un Sharpe inflado por las pruebas múltiples. Juntas son la versión en fase de despliegue del único tema del curso: el sobreajuste es el enemigo desde la característica hasta la ejecución."
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  allCorrectLabel="✓ Todo emparejado"
+  termsLabel="Términos"
+  definitionsLabel="Definiciones"
+/>
+
+## Juntándolo todo
+
+El puente de la predicción a la cartera se lee de arriba abajo. Toma la **previsión ruidosa** del modelo de ML y conviértela en una **posición**, normalmente ordenando de forma transversal y poniéndote largo/corto en los extremos, con la beta neutralizada, porque los niveles de ML están mal calibrados y solo el ranking es fiable. **Combínala** con alfas de ML genuinamente *ortogonales* a través del motor de amplitud (IR ≈ IC·√amplitud), recordando que las semillas aleatorias no son amplitud. Respeta la **rotación y la capacidad**: el Sharpe bruto de una señal rápida es una fantasía hasta que restas los costes que suben como √(tamaño), y la capacidad es donde el alfa neto llega a cero. Opera en el **horizonte consciente del coste** $h^*$ donde la joroba de decaimiento-frente-a-coste alcanza su pico, **reentrena walk-forward** contra la deriva de concepto y **vigila el IC en vivo** como el pulso de la estrategia. Luego despliega con disciplina: bloquea el conjunto de prueba, opera en simulado, nunca reajustes sobre la cinta en vivo, dimensiona a la capacidad y espera el Sharpe *deflactado*. El sobreajuste fue el enemigo todo el camino hacia abajo; la honestidad es la única ventaja que sobrevive al contacto con el dinero real.
+
+<MindMap
+  client:visible
+  title="De la señal de ML a la cartera de un vistazo"
+  caption="Predicción → posición → combinación → capacidad → reentrenamiento → despliegue honesto, con el sobreajuste como enemigo transversal."
+  root={{
+    label: 'De la señal de ML a la cartera',
+    children: [
+      { label: 'Predicción → posición', children: [
+        { label: 'Ordena de forma transversal; largo arriba / corto abajo' },
+        { label: 'Neutraliza la beta, no solo los dólares' },
+        { label: 'Fíate del RANKING; los niveles de ML están mal calibrados' }
+      ]},
+      { label: 'Motor de amplitud', children: [
+        { label: 'IR ≈ IC · √amplitud (IC de un solo ML ≈ 0,02–0,05)' },
+        { label: 'Apila alfas ORTOGONALES → IC·√n' },
+        { label: 'Las semillas aleatorias no son amplitud' }
+      ]},
+      { label: 'Capacidad y rotación', children: [
+        { label: 'Impacto ≈ k·√(tamaño/ADV)' },
+        { label: 'Neto = bruto − costes; capacidad = el neto llega a 0' },
+        { label: 'El Sharpe bruto miente hasta que descuentas costes' }
+      ]},
+      { label: 'Decaimiento, deriva y reentrenamiento', children: [
+        { label: 'IC(h) = IC₀·e^(−h/τ); vida media = τ·ln2' },
+        { label: 'Opera en el horizonte consciente del coste h*' },
+        { label: 'Reentrena walk-forward; vigila IC en vivo vs backtest' }
+      ]},
+      { label: 'Disciplina de despliegue', children: [
+        { label: 'Bloquea el conjunto de prueba; opera en simulado primero' },
+        { label: 'Nunca reajustes sobre el período en vivo' },
+        { label: 'Dimensiona a la capacidad; espera el Sharpe deflactado' },
+        { label: 'Sobreajuste: el enemigo de la característica a la ejecución' }
+      ]}
+    ]
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="De la señal a la cartera: fíjalo"
+  questions={[
+    {
+      question: "Una sola señal de ML tiene IC fuera de muestra = 0,04, operada a lo largo de 625 nombres genuinamente independientes al año. ¿Qué ratio de información predice la Ley Fundamental, y qué implica eso sobre los alfas de ML?",
+      options: [
+        { text: "≈ 1,0 — IR ≈ 0,04 × √625 = 0,04 × 25 = 1,0; una previsión débil por nombre se convierte en una estrategia financiable solo a través de una gran amplitud independiente.", correct: true },
+        { text: "≈ 25 — IR = IC × amplitud = 0,04 × 625, así que una amplitud alta hace de talla mundial a cualquier señal." },
+        { text: "≈ 0,04 — la amplitud no afecta al ratio de información; solo importa el IC." },
+        { text: "≈ 0,0016 — divides el IC entre √amplitud para obtener el IR." }
+      ],
+      explanation: "IR ≈ IC·√amplitud = 0,04 × √625 = 0,04 × 25 = 1,0. La amplitud entra como una RAÍZ CUADRADA, no linealmente (así que no es 25), y multiplicas en lugar de dividir. La lección: un IC de ML microscópico no vale nada en una apuesta pero es un negocio real a lo largo de cientos de nombres INDEPENDIENTES."
+    },
+    {
+      question: "Tu señal de ML rápida neto +35 pb por operación con 20 M \$ pero solo +5 pb con 3.000 M \$, con el alfa bruto sin cambios. ¿Qué concepto ilustra esto y cuál es la respuesta correcta?",
+      options: [
+        { text: "Capacidad — el impacto de mercado sube como √(tamaño/ADV) a medida que crece el libro, comiéndose el alfa bruto; dimensiona hasta donde el alfa neto sea sólidamente positivo, no hasta donde llega a cero.", correct: true },
+        { text: "Decaimiento del alfa — el IC de la señal cayó porque pasó demasiado tiempo entre la previsión y la operación." },
+        { text: "Deriva de concepto — la relación característica→rendimiento cambió, así que hay que reentrenar el modelo." },
+        { text: "Mala calibración — las probabilidades estaban mal, así que las posiciones se dimensionaron incorrectamente." }
+      ],
+      explanation: "El alfa bruto no cambia entre tamaños, así que esto no es decaimiento (un efecto temporal), ni deriva (un efecto de régimen), ni mala calibración (un efecto de dimensionamiento). Es CAPACIDAD: los libros más grandes mueven más ADV, el impacto crece como √(tamaño) y el alfa neto se encoge. El arreglo es gestionar por debajo del nivel de neto cero con margen, no perseguir capital que la estrategia no puede absorber."
+    },
+    {
+      question: "Mantienes una señal de ML con constante de decaimiento τ = 5 días pero solo puedes ejecutar operaciones 10 días enteros después de que el modelo se dispare. ¿Aproximadamente cuánto del IC inicial de la señal sobrevive hasta el momento en que operas?",
+      options: [
+        { text: "Alrededor del 14% — IC(10) = IC₀·e^(−10/5) = IC₀·e^(−2) ≈ 0,135·IC₀; has perdido la mayor parte de la ventaja antes de colocar la operación.", correct: true },
+        { text: "Alrededor del 50% — diez días es aproximadamente una vida media, así que queda la mitad del IC." },
+        { text: "Alrededor del 100% — el IC queda fijado al dispararse y no decae hasta que cierras la posición." },
+        { text: "Alrededor del 90% — diez días es poco respecto a la vida de la señal, así que sobrevive casi toda." }
+      ],
+      explanation: "IC(h) = IC₀·e^(−h/τ) = IC₀·e^(−10/5) = IC₀·e^(−2) ≈ 0,135·IC₀, alrededor del 14%. La vida media es solo τ·ln2 = 5×0,693 ≈ 3,5 días, así que 10 días son casi tres vidas medias: la señal está mayormente ida. Una señal de ML rápida en un pipeline de ejecución lento es alfa tirado a la basura; ajusta la infraestructura a la vida media."
+    },
+    {
+      question: "A lo largo de todo el pipeline de ML para alfa, ¿qué único tema conecta la ingeniería de características, el etiquetado, la validación cruzada, el ratio de Sharpe deflactado y la disciplina de despliegue?",
+      options: [
+        { text: "El sobreajuste —engañarte a ti mismo con ruido— es el enemigo en cada fase, desde inventar características a partir de la aleatoriedad hasta reajustar sobre la cinta en vivo; la disciplina es seguir desconfiando precisamente cuando los resultados parecen estupendos.", correct: true },
+        { text: "Maximizar el ratio de Sharpe del backtest dentro de muestra lo más alto posible en cada fase." },
+        { text: "Usar el modelo más complejo disponible, ya que los modelos profundos siempre generalizan mejor en los mercados." },
+        { text: "Operar lo más rápido posible para capturar cada señal antes de que decaiga." }
+      ],
+      explanation: "El hilo conductor es el sobreajuste: características minadas del ruido, etiquetas filtradas, k-fold que ignora el tiempo, el Sharpe de la mejor de muchas pruebas y reajustar sobre datos en vivo son todos el mismo autoengaño con disfraces distintos. Maximizar el Sharpe dentro de muestra, amontonar complejidad y operar lo más rápido posible son los ERRORES contra los que advierte el curso, no la lección. La honestidad —seguir desconfiando cuando los resultados parecen estupendos— es la única ventaja duradera."
+    }
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  nextLabel="Siguiente"
+  seeResultsLabel="Ver resultados"
+  backLabel="Atrás"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  completeTitleLabel="Cuestionario completado"
+  correctCountLabel="correctas"
+  gateLabel="Comprueba tu respuesta para continuar."
+/>
+
+Ese es el arco entero: de una columna de previsiones que el mercado no aceptará como órdenes, a una posición cubierta, consciente del coste, respetuosa con la capacidad y monitorizada de forma continua, en vivo, construida por un investigador que se negó a engañarse en cada paso. Has terminado el contenido de **Machine Learning para alfa**. Lo que queda es demostrar que caló: dirígete al **Examen Final** de este curso, una única tanda calificada sobre el conjunto completo de preguntas —una a una, con cada respuesta bloqueada en el momento en que la envías—. Sin vuelta atrás, sin reintentos; solo tú y la materia. Demuestra que el sobreajuste nunca pudo contigo.

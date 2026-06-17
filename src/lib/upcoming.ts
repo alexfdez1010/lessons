@@ -68,25 +68,6 @@ export interface UpcomingCourse {
  */
 export const upcomingCourses: UpcomingCourse[] = [
   {
-    slug: 'machine-learning-for-alpha',
-    icon: '🧠',
-    difficulty: 'expert',
-    order: 7,
-    accent: 'accent',
-    title: {
-      en: 'Machine Learning for Alpha',
-      es: 'Machine Learning para Alpha',
-    },
-    description: {
-      en: 'ML done right in markets: feature engineering, leakage and purged cross-validation, backtest overfitting, ensembles, and the deflated Sharpe ratio.',
-      es: 'ML bien hecho en mercados: ingeniería de features, fugas y validación cruzada purgada, sobreajuste del backtest, ensembles y el ratio de Sharpe desinflado.',
-    },
-    dependencies: ['time-series-finance', 'factor-models', 'systematic-and-statistical-arbitrage'],
-    tags: ['quantitative-finance'],
-    buildNotes:
-      'Applying machine learning to predictive signals without fooling yourself: financial features & labeling (fixed-horizon vs triple-barrier), the leakage problem and why standard k-fold fails on time series, purged & embargoed cross-validation, the backtest-overfitting / multiple-testing trap and the deflated Sharpe ratio, tree ensembles vs linear models & feature importance (MDI/MDA), regularization and ensembling for noisy low-signal data, and combining ML signals with the stat-arb pipeline. Heavy emphasis on overfitting as the central enemy. Islands: purged-cv-split + deflated-sharpe.',
-  },
-  {
     slug: 'high-frequency-market-making',
     icon: '⚡',
     difficulty: 'expert',
@@ -123,6 +104,44 @@ export const upcomingCourses: UpcomingCourse[] = [
     tags: ['defi', 'quantitative-finance', 'trading-and-markets'],
     buildNotes:
       'Relative-value arbitrage with no shorting and atomic settlement: cross-DEX price discrepancies and how AMM curves create them, triangular arbitrage across pools, atomic arbitrage bundles & flash-loan-funded legs, the cost stack (gas, priority fees, builder payment, slippage), competition in the priority-gas/PBS auction and why most arb profit is bid away to builders/validators, backrunning vs sandwiching, and the statistical edge & capacity limits of on-chain arb vs TradFi stat-arb. Islands: cross-dex-arb + bundle-profit-split.',
+  },
+  {
+    slug: 'reinforcement-learning-for-trading',
+    icon: '🤖',
+    difficulty: 'expert',
+    order: 10,
+    accent: 'accent',
+    title: {
+      en: 'Reinforcement Learning for Trading',
+      es: 'Aprendizaje por Refuerzo para Trading',
+    },
+    description: {
+      en: 'Markets as a sequential decision problem: MDPs for execution and market making, reward design, policy-gradient vs Q-learning, and the sim-to-real gap that wrecks naive RL backtests.',
+      es: 'Los mercados como problema de decisión secuencial: MDP para ejecución y creación de mercado, diseño de recompensas, policy-gradient frente a Q-learning, y el salto sim-a-real que arruina los backtests de RL ingenuos.',
+    },
+    dependencies: ['machine-learning-for-alpha', 'algorithmic-trading-and-execution', 'market-microstructure'],
+    tags: ['quantitative-finance', 'trading-and-markets'],
+    buildNotes:
+      'Reinforcement learning where the action moves the market: framing trading as a Markov decision process (state, action, reward, transition), why supervised ML is the wrong frame for execution/sizing, optimal execution as an RL problem (and how it relates to Almgren–Chriss), market-making agents balancing inventory and spread, value-based (Q-learning/DQN) vs policy-gradient (PPO/actor-critic) methods, reward shaping and its pitfalls (reward hacking, myopia), exploration vs exploitation under transaction costs, and the brutal sim-to-real / non-stationarity gap that makes RL backtests even easier to overfit than supervised ones. Carry the overfitting-is-the-enemy theme from machine-learning-for-alpha. Islands: rl-agent-env-loop + execution-policy-heatmap.',
+  },
+  {
+    slug: 'deep-learning-for-market-data',
+    icon: '🔮',
+    difficulty: 'expert',
+    order: 11,
+    accent: 'brand',
+    title: {
+      en: 'Deep Learning for Market Data',
+      es: 'Deep Learning para Datos de Mercado',
+    },
+    description: {
+      en: 'Sequence models on the hardest data there is: RNNs, temporal convolutions and attention for returns and the limit-order book, embeddings for alt-data, and honest, deflated evaluation.',
+      es: 'Modelos de secuencia sobre los datos más difíciles que existen: RNN, convoluciones temporales y atención para retornos y el libro de órdenes, embeddings para datos alternativos, y una evaluación honesta y desinflada.',
+    },
+    dependencies: ['machine-learning-for-alpha', 'time-series-finance'],
+    tags: ['quantitative-finance'],
+    buildNotes:
+      'Deep learning for sequential market data, without the hype: why plain MLPs over-/under-fit low-signal returns, recurrent models (RNN/LSTM/GRU) and their vanishing-gradient story, temporal convolutional networks, attention and transformers applied to returns and to limit-order-book microstructure, embeddings for categorical and alternative data, the tiny-effective-sample-size problem and aggressive regularization (dropout, weight decay, early stopping, data augmentation), purged/embargoed evaluation and the deflated Sharpe applied to DL, and a sober answer to "when does deep learning actually beat gradient boosting in finance?" (usually it does not). Builds directly on machine-learning-for-alpha. Islands: sequence-model-unroll + attention-weights-heatmap.',
   },
 ];
 

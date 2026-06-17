@@ -1,0 +1,372 @@
+---
+title: "From ML Signal to Portfolio"
+description: "Folding a noisy ML forecast into the statistical-arbitrage pipeline: turning a prediction into a position, combining ML alphas through the breadth engine, paying for fast signal decay with turnover and capacity, retraining against concept drift, and the deployment discipline that keeps a live signal honest."
+topic: "en/machine-learning-for-alpha"
+order: 6
+minutes: 15
+updated: 2026-06-17
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, SignalDecay, DiversificationDecay, CorrelationBlender, MarketImpactCurve, PoTurnoverCost } from '@/components/react';
+
+You have spent five lessons building a machine-learning model that does *not* lie to you. You labeled returns without leaking the future (triple-barrier, meta-labels), you cross-validated in a way time series can't game (purging, embargo, combinatorial purged CV), you haircut your Sharpe for the hundreds of configs you secretly tried (the deflated Sharpe ratio), and you measured which features actually matter (MDI/MDA). Congratulations: you own a forecast.
+
+A forecast is not a strategy. It is a column of numbers — a probability, an expected return, a rank — and the market does not accept columns of numbers as orders. Somewhere between "the model says +0.6% next week" and "the broker fills 12,000 shares" lives an entire second discipline: **portfolio construction**. This is where ML quants quietly bleed out, because the model that looked brilliant in a notebook gets *sized* badly, *combined* badly, traded *too fast*, and watched too loosely — and the edge evaporates on the way to the exchange. This lesson is the bridge from a clean prediction to a live, honest position, and it leans hard on the stat-arb pipeline you already met. The enemy, one last time, is overfitting — and it doesn't stop at the model. It follows you all the way to the fill.
+
+<MCQ
+  client:visible
+  pretest
+  question="Your gradient-boosted model outputs, for each stock, a meta-label probability that a long trade hits its profit target. The probabilities cluster between 0.48 and 0.62. What is the most defensible way to turn these into a market-neutral book?"
+  options={[
+    { text: "Rank the names cross-sectionally, go long the top decile and short the bottom decile, then beta-neutralize — turning a weak forecast into many small, hedged bets.", correct: true },
+    { text: "Go long every name with probability above 0.50 at full size, since the model says they're more likely than not to win." },
+    { text: "Buy only the single highest-probability name with the entire book — concentrate capital where the model is most confident." },
+    { text: "Ignore the probabilities and equal-weight all names long; the model already filtered the universe." }
+  ]}
+  explanation="A meta-label probability is a noisy alpha forecast, not a certainty. The stat-arb playbook applies: rank cross-sectionally, go long/short the extremes to stay market-neutral, and beta-neutralize so you're betting on the SPREAD between predicted winners and losers, not on market direction. Full-size longs on every p>0.5 name is a giant directional bet; betting it all on one name throws away breadth — the exact opposite of what makes a weak signal pay."
+/>
+
+## From prediction to position
+
+**Analogy.** Your model is a weather app that says "62% chance of rain." You don't respond by staying home forever (full conviction) or ignoring it (no conviction) — you grab an umbrella *proportional* to how wet you'd get and how sure the app is. Position sizing is the umbrella: it translates a probability into how much you're willing to lose if it's wrong.
+
+**Definition.** A *position* is a signed dollar (or risk) weight $w_i$ on each asset $i$. The model hands you an **alpha forecast** $\hat{\alpha}_i$ — your best guess of asset $i$'s excess return, or a probability, or a rank. The sizing rule is the function that maps forecast → weight. Five rules cover almost everything you'll do in practice:
+
+- **Proportional-to-forecast.** $w_i \propto \hat{\alpha}_i$. Bigger predicted return, bigger position. Simple, but it trusts the magnitude of a noisy forecast — dangerous when the model's *level* is poorly calibrated (which ML models often are).
+- **Cross-sectional rank → dollar-neutral long/short.** Throw away the magnitudes, keep only the *ordering*. Rank all names, go long the top decile / short the bottom decile, equal dollars each side. Robust to miscalibration — you only need the model to rank, not to predict levels. This is the stat-arb default.
+- **Confidence-scaled (meta-label sizing).** Size by the model's *probability of being right*. A meta-label probability $p_i$ becomes a position like $w_i \propto (p_i - 0.5)$ or a calibrated bet fraction. High-confidence calls get more capital; coin-flip calls get almost none.
+- **Risk-budgeted.** Scale each position so it contributes equal *risk* (volatility), not equal *dollars*: $w_i \propto \hat{\alpha}_i / \sigma_i$. A volatile name gets a smaller dollar weight for the same risk bite.
+- **Kelly-lite cap.** The Kelly criterion says bet a fraction proportional to edge-over-variance — but full Kelly is brutally aggressive and assumes you know your edge exactly (you don't). Practitioners use *fractional Kelly* (a half or quarter) and a hard per-name cap so one overconfident forecast can't blow up the book.
+
+**Worked example — meta-label probabilities to a beta-neutral book.** Your model scores six stocks with the probability that a long trade hits its profit target. Rank them, long the top two, short the bottom two, equal dollars (\$100 a side, \$50 per name), then check the market exposure:
+
+| Stock | Meta-label p | Rank | Raw position | Beta β |
+|---|---|---|---|---|
+| A | 0.61 | 1 | **Long \$50** | 1.4 |
+| B | 0.58 | 2 | **Long \$50** | 0.9 |
+| C | 0.55 | 3 | flat | 1.0 |
+| D | 0.52 | 4 | flat | 1.1 |
+| E | 0.49 | 5 | **Short \$50** | 0.8 |
+| F | 0.46 | 6 | **Short \$50** | 1.2 |
+
+Dollar-neutral? Yes — \$100 long, \$100 short. But **beta-neutral? No.** Long-side beta exposure $= 50(1.4) + 50(0.9) = 115$ \$ of "market." Short-side $= 50(0.8) + 50(1.2) = 100$ \$. Net market exposure $= 115 - 100 = +15$ \$ of beta — a hidden long tilt. To neutralize, scale the legs so $\sum_{\text{long}} w_i\beta_i = \sum_{\text{short}} w_i\beta_i$: shrink the long leg or grow the short until the betas match. A "dollar-neutral" book that isn't *beta*-neutral is secretly a small directional bet that shows up on the worst possible day — exactly the trap from the relative-value lesson, now wearing an ML costume.
+
+<Callout variant="warning" title="Pitfall — trusting an ML model's level, not just its rank">
+Classifiers and gradient-boosted models are notoriously *miscalibrated*: a model that outputs 0.7 may only be right 0.58 of the time. If you size proportional to the raw probability, you are betting on numbers the model never promised were accurate. Either calibrate the probabilities (Platt scaling, isotonic regression) before sizing, or — safer — throw the levels away and trade the *rank*. Ranks survive miscalibration; levels don't.
+</Callout>
+
+### When to use it
+
+Rank-based dollar/beta-neutral construction is the workhorse when your model is a *cross-sectional* stock picker and you don't trust its magnitudes — which is most ML signals. Reach for confidence-scaled or risk-budgeted sizing when you've genuinely *calibrated* the model and want to express conviction. Save Kelly-lite for when you have a defensible estimate of edge and variance — and even then, cap it, because a model that's wrong about its own edge will size you straight into a drawdown.
+
+<FillBlank
+  client:visible
+  question="Fill in the sizing logic."
+  text="An ML model's raw probability is often {{miscalibrated|exact|risk-free}}, so the safest construction throws away the levels and trades only the {{rank|magnitude|timestamp}}. Going long the top names and short the bottom keeps the book dollar-neutral, but you must also match the legs' {{beta|sector count|tick size}} to be truly market-neutral."
+  explanation="ML probabilities rarely match true frequencies (miscalibration), so ranking is robust where levels are not. Long-top / short-bottom is dollar-neutral; matching betas across legs is what makes it market-neutral, cancelling the common market factor."
+/>
+
+## Combining ML alphas via the breadth engine
+
+**Analogy.** One ML signal is a single slightly-loaded die — barely better than fair. The whole quant business is rolling *many* dice, of *different* shapes, across *thousands* of names, and adding them up. The noise in each cancels; the sliver of truth in each reinforces. A single ML model is never the strategy; it's one die in the cup.
+
+**The Fundamental Law, again.** From the stat-arb course: your information ratio is your skill per bet times the square root of how many *independent* bets you make.
+
+$$\text{IR} \approx \text{IC} \cdot \sqrt{\text{breadth}}$$
+
+Here **IC** (information coefficient) is the correlation between your forecast and the realized return — for a single ML signal it's humblingly small, typically **0.02 to 0.05**. Anything above ~0.10 out-of-sample should make you suspect leakage, not genius. **Breadth** is the number of independent bets per period. A lone ML signal with IC = 0.03 traded on one bet is worthless; the same signal across 500 independent names is a fundable strategy.
+
+**Stacking orthogonal ML alphas.** Two ML models whose *errors* are uncorrelated combine like independent signals: averaging keeps the full signal while halving the independent noise, so for two equally-good orthogonal signals the combined IC rises by $\sqrt{2}$:
+
+$$\text{IC}_{\text{combined}} \approx \text{IC} \cdot \sqrt{2}.$$
+
+More generally, $n$ equally-good, mutually uncorrelated signals scale the combined IC by $\sqrt{n}$ — the same $\sqrt{\cdot}$ diversification math that scales the *portfolio* IR, now applied to *signals*. The catch is identical too: the bonus only fires on **independent** signals. Two gradient-boosted models trained on the same momentum and value features are not two signals — they're one signal with two random seeds, correlated ~0.95, and stacking them buys you almost nothing. The IC jump comes from a genuinely *different* alpha: a model on order-flow imbalance, a model on filings sentiment, a model on a different horizon.
+
+**Worked example — two uncorrelated ML signals.** Signal X (a tree ensemble on price/volume features) has IC = 0.03. Signal Y (a model on textual sentiment) also has IC = 0.03, and their forecast errors are uncorrelated. Equal-weight them:
+
+$$\text{IC}_{\text{combined}} \approx 0.03 \times \sqrt{2} = 0.03 \times 1.414 \approx 0.042.$$
+
+You lifted effective skill from 0.03 to 0.042 — a 41% jump — without finding a single new feature, just by *combining orthogonally*. Now suppose X and Y were actually 0.8-correlated (both really momentum in disguise). The effective $\sqrt{n}$ collapses toward $\sqrt{1}$, and the combined IC barely exceeds 0.03. Same two models, wildly different payoff. Orthogonality is the whole game — for ML alphas exactly as for hand-built ones.
+
+<DiversificationDecay
+  client:visible
+  title="Stacking ML alphas: combined strength rises, then flattens"
+  holdingsLabel="Number of stacked alphas"
+  riskLabel="Forecast noise"
+  systematicLabel="Irreducible noise (shared error floor)"
+  idiosyncraticLabel="Diversifiable noise (model-specific)"
+  caption="Read 'number of holdings' as 'number of stacked, independent ML alphas.' The first few genuinely-different models slash the forecast's noise fast — the curve dives. But real models always share some error (the same features, the same regime), so each new one overlaps the ones you have, and the gains flatten onto a floor. Beyond a handful of distinct alphas, adding 'one more random seed' barely moves the needle — the √n bonus only counts INDEPENDENT signals."
+/>
+
+<CorrelationBlender
+  client:visible
+  title="Why two correlated ML models are really one"
+  assetALabel="Model X"
+  assetBLabel="Model Y"
+  caption="Treat the two assets as two ML alphas you're blending. At correlation ρ ≈ 0 the blend's noise collapses well below the naive average — that's the √2 combination bonus, real new information. Drag ρ toward +1 (two models trained on the same features, same horizon) and the diversification benefit evaporates: the blend is no safer than a single model. Correlation is the silent killer of signal combination, for ML alphas exactly as for hand-built ones."
+/>
+
+<Callout variant="warning" title="Pitfall — counting random seeds as breadth">
+The most common phantom-breadth mistake in ML quant: training ten models on the same data with ten random seeds and calling it 'ten signals.' They are correlated ~0.95; their effective breadth is barely above one. Worse, the *same overfitting* infects all ten, so they all fail in the same regime at the same moment. Real breadth comes from orthogonal *information* — different features, horizons, and data sources — not from re-rolling the optimizer's dice.
+</Callout>
+
+<MCQ
+  client:visible
+  question="You already trade an ML model on 1-month price-momentum features (IC ≈ 0.03). Two new models land on your desk, each IC ≈ 0.03 standalone: (A) the same architecture retrained on 3-month momentum features, correlated 0.85 with what you have; (B) a model on earnings-call sentiment, correlated 0.04 with it. Which lifts your combined IC more, and why?"
+  options={[
+    { text: "B — it's nearly orthogonal, so it carries genuinely new information and the √2 combination bonus actually applies, pushing combined IC toward ~0.042.", correct: true },
+    { text: "A — it's closer to a proven signal, so adding it is safer and compounds the existing edge." },
+    { text: "Neither — any second signal with the same standalone IC leaves the combined IC unchanged." },
+    { text: "A — higher correlation with an existing winner means the models agree more, which raises combined IC." }
+  ]}
+  explanation="The √n bonus assumes INDEPENDENCE. The 0.85-correlated momentum variant restates a bet you already hold — it adds almost nothing. The sentiment model at ρ ≈ 0.04 is nearly orthogonal, so it delivers the √2 diversification bonus and meaningfully lifts combined IC. Orthogonality of information, not standalone IC or 'closeness to a winner,' decides what a new ML alpha is worth."
+/>
+
+### When to use it
+
+Lean on breadth whenever each ML forecast is weak (it always is) but you can apply it across hundreds of independent names and stack it with genuinely *different* alphas. It's the wrong frame when your 'many models' are seed-variants of one model, or your 'many names' all share a factor — there, effective breadth collapses to a handful and no amount of headline count delivers the $\sqrt{N}$ you're counting on.
+
+## Capacity & turnover
+
+**Analogy.** A fresh ML signal is a fish that spoils in hours, not weeks — short-horizon models often predict the *next few days* sharply and then go stale. To capture it you must trade fast, and fast trading is a turnstile that charges you a toll on every pass. Trade often enough and the tolls eat the whole catch.
+
+**Definition — turnover and net alpha.** *Turnover* is the fraction of the portfolio you buy and sell each period. ML signals, especially short-horizon ones, fire frequently and demand high turnover. Every trade pays two tolls:
+
+- **Transaction cost** — the bid-ask spread plus commissions, a roughly fixed toll per round trip.
+- **Market impact** — your own order pushes the price against you. Crucially, impact grows like the **square root of size**: $\text{impact} \approx k\sqrt{\text{size}/\text{ADV}}$, where ADV is average daily volume. Doubling an order does *not* double its impact cost — but it does keep rising, and at scale it dominates.
+
+What you actually earn is **net alpha = gross alpha − costs**. A signal with a gorgeous gross Sharpe on paper can be flat or negative after costs. And here's the punchline that destroys many ML strategies: as you put *more capital* to work, your orders grow relative to ADV, impact rises, and net alpha *falls*. The size at which net alpha hits zero is your **capacity** — the most money the strategy can run before it stops making money.
+
+<MarketImpactCurve
+  client:visible
+  caption="Drag the order size. Impact cost (bps) grows like the SQUARE ROOT of how much of the daily volume you demand — steep for the first slices, then flattening, but never stopping. The dashed line is the naive 'twice the size, twice the cost' guess. For a fast ML signal this curve is the wall: the bigger the book, the more of ADV each rebalance must move, and the more impact silently subtracts from your gross alpha."
+/>
+
+**Worked example — net alpha vs. size, and where capacity bites.** A short-horizon ML signal produces a gross alpha of **40 bps per trade**. Cost per round trip is a fixed **3 bps** of spread plus impact $\approx 12\sqrt{\text{participation}}$ bps, where participation is the order as a fraction of ADV. Step the capital up so each rebalance demands more of ADV:
+
+| Capital (\$M) | Participation (% ADV) | Impact = 12√part. (bps) | Total cost = 3 + impact | Net alpha = 40 − cost |
+|---|---|---|---|---|
+| 10 | 1% | 1.2 | 4.2 | **+35.8 bps** |
+| 50 | 5% | 2.7 | 5.7 | **+34.3 bps** |
+| 200 | 20% | 5.4 | 8.4 | **+31.6 bps** |
+| 800 | 80% | 10.7 | 13.7 | **+26.3 bps** |
+| 2,000 | 200%* | 17.0 | 20.0 | **+20.0 bps** |
+| 5,000 | 500%* | 26.8 | 29.8 | **+10.2 bps** |
+| ~9,000 | ~900%* | ~36.0 | ~39.0 | **≈ 0 bps — capacity** |
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Why does participation go above 100% (the * rows) — can you trade more than a day's volume?</summary>
+
+Not in a single day without ruinous impact. The * rows mean the strategy would *need* to move multiples of ADV to deploy that capital at its target horizon — which you can't do cheaply, so you either spread the order over many days (giving the signal time to decay, forfeiting alpha) or accept the brutal impact the $\sqrt{\cdot}$ law eventually inflicts. Both routes drive net alpha toward zero. That collision — between the capital you want to deploy and the volume the market can absorb before the signal goes stale — *is* the capacity ceiling. A fast signal has a low ceiling precisely because it can't wait for you to trade patiently.
+
+</details>
+</Reveal>
+
+Read the table top to bottom: a signal worth +35.8 bps net at \$10M is worth ~0 bps at ~\$9B. The gross alpha never changed — costs ate it as size grew. **A high-Sharpe paper signal can be completely unprofitable at the size you want to run it.** This is why ML quants must estimate capacity *before* raising capital, not after.
+
+<PoTurnoverCost
+  client:visible
+  caption="The same fight in one picture. Gross alpha (grey) is what the model promises; trading cost (accent) is what turnover charges; net alpha (the badge) is what you keep. A cost-blind optimizer chases every flicker of a fast ML signal, racking up enormous turnover whose costs swallow the gross edge — net alpha can go NEGATIVE. Damp the trading and costs collapse faster than the gross edge fades, so net climbs to a peak. The best ML book respects what trading it costs, not just what the model predicts."
+/>
+
+<Callout variant="tip" title="Trade-off — gross Sharpe is a lie until you net out costs">
+Two ML strategies, same gross Sharpe of 2.0. One is a slow value signal turning over 0.5× a year; the other a fast micro-structure signal turning over 50× a year. After costs the slow one keeps a Sharpe near 2.0 and scales to billions; the fast one nets a Sharpe of 0.4 and saturates at \$50M. Never compare ML signals on gross numbers — compare net Sharpe *at the capacity you intend to run*. Turnover and capacity are not afterthoughts; they decide which signal is actually a business.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Fill in the capacity logic."
+  text="Market impact grows roughly like the {{square root|square|logarithm}} of order size relative to daily volume, so bigger books pay more per trade. Net alpha equals gross alpha minus {{costs|dividends|taxes}}, and the capital level where net alpha falls to {{zero|the gross alpha|the risk-free rate}} is the strategy's capacity."
+  explanation="Impact ≈ k·√(size/ADV) — sub-linear but relentless. Net alpha = gross − costs; as size grows, impact grows and net shrinks. Capacity is the asset level at which net alpha reaches zero — beyond it the strategy can't make money no matter how good the gross signal is."
+/>
+
+## Signal decay, concept drift & retraining
+
+**Analogy.** An ML alpha is an ice cube *and* a melting glacier at once. The ice cube is **decay**: the moment the model fires, the forecast is at full strength and shrinks every day you wait. The glacier is **concept drift**: the entire relationship the model learned — how features map to returns — slowly shifts under your feet as regimes change and other funds discover the same edge. The first you fight by trading promptly; the second you fight by *retraining*.
+
+**Alpha decay and the optimal horizon.** A signal's predictive power fades geometrically with holding horizon $h$:
+
+$$\text{IC}(h) = \text{IC}_0\, e^{-h/\tau}, \qquad \text{half-life} = \tau \ln 2 \approx 0.693\,\tau,$$
+
+where $\tau$ is the decay constant in days. ML signals often have a *small* $\tau$ — they're fast, predicting days not months. Decay pushes you to **trade fast**; turnover costs (last section) push you to **trade slow**. The winner is a hump: net alpha *per day* peaks at an **optimal holding horizon** $h^*$ in the middle. Faster decay → $h^*$ earlier; higher cost → $h^*$ later.
+
+<SignalDecay
+  client:visible
+  caption="The brand curve is the ML signal's information coefficient decaying exponentially with holding horizon — half-life τ·ln2. The accent curve is net alpha PER DAY after costs, which is hump-shaped. Drag the decay slider left (a faster, more perishable ML signal) and the optimal horizon h* slides earlier — you must trade it quickly before it's gone. Drag the cost slider up and h* slides later — expensive execution forces you to hold longer to amortize the round trip. The dot is the cost-aware rebalance horizon: not 'as fast as possible,' not 'as slow as possible,' but the calculated sweet spot."
+/>
+
+**Worked example — exponential IC decay.** An ML signal has $\tau = 6$ days. Its half-life is $6 \times 0.693 = 4.2$ days — after barely four days the edge is half gone. Tabulating $\text{IC}(h)/\text{IC}_0 = e^{-h/6}$:
+
+| Horizon h (days) | h/τ | e^(−h/τ) | Fraction of IC₀ left |
+|---|---|---|---|
+| 0 | 0.00 | 1.00 | 100% |
+| 4.2 | 0.69 | 0.50 | 50% (one half-life) |
+| 6 | 1.00 | 0.37 | 37% |
+| 12 | 2.00 | 0.135 | 14% (two half-lives) |
+| 20 | 3.33 | 0.036 | 4% |
+
+By day 20 the signal retains ~4% of its bite — noise. If your compliance/operations reality means you can only act a week after the model fires, you've surrendered most of the edge before placing the trade. Measure the *decay curve*, not a single headline IC, or you'll quote a number you can never actually trade at.
+
+**Concept drift and walk-forward retraining.** Decay is about *one forecast* going stale; **concept drift** is about *the whole model* going stale because the world changed. You combat it by **retraining walk-forward**: never train once and trade forever. Slide a training window forward through time, refit, and trade the *next* out-of-sample block — the same purged, embargoed discipline from the leakage lessons, now run repeatedly. Two window styles:
+
+| Window style | How it works | Strength | Danger |
+|---|---|---|---|
+| **Expanding** | Train on *all* history up to today; window grows | Maximum data; stable estimates | Anchors on ancient, possibly-irrelevant regimes; slow to adapt |
+| **Rolling** | Train on the last $W$ months only; drop the oldest | Adapts fast to new regimes | Throws away data; noisier; can chase short-lived patterns |
+
+The single most important diagnostic: **monitor live IC against backtest IC**. If your backtest IC was 0.04 and the live, realized IC over the last quarter is ~0.00, the signal has either decayed, drifted, or been crowded out — and no retraining frequency fixes a signal the market has already arbitraged away. Live IC is the strategy's pulse.
+
+<Categorize
+  client:visible
+  question="Sort each phenomenon by whether it degrades a SINGLE forecast (decay) or the WHOLE learned relationship (drift) — and the right response."
+  buckets={["Alpha decay (one forecast goes stale)", "Concept drift (the model goes stale)"]}
+  items={[
+    { text: "A signal's IC halves after τ·ln2 days of holding", bucket: "Alpha decay (one forecast goes stale)" },
+    { text: "Fixed by trading promptly at the cost-aware horizon h*", bucket: "Alpha decay (one forecast goes stale)" },
+    { text: "The feature→return mapping shifts as the regime changes", bucket: "Concept drift (the model goes stale)" },
+    { text: "Fixed by retraining walk-forward (rolling or expanding)", bucket: "Concept drift (the model goes stale)" },
+    { text: "Crowding: other funds learn the same edge and arbitrage it away", bucket: "Concept drift (the model goes stale)" },
+    { text: "Captured by IC(h) = IC₀·e^(−h/τ) within a single trade's life", bucket: "Alpha decay (one forecast goes stale)" }
+  ]}
+  explanation="Decay is the within-trade fading of one forecast — modeled by exponential IC(h), fought by trading promptly. Drift is the across-time staleness of the whole learned mapping — caused by regime change and crowding, fought by walk-forward retraining. They're different clocks needing different responses; conflating them leads to retraining when you should trade faster, or vice versa."
+/>
+
+<Callout variant="warning" title="Pitfall — retraining is not a license to peek at the future">
+Walk-forward retraining feels safe, but it's where leakage sneaks back in. If you refit on data that overlaps the labels of your test block, or skip the embargo between train and test, you've quietly rebuilt the leakage you spent lessons eliminating. Every retrain must purge overlapping samples and embargo the gap — the discipline doesn't relax just because you're doing it on a schedule. And never let live results 'inform' a retrain in a way that re-tunes hyperparameters on the live period: that's overfitting to the very data meant to judge you.
+</Callout>
+
+### When to use it
+
+Match retraining cadence to the drift speed, not a calendar habit: a fast-drifting micro-structure model may need monthly rolling refits, while a slow fundamental model can sit on an expanding window for a year. Use *expanding* windows when the relationship is stable and data is scarce; use *rolling* when regimes turn over and recent data is more representative than ancient history. Above all, let **live IC ≈ 0** be the alarm that overrides any schedule — a dead signal doesn't need retraining, it needs retiring.
+
+## Deployment discipline — the overfitting enemy, one last time
+
+**Analogy.** You've spent the whole course refusing to fool yourself. Deployment is the final exam where it's easiest to cheat *by accident*. It's the dieter who weighs in honestly all month, then steps on the scale forty times on the last day until it reads what they want. The discipline that protected your model in research must survive contact with real capital.
+
+**The honest-deployment checklist.** Each rule is a defense against a specific way the edge becomes a mirage:
+
+- **Lock the test set.** The final out-of-sample block is touched *once*, at the very end. Every peek that informs a change contaminates it. If you've looked, it's no longer out-of-sample — it's training data wearing a disguise.
+- **Paper-trade before capital.** Run the strategy live on real-time data with *fake* money first. This catches the gap between a clean backtest and messy reality — stale data, missed fills, costs you underestimated — before that gap costs you anything.
+- **Track live-vs-backtest, relentlessly.** Plot realized live IC and net Sharpe against what the backtest promised. A persistent shortfall means the backtest was optimistic — almost always from costs, leakage, or overfitting you didn't catch.
+- **Kill the strategy if live IC ≈ 0.** This is the hardest rule to obey because you're emotionally invested. But a signal whose live IC has flatlined is dead — decayed, drifted, or crowded out. Cut it. Hope is not a risk model.
+- **Never re-tune on the live period.** The instant you adjust hyperparameters to "fix" disappointing live results, you've overfit to the one dataset that was supposed to judge you honestly. Changes must be validated on *fresh* out-of-sample data, never on the live tape you're trying to explain away.
+- **Size to capacity.** Run the strategy at the asset level where net alpha is still solidly positive — not at the level where net alpha is zero. Leaving capacity headroom is what keeps impact from quietly eating the edge.
+- **Budget for the deflated-Sharpe haircut.** You tried hundreds of configurations; the best one's backtest Sharpe is inflated by that search. The *deflated Sharpe ratio* discounts your headline Sharpe for the number of trials and the non-normality of returns. Deploy expecting the *deflated* number, not the seductive raw one — and you'll be pleasantly un-surprised when live results land near it instead of crushed when they fall short of a fantasy.
+
+<MCQ
+  client:visible
+  question="Three months into live trading, your ML strategy's realized IC is ~0.005 against a backtest IC of 0.04, and net Sharpe is near zero. A teammate proposes re-running the hyperparameter search 'including the live data, to adapt to the new regime.' What's the disciplined response?"
+  options={[
+    { text: "Refuse — re-tuning on the live period overfits to the exact data meant to judge you. Diagnose decay/drift/crowding, and if the live IC stays near zero, kill the strategy rather than fit it to its own disappointment.", correct: true },
+    { text: "Agree — including the live data gives the model more information, which can only improve it." },
+    { text: "Agree, but only adjust a few hyperparameters slightly so the change is small enough not to overfit." },
+    { text: "Double the position size to make up the shortfall in returns while the model adapts." }
+  ]}
+  explanation="Re-tuning on the live period — even 'slightly' — contaminates the one dataset that was supposed to judge the strategy honestly; it's overfitting by another name, and a tiny tweak is still a tweak fit to noise. Doubling size into a dead signal is worse. A live IC that has flatlined to ~0 versus a 0.04 backtest is the signal of decay, drift, or crowding; the disciplined move is to diagnose, and if it stays dead, retire it. Hope is not a risk model."
+/>
+
+**The closing synthesis.** Trace the whole course and one enemy appears at every step. In **feature engineering**, overfitting was inventing predictors from noise. In **labeling**, it was leaking the future through overlapping labels. In **validation**, it was ordinary k-fold pretending time doesn't flow one way, defeated by purging and embargo. In **backtest evaluation**, it was the best of hundreds of trials masquerading as skill, deflated by the deflated Sharpe ratio. In **feature importance**, it was reading meaning into MDI inflated by noisy, correlated features. And here, in **deployment**, it's sizing on miscalibrated levels, counting random seeds as breadth, ignoring costs and capacity, re-tuning on the live tape. Overfitting was the enemy from the first feature to the final fill. The entire discipline of this course is one sentence repeated in six dialects: *don't fool yourself, and be especially suspicious when the results look great.*
+
+<MatchConcepts
+  client:visible
+  question="Match each deployment safeguard to the specific failure it prevents."
+  pairs={[
+    { term: "Lock the test set (touch once)", definition: "Stops the final out-of-sample block from being contaminated by peeking and silently turning into training data." },
+    { term: "Paper-trade before capital", definition: "Catches the gap between a clean backtest and messy live reality — stale data, missed fills, underestimated costs — before it costs money." },
+    { term: "Kill the strategy if live IC ≈ 0", definition: "Prevents pouring capital into a signal that has already decayed, drifted, or been crowded away." },
+    { term: "Never re-tune on the live period", definition: "Stops overfitting to the very data meant to judge the strategy honestly." },
+    { term: "Budget for the deflated-Sharpe haircut", definition: "Sets expectations at the Sharpe discounted for the hundreds of configurations tried, not the inflated headline number." }
+  ]}
+  explanation="Each rule blocks a distinct path to fooling yourself: contaminating the test set, mistaking a clean backtest for live reality, clinging to a dead signal, re-tuning on the judging data, and trusting a Sharpe inflated by multiple testing. Together they are the deployment-stage version of the course's single theme — overfitting is the enemy from feature to fill."
+/>
+
+## Putting it together
+
+The bridge from prediction to portfolio reads top to bottom. Take the ML model's **noisy forecast** and turn it into a **position** — usually by ranking cross-sectionally and going long/short the extremes, beta-neutralized, because ML levels are miscalibrated and only the rank is trustworthy. **Combine** it with genuinely *orthogonal* ML alphas through the breadth engine (IR ≈ IC·√breadth), remembering that random seeds aren't breadth. Respect **turnover and capacity**: a fast signal's gross Sharpe is a fantasy until you subtract costs that rise like √(size), and capacity is where net alpha hits zero. Trade at the **cost-aware horizon** $h^*$ where the decay-vs-cost hump peaks, **retrain walk-forward** against concept drift, and **monitor live IC** as the strategy's pulse. Then deploy with discipline — lock the test set, paper-trade, never re-tune on the live tape, size to capacity, and expect the *deflated* Sharpe. Overfitting was the enemy the whole way down; honesty is the only edge that survives contact with real money.
+
+<MindMap
+  client:visible
+  title="From ML signal to portfolio at a glance"
+  caption="Prediction → position → combination → capacity → retraining → honest deployment, with overfitting as the through-line enemy."
+  root={{
+    label: 'From ML signal to portfolio',
+    children: [
+      { label: 'Prediction → position', children: [
+        { label: 'Rank cross-sectionally; long top / short bottom' },
+        { label: 'Beta-neutralize, not just dollar-neutralize' },
+        { label: 'Trust the RANK; ML levels are miscalibrated' }
+      ]},
+      { label: 'Breadth engine', children: [
+        { label: 'IR ≈ IC · √breadth (single ML IC ≈ 0.02–0.05)' },
+        { label: 'Stack ORTHOGONAL alphas → IC·√n' },
+        { label: 'Random seeds are not breadth' }
+      ]},
+      { label: 'Capacity & turnover', children: [
+        { label: 'Impact ≈ k·√(size/ADV)' },
+        { label: 'Net = gross − costs; capacity = net hits 0' },
+        { label: 'Gross Sharpe lies until you net costs' }
+      ]},
+      { label: 'Decay, drift & retraining', children: [
+        { label: 'IC(h) = IC₀·e^(−h/τ); half-life = τ·ln2' },
+        { label: 'Trade at cost-aware horizon h*' },
+        { label: 'Retrain walk-forward; watch live IC vs backtest' }
+      ]},
+      { label: 'Deployment discipline', children: [
+        { label: 'Lock test set; paper-trade first' },
+        { label: 'Never re-tune on the live period' },
+        { label: 'Size to capacity; expect deflated Sharpe' },
+        { label: 'Overfitting: the enemy from feature to fill' }
+      ]}
+    ]
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Signal to portfolio: lock it in"
+  questions={[
+    {
+      question: "A single ML signal has out-of-sample IC = 0.04, traded across 625 genuinely independent names per year. What information ratio does the Fundamental Law predict, and what does that imply about ML alphas?",
+      options: [
+        { text: "≈ 1.0 — IR ≈ 0.04 × √625 = 0.04 × 25 = 1.0; a weak per-name forecast becomes a fundable strategy only through large independent breadth.", correct: true },
+        { text: "≈ 25 — IR = IC × breadth = 0.04 × 625, so high breadth makes any signal world-class." },
+        { text: "≈ 0.04 — breadth does not affect the information ratio; only the IC matters." },
+        { text: "≈ 0.0016 — you divide IC by √breadth to get the IR." }
+      ],
+      explanation: "IR ≈ IC·√breadth = 0.04 × √625 = 0.04 × 25 = 1.0. Breadth enters as a SQUARE ROOT, not linearly (so it's not 25), and you multiply rather than divide. The lesson: a microscopic ML IC is worthless on one bet but a real business across hundreds of INDEPENDENT names."
+    },
+    {
+      question: "Your fast ML signal nets +35 bps per trade at $20M but only +5 bps at $3B, with gross alpha unchanged. What concept does this illustrate, and what's the right response?",
+      options: [
+        { text: "Capacity — market impact rises like √(size/ADV) as the book grows, eating gross alpha; size to where net alpha is solidly positive, not to where it hits zero.", correct: true },
+        { text: "Alpha decay — the signal's IC fell because too much time passed between forecast and trade." },
+        { text: "Concept drift — the feature→return relationship changed, so the model must be retrained." },
+        { text: "Miscalibration — the probabilities were wrong, so the positions were sized incorrectly." }
+      ],
+      explanation: "Gross alpha is unchanged across sizes, so this isn't decay (a time effect) or drift (a regime effect) or miscalibration (a sizing effect). It's CAPACITY: bigger books move more of ADV, impact grows like √(size), and net alpha shrinks. The fix is to run below the zero-net level with headroom, not to chase capital the strategy can't absorb."
+    },
+    {
+      question: "You hold an ML signal with decay constant τ = 5 days but can only execute trades a full 10 days after the model fires. Roughly how much of the signal's initial IC survives to the moment you trade?",
+      options: [
+        { text: "About 14% — IC(10) = IC₀·e^(−10/5) = IC₀·e^(−2) ≈ 0.135·IC₀; you've lost most of the edge before placing the trade.", correct: true },
+        { text: "About 50% — ten days is roughly one half-life, so half the IC remains." },
+        { text: "About 100% — the IC is fixed at fire time and doesn't decay until you close the position." },
+        { text: "About 90% — ten days is short relative to the signal's life, so almost all of it survives." }
+      ],
+      explanation: "IC(h) = IC₀·e^(−h/τ) = IC₀·e^(−10/5) = IC₀·e^(−2) ≈ 0.135·IC₀, about 14%. The half-life is only τ·ln2 = 5×0.693 ≈ 3.5 days, so 10 days is nearly three half-lives — the signal is mostly gone. A fast ML signal in a slow execution pipeline is alpha thrown in the bin; match infrastructure to the half-life."
+    },
+    {
+      question: "Across the whole ML-for-alpha pipeline, what single theme connects feature engineering, labeling, cross-validation, the deflated Sharpe ratio, and deployment discipline?",
+      options: [
+        { text: "Overfitting — fooling yourself with noise — is the enemy at every stage, from inventing features out of randomness to re-tuning on the live tape; the discipline is to stay suspicious precisely when results look great.", correct: true },
+        { text: "Maximizing the in-sample backtest Sharpe ratio as high as possible at each stage." },
+        { text: "Using the most complex model available, since deep models always generalize better in markets." },
+        { text: "Trading as fast as possible to capture every signal before any of it decays." }
+      ],
+      explanation: "The through-line is overfitting: noise-mined features, leaked labels, k-fold that ignores time, the best-of-many-trials Sharpe, and re-tuning on live data are all the same self-deception in different costumes. Maximizing in-sample Sharpe, piling on complexity, and trading maximally fast are the MISTAKES the course warns against, not the lesson. Honesty — staying suspicious when results look great — is the only durable edge."
+    }
+  ]}
+/>
+
+That's the whole arc: from a column of forecasts that the market won't accept as orders, to a hedged, cost-aware, capacity-respecting, continuously-monitored live position — built by a researcher who refused to fool themselves at every step. You've finished the content of **Machine Learning for Alpha**. What remains is to prove it stuck: head to this course's **Final Exam**, a single graded run on the full pool of questions — one at a time, each answer locked the moment you submit it. No going back, no retries; just you and the material. Show that overfitting never got the better of you.

@@ -1,0 +1,346 @@
+---
+title: "Fugas y validación cruzada purgada"
+description: "La fuga de datos que hace brillar un backtest, por qué la validación cruzada k-fold ordinaria es inválida en series temporales con etiquetas solapadas, y la solución que exige el ML financiero: el purgado, el embargo, el walk-forward y la validación cruzada combinatoria purgada."
+topic: "es/machine-learning-for-alpha"
+order: 3
+minutes: 15
+updated: 2026-06-17
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, PurgedCvSplit, TsOverfitCurve } from '@/components/react';
+
+Hay un momento concreto y embriagador en la vida de todo cuantitativo: el backtest vuelve con un Sharpe de 3,2, una curva de capital tan suave que parece trazada con regla y un drawdown que podrías sortear de un paso. Te sientes un genio. No eres un genio. Eres, casi con total seguridad, la víctima de una **fuga de datos** (data leakage), y la broma cruel es que cuanto más bonito es el backtest, más probable es que te esté mintiendo.
+
+Esta lección trata sobre el error más caro del aprendizaje automático financiero: dejar que tu modelo espíe información que jamás habría tenido en la vida real, puntuar esa ejecución tramposa y confundir la trampa con la habilidad. Pondremos nombre a cada forma en que el futuro se cuela en el pasado, demostraremos por qué la validación cruzada que todo el mundo aprendió en clase es *inválida* en las series temporales financieras, y después construiremos la solución que el campo usa de verdad: purgado, embargo, walk-forward y validación cruzada combinatoria purgada. Al final confiarás en tus puntuaciones de validación por las razones correctas, y desconfiarás de las preciosas también por las razones correctas.
+
+<MCQ
+  client:visible
+  pretest
+  question="Una nueva estrategia presenta un Sharpe de backtest de 3,5 con casi ningún drawdown. Antes de celebrarlo, ¿cuál debería ser tu PRIMERA sospecha?"
+  options={[
+    { text: "Fuga de datos: información del futuro o del conjunto de test se ha colado en el entrenamiento, inflando una puntuación que no sobrevivirá al trading en real.", correct: true },
+    { text: "La estrategia es genuinamente excelente; un Sharpe in-sample alto predice de forma fiable el rendimiento en real." },
+    { text: "Los costes de transacción eran demasiado bajos, pero la ventaja en sí es real y persistirá." },
+    { text: "La muestra era demasiado pequeña, así que el Sharpe verdadero es aún más alto que el medido." }
+  ]}
+  explanation="Un backtest sospechosamente perfecto es la huella clásica de la fuga, no del genio. Cuando los datos de entrenamiento contienen en secreto las respuestas (etiquetas solapadas, características con visión de futuro, preprocesado sobre el conjunto completo), el rendimiento medido es ficción que se evapora en cuanto el modelo se enfrenta a datos que no pudo haber visto. Escepticismo primero, champán nunca (todavía)."
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  pretestLabel="Antes de leer — adivina"
+/>
+
+## Qué es realmente la fuga
+
+**Analogía.** Imagina que evalúas a un estudiante dándole el examen, dejándole estudiar la *plantilla de respuestas* la noche anterior y luego maravillándote ante su puntuación perfecta. La puntuación es real en el sentido trivial de que escribió las respuestas correctas, pero no predice nada sobre cómo le irá en un examen que no haya visto. La **fuga de datos** es entregarle a tu modelo la plantilla de respuestas. El modelo "aprende", puntúa de maravilla en validación y luego se estrella en el instante en que se enfrenta a datos genuinamente nuevos.
+
+**Definición.** La fuga es cualquier flujo de información desde el conjunto de test (o el futuro, o la propia variable objetivo) hacia el proceso de entrenamiento que **no estaría disponible en el momento de la decisión en producción**. El resultado es una estimación de rendimiento sesgada al alza: el backtest brilla, el trading en real no. El síntoma definitorio es una brecha: gran rendimiento in-sample (backtest) que se desploma out-of-sample (en real).
+
+Los cuatro jinetes de la fuga, cada uno en una línea:
+
+- **(1) Etiquetas solapadas.** La etiqueta de una muestra de entrenamiento se calcula sobre una ventana hacia adelante que *invade el período de test*, de modo que entrenamiento y test comparten el mismo resultado futuro. *En una línea:* etiquetas la muestra del lunes con el rendimiento de lun–vie, y luego "testeas" el miércoles: la etiqueta ya contiene el miércoles.
+- **(2) Características con visión de futuro (look-ahead).** Una característica usa datos aún no conocidos en la marca temporal de la muestra. *En una línea:* usar los beneficios *reexpresados* del Q1 de una empresa (publicados en mayo) como característica fechada en marzo, cuando solo existía el número *originalmente reportado, point-in-time*.
+- **(3) Preprocesado sobre el conjunto de datos completo.** Escalado, imputación o selección de características ajustados sobre entrenamiento **y** test juntos filtran estadísticos del conjunto de test hacia el entrenamiento. *En una línea:* calcular la media/desviación típica para la normalización sobre todo el historial (incluidos los datos del año que viene) antes de hacer la partición.
+- **(4) Sesgo de supervivencia.** Entrenar solo sobre activos que *sobrevivieron* hasta hoy excluye en silencio los que se fueron a cero. *En una línea:* hacer backtest de una estrategia de acciones sobre los miembros *actuales* del S&P 500, de modo que cada quiebra deslistada ha sido silenciosamente borrada del historial.
+
+<Callout variant="warning" title="La señal delatora: un backtest demasiado bueno">
+La fuga no se anuncia con un mensaje de error: se anuncia con un *resultado precioso*. Un Sharpe que pondría celoso a Renaissance, una tasa de acierto por encima del 70%, un drawdown que no encuentras. Entrénate para sentir sospecha, no alegría, cuando un backtest es deslumbrante. El mercado es duro; si tus números dicen lo contrario, la explicación más probable es que estás puntuando una trampa.
+</Callout>
+
+El primer jinete (las etiquetas solapadas) es el sutil, el que sobrevive incluso a los investigadores cuidadosos, y al que esta lección dedica más munición. Conecta directamente con la **unicidad de las etiquetas** de la Lección 2: cuando las etiquetas se construyen sobre ventanas hacia adelante, *las muestras adyacentes no son independientes*, y esa no-independencia es justo lo que envenena la validación cruzada.
+
+<TsOverfitCurve
+  client:visible
+  caption="Así se siente la fuga desde dentro. A medida que 'mejoras' el modelo sobre datos que puede ver en secreto (arrastra el deslizador a la derecha), la curva de backtest in-sample sube para siempre: está memorizando la plantilla de respuestas. La curva en real out-of-sample sube brevemente y luego se desploma, porque la información filtrada no existe en producción. La brecha creciente entre las dos líneas ES el impuesto de la fuga, y se paga en dólares reales el día que sales a producción."
+  inSampleLabel="In-sample (backtest)"
+  outSampleLabel="Out-of-sample (en real)"
+  complexityLabel="Complejidad del modelo"
+  performanceLabel="Rendimiento"
+/>
+
+## Por qué falla la validación cruzada k-fold ordinaria
+
+**Repaso rápido.** La **validación cruzada (CV)** es cómo estimas lo bien que un modelo generaliza: divides los datos en *k* pliegues (folds), entrenas en *k*−1 de ellos, testeas en el que dejaste fuera, rotas para que cada pliegue tenga su turno como conjunto de test y promedias las puntuaciones. El **k-fold** estándar además *baraja* los datos primero, porque asume que cada muestra es **i.i.d.**: independiente e idénticamente distribuida, como canicas sacadas de una bolsa. Para fotos de gatos y perros, eso va bien. Para series temporales financieras, es una catástrofe, por dos razones independientes.
+
+**Razón 1 — barajar destruye la flecha del tiempo.** Los mercados están ordenados: la única pregunta honesta es "dado el pasado, ¿puedes predecir el futuro?". Barajar esparce muestras futuras dentro del conjunto de entrenamiento, así que el modelo aprende del viernes para predecir el lunes. En producción no puedes hacer eso: el viernes aún no ha ocurrido. Una puntuación de CV barajada responde a una pregunta que jamás podrás hacer en real.
+
+**Razón 2 — las etiquetas solapadas se filtran a través de la frontera entrenamiento/test, incluso SIN barajar.** Esta es la asesina, y es la razón por la que incluso una partición cuidadosa y *ordenada en el tiempo* sigue siendo inválida. Supón que tu etiqueta en el instante $t$ es el signo del rendimiento de los próximos 5 días, $[t, t+5]$. Ahora pon la frontera entrenamiento/test en el día 50. La muestra de entrenamiento del día 48 tiene una etiqueta calculada sobre los días $[48, 53]$, que **alcanza el período de test** (días 50+). Entrenamiento y test ahora comparten los mismos resultados futuros. El modelo no está prediciendo el conjunto de test; lo está *recordando*.
+
+**Ejemplo resuelto de la fuga en la frontera.** Horizonte de etiqueta $h = 5$ días. El pliegue de test comienza en el día 50. Toda muestra de entrenamiento del día 45 al 49 tiene una ventana de etiqueta que toca el día 50 o más allá:
+
+| Muestra de entrenamiento en el día | Ventana de etiqueta $[t, t+5]$ | ¿Se solapa con el test (día ≥ 50)? |
+|---|---|---|
+| 44 | [44, 49] | No — segura |
+| 45 | [45, 50] | **Sí** — toca el día 50 |
+| 47 | [47, 52] | **Sí** |
+| 49 | [49, 54] | **Sí** — solapamiento profundo |
+
+Cinco muestras de entrenamiento están silenciosamente enredadas con el pliegue de test. Sus etiquetas *son* los resultados del pliegue de test. La puntuación de CV que resulta es, en el sentido técnico, basura: un número precioso que no mide nada.
+
+<Callout variant="info" title="Por qué esto muerde específicamente en finanzas">
+En un conjunto de datos de gatos-frente-a-perros, la muestra 47 y la muestra 48 son fotos sin relación: barajar es inofensivo. En finanzas, la etiqueta de la muestra 47 y la de la muestra 48 se calculan a partir de *ventanas solapadas de la misma trayectoria de precios*, así que están correlacionadas por construcción. El supuesto i.i.d. que justifica el k-fold de toda la vida es sencillamente falso aquí, y toda conclusión construida sobre él es insegura.
+</Callout>
+
+<MCQ
+  client:visible
+  question="Ordenas tus datos en el tiempo (sin barajar) y ejecutas CV k-fold. Las etiquetas son el rendimiento a 10 días vista. ¿Por qué puede AÚN así filtrarse?"
+  options={[
+    { text: "Las muestras de entrenamiento a menos de 10 días del pliegue de test tienen ventanas de etiqueta que se solapan con el período de test, así que entrenamiento y test comparten resultados.", correct: true },
+    { text: "No puede filtrarse: en cuanto dejas de barajar y mantienes el orden temporal, el k-fold es perfectamente válido en series temporales." },
+    { text: "Solo se filtra si además olvidaste estandarizar las características antes de la partición." },
+    { text: "Se filtra porque los rendimientos a 10 días son más ruidosos que los de 1 día, lo que sesga el Sharpe al alza." }
+  ]}
+  explanation="Ordenar en el tiempo mata el problema del barajado, pero NO el problema del solapamiento. Una etiqueta construida sobre una ventana de 10 días vista alcanza 10 días en el futuro, así que cualquier muestra de entrenamiento a menos de 10 días de la frontera tiene una etiqueta que se solapa con el pliegue de test, compartiendo los mismísimos resultados que se están puntuando. El orden por sí solo es necesario pero no suficiente; también necesitas purgar."
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+/>
+
+## Purgado — cortar la fuga de resultados compartidos
+
+**Analogía.** De vuelta al examen. Si unas pocas preguntas del examen de prueba están *literalmente* en el final, no puedes estudiarlas: arrancas esas hojas del cuadernillo de prácticas. El **purgado** arranca exactamente las muestras de entrenamiento cuyas respuestas se solapan con el test.
+
+**Definición.** El purgado elimina del **conjunto de entrenamiento** cualquier muestra cuya *ventana de etiqueta se solape en el tiempo* con el lapso del pliegue de test. En concreto: si una muestra de entrenamiento en el instante $t$ tiene una etiqueta evaluada sobre $[t, t+h]$, y ese intervalo interseca el rango temporal del pliegue de test *por cualquiera de los dos lados*, descartas esa muestra del entrenamiento. Lo que sobrevive son datos de entrenamiento cuyos resultados son genuinamente disjuntos de los resultados del test: ningún futuro compartido, ninguna fuga.
+
+Esta es la consecuencia operativa directa del punto de **etiquetas solapadas / unicidad** de la Lección 2: como las etiquetas con visión de futuro hacen no-independientes a los vecinos, los vecinos *del pliegue de test* están contaminados y deben irse. El purgado es la lógica de la unicidad aplicada en la frontera de validación.
+
+**Ejemplo resuelto.** El pliegue de test abarca los días 50–60. Una muestra de entrenamiento está en el día 48 con una ventana de etiqueta de 5 días, cubriendo $[48, 53]$. ¿Se solapa con los días 50–60? Sí: el día 53 cae dentro del lapso de test. Así que el día 48 se **purga** del entrenamiento. Recórrelo por el vecindario:
+
+| Muestra de entrenamiento | Ventana de etiqueta (h = 5) | ¿Toca el lapso de test [50, 60]? | Acción |
+|---|---|---|---|
+| 44 | [44, 49] | No | Conservar |
+| 46 | [46, 51] | Sí (día 51) | **Purgar** |
+| 48 | [48, 53] | Sí (día 53) | **Purgar** |
+| 61 | [61, 66] | ¿El día 61 está en el lapso? No — el lapso termina el día 60… pero una muestra cuya ventana alcanza *hacia atrás* dentro del pliegue se purga también por el lado derecho |
+
+El purgado ocurre en **ambos** lados del bloque de test: las muestras justo antes de él (cuyas ventanas hacia adelante alcanzan dentro) y, simétricamente, las muestras cuyas ventanas alcanzan hacia atrás dentro de él. El gráfico de abajo te deja sentir esto directamente: arrastra el deslizador del **horizonte de etiqueta** hacia arriba y observa cómo la banda de purgado (discontinua) crece a ambos lados del pliegue de test naranja, comiéndose las celdas de entrenamiento.
+
+<PurgedCvSplit
+  client:visible
+  caption="El bloque naranja es el pliegue de test; las celdas grises discontinuas están PURGADAS. Arrastra el deslizador del 'Horizonte de etiqueta' hacia arriba para alargar la ventana de etiqueta hacia adelante de cada muestra, y observa cómo la banda de purgado se ensancha a ambos lados del pliegue de test: las etiquetas más largas se solapan con más vecinos, así que hay que arrancar más datos de entrenamiento para detener la fuga. Arrastra la 'Posición del pliegue de test' para deslizar el bloque apartado a lo largo del tiempo. Fíjate en el coste: cada celda purgada son datos de entrenamiento reales que sacrificas para mantener honesta la puntuación. Los horizontes de etiqueta largos no salen gratis."
+  trainLabel="Entrenamiento"
+  testLabel="Test"
+  purgeLabel="Purgado"
+  embargoLabel="Embargo"
+  positionLabel="Posición del pliegue de test"
+  labelSpanLabel="Horizonte de etiqueta"
+  title="Partición de CV purgada: purgado y embargo alrededor del pliegue de test"
+/>
+
+<FillBlank
+  client:visible
+  question="Rellena la mecánica del purgado."
+  text="El purgado elimina del conjunto de {{entrenamiento|test|validación}} cualquier muestra cuya {{ventana de etiqueta|precio bruto|símbolo de cotización}} se solape en el tiempo con el pliegue de test. Cuanto más largo sea el {{horizonte|spread|beta}} de la etiqueta, {{más|menos}} muestras hay que purgar, porque cada etiqueta alcanza más lejos en el futuro y por tanto se solapa con el lapso de test más a menudo."
+  explanation="Purgas del ENTRENAMIENTO (el pliegue de test queda intacto: es lo que puntúas). Lo que se solapa es la ventana de etiqueta. Y un horizonte más largo significa que cada etiqueta alcanza más adelante, solapándose con más vecinos cerca de la frontera, así que se purgan más muestras: el coste visible que viste en el gráfico."
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+/>
+
+## El embargo — matar la fuga que sobrevive al purgado
+
+**Analogía.** Arrancaste las preguntas de prueba que estaban literalmente en el final. Pero supón que las preguntas de prueba *justo después* de ellas revelaban el tema, la formulación, el truco. Aun sin compartir una respuesta, se filtran. Así que también te saltas unas pocas preguntas inmediatamente siguientes: una banda de cuarentena. Esa cuarentena es el **embargo**.
+
+**Definición.** Incluso después de purgar los solapamientos exactos de etiquetas, las características a menudo arrastran **correlación serial**: el valor de la característica de hoy está correlacionado con el de mañana (la volatilidad se agrupa, el momento persiste, la microestructura hace eco). Esa correlación deja que la información se filtre desde el pliegue de test hacia las muestras de entrenamiento *justo después* de él, más allá de la banda de purgado. El **embargo** descarta una pequeña banda adicional de observaciones de entrenamiento inmediatamente **después** del pliegue de test (normalmente alrededor del **1%** del total de observaciones) para absorber esa filtración.
+
+¿Por qué solo *después* y no antes? Porque la fuga que el embargo persigue fluye *hacia adelante* en el tiempo: la información del período de test se correlaciona serialmente con las muestras que le siguen. El purgado ya se ocupó del solapamiento de etiquetas que alcanza hacia atrás; el embargo se ocupa de la cola de correlación serial que alcanza hacia adelante.
+
+**Ejemplo resuelto — dimensionar un embargo.** Tienes $N = 10{,}000$ observaciones y eliges una fracción de embargo del 1%. Tamaño del embargo $= 0.01 \times 10{,}000 = 100$ observaciones. Así que después de que termine el pliegue de test (y después de cualquier banda de purgado por ese lado) borras las siguientes **100** muestras de entrenamiento. Si tus características tienen una memoria más larga (digamos una característica de volatilidad ponderada exponencialmente a 20 días cuya autocorrelación sigue siendo significativa a 20 días), y una muestra representa un día, empujarías el embargo a al menos esas 20 celdas, independientemente de la regla del 1%: ajusta el embargo a cuánto "recuerdan" de verdad tus características. En el gráfico de arriba, las celdas discontinuas más oscuras justo después del pliegue de test son el embargo; arrastra su deslizador para ensanchar o encoger esa banda de cuarentena.
+
+<Callout variant="tip" title="Purgado frente a embargo en un suspiro">
+El **purgado** elimina las muestras de entrenamiento cuyas *etiquetas* se solapan con el lapso de test: arregla la fuga de mirar-el-resultado-futuro, y va por *ambos* lados. El **embargo** elimina una pequeña banda *después* del pliegue de test: arregla la fuga de filtración-por-correlación-serial, y va por *un* lado. Fugas distintas, curas distintas. Casi siempre necesitas ambas.
+</Callout>
+
+<Categorize
+  client:visible
+  question="Clasifica cada práctica en 'Fuente de fuga' (infla en secreto tu backtest) o 'Práctica legítima' (mantiene honesta la validación)."
+  buckets={["Fuente de fuga", "Práctica legítima"]}
+  items={[
+    { text: "Ajustar el escalador de características (media/desv. típica) sobre el conjunto de datos completo antes de partir entrenamiento y test", bucket: "Fuente de fuga" },
+    { text: "Etiquetar muestras con una ventana de rendimiento hacia adelante que se solapa con el pliegue de test, y luego no purgar", bucket: "Fuente de fuga" },
+    { text: "Usar fundamentales reexpresados y reportados actualmente en lugar de valores point-in-time conocidos en la marca temporal", bucket: "Fuente de fuga" },
+    { text: "Hacer backtest solo sobre acciones que están en el índice hoy, descartando todos los nombres deslistados", bucket: "Fuente de fuga" },
+    { text: "Purgar las muestras de entrenamiento cuyas ventanas de etiqueta se solapan con el pliegue de test", bucket: "Práctica legítima" },
+    { text: "Aplicar un embargo de ~1% de las observaciones inmediatamente después del pliegue de test", bucket: "Práctica legítima" },
+    { text: "Ajustar el escalador solo sobre el pliegue de entrenamiento, y luego aplicarlo al pliegue de test", bucket: "Práctica legítima" }
+  ]}
+  explanation="Las fuentes de fuga comparten todas un rasgo: información que no existiría en el momento de la decisión se cuela en el entrenamiento (escalado sobre todo el conjunto, etiquetas solapadas sin purgar, fundamentales reexpresados y universos filtrados por supervivencia). Las prácticas legítimas restauran la honestidad: purgar, embargar y ajustar todo el preprocesado solo sobre los datos de entrenamiento."
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  instructions="Coloca cada elemento en su grupo."
+/>
+
+## Walk-forward y CV combinatoria purgada
+
+El purgado y el embargo hacen honesta una *única* partición. La pregunta que queda es *cómo organizar las particiones* para obtener una estimación fiable (e idealmente *robusta*) del rendimiento. Dominan dos esquemas.
+
+### Walk-forward
+
+El **walk-forward** es el más intuitivo: entrenas siempre sobre el pasado, testeas sobre el futuro inmediato y luego desplazas la ventana hacia adelante. Entrena ene–jun, testea jul; entrena ene–jul, testea ago; y así sucesivamente. Refleja el trading en real con exactitud: en cada punto de test, el modelo solo vio el pasado genuino.
+
+Ese realismo es su gran virtud y su gran limitación. Como testea sobre un único barrido cronológico, el walk-forward produce exactamente **un camino de backtest**: una única trayectoria histórica. También es **hambriento de datos** (los primeros períodos tienen pocos datos de entrenamiento) y de **alta varianza**: tu veredicto puede depender de si el único camino que casualmente recorriste incluyó el crash de 2020 o se lo saltó. Un camino, una historia, y los mercados son generosos con las historias engañosas.
+
+### Validación cruzada combinatoria purgada (CPCV)
+
+La **CPCV** (López de Prado) extiende el purgado a un diseño *combinatorio* que fabrica *muchos* caminos. Divide la línea temporal en $N$ grupos contiguos. En lugar de apartar un grupo cada vez, aparta **cada combinación de $k$ grupos** como conjunto de test, entrena (con purgado + embargo) sobre el resto y reensambla los grupos apartados en caminos de backtest. El número de particiones entrenamiento/test distintas es el coeficiente binomial
+
+$$\binom{N}{k} = \frac{N!}{k!\,(N-k)!}$$
+
+y estas se recombinan en toda una *familia* de caminos de backtest en lugar de uno solo.
+
+**Ejemplo resuelto.** Con $N = 6$ grupos y $k = 2$ apartados por partición, obtienes $\binom{6}{2} = 15$ particiones distintas. Estas se recombinan en **5 caminos de backtest completos** (la fórmula general da $\binom{N}{k} \cdot k / N = 15 \cdot 2/6 = 5$ caminos). Cinco trayectorias en lugar de una. Ahora no obtienes un único Sharpe: obtienes una **distribución** de Sharpes, con una media *y una dispersión*. Esa dispersión es el oro: te dice cuánto depende tu resultado de qué porción de la historia te tocó testear.
+
+Esa distribución es exactamente la materia prima para estimar la **probabilidad de sobreajuste del backtest (PBO)**: a grandes rasgos, con qué frecuencia la estrategia que parecía mejor in-sample no acaba siendo la mejor out-of-sample. Guarda ese pensamiento; es la columna vertebral de la siguiente lección.
+
+| Esquema | Realismo (¿coincide con el real?) | N.º de caminos de backtest | Eficiencia de datos | ¿A salvo de fugas? |
+|---|---|---|---|---|
+| k-fold de toda la vida (barajado) | Ninguno — entrena sobre el futuro | 1 (promediado) | Alta | **No** — barajar + solapamiento, ambos filtran |
+| Walk-forward | Alto — estrictamente pasado → futuro | 1 | Baja (primeros períodos famélicos) | Sí, si se purga en la frontera |
+| CPCV | Alto — cada pliegue testea datos no vistos | Muchos ($\binom{N}{k}\cdot k/N$) | Alta — cada grupo entrena y testea | Sí — purgado + embargo incorporados |
+
+<Callout variant="info" title="Por qué una distribución gana a una estimación puntual">
+El walk-forward te entrega un número y te reta a confiar en él. La CPCV te entrega un *histograma*: un Sharpe medio y, crucialmente, su variabilidad entre caminos. Una estrategia con Sharpe medio 1,5 pero una dispersión de camino a camino de −0,5 a 3,0 es un animal muy distinto (y más aterrador) que una agrupada estrechamente en torno a 1,3. La estimación puntual esconde el riesgo; la distribución lo muestra, y te deja preguntar "¿qué probabilidad había de que esto fuera solo suerte?".
+</Callout>
+
+<MatchConcepts
+  client:visible
+  question="Empareja cada concepto de validación con lo que hace."
+  pairs={[
+    { term: "Purgado", definition: "Descarta las muestras de entrenamiento cuyas ventanas de etiqueta se solapan con el lapso del pliegue de test (por ambos lados) para detener la fuga de resultados compartidos." },
+    { term: "Embargo", definition: "Descarta una pequeña banda de muestras de entrenamiento justo DESPUÉS del pliegue de test para absorber la filtración por correlación serial que el purgado pasa por alto." },
+    { term: "Walk-forward", definition: "Entrena estrictamente sobre el pasado y testea sobre el futuro inmediato; máximamente realista pero solo produce un único camino de backtest." },
+    { term: "CPCV", definition: "Aparta cada combinación de k de N grupos (con purgado + embargo) para generar muchos caminos de backtest y una distribución de rendimiento." }
+  ]}
+  explanation="El purgado y el embargo son los dos detenedores de fugas (solapamiento de etiquetas por ambos lados; filtración por correlación serial después). El walk-forward y la CPCV son las dos organizaciones: un único camino realista frente a muchos caminos y una distribución completa."
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  allCorrectLabel="✓ Todo emparejado"
+  termsLabel="Términos"
+  definitionsLabel="Definiciones"
+/>
+
+<MCQ
+  client:visible
+  question="Un compañero reporta un Sharpe de walk-forward de 1,8 y declara la estrategia 'validada'. ¿Cuál es la limitación más fuerte de fiarse de este único número?"
+  options={[
+    { text: "Descansa sobre un único camino histórico, así que es de alta varianza: el veredicto podría darse la vuelta según qué régimen incluyera por casualidad ese único barrido.", correct: true },
+    { text: "El walk-forward es inherentemente fugaz, así que el 1,8 está garantizado que esté inflado por etiquetas solapadas." },
+    { text: "El walk-forward usa demasiados datos de entrenamiento, lo que siempre sobreajusta y sesga el Sharpe al alza." },
+    { text: "Un Sharpe de 1,8 es imposible out-of-sample, así que el resultado debe ser un error de programación." }
+  ]}
+  explanation="El walk-forward, correctamente purgado, no es fugaz: su debilidad es que produce un único camino de backtest y por tanto es de alta varianza. Un número no puede decirte cuán dependiente es el resultado de la porción concreta de historia testeada. Los muchos caminos de la CPCV te dan la distribución (y la dispersión) que un número de walk-forward solitario esconde."
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+/>
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Comprobación rápida: con N = 10 grupos y k = 2 apartados por partición, ¿cuántas particiones CPCV distintas obtienes, y aproximadamente cuántos caminos de backtest?</summary>
+
+Particiones distintas: $\binom{10}{2} = \frac{10 \cdot 9}{2} = 45$. Caminos de backtest: $\binom{N}{k}\cdot k / N = 45 \cdot 2 / 10 = 9$ caminos. Así que un único conjunto de datos da **45 combinaciones de entrenamiento/test que se recombinan en 9 trayectorias de backtest completas**: nueve lecturas casi independientes de tu estrategia en lugar del camino solitario que daría el walk-forward. Nueve Sharpes, una media y una dispersión sobre la que de verdad puedes razonar.
+
+</details>
+</Reveal>
+
+## Juntándolo todo
+
+La fuga es la razón por la que los backtests mienten, y casi siempre es una de cuatro cosas: etiquetas solapadas que alcanzan a través de la frontera entrenamiento/test, características con visión de futuro que usan datos que aún no existían, preprocesado ajustado sobre el conjunto de datos completo, o un universo filtrado por supervivencia. El k-fold ordinario está doblemente descalificado en las series temporales financieras: barajar deja que el modelo entrene sobre el futuro, y las etiquetas solapadas se filtran a través de la frontera incluso cuando *no* barajas. Las soluciones son concretas: **purga** las muestras de entrenamiento cuyas ventanas de etiqueta se solapan con el pliegue de test (ambos lados), **embarga** una pequeña banda justo después de él para matar la filtración por correlación serial, y organiza tus particiones como **walk-forward** (un camino realista) o **CPCV** (muchos caminos, una distribución completa). Confía en la puntuación que sobrevivió a todo eso, y mantente receloso de la preciosa que no.
+
+<MindMap
+  client:visible
+  title="Fugas y CV purgada de un vistazo"
+  caption="Desde las cuatro fuentes de fuga, pasando por por qué el k-fold se rompe, hasta el purgado, el embargo y la elección entre walk-forward y CPCV."
+  eyebrow="Visión de conjunto"
+  outlineLabel="Esquema"
+  root={{
+    label: 'Fugas y CV purgada',
+    children: [
+      { label: 'Qué es la fuga', children: [
+        { label: 'Info del futuro/test al entrenamiento → puntuación inflada' },
+        { label: '1. Etiquetas solapadas (la ventana hacia adelante invade el test)' },
+        { label: '2. Características look-ahead (reexpresadas vs point-in-time)' },
+        { label: '3. Preprocesado sobre todo el conjunto (escalar/seleccionar/imputar)' },
+        { label: '4. Sesgo de supervivencia (solo quedan los ganadores)' }
+      ]},
+      { label: 'Por qué falla el k-fold', children: [
+        { label: 'Barajar entrena sobre el futuro para predecir el pasado' },
+        { label: 'Las etiquetas solapadas se filtran en la frontera, incluso sin barajar' },
+        { label: 'El supuesto i.i.d. es falso en series temporales' }
+      ]},
+      { label: 'Las soluciones', children: [
+        { label: 'Purgado: descarta muestras de entr. cuya etiqueta se solapa con el test (ambos lados)' },
+        { label: 'Embargo: descarta una banda de ~1% justo DESPUÉS del test (corr. serial)' }
+      ]},
+      { label: 'Organizar las particiones', children: [
+        { label: 'Walk-forward: pasado→futuro, realista, UN camino, alta varianza' },
+        { label: 'CPCV: muchas combinaciones → distribución de caminos' },
+        { label: 'Alimenta la probabilidad de sobreajuste del backtest (Lección 4)' }
+      ]}
+    ]
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Fugas y CV purgada: fíjalo"
+  questions={[
+    {
+      question: "Tu etiqueta en el instante t es el rendimiento a 8 días vista, [t, t+8]. El pliegue de test abarca los días 100–120. ¿Qué muestra de entrenamiento DEBE purgarse?",
+      options: [
+        { text: "El día 95 — su ventana de etiqueta [95, 103] alcanza el lapso de test (día 100+), compartiendo resultados con el pliegue de test.", correct: true },
+        { text: "El día 88 — su ventana de etiqueta [88, 96] termina antes del día 100, así que es segura y no necesita purgarse." },
+        { text: "El día 130 — viene después del pliegue de test, así que lo maneja el embargo, nunca el purgado." },
+        { text: "Ninguna muestra necesita purgarse, porque los datos ya están ordenados en el tiempo." }
+      ],
+      explanation: "La etiqueta del día 95 cubre [95, 103], que se solapa con el lapso de test que empieza en el día 100: resultados compartidos, así que debe purgarse. La ventana del día 88 termina en 96 (segura). El día 130 es posterior al pliegue (territorio de embargo, y solo si la correlación serial lo alcanza). El orden temporal por sí solo nunca elimina la fuga de solapamiento."
+    },
+    {
+      question: "¿Qué arregla específicamente el embargo que el purgado NO arregla?",
+      options: [
+        { text: "La filtración por correlación serial desde el período de test hacia las muestras de entrenamiento justo DESPUÉS de él, donde las características siguen correlacionadas incluso sin etiquetas compartidas.", correct: true },
+        { text: "Las ventanas de etiqueta que se solapan con el pliegue de test por el lado ANTERIOR a él — ese es el trabajo del purgado, repetido." },
+        { text: "El sesgo de supervivencia, reañadiendo acciones deslistadas al universo de entrenamiento." },
+        { text: "El barajado, restaurando el orden temporal original de las muestras." }
+      ],
+      explanation: "El purgado elimina los solapamientos de etiquetas compartidas (ambos lados). El embargo apunta a una fuga distinta: las características arrastran correlación serial, así que la información del período de test se filtra hacia adelante a las muestras justo después del pliegue incluso cuando no se comparte ninguna etiqueta. El embargo (una pequeña banda, ~1%, después del pliegue) absorbe esa filtración."
+    },
+    {
+      question: "¿Por qué es inválido el k-fold BARAJADO ordinario en series temporales financieras, más allá del problema de las etiquetas solapadas?",
+      options: [
+        { text: "Barajar mezcla muestras futuras dentro del entrenamiento, dejando que el modelo aprenda del futuro para predecir el pasado — imposible en el trading en real.", correct: true },
+        { text: "Barajar reduce el número de pliegues, lo que mecánicamente baja el ratio de Sharpe." },
+        { text: "Barajar va bien en series temporales mientras las etiquetas sean de un solo período (sin ventana hacia adelante)." },
+        { text: "Barajar aumenta los costes de transacción, lo que sesga el backtest a la baja." }
+      ],
+      explanation: "Independientemente del solapamiento de etiquetas, barajar destruye el orden temporal, así que los datos de entrenamiento incluyen muestras posteriores al punto de test: el modelo entrena sobre el futuro. En real, el futuro no ha ocurrido. Por eso las finanzas exigen particiones ordenadas en el tiempo Y purgado; barajar por sí solo ya es descalificante."
+    },
+    {
+      question: "¿Cuál es la principal ventaja práctica de la CPCV frente a la validación walk-forward?",
+      options: [
+        { text: "Genera muchos caminos de backtest, dando una DISTRIBUCIÓN de rendimiento (media y dispersión) en lugar de un único número de alta varianza.", correct: true },
+        { text: "Elimina la necesidad de purgado y embargo, porque las combinaciones cancelan la fuga." },
+        { text: "Garantiza un ratio de Sharpe más alto que el walk-forward al promediar sobre más pliegues." },
+        { text: "Entrena solo sobre los datos más recientes, haciéndola más sensible a los cambios de régimen." }
+      ],
+      explanation: "La CPCV aparta cada combinación de k de N grupos (igualmente purgada y embargada) y las recombina en muchos caminos de backtest, así que obtienes una distribución, no un número. Esa dispersión revela cuán dependiente de la suerte es el resultado, y es exactamente lo que alimenta la estimación de la probabilidad de sobreajuste del backtest. NO reemplaza el purgado/embargo; se construye sobre ellos."
+    }
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  nextLabel="Siguiente"
+  seeResultsLabel="Ver resultados"
+  backLabel="Atrás"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  completeTitleLabel="Cuestionario completado"
+  correctCountLabel="correctas"
+  gateLabel="Comprueba tu respuesta para continuar."
+/>
+
+Ahora sabes cómo hacer *honesta* una puntuación de validación, pero la honestidad no es lo mismo que la *robustez*. Incluso con un purgado, un embargo y una CPCV impecables, hay una trampa más profunda: prueba suficientes estrategias sobre la misma historia y una parecerá espectacular por puro azar, igual que el mono millonésimo acaba tecleando un ratio de Sharpe coherente. Eso es el **sesgo de selección bajo pruebas múltiples**, y es lo que hace que el backtest *de mejor aspecto* sea el *más* probable de decepcionar. La distribución de caminos de la CPCV es precisamente la herramienta que nos deja medirlo. A continuación, la Lección 4 — **Sobreajuste del backtest y el Sharpe deflactado** — donde ponemos un número a cuánto de tu precioso backtest es habilidad y cuánto es el mono.

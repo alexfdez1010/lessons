@@ -1,0 +1,435 @@
+---
+title: "Modelos, ensembles e importancia de variables"
+description: "Elegir y domar modelos para datos de baja señal: modelos lineales frente a ensembles de árboles, por qué la regularización y el ensembling (bagging y boosting) se ganan su sitio cuando los datos son casi todo ruido, y cómo leer la importancia de variables MDI y MDA sin dejarte engañar por ellas."
+topic: "es/machine-learning-for-alpha"
+order: 5
+minutes: 15
+updated: 2026-06-17
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, ShrinkageEstimator, DiversificationDecay } from '@/components/react';
+
+En la mayor parte del machine learning, los datos son generosos. Enséñale a un modelo un millón de fotos de gatos etiquetadas y la *relación señal-ruido* (SNR, por *signal-to-noise ratio*) —cuánto de los datos es patrón real y repetible frente a basura aleatoria— es enorme: un gato es un gato, los píxeles no mienten, y una red neuronal lo bastante hambrienta memoriza el universo felino entero y aun así generaliza. Los rendimientos financieros son justo el tipo de datos opuesto. El rendimiento de mañana de una acción es quizá un **1% de señal y un 99% de ruido**, y la señal ni siquiera es estacionaria: decae, muta y se arbitra hasta desaparecer en cuanto demasiada gente la encuentra.
+
+Ese único hecho reescribe todos los instintos de modelado que importaste de la visión por ordenador. El modelo llamativo y ultraflexible que gana las clasificaciones de Kaggle con datos limpios, sobre rendimientos, memorizará amorosamente el ruido y se estrellará fuera de muestra. Esta lección va de elegir modelos que *sobrevivan* a ese entorno: cuándo preferir un humilde modelo lineal a un bosque de árboles, por qué la **regularización** y el **ensembling** dejan de ser opcionales, y cómo leer qué variables importan sin engañarte a ti mismo. Aquí, más simple no es una concesión: es la estrategia entera.
+
+<MCQ
+  client:visible
+  pretest
+  question="Estás modelando rendimientos diarios de acciones, donde aproximadamente el 1% de la variación es señal real y el 99% es ruido. Tienes dos candidatos: un árbol de decisión de profundidad 20 que ajusta el conjunto de entrenamiento casi a la perfección, y una regresión ridge que solo lo ajusta de forma laxa. ¿Cuál es la mejor apuesta fuera de muestra, y por qué?"
+  options={[
+    { text: "La regresión ridge: con datos de baja relación señal-ruido, el modelo regularizado y de ajuste laxo generaliza; el árbol profundo ha memorizado el ruido.", correct: true },
+    { text: "El árbol de profundidad 20: un ajuste casi perfecto en entrenamiento significa que ha captado el patrón verdadero mejor que el modelo ridge." },
+    { text: "Rendirán de forma idéntica fuera de muestra, ya que ambos se entrenaron con los mismos datos." },
+    { text: "El árbol de profundidad 20, porque los árboles siempre baten a los modelos lineales con datos financieros." }
+  ]}
+  explanation="Un ajuste casi perfecto dentro de muestra sobre datos que son un 99% ruido es una señal de alarma, no un trofeo: el árbol ajustó el ruido, que no se repetirá. El modelo lineal regularizado se niega adrede a perseguir cada ondulación, cambiando un poco de precisión dentro de muestra por una varianza muchísimo menor, y suele ganar fuera de muestra. Con datos de baja SNR, 'ajusta el conjunto de entrenamiento a la perfección' significa 'sobreajustado'."
+/>
+
+## Modelos lineales frente a árboles con datos de baja señal
+
+**Analogía.** Imagina a dos estudiantes empollando para un examen con un libro de texto plagado de erratas. El primero aprende los *conceptos*: capta las ideas principales del libro, pero se encoge de hombros ante las erratas. El segundo memoriza el libro *al pie de la letra*, erratas incluidas, y borda un test sacado de esas páginas exactas. Luego llega el examen de verdad, sacado de una fuente nueva y correctamente escrita. El que aprendió conceptos lo hace bien; el memorizador, que aprendió las erratas como si fueran hechos, se hunde. Los datos financieros son el libro plagado de erratas, las erratas son el ruido, y el memorizador es tu modelo sobreajustado.
+
+**El equilibrio sesgo-varianza (repaso).** El error esperado fuera de muestra de todo modelo se descompone en tres piezas:
+
+$$\mathbb{E}\big[(y - \hat{f}(x))^2\big] = \underbrace{\big(\text{Sesgo}[\hat{f}]\big)^2}_{\text{demasiado rígido}} + \underbrace{\text{Var}[\hat{f}]}_{\text{demasiado nervioso}} + \underbrace{\sigma^2_{\varepsilon}}_{\text{ruido irreducible}}$$
+
+- **Sesgo (bias):** el error de que el modelo sea demasiado simple para captar la relación verdadera (una línea recta intentando trazar una curva). Sesgo alto = *infraajuste* (underfitting).
+- **Varianza (variance):** cuánto *saltaría* el modelo ajustado si lo reentrenaras con una muestra distinta. Un modelo flexible persigue el ruido, así que una muestra nueva produce un ajuste radicalmente distinto. Varianza alta = *sobreajuste* (overfitting).
+- **Ruido irreducible** $\sigma^2_{\varepsilon}$: la parte que nunca podrás predecir. Sobre rendimientos, este término es *enorme*.
+
+Más flexibilidad (árboles más profundos, redes más grandes, más variables) baja el sesgo pero sube la varianza, y hay un punto óptimo. **Dónde se sitúa depende enteramente de la SNR.** Con datos limpios y de alta SNR el ruido irreducible es pequeño, así que la flexibilidad compensa: lleva el sesgo a cero y la varianza que recoges merece la pena. Sobre rendimientos, donde $\sigma^2_{\varepsilon}$ empequeñece a la señal, *cualquier* varianza que añadas es casi puro ajuste de ruido, así que el óptimo se desliza con fuerza hacia el extremo simple, de alto sesgo y baja varianza.
+
+**Definiciones: las dos familias de modelos.**
+
+- **Modelo lineal.** Predice una suma ponderada de variables: $\hat{y} = \beta_0 + \beta_1 x_1 + \dots + \beta_p x_p$. Rígido (solo puede trazar hiperplanos, nunca se dobla), así que tiene *sesgo alto* pero, por naturaleza, *baja varianza*. Pocos parámetros que retocar significa poco margen para memorizar ruido.
+- **Árbol de decisión.** Parte repetidamente los datos según umbrales de las variables ("si el momentum > 0,3 y la volatilidad < 0,2, predice +0,4%"). Trocea el espacio de variables en cajas, así que capta la **no linealidad** (relaciones curvas) y las **interacciones** (la variable A solo importa cuando la variable B es alta) gratis. Pero un árbol profundo puede aislar cada punto de entrenamiento en su propia hoja: *sesgo cero, varianza catastrófica*. Los árboles sobreajustan a la mínima.
+
+**Ejemplo resuelto: árbol demasiado profundo frente a ridge.** Tienes 500 días de datos y una única variable genuinamente útil (la reversión a la media de la semana pasada), enterrada en ruido. Ajustas dos modelos.
+
+| Modelo | R² dentro de muestra | R² fuera de muestra | Qué pasó |
+|---|---|---|---|
+| Árbol de decisión de profundidad 20 | 0,98 | −0,04 | Troceó los 500 días en hojas minúsculas, ajustando el ruido de cada día. Perfecto sobre el pasado, *peor que adivinar la media* sobre el futuro (R² negativo). |
+| Regresión ridge | 0,06 | 0,02 | Se negó a perseguir ondulaciones; captó solo la fina señal fiable. Modesto sobre el pasado, pero el 0,02 que encontró fuera de muestra es *real* y operable. |
+
+El R² dentro de muestra de 0,98 del árbol es la trampa. No aprendió el mercado; aprendió esos 500 días exactos, erratas incluidas. El poco glamuroso 0,02 fuera de muestra del modelo ridge vale infinitamente más que el glamuroso −0,04 del árbol, porque en finanzas solo te pagan fuera de muestra. Los árboles *pueden* ganar sobre rendimientos, pero solo cuando se les frena con dureza (poco profundos, en ensembles, regularizados: el resto de esta lección).
+
+<Callout variant="tip" title="Más simple es una virtud, no una concesión">
+Con datos de mucho ruido, la complejidad del modelo es un pasivo que pagas en varianza. El reflejo del ML de datos limpios —"échale un modelo más grande"— es exactamente lo contrario de lo que toca aquí. Un modelo lineal regularizado o un ensemble *poco profundo* no es el premio de consolación que aceptas cuando la red profunda no converge; con frecuencia es la respuesta *correcta*. Empieza simple, y haz que cualquier complejidad añadida se *gane* su sitio mejorando el rendimiento fuera de muestra, no el de dentro de muestra.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Completa el razonamiento sesgo-varianza para datos de baja SNR."
+  text="Sobre rendimientos financieros el {{ruido irreducible|término de sesgo|ritmo de aprendizaje}} es enorme, así que el modelo óptimo se sitúa hacia el extremo de {{alto sesgo y baja varianza|bajo sesgo y alta varianza|sesgo cero}}. Un árbol de profundidad 20 tiene un sesgo muy {{bajo|alto|nulo}} pero una varianza muy {{alta|baja|negativa}}, así que memoriza el ruido y el óptimo se desplaza hacia modelos más simples."
+  explanation="El término de ruido irreducible domina los rendimientos, así que la flexibilidad extra te compra casi pura varianza (ajuste de ruido) con poca reducción de sesgo a cambio. Los árboles profundos son de bajo sesgo / alta varianza —el lado equivocado del equilibrio aquí—, lo que empuja el punto dulce hacia modelos simples y regularizados."
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+/>
+
+## Regularización: gravar la complejidad
+
+**Analogía.** La regularización es un *impuesto a la complejidad*. Sin gravar, un modelo gastará sus coeficientes a manos llenas, comprándose una mansión elaborada de ondulaciones para ajustar cada punto de datos, ruido incluido. Ponle un impuesto al tamaño de los coeficientes y de repente el modelo se vuelve frugal: solo "gasta" en variables que genuinamente arriman el hombro, y encoge el resto hacia cero. Cedes un poco de ajuste (sesgo) y recuperas *mucha* estabilidad (varianza). Sobre datos ruidosos eso es un trato fantástico.
+
+**Definición / objetivo.** Los mínimos cuadrados ordinarios minimizan solo el error cuadrático. La regularización *añade una penalización* sobre el tamaño de los coeficientes $\beta$:
+
+- **Ridge (L2).** Penaliza la suma de coeficientes *al cuadrado*. Encoge suavemente cada coeficiente hacia cero, pero nunca exactamente a cero.
+
+$$\hat{\beta}^{\text{ridge}} = \arg\min_{\beta}\ \sum_{i=1}^{n}\big(y_i - x_i^\top\beta\big)^2 + \lambda \sum_{j=1}^{p}\beta_j^2$$
+
+- **Lasso (L1).** Penaliza la suma de coeficientes *en valor absoluto*. Encoge *y selecciona*: lleva los coeficientes débiles exactamente a cero, realizando una selección automática de variables.
+
+$$\hat{\beta}^{\text{lasso}} = \arg\min_{\beta}\ \sum_{i=1}^{n}\big(y_i - x_i^\top\beta\big)^2 + \lambda \sum_{j=1}^{p}|\beta_j|$$
+
+- **Elastic net.** Una mezcla de ambas penalizaciones ($\lambda_1\sum|\beta_j| + \lambda_2\sum\beta_j^2$): obtiene la selección del lasso más la estabilidad del ridge cuando las variables están correlacionadas (el lasso solo elige arbitrariamente una de un grupo correlacionado; el término L2 reparte la carga).
+
+El mando $\lambda$ (lambda) fija el tipo impositivo. $\lambda = 0$ es OLS pelado (sin impuesto, riesgo de sobreajuste total); $\lambda \to \infty$ aplasta todos los coeficientes a cero (puro sesgo, ignora los datos). Ajustas $\lambda$ por validación cruzada, y sobre rendimientos el óptimo validado suele ser *agresivo*.
+
+**El análogo en árboles.** Los árboles no tienen coeficientes, así que los regularizas de forma estructural: limita cuán complejo puede llegar a ser un árbol individual:
+
+- **`max_depth`**: limita cuántas particiones de profundidad puede alcanzar un árbol (los árboles poco profundos no pueden aislar puntos individuales).
+- **`min_samples_leaf`**: exige que cada hoja contenga al menos, pongamos, 50 muestras, para que ninguna hoja se ajuste a un solo día afortunado.
+- **`max_features`**: deja que cada partición solo considere un subconjunto aleatorio de variables (también la clave de los random forests, más abajo).
+- **Parada temprana (early stopping):** en boosting, detén el entrenamiento en cuanto el error de validación deja de mejorar, antes de que empiece a ajustar ruido.
+
+**Ejemplo resuelto: ridge encogiendo un coeficiente ruidoso.** Supón que la variable $x_3$ es puro ruido, pero en tu muestra de 500 días *resultó* correlacionar con los rendimientos, así que OLS le entrega un coeficiente de $\beta_3 = 0,40$. Fuera de muestra, ese 0,40 es un pasivo: $x_3$ no tiene poder predictivo real, así que cada vez que $x_3$ se mueve el modelo hace un ajuste confiado y equivocado. Ridge con un $\lambda$ moderado lo encoge hacia cero:
+
+| Coeficiente | OLS (sin penalización) | Ridge (λ moderado) | Efecto fuera de muestra |
+|---|---|---|---|
+| $\beta_3$ (variable de ruido) | 0,40 | 0,05 | Casi cero, así que los movimientos espurios de $x_3$ apenas sacuden la predicción |
+| $\beta_1$ (señal real) | 0,30 | 0,26 | Ligeramente encogido pero aún haciendo su trabajo |
+
+Al gravar $\beta_3$ de 0,40 a 0,05, ridge impide que el modelo apueste por una casualidad. La señal real $\beta_1$ también se lleva un pequeño recorte (0,30 → 0,26) —ese es el sesgo que pagas—, pero la varianza que ahorras en el coeficiente de ruido más que compensa, y el error fuera de muestra baja.
+
+<ShrinkageEstimator
+  client:visible
+  title="La regularización encoge las estimaciones ruidosas hacia un ancla"
+  shrinkageLabel="Fuerza de regularización (≈ λ)"
+  anchorLabel="Objetivo de encogimiento (0)"
+  rawLabel="Coeficiente OLS (ruidoso)"
+  shrunkLabel="Coeficiente ridge (encogido)"
+  rawSpreadLabel="Dispersión OLS"
+  shrunkSpreadLabel="Dispersión ridge"
+  prior={0}
+  assets={[
+    { label: 'x₁ señal', raw: 0.18 },
+    { label: 'x₂ débil', raw: 0.07 },
+    { label: 'x₃ ruido', raw: 0.16 },
+    { label: 'x₄ ruido', raw: -0.04 },
+    { label: 'x₅ ruido', raw: 0.11 }
+  ]}
+  caption="Cada punto es un coeficiente estimado. Sin regularización (izquierda), las variables de ruido (x₃–x₅) heredan coeficientes grandes y confiados a partir de casualidades de la muestra. Sube la fuerza y todos los coeficientes son arrastrados hacia cero (el ancla): los espurios colapsan más rápido porque no tenían señal real que los sostuviera. Esa compresión es exactamente la reducción de varianza que gana fuera de muestra." />
+
+<Callout variant="warning" title="Trampa — estandariza antes de penalizar">
+Ridge y lasso penalizan el *tamaño* de los coeficientes, pero el tamaño del coeficiente depende de las unidades de la variable. Una variable medida en puntos básicos recibe un coeficiente minúsculo; la misma variable en decimales recibe uno enorme, y la penalización los machacaría de forma desigual sin ninguna buena razón. **Estandariza siempre las variables** (media cero, varianza unitaria) antes de ajustar un modelo penalizado, o tu regularización castigará en secreto a las variables por su escala de medida en lugar de por su irrelevancia.
+</Callout>
+
+<MCQ
+  client:visible
+  question="Ajustas lasso y ridge al mismo modelo de rendimientos con 40 variables. El lasso devuelve 8 coeficientes no nulos; ridge devuelve 40 pequeños. Un colega dice 'son lo mismo con una penalización distinta'. ¿Cuál es la diferencia práctica clave?"
+  options={[
+    { text: "La penalización L1 del lasso lleva los coeficientes débiles exactamente a cero, así que selecciona variables; la L2 del ridge solo los encoge, conservando las 40.", correct: true },
+    { text: "Ridge selecciona variables y el lasso solo las encoge; por eso ridge devolvió menos coeficientes no nulos." },
+    { text: "No hay diferencia real: ambos devuelven siempre el mismo conjunto de coeficientes no nulos para un λ dado." },
+    { text: "El lasso sube la varianza mientras que ridge sube el sesgo, así que el lasso es estrictamente peor con datos ruidosos." }
+  ]}
+  explanation="L1 (lasso) tiene esquinas en cero en su región de restricción, así que el óptimo cae a menudo exactamente sobre cero para las variables débiles: selección automática, aquí conservando solo 8. L2 (ridge) encoge suavemente pero esencialmente nunca a exactamente cero, así que las 40 sobreviven como coeficientes pequeños. Cuando las variables están correlacionadas, elastic net mezcla ambas: selección al estilo lasso con estabilidad al estilo ridge."
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+/>
+
+## Ensembling — bagging (matar la varianza)
+
+**Analogía.** Pídele a un único experto algo achispado que adivine cuántas gominolas hay en un tarro y obtendrás una respuesta disparatada. Pídeselo a *quinientos* adivinos independientes y promedia, y la media de la multitud es asombrosamente precisa: los errores individuales, al ser aleatorios e incorrelacionados, se cancelan. **Bagging** (de *bootstrap aggregating*) es justo esto: construye muchos modelos de alta varianza, cada uno un poco equivocado en su propia dirección aleatoria, y *promédialos*. La señal compartida se refuerza; el ruido independiente se cancela.
+
+**Definición / fórmula.** Entrena $B$ modelos, cada uno sobre una *muestra bootstrap* distinta (un remuestreo aleatorio con reemplazo de tus datos), y luego promedia sus predicciones. Si cada modelo tiene varianza $\sigma^2$ y los modelos están **mutuamente incorrelacionados**, la varianza de la media es:
+
+$$\text{Var}\Big(\tfrac{1}{B}\sum_{b=1}^{B}\hat{f}_b\Big) = \frac{\sigma^2}{B}$$
+
+Así que la *desviación típica* del ensemble cae como $\sigma/\sqrt{B}$: exactamente la misma ley de diversificación $1/\sqrt{N}$ que impulsa un libro de stat-arb basado en la amplitud. Más aprendices descorrelacionados → menos varianza, sin sesgo extra. Estás diversificando entre *modelos* en lugar de entre operaciones, pero son las mismas matemáticas.
+
+**El truco, y el arreglo del random forest.** Ese limpio $\sigma^2/B$ solo se cumple si los modelos están incorrelacionados. Las muestras bootstrap se solapan mucho, así que los árboles entrenados con ellas salen *parecidos* —fuertemente correlacionados—, y los aprendices correlacionados apenas diversifican (igual que las apuestas correlacionadas en una cartera). Con una correlación media por pares $\rho$ entre los $B$ árboles, la varianza del ensemble es en realidad:
+
+$$\text{Var}(\text{ensemble}) = \rho\,\sigma^2 + \frac{1-\rho}{B}\,\sigma^2$$
+
+A medida que $B \to \infty$ el segundo término se desvanece, pero el primero, $\rho\sigma^2$, *no*: la correlación pone un suelo duro a cuánta varianza puedes cancelar. Los **random forests** atacan ese suelo directamente: en cada partición, cada árbol solo puede considerar un *subconjunto aleatorio* de variables (`max_features`). Esto obliga a árboles distintos a apoyarse en señales distintas, **descorrelacionándolos** de forma mecánica: empuja $\rho$ a la baja para que el término $\frac{1-\rho}{B}\sigma^2$ realmente se encoja. La descorrelación, no el bootstrap, es la magia de verdad.
+
+**Ejemplo resuelto: varianza de una media.** Cada árbol tiene varianza $\sigma^2 = 1,0$. Promedia $B = 100$ de ellos.
+
+| Escenario | Corr. por pares ρ | Varianza del ensemble $= \rho\sigma^2 + \frac{1-\rho}{B}\sigma^2$ | Recorte de varianza |
+|---|---|---|---|
+| Perfectamente independientes | 0,00 | $0 + \tfrac{1}{100} = 0,010$ | 100× — $1/B$ completo |
+| Levemente correlacionados (bagging simple) | 0,30 | $0,30 + \tfrac{0,70}{100} = 0,307$ | ~3,3× — suelo en 0,30 |
+| Descorrelacionados (random forest) | 0,05 | $0,05 + \tfrac{0,95}{100} = 0,060$ | ~17× — la mayor parte del beneficio recuperada |
+
+Lee las filas: los árboles correlacionados del bagging simple ($\rho = 0,30$) chocan contra un muro: incluso con infinitos árboles, la varianza no puede bajar de 0,30. La aleatorización de variables del random forest recorta $\rho$ a 0,05, bajando el suelo a casi 0,06 y recuperando la mayor parte de la diversificación. *Los árboles correlacionados no diversifican*: por eso un bosque aleatoriza variables, no solo filas.
+
+<DiversificationDecay
+  client:visible
+  title="Bagging: la varianza del ensemble cae como 1/√B — hasta que la correlación la frena"
+  holdingsLabel="Número de árboles (B)"
+  riskLabel="Error del ensemble (desv. típica)"
+  systematicLabel="Suelo de correlación (√ρ · σ)"
+  idiosyncraticLabel="Varianza del modelo diversificable"
+  singleStockVol={40}
+  systematicFloor={9}
+  maxHoldings={30}
+  caption="Añade árboles descorrelacionados de uno en uno y el error del ensemble se desploma rápido: la ley del 1/√B, idéntica a diversificar entre operaciones independientes. Pero fíjate en el suelo sobre el que se aplana: ese es √ρ·σ, la correlación residual entre árboles que ninguna cantidad de árboles extra puede cancelar. La aleatorización de variables de un random forest baja ese suelo (ρ más pequeño); el bagging simple lo deja alto. Amplitud entre MODELOS, igual que amplitud entre apuestas." />
+
+<MatchConcepts
+  client:visible
+  question="Empareja cada idea de bagging / random forest con lo que hace."
+  pairs={[
+    { term: "Muestreo bootstrap", definition: "Entrenar cada árbol sobre un remuestreo aleatorio con reemplazo de las filas, para que los árboles difieran entre sí." },
+    { term: "Subconjunto aleatorio de variables (max_features)", definition: "En cada partición, permitir solo un subconjunto aleatorio de variables: el mecanismo que DESCORRELACIONA los árboles." },
+    { term: "Promediar las predicciones", definition: "Combina los árboles para que sus errores independientes se cancelen, recortando la varianza hacia σ²/B." },
+    { term: "Suelo de correlación ρσ²", definition: "La varianza residual que sobrevive sin importar cuántos árboles añadas, porque los árboles no son perfectamente independientes." }
+  ]}
+  explanation="Las filas bootstrap hacen que los árboles difieran un poco; los subconjuntos aleatorios de variables hacen que difieran MUCHO (ρ baja); promediar lo convierte en reducción de varianza. Pero el suelo ρσ² significa que los árboles correlacionados dejan de ayudar, que es precisamente por lo que la descorrelación, no solo más árboles, es la palanca."
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  termsLabel="Términos"
+  definitionsLabel="Definiciones"
+/>
+
+## Ensembling — boosting (matar el sesgo)
+
+**Analogía.** Si el bagging son quinientos adivinos independientes votando a la vez, el **boosting** es un relevo de especialistas, cada uno estudiando los *errores* del corredor anterior. El modelo 1 hace una predicción tosca. El modelo 2 no vuelve a predecir desde cero: predice los *errores* (residuos) del modelo 1, parcheándolos. El modelo 3 parchea lo que queda, y así sucesivamente. Cada aprendiz es débil y poco profundo, pero el equipo va limando secuencialmente el *sesgo* que el aprendiz base simple no podía captar solo.
+
+**Definición / fórmula.** El boosting ajusta un modelo aditivo de forma *secuencial*. Empieza con una constante, luego en cada ronda $m$ ajusta un árbol pequeño $h_m$ a los residuos actuales (en **gradient boosting**, al gradiente negativo de la pérdida) y añade una porción *encogida* de él:
+
+$$F_m(x) = F_{m-1}(x) + \nu\, h_m(x)$$
+
+donde $\nu$ (nu) es el **ritmo de aprendizaje** (learning rate): un factor de encogimiento, típicamente de 0,01 a 0,1, que dice "da solo un pequeño paso hacia arreglar los residuos en cada ronda". **XGBoost**, **LightGBM** y compañía son implementaciones de gradient boosting muy optimizadas que añaden su propia regularización. Como el boosting ataca los residuos, reduce principalmente el **sesgo**: puede modelar relaciones que un único árbol poco profundo nunca podría.
+
+**El peligro.** La reducción de sesgo es un arma de doble filo con datos ruidosos. Sigue ajustando residuos lo suficiente y el boosting empezará a "arreglar" el *ruido*: los residuos que nunca fueron señal. El boosting es también célebremente **sensible a datos mal etiquetados o ruidosos**: una etiqueta mala parece un residuo grande, así que el siguiente aprendiz se obsesiona con ella. Las defensas van todas de la contención:
+
+- **Ritmo de aprendizaje $\nu$:** pasos pequeños (0,01–0,05) para que ninguna ronda se sobrecomprometa con el ruido; combínalo con más rondas.
+- **Submuestreo (subsampling):** ajusta cada ronda sobre una fracción aleatoria de filas y/o columnas (stochastic gradient boosting), lo que a la vez descorrelaciona y regulariza.
+- **Parada temprana (early stopping):** vigila el error de validación y detente en el momento en que deje de mejorar, antes de que empiece el ajuste de ruido.
+- **Aprendices base poco profundos:** árboles de profundidad 2 a 4 (algo así como "tocones"), para que cada ronda añada solo un poco de flexibilidad.
+
+**Bagging frente a boosting: el contraste.**
+
+| Dimensión | Bagging / random forest | Boosting (gradient boosting / XGBoost) |
+|---|---|---|
+| Reduce principalmente | **Varianza** | **Sesgo** |
+| Cómo se combinan los aprendices | En paralelo: todos independientes, luego promediados | Secuencial: cada uno ajusta los errores del anterior |
+| Aprendiz base | Árboles profundos, de alta varianza (los quieres fuertes) | Árboles poco profundos, de alto sesgo (tocones) |
+| Reacción a datos ruidosos/mal etiquetados | Robusto: el promediado diluye un árbol malo | Frágil: persigue el residuo malo |
+| Sobreajusta si… | Casi nunca por añadir árboles (solo se estanca) | Boosteas demasiado tiempo / ritmo de aprendizaje demasiado alto |
+| Mando clave | `n_trees`, `max_features` (descorrelacionar) | ritmo de aprendizaje $\nu$, rondas, parada temprana |
+
+Con datos *limpios*, un boosting bien ajustado suele batir al bagging. Con datos *financieros ruidosos* el veredicto está más reñido, y la fragilidad del boosting ante el ruido es un coste real, por lo que muchos fondos cuantitativos se apoyan en random forests o en un boosting fuertemente regularizado, con parada temprana y bajo ritmo de aprendizaje, en lugar de en un XGBoost al máximo.
+
+<Categorize
+  client:visible
+  question="Clasifica cada afirmación bajo el método de ensembling que describe."
+  buckets={["Bagging / Random Forest", "Boosting / XGBoost"]}
+  items={[
+    { text: "Reduce principalmente la varianza promediando muchos aprendices", bucket: "Bagging / Random Forest" },
+    { text: "Entrena los aprendices en paralelo y luego los combina", bucket: "Bagging / Random Forest" },
+    { text: "Robusto ante unos pocos puntos mal etiquetados: el promediado los diluye", bucket: "Bagging / Random Forest" },
+    { text: "Descorrelaciona los aprendices con subconjuntos aleatorios de variables en cada partición", bucket: "Bagging / Random Forest" },
+    { text: "Reduce principalmente el sesgo ajustando residuos de forma secuencial", bucket: "Boosting / XGBoost" },
+    { text: "Necesita un ritmo de aprendizaje ν pequeño y parada temprana para evitar ajustar el ruido", bucket: "Boosting / XGBoost" },
+    { text: "Frágil ante datos mal etiquetados: un residuo malo se parchea obsesivamente", bucket: "Boosting / XGBoost" }
+  ]}
+  explanation="Bagging = paralelo, mata-varianza, robusto al ruido, árboles profundos descorrelacionados. Boosting = secuencial, mata-sesgo, frágil al ruido, necesita encogimiento y parada temprana. La regla mnemotécnica más limpia: el bagging promedia aprendices fuertes para recortar varianza; el boosting apila aprendices débiles para recortar sesgo."
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  instructions="Coloca cada elemento en su grupo."
+/>
+
+<Callout variant="info" title="Por qué ambos siguen importando sobre rendimientos">
+Ningún método es una varita mágica sobre datos con un 99% de ruido, pero cada uno ataca a un enemigo distinto. Si tu modelo simple está *infraajustando* (sesgo alto: se está perdiendo una no linealidad real), echa mano del boosting, cuidadosamente frenado. Si está *sobreajustando* (varianza alta: inestable entre remuestreos), echa mano del bagging. Diagnostica qué problema tienes de verdad antes de elegir la herramienta; echarle boosting a un problema de varianza solo añade una nueva forma de sobreajustar.
+</Callout>
+
+## Importancia de variables — MDI frente a MDA
+
+Has entrenado un modelo que funciona. Ahora la pregunta inevitable: *¿qué variables lo están impulsando de verdad?* La quieres para la intuición, para podar variables muertas y para el equipo de riesgos. Dos métodos dominan en los modelos de árboles, y discrepan lo bastante a menudo como para que conocer la diferencia sea una habilidad de supervivencia.
+
+**MDI — Mean Decrease in Impurity (también llamada importancia Gini).**
+
+Cada partición de un árbol reduce la "impureza" (varianza en regresión, Gini/entropía en clasificación). MDI suma, para cada variable, la reducción total de impureza que produjo en todas las particiones de todos los árboles, ponderada por cuántas muestras pasaron por ahí. Es el `feature_importances_` por defecto en scikit-learn.
+
+- **Pros:** prácticamente gratis: cae del entrenamiento, sin cálculo extra.
+- **Contras (serios):** se calcula **dentro de muestra** (sobre los datos de entrenamiento), así que una variable que sobreajusta recibe *crédito* por ello. Peor aún, está **sesgada hacia variables de alta cardinalidad y continuas**: una variable con muchos valores distintos (un precio, un ratio continuo) ofrece más puntos de partición posibles, así que se llevará importancia *por pura casualidad* aunque sea ruido. Un indicador binario, con una única partición posible, está estructuralmente en desventaja. MDI sobrevalora sistemáticamente el ruido continuo.
+
+**MDA — Mean Decrease in Accuracy (también llamada importancia por permutación).**
+
+Toma tu modelo *entrenado* y un conjunto *reservado* (held-out). Anota la puntuación base fuera de muestra. Ahora **baraja los valores de una variable** (permuta la columna, rompiendo su vínculo con el objetivo) y vuelve a puntuar. La caída de rendimiento es la importancia de esa variable: si revolverla apenas hace daño, el modelo no la estaba usando de verdad.
+
+- **Pros:** se mide **fuera de muestra**, sobre la métrica de rendimiento real, así que una variable solo puntúa si de verdad ayuda al modelo a *generalizar*. Honesta. Agnóstica al modelo (funciona sobre cualquier modelo ajustado, no solo árboles).
+- **Contras:** más lenta (vuelve a puntuar una vez por variable, a menudo repetido para estabilidad) y —crucialmente— hereda el **efecto de sustitución** cuando las variables están correlacionadas.
+
+**El efecto de sustitución (la trampa que engaña a todos).** Supón que dos variables están *muy correlacionadas* —pongamos `momentum_10d` y `momentum_12d`, casi gemelas—. La importancia por permutación baraja `momentum_10d`: el modelo apenas se inmuta, porque `momentum_12d` lleva la misma información y le cubre las espaldas, así que `momentum_10d` parece poco importante. Baraja `momentum_12d` en su lugar y `momentum_10d` cubre. **Ambas gemelas puntúan cerca de cero**, aunque *el momentum como concepto* sea el único impulsor más importante. La importancia quedó *diluida/repartida* por el grupo correlacionado, haciendo que una señal crítica parezca inútil.
+
+**Ejemplo resuelto: dos variables correlacionadas repartiéndose la importancia.** Un modelo está genuinamente impulsado por el momentum. Le das dos variables de momentum casi idénticas (ρ ≈ 0,95) más una variable de ruido irrelevante.
+
+| Variable | Contribución "verdadera" | Importancia MDA (permutar de una en una) | Por qué |
+|---|---|---|---|
+| `momentum_10d` | Alta (compartida) | **0,04** | Al barajarla, su gemela `momentum_12d` cubre: caída de precisión minúscula |
+| `momentum_12d` | Alta (compartida) | **0,05** | Al barajarla, `momentum_10d` cubre: caída de precisión minúscula |
+| `noise_feature` | Ninguna | **0,01** | Genuinamente inútil: caída pequeña, ¡pero comparable a la de las gemelas! |
+
+Mira el desastre: las dos variables de momentum (el motor real del modelo) puntúan 0,04–0,05, apenas por encima de la variable de ruido *inútil* en 0,01. Una lectura ingenua —"el momentum no importa, vamos a quitarlo"— destriparía la estrategia. El arreglo es probar las variables correlacionadas como un *grupo* (permutar ambas gemelas juntas: la caída es grande, revelando la verdadera importancia del momentum) o agrupar/descorrelacionar variables antes de medir (p. ej. el MDA/MDI agrupado de López de Prado).
+
+**Dos trampas más que se aplican a ambos métodos:**
+
+- **Importancia ≠ causalidad.** Una variable puede ser "importante" para el modelo puramente por estar correlacionada con el impulsor verdadero, o con la *fuga de la etiqueta* (label leakage) que dejaste ahí por accidente. Una importancia alta te dice que el modelo la *usa*, no que *cause* los rendimientos.
+- **La importancia es condicional al modelo.** MDI/MDA describen la dependencia que *este modelo ajustado* tiene de una variable, no el valor universal de la variable. Un modelo distinto (o el mismo modelo sobre una muestra distinta) puede ordenar las variables de forma completamente diferente. Nunca informes de la importancia como si fuera una propiedad de la variable por sí sola.
+
+<Callout variant="warning" title="Trampa — fiarte del MDI por defecto en variables continuas">
+El valor por defecto de scikit-learn (`feature_importances_` = MDI) es dentro de muestra y está estructuralmente sesgado hacia variables continuas y de alta cardinalidad. Una columna de puro ruido gaussiano, al ser continua, a menudo superará en MDI a un indicador binario genuinamente útil. Contrasta siempre con el MDA fuera de muestra (importancia por permutación), y cuando las variables estén correlacionadas, mídelas en grupos, o podarás las cosas equivocadas y conservarás el ruido.
+</Callout>
+
+<MCQ
+  client:visible
+  question="La importancia por permutación (MDA) informa de que AMBAS de tus dos variables de momentum casi idénticas tienen una importancia cercana a cero, mientras que tú estás seguro de que el momentum impulsa el modelo. ¿Cuál es la explicación más probable?"
+  options={[
+    { text: "El efecto de sustitución: las dos variables correlacionadas se cubren mutuamente, así que barajar cualquiera apenas hace daño y la importancia se diluye por el par.", correct: true },
+    { text: "El momentum genuinamente no importa; MDA es fuera de muestra, así que su veredicto cercano a cero es definitivo y deberías quitar ambas." },
+    { text: "MDA está sesgada hacia variables de alta cardinalidad, así que ha sobrepenalizado las variables de momentum continuas." },
+    { text: "Deberías cambiar al MDI dentro de muestra, que es inmune a los efectos de correlación y dará la importancia verdadera." }
+  ]}
+  explanation="Las variables correlacionadas se sustituyen mutuamente: permuta una y su gemela cubre, así que cada una parece poco importante y la importancia real se reparte/diluye por el grupo. El arreglo es permutar el grupo correlacionado junto, o agrupar las variables primero. (El sesgo de alta cardinalidad es un problema de MDI, no de MDA; y MDI es dentro de muestra e igualmente engañado por la correlación: cambiar a él no ayuda.)"
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+/>
+
+<MatchConcepts
+  client:visible
+  question="Empareja cada idea de importancia de variables con su descripción."
+  pairs={[
+    { term: "MDI (Mean Decrease Impurity)", definition: "Dentro de muestra, gratis en el momento del entrenamiento, pero sesgada hacia variables de alta cardinalidad/continuas." },
+    { term: "MDA (importancia por permutación)", definition: "Baraja una variable y mide la caída de rendimiento fuera de muestra: más lenta pero honesta." },
+    { term: "Efecto de sustitución", definition: "Las variables correlacionadas se cubren mutuamente, así que cada una parece poco importante y su importancia se diluye por el grupo." },
+    { term: "Importancia ≠ causalidad", definition: "Una importancia alta significa que el modelo se apoya en la variable, no que la variable impulse los rendimientos." }
+  ]}
+  explanation="MDI es rápida y dentro de muestra pero sobrevalora el ruido continuo; MDA es fuera de muestra y honesta pero sufre el efecto de sustitución con variables correlacionadas. Y ninguna da causalidad: la importancia es siempre condicional a este modelo ajustado en particular."
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  termsLabel="Términos"
+  definitionsLabel="Definiciones"
+/>
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Comprobación rápida: el MDI de tu random forest coloca una variable continua de "ruido" en el puesto número 1, pero su importancia MDA (permutación) es casi cero. ¿En cuál confías, y por qué?</summary>
+
+Confía en la **MDA**. El MDI se calcula dentro de muestra y está estructuralmente sesgado hacia variables continuas y de alta cardinalidad: una columna de ruido con muchos valores distintos ofrece muchos puntos de partición y se lleva reducción de impureza *por casualidad*, inflando su rango MDI. La MDA baraja la variable y comprueba la caída de rendimiento *fuera de muestra*; una MDA casi nula dice que revolver la variable no daña la generalización, es decir, que el modelo no se apoyaba de verdad en ella. Cuando MDI y MDA discrepan sobre una variable continua, la discrepancia es en sí misma la pista: el rango alto del MDI es muy probablemente el sesgo de cardinalidad, no señal real. (Salvedad: si la variable estuviera *correlacionada con un impulsor real*, una MDA baja podría ser, en cambio, el efecto de sustitución, así que comprueba las correlaciones antes de quitarla.)
+
+</details>
+</Reveal>
+
+## Juntándolo todo
+
+Modelar datos de baja relación señal-ruido es una disciplina de *contención*. Primero, respeta el equilibrio sesgo-varianza: como los rendimientos son un 99% ruido, el término de ruido irreducible domina, el óptimo se desliza hacia lo simple, y un modelo lineal regularizado o un ensemble poco profundo bate de forma rutinaria a un árbol profundo que memorizó el pasado. Segundo, **regulariza**: grava la complejidad (ridge encoge, lasso encoge-y-selecciona, elastic net mezcla; los árboles usan límites de profundidad/hoja/variables y parada temprana) para cambiar un poco de sesgo por mucha menos varianza. Tercero, **haz ensembling** con la herramienta adecuada: **baggea** (promedia árboles descorrelacionados, al estilo random forest, para machacar la *varianza* vía $1/\sqrt{B}$) cuando estés sobreajustando, y **boostea** (ajusta residuos de forma secuencial para recortar el *sesgo*) —con cuidado, con un ritmo de aprendizaje pequeño y parada temprana— cuando estés infraajustando. Por último, lee la **importancia de variables** con profunda sospecha: prefiere la **MDA** fuera de muestra a la **MDI** dentro de muestra y sesgada por la cardinalidad, vigila el **efecto de sustitución** diluyendo variables correlacionadas, y nunca confundas "el modelo la usa" con "causa los rendimientos".
+
+<MindMap
+  client:visible
+  title="Modelos, ensembles e importancia de variables de un vistazo"
+  caption="Desde el sesgo-varianza sobre datos ruidosos, pasando por la regularización y los dos sabores del ensembling, hasta leer la importancia de variables sin dejarte engañar."
+  root={{
+    label: 'Domar modelos para datos de baja señal',
+    children: [
+      { label: 'Sesgo-varianza sobre rendimientos', children: [
+        { label: '99% ruido → domina el término irreducible' },
+        { label: 'El óptimo se desliza hacia lo simple / alto sesgo' },
+        { label: 'Árbol profundo: sesgo 0, varianza enorme → memoriza ruido' },
+        { label: 'Lineal: alto sesgo, baja varianza → generaliza' }
+      ]},
+      { label: 'Regularización (gravar la complejidad)', children: [
+        { label: 'Ridge L2 — encoge todos los coeficientes' },
+        { label: 'Lasso L1 — encoge Y selecciona (→0)' },
+        { label: 'Elastic net — mezcla para variables correlacionadas' },
+        { label: 'Árboles: profundidad / hoja mín. / max-features / parada temprana' }
+      ]},
+      { label: 'Ensembling', children: [
+        { label: 'Bagging → recorta VARIANZA, paralelo, 1/√B' },
+        { label: 'Random forest: variables aleatorias DESCORRELACIONAN (↓ρ)' },
+        { label: 'Boosting → recorta SESGO, secuencial, ajusta residuos' },
+        { label: 'Boosting necesita ν, submuestreo, parada temprana (frágil al ruido)' }
+      ]},
+      { label: 'Importancia de variables', children: [
+        { label: 'MDI — dentro de muestra, gratis, sesgada a alta cardinalidad' },
+        { label: 'MDA — fuera de muestra, honesta, más lenta' },
+        { label: 'Efecto de sustitución: las gemelas correlacionadas se reparten importancia' },
+        { label: 'Importancia ≠ causalidad; condicional al modelo' }
+      ]}
+    ]
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Modelos, ensembles e importancia de variables: fíjalo"
+  questions={[
+    {
+      question: "Sobre datos de rendimientos con un 99% de ruido, un árbol de profundidad 25 puntúa R² = 0,95 dentro de muestra y R² = −0,06 fuera de muestra. ¿Cuál es el diagnóstico correcto?",
+      options: [
+        { text: "Sobreajuste severo: la flexibilidad del árbol le dejó memorizar el ruido del entrenamiento, así que tiene alta varianza y no generaliza.", correct: true },
+        { text: "Infraajuste severo: el R² negativo fuera de muestra significa que el árbol era demasiado simple para captar la señal." },
+        { text: "Un modelo bien calibrado: un R² alto dentro de muestra confirma que encontró el patrón verdadero." },
+        { text: "Solo ruido irreducible: ningún modelo podría hacerlo mejor, así que el resultado es esperable y está bien." }
+      ],
+      explanation: "Un ajuste casi perfecto dentro de muestra que colapsa a un R² negativo fuera de muestra es la firma de manual del sobreajuste: alta varianza, bajo sesgo, ruido memorizado. El arreglo es la contención —menos profundidad, regularización o ensembling—, no más flexibilidad."
+    },
+    {
+      question: "Promedias B = 100 árboles. Con bagging simple la correlación por pares entre árboles es ρ = 0,4; la aleatorización de variables de un random forest la recorta a ρ = 0,05. Usando Var = ρσ² + (1−ρ)σ²/B con σ² = 1, ¿cuál es el beneficio del random forest?",
+      options: [
+        { text: "Baja el suelo de varianza de ~0,41 a ~0,06, porque rebajar ρ encoge el término ρσ² que los árboles extra nunca pueden cancelar.", correct: true },
+        { text: "Nada: con B = 100 árboles ambos ya alcanzan una varianza ≈ 0,01, así que la descorrelación es irrelevante." },
+        { text: "Sube la varianza, porque los árboles descorrelacionados son individualmente más débiles que los correlacionados." },
+        { text: "Solo importa para el sesgo; la correlación entre árboles no tiene efecto sobre la varianza del ensemble." }
+      ],
+      explanation: "Bagging simple: 0,4 + 0,6/100 ≈ 0,41. Random forest: 0,05 + 0,95/100 ≈ 0,06. El término ρσ² es un suelo duro que los árboles extra no pueden tocar, así que descorrelacionar (rebajar ρ vía subconjuntos aleatorios de variables) es lo que de verdad desbloquea más reducción de varianza: la razón entera por la que un bosque aleatoriza variables, no solo filas."
+    },
+    {
+      question: "Tu modelo lineal simple está claramente INFRAAJUSTANDO: se está perdiendo una interacción no lineal real que los datos soportan. ¿Qué herramienta ataca más directamente ese problema, y cuál es el truco?",
+      options: [
+        { text: "Boosting: ajusta residuos de forma secuencial para reducir el sesgo, captando la estructura perdida; el truco es que puede ajustar ruido, así que usa un ritmo de aprendizaje pequeño y parada temprana.", correct: true },
+        { text: "Bagging: promediar más modelos lineales reducirá el sesgo que tiene el modelo único; el truco es que es lento de entrenar." },
+        { text: "Más regularización ridge: aumentar λ añade la flexibilidad necesaria para captar la interacción." },
+        { text: "Selección de variables con lasso: quitar variables dejará que las restantes modelen la no linealidad." }
+      ],
+      explanation: "Infraajuste = sesgo alto, y el boosting es el mata-sesgo: cada ronda parchea los residuos anteriores, captando estructura que un único aprendiz se perdió. Pero el boosting es frágil al ruido, así que frénalo: bajo ritmo de aprendizaje ν, submuestreo, parada temprana. El bagging y más regularización reducen varianza o añaden sesgo: la dirección equivocada para un modelo infraajustado."
+    },
+    {
+      question: "El MDI coloca una variable continua y de alta cardinalidad como tu impulsor número 1, pero su importancia por permutación (MDA) es esencialmente cero y no está correlacionada con ninguna otra variable. ¿Mejor interpretación?",
+      options: [
+        { text: "El sesgo de cardinalidad del MDI probablemente la infló: una variable continua tiene muchos puntos de partición y se lleva impureza dentro de muestra por casualidad; la MDA casi nula fuera de muestra dice que el modelo no se apoya de verdad en ella.", correct: true },
+        { text: "El efecto de sustitución está ocultando su importancia verdadera, así que deberías fiarte del rango alto del MDI y conservar la variable." },
+        { text: "MDA no es fiable para variables continuas; MDI es la medida honesta, fuera de muestra, así que la variable es genuinamente la número 1." },
+        { text: "Ambas métricas coinciden en que la variable es crítica, así que debería ponderarse aún más." }
+      ],
+      explanation: "El MDI es dentro de muestra y está estructuralmente sesgado hacia variables continuas/de alta cardinalidad, que se llevan reducción de impureza por casualidad. Una MDA casi nula (fuera de muestra) sobre una variable incorrelacionada dice que el modelo no se apoya de verdad en ella, así que el MDI alto es el sesgo, no señal. (La sustitución solo aplicaría si la variable estuviera correlacionada con otra, cosa que aquí no ocurre.)"
+    }
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  nextLabel="Siguiente"
+  seeResultsLabel="Ver resultados"
+  backLabel="Atrás"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  completeTitleLabel="Cuestionario completado"
+  correctCountLabel="correctas"
+  gateLabel="Comprueba tu respuesta para continuar."
+/>
+
+Ya sabes elegir un modelo que sobreviva al ruido, regularizarlo y hacerle ensembling sin engañarte, y leer sus importancias de variables con la dosis justa de paranoia. Pero un modelo que predice bien todavía no es una cartera: un vector de previsiones de rendimiento no son posiciones, y el hueco entre "mi modelo dice que estas 200 acciones son atractivas" y "esto es exactamente cuánto mantener de cada una" es donde se gana o se pierde una cantidad sorprendente de alfa. Esa traducción —de señal de ML en bruto a posiciones dimensionadas, con riesgo controlado y conscientes del coste— es el tema de la siguiente lección, **De señal de ML a cartera**.

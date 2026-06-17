@@ -1,0 +1,391 @@
+---
+title: "Financial Features & Labeling"
+description: "Turning prices into stationary, informative features without throwing away memory, and the labeling problem nobody warns you about: fixed-horizon labels and their flaws, the triple-barrier method, meta-labeling, and sample weighting for overlapping outcomes."
+topic: "en/machine-learning-for-alpha"
+order: 2
+minutes: 15
+updated: 2026-06-17
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, TsStationarityChart, CrossSectionScatter, TsAcfPlot } from '@/components/react';
+
+In most machine-learning tutorials the data shows up pre-chewed: here are your features `X`, here is your label `y`, go fit a model. Finance is crueler. Nobody hands you `X` and `y` — you *manufacture* both from a single dirty stream of prices, and **the way you manufacture them decides whether your model learns anything real or just memorizes noise that will never repeat.** This lesson is about that manufacturing process, and it is where most quant ML projects quietly die long before they reach a backtest.
+
+Two problems lurk here, and they are both subtle enough that smart people get them wrong for years. The first: what do you feed the model? Raw prices are poison (we'll see why), and the obvious fix — returns — throws away something precious. The second, and the one that ruins more strategies than any other: what is `y`? "The thing that goes up" sounds like an answer until you try to write it down. Let's manufacture both, carefully.
+
+<MCQ
+  client:visible
+  pretest
+  question="You want to predict tomorrow's move, so you feed a model 20 years of raw daily closing PRICES of a stock as its main feature. The model backtests beautifully. What's the most likely problem?"
+  options={[
+    { text: "Prices are non-stationary — their level trends and drifts, so the model learns price LEVELS that won't recur out of sample, not a repeatable relationship.", correct: true },
+    { text: "Prices update too slowly; you'd need intraday ticks for any model to work." },
+    { text: "Nothing — raw prices are the most informative input you can give a model." },
+    { text: "Prices are already stationary, so the model has nothing left to learn from them." }
+  ]}
+  explanation="A price series is (close to) a random walk: its mean and variance drift over time, so it's NON-stationary. A model trained on levels learns things like 'when price is near 87 it tends to rise' — a pattern glued to a specific historical price range that has zero reason to repeat once the stock trades at 300. The beautiful backtest is the model memorizing the path it was shown. Fixing this — without throwing away all the series' memory — is the first half of this lesson."
+/>
+
+## Features must be stationary AND informative
+
+**Analogy.** Imagine training a model to recognize "tall" by showing it people standing on a hill that keeps rising. It learns that tall means "head is around 6 feet above sea level" — and then totally fails the moment the ground moves. A raw price is that rising hill: the model latches onto absolute levels (the altitude) instead of the relationship you actually care about (the height of the person). You need to subtract the hill out.
+
+**Definition — stationarity.** A time series is **stationary** when its statistical properties — mean, variance, autocorrelation — don't change over time. Loosely: the future looks statistically like the past, so a pattern learned yesterday is still valid tomorrow. A **random walk** (each step is the last value plus an unpredictable shock, $P_t = P_{t-1} + \varepsilon_t$) is the canonical *non*-stationary series: its level wanders with no fixed mean and its variance grows without bound. Stock prices are very close to this. Feed them to a model and it learns levels that will never recur.
+
+The classic fix is to **difference** the series — take changes instead of levels. The first difference of a price gives you **returns**:
+
+$$r_t = P_t - P_{t-1} \qquad \text{(or log returns } r_t = \ln P_t - \ln P_{t-1}\text{)}$$
+
+Returns *are* stationary: they hover around a fixed mean with a roughly stable spread, exactly the flat cloud a model can generalize from. Problem solved? Not quite — and here is the dilemma that makes financial ML genuinely hard.
+
+<TsStationarityChart client:visible caption="The exact same simulated data, two faces. As a PRICE level (left view) it wanders off and its spread keeps widening — non-stationary, and a model trained on it memorizes a path. Tick 'Show returns' and you difference it once: a flat cloud around a fixed mean with stable spread — stationary, and now generalizable. Models are built on the right-hand picture. The catch the rest of this section is about: differencing also erased the price's memory." />
+
+### The stationarity–memory dilemma
+
+Differencing buys stationarity at a brutal price: **it destroys memory.** A return tells you what happened in *one* bar and nothing about the level the series has reached. But a lot of real signal lives in the level and its slow-moving structure — how far price has run from a moving average, whether it sits above or below a long-run equilibrium, the persistent component a mean-reversion or trend signal needs. Take the full first difference and you've thrown all of that out. You're stationary *and* nearly memoryless — you optimized one thing to zero and the other thing to zero too.
+
+This is a real trade-off, not a false dichotomy:
+
+| Series | Stationary? | Memory retained | Verdict |
+|---|---|---|---|
+| Raw price $P_t$ | No (random walk) | All of it | Informative but unusable — model learns levels |
+| Full return $r_t = P_t - P_{t-1}$ | Yes | Almost none | Usable but amnesiac — throws away the level signal |
+| **Fractionally differenced** $\tilde{P}_t$ | Yes (tune $d$) | Maximal possible | The compromise — just stationary, still remembers |
+
+**Definition — fractional differentiation.** Instead of differencing a whole step (order $d = 1$, full returns) or not at all ($d = 0$, raw price), difference by a *fractional* order $d$ between 0 and 1. Formally, the differencing operator $(1 - B)^d$ — where $B$ is the backshift operator, $B P_t = P_{t-1}$ — is expanded as an infinite weighted sum of past values:
+
+$$\tilde{P}_t = \sum_{k=0}^{\infty} \omega_k \, P_{t-k}, \qquad \omega_k = (-1)^k \binom{d}{k} = \omega_{k-1}\,\frac{d - k + 1}{k}$$
+
+At $d = 1$ the weights collapse to $\{1, -1, 0, 0, \dots\}$ — that's just $P_t - P_{t-1}$, the ordinary return. At $d = 0$ the weights are $\{1, 0, 0, \dots\}$ — the raw price, untouched. For $d$ in between, the weights decay slowly, so $\tilde{P}_t$ keeps a long, fading tail of past prices in memory while still being stationary. The recipe: **find the smallest $d$ that passes a stationarity test (e.g. the ADF test), because the smallest $d$ keeps the most memory.** That tiny $d$ — often around 0.3–0.5 — is the sweet spot.
+
+<TsAcfPlot client:visible caption="Memory, made visible. The autocorrelation function (ACF) measures how correlated a series is with its own past at each lag. A stationary-but-amnesiac series (white noise) has every bar inside the band — no memory at all. A series with persistent structure (AR(1) decay) stays correlated across many lags — that long fading tail is exactly the memory fractional differentiation is built to PRESERVE while still pulling the series down to stationarity. Full differencing would flatten this toward the white-noise picture and throw the signal away." />
+
+### Volatility-scaling features
+
+One more transform you'll use constantly: **divide by recent volatility.** A 1% move means something completely different in a sleepy market than in a screaming one. Scaling a feature (or a return) by a rolling estimate of volatility $\hat{\sigma}_t$ puts every observation on the same footing:
+
+$$\tilde{r}_t = \frac{r_t}{\hat{\sigma}_t}$$
+
+This is the same standardization idea as a z-score, applied through time. It keeps the *magnitude* of a feature comparable across calm and turbulent regimes, so the model isn't fooled into thinking a turbulent day's giant move is a stronger signal than a calm day's tiny one. (Hold onto vol-scaling — it comes back with a vengeance when we set labeling barriers below.)
+
+### Worked example — why levels mislead
+
+Take three days of price: **100 → 110 → 105.** Look at it two ways.
+
+| Day | Raw price (feature) | Simple return (feature) |
+|---|---|---|
+| 1 | 100 | — |
+| 2 | 110 | $(110-100)/100 = +10\%$ |
+| 3 | 105 | $(105-110)/110 = -4.5\%$ |
+
+A model fed the **raw price** column sees the numbers 100, 110, 105 — and if its training data only ever ranged from, say, 80 to 120, it builds rules anchored to that band ("around 105–110 the series tends to fall"). Re-run the stock after a 3-for-1 split, or five years later when it trades at 400, and those rules are gibberish — the level it learned never recurs. A model fed the **returns** column sees +10%, −4.5% — numbers that mean the same thing whether the stock is at 100 or 400, because they're stationary. That's the whole case for differencing. The only thing the returns view loses is *where* the price actually is — and that lost level is the memory fractional differentiation works to claw back.
+
+<Callout variant="warning" title="Pitfall — the 'great' backtest on raw prices">
+If a model trained on raw price levels backtests spectacularly, be suspicious, not thrilled. It has very likely memorized the specific historical price path (its level and trend), which is non-stationary and will not repeat. The tell: performance falls off a cliff the moment the live price moves outside the training range. Stationarity isn't a nicety — it's the difference between a learned relationship and a memorized history.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Fill in the stationarity–memory trade-off."
+  text="Raw prices are {{non-stationary|stationary|periodic}} because their level wanders like a random walk, so a model learns levels that won't recur. Taking full returns makes the series {{stationary|non-stationary|seasonal}} but destroys its {{memory|variance|sign}}. {{Fractional differentiation|Mean reversion|Min-max scaling}} is the compromise: pick the smallest order d that achieves stationarity so the series keeps the {{most|least|same}} memory possible."
+  explanation="Prices are non-stationary; full differencing (returns) is stationary but nearly memoryless. Fractional differentiation tunes the differencing order d to be just large enough for stationarity, retaining maximal memory — the smallest passing d keeps the longest tail of the past."
+/>
+
+## The labeling problem (what is Y?)
+
+Supervised learning needs a label — a `y` for every `X`. In an image classifier, `y` is obvious ("cat" / "dog"). In finance, you have to *invent* `y`, and the obvious invention is a landmine. This is the part nobody warns you about, and it's responsible for more dead strategies than bad models ever were.
+
+**Definition — fixed-horizon labeling.** The naive approach: look $h$ bars ahead, compute the return over that window, and label it by comparing to a fixed threshold $\tau$:
+
+$$y_t = \begin{cases} +1 & \text{if } r_{t,t+h} > \tau \\ -1 & \text{if } r_{t,t+h} < -\tau \\ \phantom{+}0 & \text{otherwise} \end{cases}$$
+
+In English: "buy if the stock is up more than $\tau$ after $h$ bars, sell if it's down more than $\tau$, otherwise call it flat." Clean, simple, and quietly broken in two ways.
+
+**Flaw 1 — it ignores the path.** The label only looks at the *endpoint* return, $h$ bars later. But you don't trade endpoints — you hold a position the whole way, with a stop-loss that can take you out. Consider a trade that drops 8% (blowing through your stop, ending the position in real life as a loss) and then, after you've already been stopped out, recovers to close +1% on day $h$. Fixed-horizon labeling cheerfully stamps it **+1, a winner** — a label your actual P&L would never have collected, because you were stopped out at the bottom. The model is now learning from outcomes that *couldn't happen*.
+
+**Flaw 2 — a fixed threshold ignores time-varying volatility.** A threshold $\tau = 2\%$ is enormous in a calm market (price barely moves 2% in $h$ bars, so almost everything gets labeled 0/flat) and trivial in a turbulent one (price routinely swings 5%, so almost everything trips the threshold). The *same* $\tau$ means different things in different regimes, so your labels are inconsistent across time — and remember, that inconsistency is exactly the non-stationarity we just worked to remove from the features, sneaking back in through the labels.
+
+### Worked example — fixed-horizon gone wrong
+
+Set $h = 5$ days, $\tau = 2\%$. Two trades:
+
+| Trade | Path over 5 days | Endpoint return | Fixed-horizon label | What actually happened |
+|---|---|---|---|---|
+| A | Dips to −8% on day 2, recovers to **+1%** by day 5 | +1% | **0** (under +2% τ) | You'd have been stopped out at −8% — a real LOSS, labeled flat |
+| B | Calm grind, never moves >1%, closes **+0.5%** | +0.5% | **0** (flat) | Genuinely nothing happened — label is fine |
+
+Trade A and Trade B get the *same* label (0), yet one was a disaster and the other a non-event. The fixed-horizon scheme can't tell them apart because it never looked at the path — and in a higher-vol month a τ of 2% would have labeled both as noise while a τ of 0.5% would have labeled both as signals. The threshold is doing the deciding, and it's the wrong size half the time. We need a labeling scheme that watches the *path* and *scales with volatility*. Enter the triple barrier.
+
+<Callout variant="warning" title="Pitfall — labeling on the endpoint return">
+The single most common labeling mistake is grading a trade by where it ended instead of how it traveled. A position that hit your stop is closed — its real outcome is the stop loss, full stop, no matter what the price does afterward. If your labels reward 'paper recoveries' your model never actually got to enjoy, it learns to love trades that would have stopped you out. Label the journey, not the destination.
+</Callout>
+
+## The triple-barrier method
+
+**Analogy.** Picture three exit doors around a trade the instant you enter it. A door above you (take profit), a door below you (stop loss), and a clock on the wall that forces you out when time's up (max holding period). The label is simply **which door you walk through first.** That's the triple-barrier method, and it fixes both flaws at once: it watches the whole path (whichever barrier is touched first wins) and it can scale the doors' distances to volatility (so the doors mean the same thing in calm and chaos).
+
+**Definition.** From each entry, set three barriers:
+
+- **Upper (profit-take)** — a horizontal barrier above entry. Touch it → label **+1**.
+- **Lower (stop-loss)** — a horizontal barrier below entry. Touch it → label **−1**.
+- **Vertical (max holding time)** — a time limit $h$. If neither horizontal barrier is hit by then, the trade expires; label **0** (or, in a common variant, the *sign* of the return at expiry).
+
+The label is the **first barrier touched.** Crucially, make the horizontal barriers **volatility-scaled** rather than fixed — e.g. set them at $\pm 2\hat{\sigma}_{\text{daily}}$, so they automatically widen in turbulent markets and tighten in calm ones. Now a "+1" means the same thing — *the trade reached two standard deviations of profit before it lost two standard deviations or ran out of time* — regardless of the regime. The fixed-threshold disease is cured.
+
+$$\text{upper} = P_0 \,(1 + u\,\hat{\sigma}), \quad \text{lower} = P_0\,(1 - \ell\,\hat{\sigma}), \quad \text{vertical at } t = t_0 + h$$
+
+### Worked example — labeling one trade
+
+Entry at $P_0 = 100$. Recent daily volatility $\hat{\sigma}_{\text{daily}} = 1.5\%$. Set barriers at $\pm 2\hat{\sigma}$ and a vertical of $h = 5$ days.
+
+- **Upper barrier** = $100 \times (1 + 2 \times 0.015) = 100 \times 1.03 = \mathbf{103.0}$
+- **Lower barrier** = $100 \times (1 - 2 \times 0.015) = 100 \times 0.97 = \mathbf{97.0}$
+- **Vertical** = end of day 5.
+
+Now watch a price path bar by bar:
+
+| Day | Price | Hit upper (≥103)? | Hit lower (≤97)? | Action |
+|---|---|---|---|---|
+| 1 | 101.2 | No | No | hold |
+| 2 | 98.5 | No | No | hold |
+| 3 | **96.8** | No | **Yes (≤97)** | **stop-loss touched** |
+| 4 | — | — | — | position already closed |
+| 5 | 104.0 | (irrelevant) | — | (irrelevant) |
+
+The **lower barrier is touched first**, on day 3 → the label is **−1.** Notice that the price later rips to 104 on day 5 (well above the upper barrier), but it doesn't matter one bit: you were stopped out on day 3, and the triple-barrier label honestly records that loss. A fixed-horizon labeler looking only at day 5 would have called this a screaming **+1 winner** — the exact mislabel we're eliminating. Same path, opposite labels; only one of them matches what your account would actually have done.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Same setup (P₀=100, barriers 103 / 97, h=5). New path: 100.5 → 101.4 → 102.2 → 103.3 → 102.0. What's the label?</summary>
+
+Walk the path against the barriers in order. Day 1 (100.5), day 2 (101.4), day 3 (102.2): none reach 103 or drop to 97 — hold. **Day 4 the price hits 103.3 ≥ 103 — the upper (profit-take) barrier is touched first.** Label = **+1.** The trade closes there; the day-5 pullback to 102.0 is irrelevant because the position already exited at the profit-take. The first door you walk through is the one that sets the label — and here it's the upper one.
+
+</details>
+</Reveal>
+
+<Categorize
+  client:visible
+  question="A trade is entered with an upper barrier (+2σ), a lower barrier (−2σ), and a vertical (max-hold) barrier. Sort each outcome by the label the triple-barrier method assigns."
+  buckets={["Label +1", "Label −1", "Label 0"]}
+  items={[
+    { text: "Price touches the upper (profit-take) barrier first", bucket: "Label +1" },
+    { text: "Price touches the lower (stop-loss) barrier first", bucket: "Label −1" },
+    { text: "Neither horizontal barrier is hit; the vertical time limit expires (basic scheme)", bucket: "Label 0" },
+    { text: "Crashes to the stop, then recovers above entry after the position is closed", bucket: "Label −1" },
+    { text: "Drifts sideways within ±2σ for the whole holding window", bucket: "Label 0" }
+  ]}
+  explanation="The label is the FIRST barrier touched. Upper first → +1; lower first → −1; neither, time runs out → 0. The 'crash then recover' case is the headline fix: because the lower barrier was touched first, it's correctly labeled −1, not the +1 a fixed-horizon endpoint labeler would (wrongly) assign."
+/>
+
+<MCQ
+  client:visible
+  question="Why are the triple-barrier's horizontal barriers usually set at ±k·σ̂ (volatility-scaled) rather than at a fixed ±2%?"
+  options={[
+    { text: "So a '+1' means the same thing across regimes — the barriers widen in turbulent markets and tighten in calm ones, keeping labels consistent through time.", correct: true },
+    { text: "Because volatility-scaled barriers guarantee every trade hits a horizontal barrier before the vertical one." },
+    { text: "Because a fixed percentage is impossible to compute, while σ̂ is always available." },
+    { text: "To make the upper barrier always farther from entry than the lower barrier." }
+  ]}
+  explanation="A fixed ±2% is huge in calm markets (almost everything expires at the vertical) and trivial in turbulent ones (almost everything trips instantly), so the same threshold means different things over time — non-stationarity sneaking in through the labels. Scaling by σ̂ makes the barriers breathe with the market, so a +1 always means 'reached ~k standard deviations of profit first.' It does NOT force a horizontal touch, nor reorder the barriers."
+/>
+
+## Meta-labeling
+
+So far we've decided *which way* to bet and labeled the outcome. Meta-labeling adds a second, sneakier model on top — and it's one of the highest-leverage tricks in the financial-ML toolbox.
+
+**Analogy.** Think of a sniper team. The **spotter** (the primary model) calls the target and the direction — "long, that one." The **trigger-puller** (the meta-model) decides whether the shot is actually worth taking and how much to commit — "high confidence, full size" or "shaky, pass." Splitting these two jobs lets each specialize: the spotter is allowed to be trigger-happy and call lots of targets, because a disciplined second filter decides which calls to act on.
+
+**Definition.** **Meta-labeling** uses two stacked models:
+
+1. A **primary model** (or even a simple rule) decides the **side** — long or short. It's allowed to have low precision; it just needs to catch the real moves (high recall).
+2. A **secondary (meta) model** decides whether to **act on** the primary's call, and how big. It's a *binary* classifier whose label is "was the primary call correct? (1/0)", so its prediction is the **probability the primary signal is right** — a precision filter and a position-sizer in one.
+
+The meta-model never decides direction — that's the primary's job. It only answers "should I take this bet, and with how much conviction?" This cleanly **separates 'which way' from 'how much,'** and it tends to lift **precision** and **F1** (the harmonic mean of precision and recall) because it suppresses the primary's false positives. Bonus: since the meta-model outputs a probability, you can **size by confidence** — bet bigger when it's sure, smaller when it's marginal.
+
+A quick refresher on the metrics this improves, because they're the whole point:
+
+- **Precision** = of the trades you took, what fraction were right. (Few false positives.)
+- **Recall** = of the real opportunities, what fraction you caught. (Few false negatives.)
+- **F1** = the harmonic mean of the two — punishes you for being lopsided.
+
+### Worked example — filtering false positives
+
+Suppose your primary model is an aggressive trend rule that fires **100 long signals.** It has high recall (it catches almost every real up-move) but lousy precision — only **40 of the 100** were genuinely good; the other **60 are false positives.** Precision = 40/100 = **40%.**
+
+Now train a meta-model on those 100 signals, labeled 1 if the primary was right and 0 if wrong, and have it act only when its confidence clears a threshold. Say it correctly green-lights **35 of the 40 true winners** and correctly vetoes **45 of the 60 false positives** (acting on only 15 of them):
+
+| | Meta says ACT | Meta says PASS | Total |
+|---|---|---|---|
+| Primary was right (true +) | 35 | 5 | 40 |
+| Primary was wrong (false +) | 15 | 45 | 60 |
+| **Trades actually taken** | **50** | (95 skipped overall) | |
+
+Of the **50 trades you now take**, 35 are winners → precision = 35/50 = **70%**, up from 40%. You threw away 5 real winners (recall drops a bit), but you also dodged 45 losing trades — and you can pour more capital into the high-confidence green-lights and a sliver into the marginal ones. Same primary signal, far cleaner book. That precision jump from 40% to 70%, bought without changing the direction model at all, is why meta-labeling is so prized.
+
+<CrossSectionScatter
+  client:visible
+  title="Meta-model confidence vs how the trade worked out"
+  xLabel="Meta-model confidence (P primary is right)"
+  yLabel="Realized trade return (%)"
+  slopeLabel="Confidence→return slope"
+  interceptLabel="Return at zero confidence"
+  points={[
+    { label: "Vetoed", x: 0.18, y: -3.1 },
+    { label: "Vetoed", x: 0.27, y: -2.0 },
+    { label: "Marginal", x: 0.41, y: -0.6 },
+    { label: "Marginal", x: 0.52, y: 0.9 },
+    { label: "Acted", x: 0.63, y: 1.8 },
+    { label: "Acted", x: 0.72, y: 2.6 },
+    { label: "Acted", x: 0.81, y: 3.0 },
+    { label: "High conv.", x: 0.9, y: 4.2 }
+  ]}
+  caption="Each dot is one of the primary model's signals: across is the meta-model's confidence that the call is correct, up is how the trade actually paid off. The upward slope is the meta-model earning its keep — its confidence really does track realized return, so acting only on high-confidence signals (right side) filters out the low-confidence losers (left side) and lets you size by conviction. That's precision filtering plus position sizing in one picture." />
+
+<Callout variant="tip" title="Why split 'which way' from 'how much'">
+Meta-labeling lets your primary model be brave and your sizing be cautious. The primary can chase recall — fire on everything that might be a move — without you paying for its false alarms, because the meta-model is a disciplined second gate that only acts on the calls it believes, and sizes by how strongly it believes them. You're not building one heroic model that's perfect at both direction and conviction; you're building two specialists. Bonus: you can bolt meta-labeling onto a primary you can't even change — a black-box vendor signal, a human PM's discretionary calls — and just learn when to trust it.
+</Callout>
+
+<MCQ
+  client:visible
+  question="In a meta-labeling setup, what exactly does the SECONDARY (meta) model predict?"
+  options={[
+    { text: "The probability that the PRIMARY model's call (its chosen side) is correct — a confidence used to filter trades and size positions.", correct: true },
+    { text: "The direction of the trade (long vs short), overriding the primary model." },
+    { text: "The raw next-period return of the asset, ignoring the primary model entirely." },
+    { text: "The volatility of the asset, used to set the triple-barrier widths." }
+  ]}
+  explanation="The meta-model takes the primary's SIDE as given and only predicts P(primary is correct) — a binary 'act / don't act' confidence. It never picks direction (that's the primary's job) and it isn't a return or volatility forecaster. That probability is then used as a precision filter (act only above a threshold) and as a sizing signal (bigger when more confident)."
+/>
+
+## Sample weighting & uniqueness
+
+Here's an assumption every off-the-shelf ML algorithm quietly makes and that financial labels quietly violate: that your training samples are **IID** — independent and identically distributed, each one a fresh, separate draw. With triple-barrier (or any horizon-based) labels, **they are not even close**, and ignoring it silently corrupts training.
+
+**The problem — overlapping label windows.** Each label spans a window of future bars (from entry until a barrier is touched). If you label every bar, those windows *overlap heavily*: the label for Monday and the label for Tuesday both depend on, say, Wednesday's and Thursday's returns. **The same return drives many labels.** So the samples aren't independent draws — they're a tangle of shared outcomes, and a crowded, high-activity stretch of market gets its returns counted over and over. Naive training **over-counts** those crowded periods, letting a handful of overlapping events dominate the fit as if they were dozens of independent ones — the very same "phantom breadth" illusion that wrecks diversification, now poisoning your model's training set.
+
+**The fix — weight by uniqueness.** Down-weight each sample by how much its label-window overlaps with others. The cleanest measure is **average uniqueness**: at each point in time, count how many label windows are "live" (concurrency $c_t$); a sample's uniqueness over its life is the average of $1/c_t$ across the bars it spans. A label that shares every one of its bars with one other label is only *half* unique, so it should carry about *half* the weight. Two refinements stack on top:
+
+- **Weight by absolute return (label informativeness).** A label tied to a big move carries more information than one tied to a tiny wiggle, so weight by $|r|$ — let the meaningful outcomes pull harder on the fit.
+- **Time decay.** Markets evolve, so older samples can be down-weighted toward (but usually not to) zero, letting recent regimes matter more without throwing the past away entirely.
+
+<Callout variant="info" title="Average uniqueness, in one line">
+If, over a label's life, an average of $\bar{c}$ labels are concurrently live alongside it, its average uniqueness is about $1/\bar{c}$. Two fully overlapping labels → $\bar{c} = 2$ → uniqueness $\approx 0.5$ each. Ten labels all stacked on the same window → uniqueness $\approx 0.1$ each, so together they count like one independent observation, not ten. Sample weights are then set proportional to uniqueness (optionally times $|r|$ and a time-decay factor) and normalized.
+</Callout>
+
+### Worked example — two overlapping labels
+
+Two trades opened a day apart, each labeled over a 2-day window, so they share one day of returns:
+
+| | Day 1 ret | Day 2 ret | Day 3 ret | Concurrency on shared day |
+|---|---|---|---|---|
+| Label A (entry day 1, window days 1–2) | exclusive | **shared** | — | 2 labels live |
+| Label B (entry day 2, window days 2–3) | — | **shared** | exclusive | 2 labels live |
+
+Day 2's return feeds *both* labels. Roughly, each label is unique on one of its two days and shared on the other, so its average uniqueness is about $\tfrac{1}{2}(1 + \tfrac{1}{2}) \approx 0.75$ on this toy timeline — and on the fully shared day each gets credit for only $1/2$ of that bar. The headline intuition the prompt wants: **a return shared by two labels should be split ~0.5 / 0.5 between them, not double-counted.** Weight the two samples down accordingly and the shared day stops voting twice. Scale this up to a real book where dozens of labels can be live at once, and unweighted training would let a single hot week stomp all over the loss function.
+
+<MatchConcepts
+  client:visible
+  question="Match each sample-weighting idea to what it corrects for."
+  pairs={[
+    { term: "Average uniqueness (1/concurrency)", definition: "Overlapping label windows make samples non-IID; down-weighting by how many labels are concurrently live stops crowded periods from being over-counted." },
+    { term: "Weight by |return|", definition: "Labels tied to bigger moves carry more information, so they should pull harder on the fit than near-zero wiggles." },
+    { term: "Time decay", definition: "Markets evolve, so older samples are down-weighted toward (not to) zero, letting recent regimes matter more." },
+    { term: "Concurrency cₜ", definition: "The count of label windows that are simultaneously 'live' at a given bar — the thing uniqueness inverts." }
+  ]}
+  explanation="Uniqueness fixes non-IID overlap; |return| weighting fixes information imbalance; time decay fixes regime drift. Concurrency is the raw count of overlapping labels that uniqueness (1/cₜ, averaged) is built from."
+/>
+
+<Callout variant="warning" title="Pitfall — training on overlapping labels as if they were IID">
+Hand a standard classifier a million horizon-labeled bars and it assumes a million independent observations. They aren't — overlapping windows mean a noisy, high-activity week can be quietly counted dozens of times, dominating the fit and inflating your sense of how much data you really have. Always weight by uniqueness (and consider |return| and time decay) before you fit. And note this same overlap doesn't just bias the fit — it shatters cross-validation, which is the entire subject of the next lesson.
+</Callout>
+
+## Putting it together
+
+Manufacturing `X` and `y` is where financial ML is won or lost, long before any model is fit. On the **feature** side, raw prices are non-stationary poison and full returns are stationary but amnesiac, so you reach for **fractional differentiation** — the smallest differencing order $d$ that achieves stationarity, keeping maximal memory — and you **vol-scale** features so a move means the same thing in calm and chaos. On the **label** side, naive fixed-horizon labels ignore the path and ride a fixed threshold through a volatile world, so you switch to the **triple-barrier method** (first of upper/lower/vertical wins, barriers scaled to $\sigma$), optionally stack a **meta-model** to filter the primary's false positives and size by confidence, and finally **weight samples by uniqueness** (plus $|r|$ and time decay) because overlapping label windows make your data anything but IID.
+
+<MindMap
+  client:visible
+  title="Features & labeling at a glance"
+  caption="From stationary-but-still-remembering features to path-aware, vol-scaled labels, a meta-model filter, and uniqueness weighting for non-IID samples."
+  root={{
+    label: 'Features & labeling',
+    children: [
+      { label: 'Features: stationary AND informative', children: [
+        { label: 'Raw price — non-stationary, memorizes levels' },
+        { label: 'Returns — stationary but memoryless' },
+        { label: 'Fractional diff — smallest d that’s stationary, max memory' },
+        { label: 'Vol-scaling — divide by recent σ̂' }
+      ]},
+      { label: 'Labeling: what is Y?', children: [
+        { label: 'Fixed-horizon: sign of h-bar return vs τ' },
+        { label: 'Flaw 1 — ignores the path (stop-then-recover)' },
+        { label: 'Flaw 2 — fixed τ ignores time-varying vol' }
+      ]},
+      { label: 'Triple-barrier', children: [
+        { label: 'Upper (+1), lower (−1), vertical (0)' },
+        { label: 'Label = FIRST barrier touched' },
+        { label: 'Barriers scaled to ±kσ̂' }
+      ]},
+      { label: 'Meta-labeling', children: [
+        { label: 'Primary picks the SIDE' },
+        { label: 'Meta predicts P(primary correct)' },
+        { label: 'Filters false positives; size by confidence' }
+      ]},
+      { label: 'Sample weighting', children: [
+        { label: 'Overlapping labels → NOT IID' },
+        { label: 'Average uniqueness = avg(1/concurrency)' },
+        { label: 'Also |return| + time decay' },
+        { label: 'Teaser: overlap breaks cross-validation' }
+      ]}
+    ]
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Features & labeling: lock it in"
+  questions={[
+    {
+      question: "You fractionally difference a price series and find that d = 0.4 already passes your stationarity (ADF) test. Why prefer this d over the d = 1 of full returns?",
+      options: [
+        { text: "The smallest d that achieves stationarity retains the most memory — d = 0.4 keeps a long fading tail of past prices that full differencing (d = 1) would erase.", correct: true },
+        { text: "A smaller d makes the series more non-stationary, which models prefer." },
+        { text: "d = 0.4 is faster to compute than d = 1, but the two series are statistically identical." },
+        { text: "Any d below 1 guarantees the series is white noise, which is ideal for ML." }
+      ],
+      explanation: "Fractional differencing trades off stationarity against memory. The larger d is, the more memory you destroy; full returns (d = 1) keep almost none. So you want the SMALLEST d that still passes the stationarity test — here 0.4 — to stay stationary while preserving the longest possible memory tail."
+    },
+    {
+      question: "A trade enters at 100 with triple barriers at upper 103, lower 97, vertical at day 5. Path: 101 → 96.5 → 102 → 104 → 101. What label does the triple-barrier method assign?",
+      options: [
+        { text: "−1 — the lower barrier (97) is touched first, on day 2 (96.5 ≤ 97); later highs are irrelevant because the position already closed.", correct: true },
+        { text: "+1 — the price reaches 104 (above the upper barrier) on day 4." },
+        { text: "+1 — the endpoint is 101, which is above the 100 entry." },
+        { text: "0 — neither barrier matters until the vertical at day 5." }
+      ],
+      explanation: "The label is the FIRST barrier touched. Day 2 prints 96.5 ≤ 97, hitting the lower (stop-loss) barrier — label −1, position closed. The day-4 spike to 104 and the +1 endpoint are exactly the 'paper recovery' a fixed-horizon labeler would wrongly reward; triple-barrier honestly records the stop-out."
+    },
+    {
+      question: "A primary model fires 100 signals with 40% precision (40 true, 60 false positives). A meta-model green-lights 35 of the 40 winners and acts on only 15 of the 60 false positives. What's the new precision on the trades actually taken?",
+      options: [
+        { text: "70% — 35 winners out of 50 trades taken (35 true-positive acts + 15 false-positive acts).", correct: true },
+        { text: "40% — meta-labeling can't change precision, only recall." },
+        { text: "35% — you take 35 of the original 100 signals." },
+        { text: "88% — 35 of the 40 true winners are kept." }
+      ],
+      explanation: "Trades taken = 35 (correct green-lights) + 15 (false positives it wrongly acted on) = 50. Of those, 35 are real winners → 35/50 = 70%, up from 40%. Meta-labeling raises precision by vetoing most false positives; the cost is the 5 real winners it skipped (slightly lower recall)."
+    },
+    {
+      question: "Two triple-barrier labels share exactly the same single day of returns (they're 100% overlapping on that bar). How should sample weighting treat that shared return?",
+      options: [
+        { text: "Split it ~0.5 / 0.5 — down-weight both samples by their uniqueness so the shared return isn't double-counted, since overlapping labels aren't IID.", correct: true },
+        { text: "Count it fully for both labels — more weight on shared returns improves the fit." },
+        { text: "Drop both labels entirely, because any overlap makes them unusable." },
+        { text: "Keep both at full weight; overlap only matters for features, never for labels." }
+      ],
+      explanation: "Overlapping label windows mean the same return drives multiple labels, so the samples are NOT IID. Average uniqueness (≈ 1/concurrency) down-weights each: two labels sharing a bar get about 0.5 credit each for it, so a crowded period doesn't vote multiple times. Dropping labels wastes data; full-weighting double-counts. This same overlap is what breaks cross-validation next."
+    }
+  ]}
+/>
+
+You can now build the inputs and the targets the right way — stationary-yet-remembering features, and honest, path-aware, vol-scaled labels with the proper weights. But there's a final trap hiding in plain sight, and it's the one that turns a "great" backtest into a real-money disaster: those overlapping labels don't just bias the *fit* — they leak the future into your *validation*, so the model grades its own homework with the answer key open. Standard k-fold cross-validation, the technique everyone trusts, is quietly broken for financial data. Fixing it — with **purging**, **embargoes**, and an honest accounting of **leakage** — is the subject of the next lesson, **Leakage & Purged Cross-Validation**.

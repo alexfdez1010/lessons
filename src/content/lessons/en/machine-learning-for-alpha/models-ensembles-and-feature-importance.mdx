@@ -1,0 +1,395 @@
+---
+title: "Models, Ensembles & Feature Importance"
+description: "Choosing and taming models for low-signal data: linear models versus tree ensembles, why regularization and ensembling (bagging and boosting) earn their keep when the data is mostly noise, and how to read MDI and MDA feature importance without being misled by them."
+topic: "en/machine-learning-for-alpha"
+order: 5
+minutes: 15
+updated: 2026-06-17
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, ShrinkageEstimator, DiversificationDecay } from '@/components/react';
+
+In most of machine learning, the data is generous. Show a model a million labelled cat photos and the *signal-to-noise ratio* (SNR) — how much of the data is real, repeatable pattern versus random junk — is enormous: a cat is a cat, the pixels don't lie, and a hungry enough neural net memorizes the whole feline universe and still generalizes. Financial returns are the opposite kind of data. Tomorrow's stock return is maybe **1% signal and 99% noise**, and the signal isn't even stationary — it decays, mutates, and gets arbitraged away the moment too many people find it.
+
+That single fact rewrites every modelling instinct you imported from computer vision. The flashy, ultra-flexible model that wins Kaggle leaderboards on clean data will, on returns, lovingly memorize the noise and faceplant out-of-sample. This lesson is about picking models that *survive* that environment: when to prefer a humble linear model over a tree forest, why **regularization** and **ensembling** stop being optional, and how to read which features matter without fooling yourself. Simpler, here, is not a compromise — it's the whole strategy.
+
+<MCQ
+  client:visible
+  pretest
+  question="You're modelling daily stock returns, where roughly 1% of the variation is real signal and 99% is noise. You have two candidates: a depth-20 decision tree that fits the training set almost perfectly, and a ridge regression that fits it only loosely. Which is the better bet out-of-sample, and why?"
+  options={[
+    { text: "The ridge regression — on low signal-to-noise data the loose-fitting, regularized model generalizes; the deep tree has memorized noise.", correct: true },
+    { text: "The depth-20 tree — a near-perfect training fit means it has captured the true pattern better than the ridge model." },
+    { text: "They will perform identically out-of-sample, since both were trained on the same data." },
+    { text: "The depth-20 tree, because trees always beat linear models on financial data." }
+  ]}
+  explanation="A near-perfect in-sample fit on data that's 99% noise is a red flag, not a trophy — the tree fit the noise, which won't repeat. The regularized linear model deliberately refuses to chase every wiggle, trading a little in-sample accuracy for far lower variance, and usually wins out-of-sample. On low-SNR data, 'fits the training set perfectly' means 'overfit.'"
+/>
+
+## Linear vs tree models on low-signal data
+
+**Analogy.** Imagine two students cramming for an exam from a textbook riddled with typos. The first student learns the *concepts* — they get the textbook's main ideas but shrug off the typos. The second student memorizes the book *verbatim*, typos and all, and aces a quiz drawn from those exact pages. Then the real exam arrives, drawn from a fresh, correctly-typed source. The concept-learner does fine; the memorizer, who learned the typos as if they were facts, bombs. Financial data is the typo-ridden textbook, the typos are noise, and the memorizer is your overfit model.
+
+**The bias–variance trade-off (recap).** Every model's expected out-of-sample error decomposes into three pieces:
+
+$$\mathbb{E}\big[(y - \hat{f}(x))^2\big] = \underbrace{\big(\text{Bias}[\hat{f}]\big)^2}_{\text{too rigid}} + \underbrace{\text{Var}[\hat{f}]}_{\text{too twitchy}} + \underbrace{\sigma^2_{\varepsilon}}_{\text{irreducible noise}}$$
+
+- **Bias** — error from the model being too simple to capture the true relationship (a straight line trying to trace a curve). High bias = *underfitting*.
+- **Variance** — how much the fitted model would *jump around* if you re-trained it on a different sample. A flexible model chases the noise, so a new sample yields a wildly different fit. High variance = *overfitting*.
+- **Irreducible noise** $\sigma^2_{\varepsilon}$ — the part you can never predict. On returns, this term is *enormous*.
+
+More flexibility (deeper trees, bigger nets, more features) lowers bias but raises variance, and there's a sweet spot. **Where it sits depends entirely on the SNR.** On clean, high-SNR data the irreducible noise is small, so flexibility pays — drive bias to zero and the variance you pick up is worth it. On returns, where $\sigma^2_{\varepsilon}$ dwarfs the signal, *any* variance you add is almost pure noise-fitting, so the optimum slides hard toward the simple, high-bias, low-variance end.
+
+**Definitions — the two model families.**
+
+- **Linear model.** Predicts a weighted sum of features: $\hat{y} = \beta_0 + \beta_1 x_1 + \dots + \beta_p x_p$. Rigid (it can only draw hyperplanes, never bends), so it has *high bias* but naturally *low variance*. Few parameters to wiggle means little room to memorize noise.
+- **Decision tree.** Repeatedly splits the data on feature thresholds ("if momentum > 0.3 and volatility < 0.2, predict +0.4%"). It carves the feature space into boxes, so it captures **nonlinearity** (curved relationships) and **interactions** (feature A only matters when feature B is high) for free. But a deep tree can isolate every training point into its own leaf — *zero bias, catastrophic variance*. Trees overfit at the drop of a hat.
+
+**Worked example — over-deep tree vs ridge.** You have 500 days of data and one genuinely useful feature (last week's mean reversion), buried in noise. You fit two models.
+
+| Model | In-sample R² | Out-of-sample R² | What happened |
+|---|---|---|---|
+| Depth-20 decision tree | 0.98 | −0.04 | Carved the 500 days into tiny leaves, fitting each day's noise. Perfect on the past, *worse than guessing the mean* on the future (negative R²). |
+| Ridge regression | 0.06 | 0.02 | Refused to chase wiggles; captured only the thin reliable signal. Modest on the past, but the 0.02 it found out-of-sample is *real* and tradeable. |
+
+The tree's 0.98 in-sample R² is the trap. It didn't learn the market; it learned those exact 500 days, typos and all. The ridge model's unglamorous 0.02 out-of-sample is worth infinitely more than the tree's glamorous −0.04 — because in finance you only ever get paid on out-of-sample. Trees *can* win on returns, but only when heavily restrained (shallow, ensembled, regularized — the rest of this lesson).
+
+<Callout variant="tip" title="Simpler is a feature, not a compromise">
+On high-noise data, model complexity is a liability you pay for in variance. The reflex from clean-data ML — "throw a bigger model at it" — is exactly backwards here. A regularized linear model or a *shallow* ensemble isn't the consolation prize you accept when the deep net won't converge; it's frequently the *correct* answer. Start simple, and make any added complexity *earn* its place by improving out-of-sample, not in-sample, performance.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Fill in the bias–variance reasoning for low-SNR data."
+  text="On financial returns the {{irreducible noise|bias term|learning rate}} is huge, so the optimal model sits toward the {{high-bias, low-variance|low-bias, high-variance|zero-bias}} end. A depth-20 tree has very {{low|high|zero}} bias but very {{high|low|negative}} variance, so it memorizes noise and the optimum shifts toward simpler models."
+  explanation="The irreducible-noise term dominates returns, so extra flexibility buys you almost pure variance (noise-fitting) with little bias reduction to show for it. Deep trees are low-bias / high-variance — the wrong side of the trade-off here — pushing the sweet spot toward simple, regularized models."
+/>
+
+## Regularization — taxing complexity
+
+**Analogy.** Regularization is a *complexity tax*. Left untaxed, a model will spend its coefficients freely, buying an elaborate mansion of wiggles to fit every data point — including the noise. Slap a tax on coefficient size and suddenly the model gets frugal: it only "spends" on features that genuinely pull their weight, and shrinks the rest toward zero. You give up a little fit (bias) and get back a *lot* of stability (variance). On noisy data that's a fantastic trade.
+
+**Definition / objective.** Ordinary least squares minimizes squared error alone. Regularization *adds a penalty* on the size of the coefficients $\beta$:
+
+- **Ridge (L2).** Penalizes the sum of *squared* coefficients. Shrinks every coefficient smoothly toward zero, but never exactly to zero.
+
+$$\hat{\beta}^{\text{ridge}} = \arg\min_{\beta}\ \sum_{i=1}^{n}\big(y_i - x_i^\top\beta\big)^2 + \lambda \sum_{j=1}^{p}\beta_j^2$$
+
+- **Lasso (L1).** Penalizes the sum of *absolute* coefficients. Shrinks *and selects* — it drives weak coefficients exactly to zero, performing automatic feature selection.
+
+$$\hat{\beta}^{\text{lasso}} = \arg\min_{\beta}\ \sum_{i=1}^{n}\big(y_i - x_i^\top\beta\big)^2 + \lambda \sum_{j=1}^{p}|\beta_j|$$
+
+- **Elastic net.** A blend of both penalties ($\lambda_1\sum|\beta_j| + \lambda_2\sum\beta_j^2$) — gets lasso's selection plus ridge's stability when features are correlated (lasso alone arbitrarily picks one of a correlated group; the L2 term shares the load).
+
+The knob $\lambda$ (lambda) sets the tax rate. $\lambda = 0$ is plain OLS (no tax, full overfit risk); $\lambda \to \infty$ crushes every coefficient to zero (pure bias, ignores the data). You tune $\lambda$ by cross-validation — and on returns, the cross-validated optimum is usually *aggressive*.
+
+**The tree analogue.** Trees don't have coefficients, so you regularize them structurally — limit how complex any single tree can get:
+
+- **`max_depth`** — cap how many splits deep a tree may go (shallow trees can't isolate single points).
+- **`min_samples_leaf`** — require each leaf to hold at least, say, 50 samples, so no leaf is fit to one lucky day.
+- **`max_features`** — only let each split consider a random subset of features (also the key to random forests, below).
+- **Early stopping** — in boosting, halt training once validation error stops improving, before it starts fitting noise.
+
+**Worked example — ridge shrinking a noisy coefficient.** Suppose feature $x_3$ is pure noise, but in your 500-day sample it *happened* to correlate with returns, so OLS hands it a coefficient of $\beta_3 = 0.40$. Out-of-sample, that 0.40 is a liability — $x_3$ has no real predictive power, so every time $x_3$ moves the model makes a confident, wrong adjustment. Ridge with a moderate $\lambda$ shrinks it toward zero:
+
+| Coefficient | OLS (no penalty) | Ridge (moderate λ) | Out-of-sample effect |
+|---|---|---|---|
+| $\beta_3$ (noise feature) | 0.40 | 0.05 | Near-zero, so spurious moves in $x_3$ barely jolt the prediction |
+| $\beta_1$ (real signal) | 0.30 | 0.26 | Lightly shrunk but still doing its job |
+
+By taxing $\beta_3$ down from 0.40 to 0.05, ridge stops the model betting on a fluke. The real signal $\beta_1$ takes a small haircut too (0.30 → 0.26) — that's the bias you pay — but the variance you save on the noise coefficient more than compensates, and out-of-sample error drops.
+
+<ShrinkageEstimator
+  client:visible
+  title="Regularization shrinks noisy estimates toward an anchor"
+  shrinkageLabel="Regularization strength (≈ λ)"
+  anchorLabel="Shrinkage target (0)"
+  rawLabel="OLS coefficient (noisy)"
+  shrunkLabel="Ridge coefficient (shrunk)"
+  rawSpreadLabel="OLS spread"
+  shrunkSpreadLabel="Ridge spread"
+  prior={0}
+  assets={[
+    { label: 'x₁ signal', raw: 0.18 },
+    { label: 'x₂ weak', raw: 0.07 },
+    { label: 'x₃ noise', raw: 0.16 },
+    { label: 'x₄ noise', raw: -0.04 },
+    { label: 'x₅ noise', raw: 0.11 }
+  ]}
+  caption="Each dot is an estimated coefficient. With no regularization (left), the noise features (x₃–x₅) inherit big, confident coefficients from sample flukes. Turn up the strength and every coefficient is pulled toward zero (the anchor) — the spurious ones collapse fastest because they had no real signal holding them up. That compression is exactly the variance reduction that wins out-of-sample." />
+
+<Callout variant="warning" title="Pitfall — standardize before you penalize">
+Ridge and lasso penalize coefficient *size*, but coefficient size depends on a feature's units. A feature measured in basis points gets a tiny coefficient; the same feature in decimals gets a huge one — and the penalty would clobber them unequally for no good reason. Always **standardize features** (zero mean, unit variance) before fitting a penalized model, or your regularization secretly punishes features for their measurement scale rather than their irrelevance.
+</Callout>
+
+<MCQ
+  client:visible
+  question="You fit lasso and ridge to the same 40-feature return model. Lasso returns 8 non-zero coefficients; ridge returns 40 small ones. A colleague says 'they're the same thing with a different penalty.' What's the key practical difference?"
+  options={[
+    { text: "Lasso's L1 penalty drives weak coefficients exactly to zero, so it selects features; ridge's L2 only shrinks them, keeping all 40.", correct: true },
+    { text: "Ridge selects features and lasso only shrinks them; that's why ridge returned fewer non-zero coefficients." },
+    { text: "There is no real difference — both always return the same set of non-zero coefficients for a given λ." },
+    { text: "Lasso raises variance while ridge raises bias, so lasso is strictly worse on noisy data." }
+  ]}
+  explanation="L1 (lasso) has corners at zero in its constraint region, so the optimum often lands exactly on zero for weak features — automatic selection, here keeping just 8. L2 (ridge) shrinks smoothly but essentially never to exactly zero, so all 40 survive as small coefficients. When features are correlated, elastic net blends both: lasso-style selection with ridge-style stability."
+/>
+
+## Ensembling — bagging (kill variance)
+
+**Analogy.** Ask one slightly-tipsy expert to guess the number of jellybeans in a jar and you'll get a wild answer. Ask *five hundred* independent guessers and average them, and the crowd's average is eerily accurate — the individual errors, being random and uncorrelated, cancel out. **Bagging** (bootstrap aggregating) is exactly this: build many high-variance models, each a bit wrong in its own random direction, and *average* them. The shared signal reinforces; the independent noise cancels.
+
+**Definition / formula.** Train $B$ models, each on a different *bootstrap sample* (a random resample-with-replacement of your data), then average their predictions. If each model has variance $\sigma^2$ and the models are **mutually uncorrelated**, the variance of the average is:
+
+$$\text{Var}\Big(\tfrac{1}{B}\sum_{b=1}^{B}\hat{f}_b\Big) = \frac{\sigma^2}{B}$$
+
+So the *standard deviation* of the ensemble falls like $\sigma/\sqrt{B}$ — the exact same $1/\sqrt{N}$ diversification law that powers a breadth-driven stat-arb book. More de-correlated learners → less variance, with no extra bias. You're diversifying across *models* instead of across *trades*, but it's the same math.
+
+**The catch — and the random-forest fix.** That clean $\sigma^2/B$ only holds if the models are uncorrelated. Bootstrap samples overlap heavily, so trees trained on them come out *similar* — strongly correlated — and correlated learners barely diversify (just like correlated bets in a portfolio). With average pairwise correlation $\rho$ between the $B$ trees, the ensemble variance is actually:
+
+$$\text{Var}(\text{ensemble}) = \rho\,\sigma^2 + \frac{1-\rho}{B}\,\sigma^2$$
+
+As $B \to \infty$ the second term vanishes but the first, $\rho\sigma^2$, *does not* — correlation puts a hard floor under how much variance you can cancel. **Random forests** attack that floor directly: at every split, each tree may only consider a *random subset* of features (`max_features`). This forces different trees to rely on different signals, mechanically **de-correlating** them — driving $\rho$ down so the $\frac{1-\rho}{B}\sigma^2$ term actually shrinks. The de-correlation, not the bootstrap, is the real magic.
+
+**Worked example — variance of an average.** Each tree has variance $\sigma^2 = 1.0$. Average $B = 100$ of them.
+
+| Scenario | Pairwise corr. ρ | Ensemble variance $= \rho\sigma^2 + \frac{1-\rho}{B}\sigma^2$ | Variance cut |
+|---|---|---|---|
+| Perfectly independent | 0.00 | $0 + \tfrac{1}{100} = 0.010$ | 100× — full $1/B$ |
+| Mildly correlated (plain bagging) | 0.30 | $0.30 + \tfrac{0.70}{100} = 0.307$ | ~3.3× — floor at 0.30 |
+| De-correlated (random forest) | 0.05 | $0.05 + \tfrac{0.95}{100} = 0.060$ | ~17× — most of the benefit back |
+
+Read the rows: plain bagging's correlated trees ($\rho = 0.30$) hit a wall — even with infinite trees, variance can't drop below 0.30. The random forest's feature randomization slashes $\rho$ to 0.05, dropping the floor to near 0.06 and recovering most of the diversification. *Correlated trees don't diversify* — that's why a forest randomizes features, not just rows.
+
+<DiversificationDecay
+  client:visible
+  title="Bagging: ensemble variance falls like 1/√B — until correlation floors it"
+  holdingsLabel="Number of trees (B)"
+  riskLabel="Ensemble error (std. dev.)"
+  systematicLabel="Correlation floor (√ρ · σ)"
+  idiosyncraticLabel="Diversifiable model variance"
+  singleStockVol={40}
+  systematicFloor={9}
+  maxHoldings={30}
+  caption="Add de-correlated trees one at a time and the ensemble's error collapses fast — the 1/√B law, identical to diversifying across independent trades. But notice the floor it flattens onto: that's √ρ·σ, the residual correlation between trees that no amount of extra trees can cancel. A random forest's feature randomization lowers that floor (smaller ρ); plain bagging leaves it high. Breadth across MODELS, just like breadth across bets." />
+
+<MatchConcepts
+  client:visible
+  question="Match each bagging / random-forest idea to what it does."
+  pairs={[
+    { term: "Bootstrap sampling", definition: "Train each tree on a random resample-with-replacement of the rows, so the trees differ from one another." },
+    { term: "Random feature subset (max_features)", definition: "At each split, only allow a random subset of features — the mechanism that DE-CORRELATES the trees." },
+    { term: "Averaging the predictions", definition: "Combines the trees so their independent errors cancel, cutting variance toward σ²/B." },
+    { term: "Correlation floor ρσ²", definition: "The residual variance that survives no matter how many trees you add, because the trees are not perfectly independent." }
+  ]}
+  explanation="Bootstrap rows make trees differ a little; random feature subsets make them differ a LOT (low ρ); averaging cashes that in as variance reduction. But the ρσ² floor means correlated trees stop helping — which is precisely why de-correlation, not just more trees, is the lever."
+/>
+
+## Ensembling — boosting (kill bias)
+
+**Analogy.** If bagging is five hundred independent guessers voting at once, **boosting** is a relay of specialists, each one studying the *mistakes* of the previous runner. Model 1 makes a rough prediction. Model 2 doesn't re-predict from scratch — it predicts model 1's *errors* (residuals), patching them. Model 3 patches what's left, and so on. Each learner is weak and shallow, but the team sequentially chips away at the *bias* the simple base learner couldn't capture alone.
+
+**Definition / formula.** Boosting fits an additive model *sequentially*. Start with a constant, then at each round $m$ fit a small tree $h_m$ to the current residuals (in **gradient boosting**, to the negative gradient of the loss) and add a *shrunken* slice of it:
+
+$$F_m(x) = F_{m-1}(x) + \nu\, h_m(x)$$
+
+where $\nu$ (nu) is the **learning rate** — a shrinkage factor, typically 0.01–0.1, that says "only take a small step toward fixing the residuals each round." **XGBoost**, **LightGBM**, and friends are highly optimized gradient-boosting implementations that add their own regularization. Because boosting attacks residuals, it primarily reduces **bias** — it can model relationships a single shallow tree never could.
+
+**The danger.** Bias-reduction is a double-edged sword on noisy data. Keep fitting residuals long enough and boosting will start "fixing" the *noise* — the residuals that were never signal in the first place. Boosting is also notoriously **sensitive to mislabeled or noisy data**: a bad label looks like a big residual, so the next learner obsesses over it. The defenses are all about restraint:
+
+- **Learning rate $\nu$** — small steps (0.01–0.05) so no single round overcommits to noise; pair with more rounds.
+- **Subsampling** — fit each round on a random fraction of rows and/or columns (stochastic gradient boosting), which both de-correlates and regularizes.
+- **Early stopping** — watch validation error and halt the moment it stops improving, before the noise-fitting begins.
+- **Shallow base learners** — depth-2 to depth-4 trees ("stumps"-ish), so each round adds only a little flexibility.
+
+**Bagging vs boosting — the contrast.**
+
+| Dimension | Bagging / random forest | Boosting (gradient boosting / XGBoost) |
+|---|---|---|
+| Primarily reduces | **Variance** | **Bias** |
+| How learners combine | Parallel — all independent, then averaged | Sequential — each fits the previous errors |
+| Base learner | Deep, high-variance trees (you want them strong) | Shallow, high-bias trees (stumps) |
+| Reaction to noisy/mislabeled data | Robust — averaging dilutes a bad tree | Fragile — chases the bad residual |
+| Overfits if… | Almost never from adding trees (just plateaus) | You boost too long / learning rate too high |
+| Key knob | `n_trees`, `max_features` (de-correlate) | learning rate $\nu$, rounds, early stopping |
+
+On *clean* data, well-tuned boosting usually beats bagging. On *noisy financial* data the verdict is closer, and boosting's fragility to noise is a real cost — which is why many quant shops lean on random forests or heavily-regularized, early-stopped, low-learning-rate boosting rather than a maxed-out XGBoost.
+
+<Categorize
+  client:visible
+  question="Sort each statement under the ensembling method it describes."
+  buckets={["Bagging / Random Forest", "Boosting / XGBoost"]}
+  items={[
+    { text: "Primarily reduces variance by averaging many learners", bucket: "Bagging / Random Forest" },
+    { text: "Trains learners in parallel, then combines them", bucket: "Bagging / Random Forest" },
+    { text: "Robust to a few mislabeled points — averaging dilutes them", bucket: "Bagging / Random Forest" },
+    { text: "De-correlates learners with random feature subsets at each split", bucket: "Bagging / Random Forest" },
+    { text: "Primarily reduces bias by sequentially fitting residuals", bucket: "Boosting / XGBoost" },
+    { text: "Needs a small learning rate ν and early stopping to avoid fitting noise", bucket: "Boosting / XGBoost" },
+    { text: "Fragile to mislabeled data — a bad residual gets obsessively patched", bucket: "Boosting / XGBoost" }
+  ]}
+  explanation="Bagging = parallel, variance-killing, noise-robust, de-correlated deep trees. Boosting = sequential, bias-killing, noise-fragile, needs shrinkage and early stopping. The cleanest mnemonic: bagging averages strong learners to cut variance; boosting stacks weak learners to cut bias."
+/>
+
+<Callout variant="info" title="Why both still matter on returns">
+Neither method is a magic wand on 99%-noise data, but each targets a different enemy. If your simple model is *underfitting* (high bias — it's missing a real nonlinearity), reach for boosting, carefully throttled. If it's *overfitting* (high variance — unstable across resamples), reach for bagging. Diagnose which problem you actually have before picking the tool; throwing boosting at a variance problem just adds a new way to overfit.
+</Callout>
+
+## Feature importance — MDI vs MDA
+
+You've trained a model that works. Now the inevitable question: *which features are actually driving it?* You want this for intuition, for pruning dead features, and for the risk team. Two methods dominate for tree models, and they disagree often enough that knowing the difference is a survival skill.
+
+**MDI — Mean Decrease in Impurity (a.k.a. Gini importance).**
+
+Every split in a tree reduces "impurity" (variance for regression, Gini/entropy for classification). MDI tallies, for each feature, the total impurity reduction it produced across all splits in all trees, weighted by how many samples passed through. It's the default `feature_importances_` in scikit-learn.
+
+- **Pros:** essentially free — it falls out of training, no extra computation.
+- **Cons (serious):** it's computed **in-sample** (on training data), so a feature that overfits gets *credit* for it. Worse, it is **biased toward high-cardinality and continuous features** — a feature with many distinct values (a price, a continuous ratio) offers more possible split points, so it'll grab importance *by sheer chance* even if it's noise. A binary flag, with one possible split, is structurally handicapped. MDI systematically over-rates continuous noise.
+
+**MDA — Mean Decrease in Accuracy (a.k.a. permutation importance).**
+
+Take your *trained* model and a *held-out* set. Record the baseline out-of-sample score. Now **shuffle one feature's values** (permute the column, breaking its link to the target) and re-score. The drop in performance is that feature's importance — if scrambling it barely hurts, the model wasn't really using it.
+
+- **Pros:** measured **out-of-sample**, on the real performance metric, so a feature only scores if it genuinely helps the model *generalize*. Honest. Model-agnostic (works on any fitted model, not just trees).
+- **Cons:** slower (re-score once per feature, often repeated for stability), and — crucially — it inherits the **substitution effect** when features are correlated.
+
+**The substitution effect (the trap that fools everyone).** Suppose two features are *highly correlated* — say `momentum_10d` and `momentum_12d`, near-twins. Permutation importance shuffles `momentum_10d`: the model barely flinches, because `momentum_12d` carries the same information and covers for it, so `momentum_10d` looks unimportant. Shuffle `momentum_12d` instead and `momentum_10d` covers. **Both twins score near zero**, even though *momentum as a concept* is the single most important driver. The importance got *diluted/shared* across the correlated group, making a critical signal look worthless.
+
+**Worked example — two correlated features splitting importance.** A model is genuinely driven by momentum. You feed it two near-identical momentum features (ρ ≈ 0.95) plus an irrelevant noise feature.
+
+| Feature | "True" contribution | MDA importance (permute one at a time) | Why |
+|---|---|---|---|
+| `momentum_10d` | High (shared) | **0.04** | When shuffled, its twin `momentum_12d` covers — tiny accuracy drop |
+| `momentum_12d` | High (shared) | **0.05** | When shuffled, `momentum_10d` covers — tiny accuracy drop |
+| `noise_feature` | None | **0.01** | Genuinely useless — small drop, but comparable to the twins! |
+
+Look at the disaster: the two momentum features (the actual engine of the model) score 0.04–0.05, barely above the *useless* noise feature at 0.01. A naive read — "momentum doesn't matter, let's drop it" — would gut the strategy. The fix is to test correlated features as a *group* (permute both twins together: the drop is large, revealing momentum's true importance) or to cluster/decorrelate features before measuring (e.g. López de Prado's clustered MDA/MDI).
+
+**Two more pitfalls that apply to both methods:**
+
+- **Importance ≠ causation.** A feature can be "important" to the model purely by being correlated with the true driver, or with the *label leakage* you accidentally left in. High importance tells you the model *uses* it, not that it *causes* returns.
+- **Importance is conditional on the model.** MDI/MDA describe *this fitted model's* reliance on a feature, not the feature's universal worth. A different model (or the same model on a different sample) can rank features completely differently. Never report importance as if it's a property of the feature alone.
+
+<Callout variant="warning" title="Pitfall — trusting default MDI on continuous features">
+The scikit-learn default (`feature_importances_` = MDI) is in-sample and structurally biased toward continuous, high-cardinality features. A column of pure Gaussian noise, being continuous, will often out-rank a genuinely useful binary flag on MDI alone. Always cross-check with out-of-sample MDA (permutation importance), and when features are correlated, measure them in clusters — or you'll prune the wrong things and keep the noise.
+</Callout>
+
+<MCQ
+  client:visible
+  question="Permutation importance (MDA) reports that BOTH of your two near-identical momentum features have near-zero importance, while you're certain momentum drives the model. What's the most likely explanation?"
+  options={[
+    { text: "The substitution effect — the two correlated features cover for each other, so shuffling either one barely hurts and the importance gets diluted across the pair.", correct: true },
+    { text: "Momentum genuinely doesn't matter; MDA is out-of-sample so its near-zero verdict is definitive and you should drop both." },
+    { text: "MDA is biased toward high-cardinality features, so it has over-penalized the continuous momentum features." },
+    { text: "You should switch to in-sample MDI, which is immune to correlation effects and will give the true importance." }
+  ]}
+  explanation="Correlated features substitute for each other: permute one and its twin covers, so each looks unimportant and the real importance is shared/diluted across the group. The fix is to permute the correlated group together, or cluster features first. (The high-cardinality bias is an MDI problem, not MDA; and MDI is in-sample and equally fooled by correlation — switching to it doesn't help.)"
+/>
+
+<MatchConcepts
+  client:visible
+  question="Match each feature-importance idea to its description."
+  pairs={[
+    { term: "MDI (Mean Decrease Impurity)", definition: "In-sample, free at training time, but biased toward high-cardinality/continuous features." },
+    { term: "MDA (permutation importance)", definition: "Shuffle a feature and measure the out-of-sample performance drop — slower but honest." },
+    { term: "Substitution effect", definition: "Correlated features cover for each other, so each looks unimportant and their importance is diluted across the group." },
+    { term: "Importance ≠ causation", definition: "High importance means the model relies on the feature, not that the feature drives returns." }
+  ]}
+  explanation="MDI is fast and in-sample but over-rates continuous noise; MDA is out-of-sample and honest but suffers the substitution effect with correlated features. And neither gives causation — importance is always conditional on this particular fitted model."
+/>
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Quick check: your random forest's MDI ranks a continuous "noise" feature #1, but its MDA (permutation) importance is near zero. Which do you trust, and why?</summary>
+
+Trust the **MDA**. MDI is computed in-sample and is structurally biased toward continuous, high-cardinality features — a noise column with many distinct values offers many split points and grabs impurity reduction *by chance*, inflating its MDI rank. MDA shuffles the feature and checks the *out-of-sample* performance drop; a near-zero MDA says scrambling the feature doesn't hurt generalization, i.e. the model wasn't truly relying on it. When MDI and MDA disagree on a continuous feature, the disagreement is itself the tell: MDI's high rank is most likely the cardinality bias, not real signal. (Caveat: if the feature were *correlated with a real driver*, a low MDA could instead be the substitution effect — so check correlations before dropping it.)
+
+</details>
+</Reveal>
+
+## Putting it together
+
+Modelling low-signal-to-noise data is a discipline of *restraint*. First, respect the bias–variance trade-off: because returns are 99% noise, the irreducible-noise term dominates, the optimum slides toward simple, and a regularized linear model or shallow ensemble routinely beats a deep tree that memorized the past. Second, **regularize** — tax complexity (ridge shrinks, lasso shrinks-and-selects, elastic net blends; trees use depth/leaf/feature caps and early stopping) to trade a little bias for a lot less variance. Third, **ensemble** with the right tool: **bag** (average de-correlated trees, random-forest-style, to crush *variance* via $1/\sqrt{B}$) when you're overfitting, and **boost** (sequentially fit residuals to cut *bias*) — carefully, with a small learning rate and early stopping — when you're underfitting. Finally, read **feature importance** with deep suspicion: prefer out-of-sample **MDA** over in-sample, cardinality-biased **MDI**, watch the **substitution effect** dilute correlated features, and never confuse "the model uses it" with "it causes returns."
+
+<MindMap
+  client:visible
+  title="Models, ensembles & feature importance at a glance"
+  caption="From bias–variance on noisy data, through regularization and the two flavors of ensembling, to reading feature importance without being fooled."
+  root={{
+    label: 'Taming models for low-signal data',
+    children: [
+      { label: 'Bias–variance on returns', children: [
+        { label: '99% noise → irreducible term dominates' },
+        { label: 'Optimum slides toward simple / high-bias' },
+        { label: 'Deep tree: 0 bias, huge variance → memorizes noise' },
+        { label: 'Linear: high bias, low variance → generalizes' }
+      ]},
+      { label: 'Regularization (tax complexity)', children: [
+        { label: 'Ridge L2 — shrinks all coefficients' },
+        { label: 'Lasso L1 — shrinks AND selects (→0)' },
+        { label: 'Elastic net — blend for correlated features' },
+        { label: 'Trees: depth / min-leaf / max-features / early stop' }
+      ]},
+      { label: 'Ensembling', children: [
+        { label: 'Bagging → cut VARIANCE, parallel, 1/√B' },
+        { label: 'Random forest: random features DE-CORRELATE (↓ρ)' },
+        { label: 'Boosting → cut BIAS, sequential, fit residuals' },
+        { label: 'Boosting needs ν, subsample, early stop (noise-fragile)' }
+      ]},
+      { label: 'Feature importance', children: [
+        { label: 'MDI — in-sample, free, biased to high-cardinality' },
+        { label: 'MDA — out-of-sample, honest, slower' },
+        { label: 'Substitution effect: correlated twins share importance' },
+        { label: 'Importance ≠ causation; conditional on the model' }
+      ]}
+    ]
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Models, ensembles & feature importance: lock it in"
+  questions={[
+    {
+      question: "On 99%-noise return data, a depth-25 tree scores R² = 0.95 in-sample and R² = −0.06 out-of-sample. What's the correct diagnosis?",
+      options: [
+        { text: "Severe overfitting — the tree's flexibility let it memorize the training noise, so it has high variance and fails to generalize.", correct: true },
+        { text: "Severe underfitting — the negative out-of-sample R² means the tree was too simple to capture the signal." },
+        { text: "A well-calibrated model — a high in-sample R² confirms it found the true pattern." },
+        { text: "Irreducible noise alone — no model could do better, so the result is expected and fine." }
+      ],
+      explanation: "A near-perfect in-sample fit collapsing to negative out-of-sample R² is the textbook signature of overfitting: high variance, low bias, noise memorized. The fix is restraint — shallower depth, regularization, or ensembling — not more flexibility."
+    },
+    {
+      question: "You average B = 100 trees. With plain bagging the pairwise tree correlation is ρ = 0.4; a random forest's feature randomization cuts it to ρ = 0.05. Using Var = ρσ² + (1−ρ)σ²/B with σ² = 1, what's the benefit of the random forest?",
+      options: [
+        { text: "It drops the variance floor from ~0.41 to ~0.06, because lowering ρ shrinks the ρσ² term that extra trees can never cancel.", correct: true },
+        { text: "Nothing — with B = 100 trees both already reach variance ≈ 0.01, so de-correlation is irrelevant." },
+        { text: "It raises the variance, because de-correlated trees are individually weaker than correlated ones." },
+        { text: "It only matters for bias; correlation between trees has no effect on the ensemble's variance." }
+      ],
+      explanation: "Plain bagging: 0.4 + 0.6/100 ≈ 0.41. Random forest: 0.05 + 0.95/100 ≈ 0.06. The ρσ² term is a hard floor extra trees can't touch, so de-correlating (lowering ρ via random feature subsets) is what actually unlocks more variance reduction — the whole reason a forest randomizes features, not just rows."
+    },
+    {
+      question: "Your simple linear model is clearly UNDERFITTING — it's missing a real nonlinear interaction the data supports. Which tool most directly targets that problem, and what's the catch?",
+      options: [
+        { text: "Boosting — it sequentially fits residuals to reduce bias, capturing the missed structure; the catch is it can fit noise, so use a small learning rate and early stopping.", correct: true },
+        { text: "Bagging — averaging more linear models will reduce the bias the single model has; the catch is it's slow to train." },
+        { text: "Stronger ridge regularization — increasing λ adds the flexibility needed to capture the interaction." },
+        { text: "Lasso feature selection — dropping features will let the remaining ones model the nonlinearity." }
+      ],
+      explanation: "Underfitting = high bias, and boosting is the bias-killer: each round patches the previous residuals, capturing structure a single learner missed. But boosting is noise-fragile, so throttle it — low learning rate ν, subsampling, early stopping. Bagging and stronger regularization both reduce variance or add bias, the wrong direction for an underfit model."
+    },
+    {
+      question: "MDI ranks a continuous, high-cardinality feature as your #1 driver, but its permutation (MDA) importance is essentially zero and it isn't correlated with any other feature. Best interpretation?",
+      options: [
+        { text: "MDI's cardinality bias likely inflated it — a continuous feature has many split points and grabs in-sample impurity by chance; the near-zero out-of-sample MDA says the model doesn't truly rely on it.", correct: true },
+        { text: "The substitution effect is hiding its true importance, so you should trust the high MDI rank and keep the feature." },
+        { text: "MDA is unreliable for continuous features; MDI is the honest, out-of-sample measure, so the feature is genuinely #1." },
+        { text: "Both metrics agree the feature is critical, so it should be weighted even more heavily." }
+      ],
+      explanation: "MDI is in-sample and structurally biased toward continuous/high-cardinality features, which grab impurity reduction by chance. A near-zero MDA (out-of-sample) on an uncorrelated feature says the model doesn't actually rely on it — so the high MDI is the bias, not signal. (Substitution would only apply if the feature were correlated with another, which it isn't here.)"
+    }
+  ]}
+/>
+
+You can now pick a model that survives the noise, regularize and ensemble it without fooling yourself, and read its feature importances with the right amount of paranoia. But a model that predicts well is still not a portfolio — a vector of return forecasts isn't positions, and the gap between "my model says these 200 stocks are attractive" and "here is exactly how much of each to hold" is where a surprising amount of alpha is won or lost. That translation — from raw ML signal to sized, risk-controlled, cost-aware positions — is the subject of the next lesson, **From ML Signal to Portfolio**.

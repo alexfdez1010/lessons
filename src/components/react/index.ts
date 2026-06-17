@@ -755,3 +755,10 @@ export type { DovPayoffProps } from '@/components/react/DovPayoff';
 
 export { OnchainVol, default as OnchainVolDefault } from '@/components/react/OnchainVol';
 export type { OnchainVolProps } from '@/components/react/OnchainVol';
+
+// Machine-learning-for-alpha islands
+export { PurgedCvSplit, default as PurgedCvSplitDefault } from '@/components/react/PurgedCvSplit';
+export type { PurgedCvSplitProps } from '@/components/react/PurgedCvSplit';
+
+export { DeflatedSharpe, default as DeflatedSharpeDefault } from '@/components/react/DeflatedSharpe';
+export type { DeflatedSharpeProps } from '@/components/react/DeflatedSharpe';

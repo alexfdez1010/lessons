@@ -1,0 +1,422 @@
+---
+title: "Features financieras y etiquetado"
+description: "Convertir los precios en features estacionarias e informativas sin tirar a la basura la memoria, y el problema del etiquetado del que nadie te avisa: las etiquetas de horizonte fijo y sus defectos, el método de la triple barrera, el meta-etiquetado y la ponderación de muestras para resultados solapados."
+topic: "es/machine-learning-for-alpha"
+order: 2
+minutes: 15
+updated: 2026-06-17
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, TsStationarityChart, CrossSectionScatter, TsAcfPlot } from '@/components/react';
+
+En la mayoría de los tutoriales de machine learning los datos llegan ya masticados: aquí tienes tus features `X`, aquí tienes tu etiqueta `y`, ve y ajusta un modelo. Las finanzas son más crueles. Nadie te entrega `X` e `y`: *fabricas* ambos a partir de un único flujo sucio de precios, y **la forma en que los fabricas decide si tu modelo aprende algo real o simplemente memoriza ruido que nunca se repetirá.** Esta lección va sobre ese proceso de fabricación, y es donde la mayoría de los proyectos de ML cuantitativo mueren en silencio mucho antes de llegar a un backtest.
+
+Aquí acechan dos problemas, y los dos son lo bastante sutiles como para que gente lista los haga mal durante años. El primero: ¿qué le das de comer al modelo? Los precios en bruto son veneno (veremos por qué), y el remedio obvio (los rendimientos) tira a la basura algo precioso. El segundo, y el que arruina más estrategias que ningún otro: ¿qué es `y`? "La cosa que sube" suena a respuesta hasta que intentas escribirla. Fabriquemos ambos, con cuidado.
+
+<MCQ
+  client:visible
+  pretest
+  question="Quieres predecir el movimiento de mañana, así que le das a un modelo 20 años de PRECIOS de cierre diarios en bruto de una acción como su feature principal. El modelo hace un backtest precioso. ¿Cuál es el problema más probable?"
+  options={[
+    { text: "Los precios son no estacionarios: su nivel tiene tendencia y deriva, así que el modelo aprende NIVELES de precio que no se repetirán fuera de muestra, no una relación repetible.", correct: true },
+    { text: "Los precios se actualizan demasiado despacio; necesitarías ticks intradía para que cualquier modelo funcione." },
+    { text: "Nada: los precios en bruto son la entrada más informativa que le puedes dar a un modelo." },
+    { text: "Los precios ya son estacionarios, así que al modelo no le queda nada que aprender de ellos." }
+  ]}
+  explanation="Una serie de precios es (casi) un paseo aleatorio: su media y su varianza derivan con el tiempo, así que es NO estacionaria. Un modelo entrenado sobre niveles aprende cosas como 'cuando el precio ronda los 87 tiende a subir': un patrón pegado a un rango histórico de precio concreto que no tiene razón alguna para repetirse cuando la acción cotiza a 300. El backtest precioso es el modelo memorizando el camino que se le mostró. Arreglar esto, sin tirar toda la memoria de la serie, es la primera mitad de esta lección."
+/>
+
+## Las features deben ser estacionarias Y informativas
+
+**Analogía.** Imagina entrenar un modelo para reconocer "alto" enseñándole personas de pie sobre una colina que no para de crecer. Aprende que alto significa "la cabeza está a unos 1,80 m sobre el nivel del mar", y luego fracasa por completo en cuanto el suelo se mueve. Un precio en bruto es esa colina creciente: el modelo se agarra a niveles absolutos (la altitud) en lugar de a la relación que de verdad te importa (la estatura de la persona). Tienes que restar la colina.
+
+**Definición: estacionariedad.** Una serie temporal es **estacionaria** cuando sus propiedades estadísticas (media, varianza, autocorrelación) no cambian con el tiempo. A grandes rasgos: el futuro se parece estadísticamente al pasado, así que un patrón aprendido ayer sigue siendo válido mañana. Un **paseo aleatorio** (cada paso es el último valor más un shock impredecible, $P_t = P_{t-1} + \varepsilon_t$) es la serie *no* estacionaria por antonomasia: su nivel deambula sin media fija y su varianza crece sin límite. Los precios de las acciones se acercan muchísimo a esto. Dáselos a un modelo y aprende niveles que nunca se repetirán.
+
+El arreglo clásico es **diferenciar** la serie: tomar cambios en lugar de niveles. La primera diferencia de un precio te da los **rendimientos**:
+
+$$r_t = P_t - P_{t-1} \qquad \text{(o rendimientos logarítmicos } r_t = \ln P_t - \ln P_{t-1}\text{)}$$
+
+Los rendimientos *sí* son estacionarios: rondan una media fija con una dispersión más o menos estable, justo la nube plana de la que un modelo puede generalizar. ¿Problema resuelto? No del todo, y aquí está el dilema que hace que el ML financiero sea genuinamente difícil.
+
+<TsStationarityChart client:visible caption="Exactamente los mismos datos simulados, dos caras. Como NIVEL de precio (vista izquierda) deambula y su dispersión no para de ensancharse: no estacionario, y un modelo entrenado sobre él memoriza un camino. Marca 'Mostrar rendimientos' y lo diferencias una vez: una nube plana alrededor de una media fija con dispersión estable, estacionaria, y ahora generalizable. Los modelos se construyen sobre la imagen de la derecha. La trampa de la que va el resto de esta sección: diferenciar también borró la memoria del precio." />
+
+### El dilema estacionariedad–memoria
+
+Diferenciar compra estacionariedad a un precio brutal: **destruye la memoria.** Un rendimiento te dice lo que pasó en *una* barra y nada sobre el nivel que ha alcanzado la serie. Pero mucha señal real vive en el nivel y en su estructura de movimiento lento: cuánto se ha alejado el precio de una media móvil, si está por encima o por debajo de un equilibrio de largo plazo, la componente persistente que necesita una señal de reversión a la media o de tendencia. Toma la primera diferencia completa y has tirado todo eso a la basura. Eres estacionario *y* casi sin memoria: optimizaste una cosa a cero y la otra también a cero.
+
+Esto es un compromiso real, no una falsa dicotomía:
+
+| Serie | ¿Estacionaria? | Memoria retenida | Veredicto |
+|---|---|---|---|
+| Precio en bruto $P_t$ | No (paseo aleatorio) | Toda | Informativa pero inservible: el modelo aprende niveles |
+| Rendimiento completo $r_t = P_t - P_{t-1}$ | Sí | Casi ninguna | Usable pero amnésica: tira la señal del nivel |
+| **Diferenciada fraccionalmente** $\tilde{P}_t$ | Sí (ajusta $d$) | La máxima posible | El compromiso: justo estacionaria, sigue recordando |
+
+**Definición: diferenciación fraccional.** En lugar de diferenciar un paso entero (orden $d = 1$, rendimientos completos) o nada en absoluto ($d = 0$, precio en bruto), diferencia con un orden *fraccional* $d$ entre 0 y 1. Formalmente, el operador de diferenciación $(1 - B)^d$ (donde $B$ es el operador de retardo, $B P_t = P_{t-1}$) se expande como una suma ponderada infinita de valores pasados:
+
+$$\tilde{P}_t = \sum_{k=0}^{\infty} \omega_k \, P_{t-k}, \qquad \omega_k = (-1)^k \binom{d}{k} = \omega_{k-1}\,\frac{d - k + 1}{k}$$
+
+En $d = 1$ los pesos colapsan a $\{1, -1, 0, 0, \dots\}$: eso es justo $P_t - P_{t-1}$, el rendimiento ordinario. En $d = 0$ los pesos son $\{1, 0, 0, \dots\}$: el precio en bruto, intacto. Para un $d$ intermedio, los pesos decaen lentamente, así que $\tilde{P}_t$ conserva en memoria una larga cola desvaneciente de precios pasados sin dejar de ser estacionaria. La receta: **encuentra el $d$ más pequeño que pase un test de estacionariedad (p. ej. el test ADF), porque el $d$ más pequeño conserva la máxima memoria.** Ese $d$ minúsculo (a menudo alrededor de 0,3–0,5) es el punto dulce.
+
+<TsAcfPlot client:visible caption="La memoria, hecha visible. La función de autocorrelación (ACF) mide cuán correlacionada está una serie con su propio pasado en cada retardo. Una serie estacionaria pero amnésica (ruido blanco) tiene todas las barras dentro de la banda: nada de memoria. Una serie con estructura persistente (decaimiento AR(1)) sigue correlacionada a lo largo de muchos retardos: esa larga cola desvaneciente es exactamente la memoria que la diferenciación fraccional está hecha para PRESERVAR mientras tira de la serie hacia la estacionariedad. La diferenciación completa aplanaría esto hacia la imagen del ruido blanco y tiraría la señal a la basura." />
+
+### Features escaladas por volatilidad
+
+Una transformación más que usarás constantemente: **divide por la volatilidad reciente.** Un movimiento del 1% significa algo completamente distinto en un mercado adormilado que en uno desbocado. Escalar una feature (o un rendimiento) por una estimación móvil de la volatilidad $\hat{\sigma}_t$ pone cada observación en igualdad de condiciones:
+
+$$\tilde{r}_t = \frac{r_t}{\hat{\sigma}_t}$$
+
+Es la misma idea de estandarización que un z-score, aplicada a lo largo del tiempo. Mantiene la *magnitud* de una feature comparable entre regímenes tranquilos y turbulentos, de modo que el modelo no se deje engañar pensando que el movimiento gigante de un día turbulento es una señal más fuerte que el movimiento minúsculo de un día tranquilo. (Quédate con el escalado por volatilidad: vuelve con ganas cuando fijemos las barreras de etiquetado más abajo.)
+
+### Ejemplo resuelto: por qué los niveles engañan
+
+Toma tres días de precio: **100 → 110 → 105.** Míralo de dos maneras.
+
+| Día | Precio en bruto (feature) | Rendimiento simple (feature) |
+|---|---|---|
+| 1 | 100 | — |
+| 2 | 110 | $(110-100)/100 = +10\%$ |
+| 3 | 105 | $(105-110)/110 = -4,5\%$ |
+
+Un modelo alimentado con la columna del **precio en bruto** ve los números 100, 110, 105; y si sus datos de entrenamiento solo abarcaron, pongamos, de 80 a 120, construye reglas ancladas a esa banda ("alrededor de 105–110 la serie tiende a caer"). Vuelve a pasar la acción tras un split 3 a 1, o cinco años después cuando cotiza a 400, y esas reglas son galimatías: el nivel que aprendió nunca se repite. Un modelo alimentado con la columna de **rendimientos** ve +10%, −4,5%: números que significan lo mismo tanto si la acción está a 100 como a 400, porque son estacionarios. Ese es todo el argumento a favor de diferenciar. Lo único que pierde la vista de rendimientos es *dónde* está de verdad el precio, y ese nivel perdido es la memoria que la diferenciación fraccional se afana en recuperar.
+
+<Callout variant="warning" title="Trampa — el 'gran' backtest sobre precios en bruto">
+Si un modelo entrenado sobre niveles de precio en bruto hace un backtest espectacular, sospecha, no te alegres. Lo más probable es que haya memorizado el camino de precio histórico concreto (su nivel y su tendencia), que es no estacionario y no se repetirá. La señal delatora: el rendimiento se desploma en cuanto el precio en vivo se sale del rango de entrenamiento. La estacionariedad no es un detalle bonito: es la diferencia entre una relación aprendida y una historia memorizada.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Rellena el compromiso estacionariedad–memoria."
+  text="Los precios en bruto son {{no estacionarios|estacionarios|periódicos}} porque su nivel deambula como un paseo aleatorio, así que un modelo aprende niveles que no se repetirán. Tomar rendimientos completos hace la serie {{estacionaria|no estacionaria|estacional}} pero destruye su {{memoria|varianza|signo}}. La {{diferenciación fraccional|reversión a la media|escala mín-máx}} es el compromiso: elige el orden d más pequeño que logre la estacionariedad para que la serie conserve la {{mayor|menor|misma}} memoria posible."
+  explanation="Los precios son no estacionarios; la diferenciación completa (rendimientos) es estacionaria pero casi sin memoria. La diferenciación fraccional ajusta el orden de diferenciación d para que sea justo lo bastante grande para la estacionariedad, reteniendo la máxima memoria: el d más pequeño que pasa el test conserva la cola más larga del pasado."
+/>
+
+## El problema del etiquetado (¿qué es Y?)
+
+El aprendizaje supervisado necesita una etiqueta: una `y` para cada `X`. En un clasificador de imágenes, `y` es obvia ("gato" / "perro"). En finanzas, tienes que *inventarte* `y`, y la invención obvia es una mina. Esta es la parte de la que nadie te avisa, y es responsable de más estrategias muertas que cualquier modelo malo.
+
+**Definición: etiquetado de horizonte fijo.** El enfoque ingenuo: mira $h$ barras hacia delante, calcula el rendimiento de esa ventana y etiquétalo comparándolo con un umbral fijo $\tau$:
+
+$$y_t = \begin{cases} +1 & \text{si } r_{t,t+h} > \tau \\ -1 & \text{si } r_{t,t+h} < -\tau \\ \phantom{+}0 & \text{en otro caso} \end{cases}$$
+
+En cristiano: "compra si la acción ha subido más de $\tau$ tras $h$ barras, vende si ha bajado más de $\tau$, en otro caso llámalo plano". Limpio, simple y silenciosamente roto de dos maneras.
+
+**Defecto 1 — ignora el camino.** La etiqueta solo mira el rendimiento del *punto final*, $h$ barras después. Pero tú no operas puntos finales: mantienes una posición todo el trayecto, con un stop-loss que puede sacarte. Imagina una operación que cae un 8% (atravesando tu stop, cerrando la posición en la vida real como pérdida) y luego, después de que ya te hayan sacado, se recupera hasta cerrar +1% el día $h$. El etiquetado de horizonte fijo, tan campante, le estampa un **+1, ganadora**: una etiqueta que tu P&L real nunca habría cobrado, porque te sacaron en el fondo. El modelo está ahora aprendiendo de resultados que *no podían suceder*.
+
+**Defecto 2 — un umbral fijo ignora la volatilidad cambiante en el tiempo.** Un umbral $\tau = 2\%$ es enorme en un mercado tranquilo (el precio apenas se mueve un 2% en $h$ barras, así que casi todo se etiqueta como 0/plano) y trivial en uno turbulento (el precio oscila rutinariamente un 5%, así que casi todo dispara el umbral). El *mismo* $\tau$ significa cosas distintas en regímenes distintos, así que tus etiquetas son inconsistentes a lo largo del tiempo; y recuerda, esa inconsistencia es justo la no estacionariedad que acabamos de afanarnos en quitar de las features, colándose de vuelta por las etiquetas.
+
+### Ejemplo resuelto: horizonte fijo torcido
+
+Fija $h = 5$ días, $\tau = 2\%$. Dos operaciones:
+
+| Operación | Camino a lo largo de 5 días | Rendimiento del punto final | Etiqueta de horizonte fijo | Lo que de verdad pasó |
+|---|---|---|---|---|
+| A | Baja a −8% el día 2, se recupera a **+1%** para el día 5 | +1% | **0** (por debajo del τ de +2%) | Te habrían sacado en −8%: una PÉRDIDA real, etiquetada como plana |
+| B | Lento y tranquilo, nunca se mueve >1%, cierra **+0,5%** | +0,5% | **0** (plano) | Genuinamente no pasó nada: la etiqueta está bien |
+
+La operación A y la operación B reciben la *misma* etiqueta (0), pero una fue un desastre y la otra un no-evento. El esquema de horizonte fijo no las distingue porque nunca miró el camino; y en un mes de mayor volatilidad un τ del 2% habría etiquetado ambas como ruido, mientras que un τ del 0,5% habría etiquetado ambas como señales. El umbral está tomando la decisión, y la mitad de las veces tiene el tamaño equivocado. Necesitamos un esquema de etiquetado que vigile el *camino* y *escale con la volatilidad*. Entra en escena la triple barrera.
+
+<Callout variant="warning" title="Trampa — etiquetar por el rendimiento del punto final">
+El error de etiquetado más común con diferencia es calificar una operación por dónde terminó en lugar de por cómo viajó. Una posición que tocó tu stop está cerrada: su resultado real es el stop-loss, punto, pase lo que pase con el precio después. Si tus etiquetas premian 'recuperaciones de papel' que tu modelo nunca llegó a disfrutar, aprende a enamorarse de operaciones que te habrían sacado. Etiqueta el viaje, no el destino.
+</Callout>
+
+## El método de la triple barrera
+
+**Analogía.** Imagina tres puertas de salida alrededor de una operación en el instante en que entras. Una puerta por encima de ti (recogida de beneficios), una puerta por debajo (stop-loss) y un reloj en la pared que te obliga a salir cuando se acaba el tiempo (período máximo de tenencia). La etiqueta es sencillamente **por qué puerta cruzas primero.** Eso es el método de la triple barrera, y arregla ambos defectos a la vez: vigila todo el camino (gana la barrera que se toca primero) y puede escalar las distancias de las puertas a la volatilidad (para que las puertas signifiquen lo mismo en la calma y en el caos).
+
+**Definición.** Desde cada entrada, fija tres barreras:
+
+- **Superior (recogida de beneficios)** — una barrera horizontal por encima de la entrada. Tócala → etiqueta **+1**.
+- **Inferior (stop-loss)** — una barrera horizontal por debajo de la entrada. Tócala → etiqueta **−1**.
+- **Vertical (tiempo máximo de tenencia)** — un límite temporal $h$. Si para entonces no se ha tocado ninguna barrera horizontal, la operación expira; etiqueta **0** (o, en una variante común, el *signo* del rendimiento al vencer).
+
+La etiqueta es la **primera barrera tocada.** Y crucialmente, haz las barreras horizontales **escaladas por volatilidad** en lugar de fijas; p. ej. fíjalas en $\pm 2\hat{\sigma}_{\text{diaria}}$, para que se ensanchen automáticamente en mercados turbulentos y se estrechen en los tranquilos. Ahora un "+1" significa lo mismo (*la operación alcanzó dos desviaciones típicas de beneficio antes de perder dos desviaciones típicas o de quedarse sin tiempo*) sin importar el régimen. La enfermedad del umbral fijo está curada.
+
+$$\text{superior} = P_0 \,(1 + u\,\hat{\sigma}), \quad \text{inferior} = P_0\,(1 - \ell\,\hat{\sigma}), \quad \text{vertical en } t = t_0 + h$$
+
+### Ejemplo resuelto: etiquetar una operación
+
+Entrada en $P_0 = 100$. Volatilidad diaria reciente $\hat{\sigma}_{\text{diaria}} = 1,5\%$. Fija las barreras en $\pm 2\hat{\sigma}$ y una vertical de $h = 5$ días.
+
+- **Barrera superior** = $100 \times (1 + 2 \times 0.015) = 100 \times 1.03 = \mathbf{103.0}$
+- **Barrera inferior** = $100 \times (1 - 2 \times 0.015) = 100 \times 0.97 = \mathbf{97.0}$
+- **Vertical** = final del día 5.
+
+Ahora observa un camino de precio barra a barra:
+
+| Día | Precio | ¿Toca superior (≥103)? | ¿Toca inferior (≤97)? | Acción |
+|---|---|---|---|---|
+| 1 | 101,2 | No | No | mantener |
+| 2 | 98,5 | No | No | mantener |
+| 3 | **96,8** | No | **Sí (≤97)** | **stop-loss tocado** |
+| 4 | — | — | — | posición ya cerrada |
+| 5 | 104,0 | (irrelevante) | — | (irrelevante) |
+
+La **barrera inferior se toca primero**, el día 3 → la etiqueta es **−1.** Fíjate en que el precio luego se dispara a 104 el día 5 (muy por encima de la barrera superior), pero no importa lo más mínimo: te sacaron el día 3, y la etiqueta de triple barrera registra honestamente esa pérdida. Un etiquetador de horizonte fijo que mirase solo el día 5 habría cantado un **+1 ganador** clamoroso: justo el mal etiquetado que estamos eliminando. Mismo camino, etiquetas opuestas; solo una de ellas concuerda con lo que tu cuenta habría hecho de verdad.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Misma configuración (P₀=100, barreras 103 / 97, h=5). Nuevo camino: 100,5 → 101,4 → 102,2 → 103,3 → 102,0. ¿Cuál es la etiqueta?</summary>
+
+Recorre el camino contra las barreras en orden. Día 1 (100,5), día 2 (101,4), día 3 (102,2): ninguno alcanza 103 ni baja a 97 — mantener. **El día 4 el precio toca 103,3 ≥ 103: se toca primero la barrera superior (recogida de beneficios).** Etiqueta = **+1.** La operación se cierra ahí; el retroceso del día 5 a 102,0 es irrelevante porque la posición ya salió en la recogida de beneficios. La primera puerta que cruzas es la que fija la etiqueta, y aquí es la superior.
+
+</details>
+</Reveal>
+
+<Categorize
+  client:visible
+  question="Se entra en una operación con una barrera superior (+2σ), una barrera inferior (−2σ) y una barrera vertical (tenencia máxima). Clasifica cada resultado según la etiqueta que le asigna el método de la triple barrera."
+  buckets={["Etiqueta +1", "Etiqueta −1", "Etiqueta 0"]}
+  items={[
+    { text: "El precio toca primero la barrera superior (recogida de beneficios)", bucket: "Etiqueta +1" },
+    { text: "El precio toca primero la barrera inferior (stop-loss)", bucket: "Etiqueta −1" },
+    { text: "No se toca ninguna barrera horizontal; el límite temporal vertical expira (esquema básico)", bucket: "Etiqueta 0" },
+    { text: "Se desploma hasta el stop y luego se recupera por encima de la entrada tras cerrarse la posición", bucket: "Etiqueta −1" },
+    { text: "Deriva de lado dentro de ±2σ durante toda la ventana de tenencia", bucket: "Etiqueta 0" }
+  ]}
+  explanation="La etiqueta es la PRIMERA barrera tocada. Superior primero → +1; inferior primero → −1; ninguna, se acaba el tiempo → 0. El caso de 'desplome y luego recuperación' es el arreglo estrella: como se tocó primero la barrera inferior, se etiqueta correctamente como −1, no el +1 que un etiquetador de punto final de horizonte fijo asignaría (erróneamente)."
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  instructions="Coloca cada elemento en su grupo."
+/>
+
+<MCQ
+  client:visible
+  question="¿Por qué las barreras horizontales de la triple barrera se fijan normalmente en ±k·σ̂ (escaladas por volatilidad) en lugar de en un ±2% fijo?"
+  options={[
+    { text: "Para que un '+1' signifique lo mismo entre regímenes: las barreras se ensanchan en mercados turbulentos y se estrechan en los tranquilos, manteniendo las etiquetas consistentes a lo largo del tiempo.", correct: true },
+    { text: "Porque las barreras escaladas por volatilidad garantizan que toda operación toque una barrera horizontal antes que la vertical." },
+    { text: "Porque un porcentaje fijo es imposible de calcular, mientras que σ̂ siempre está disponible." },
+    { text: "Para que la barrera superior esté siempre más lejos de la entrada que la inferior." }
+  ]}
+  explanation="Un ±2% fijo es enorme en mercados tranquilos (casi todo expira en la vertical) y trivial en los turbulentos (casi todo se dispara al instante), así que el mismo umbral significa cosas distintas con el tiempo: la no estacionariedad colándose por las etiquetas. Escalar por σ̂ hace que las barreras respiren con el mercado, de modo que un +1 siempre significa 'alcanzó primero ~k desviaciones típicas de beneficio'. NO obliga a tocar una horizontal, ni reordena las barreras."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+## Meta-etiquetado
+
+Hasta ahora hemos decidido *en qué dirección* apostar y hemos etiquetado el resultado. El meta-etiquetado añade un segundo modelo, más astuto, por encima; y es uno de los trucos de mayor apalancamiento de la caja de herramientas del ML financiero.
+
+**Analogía.** Piensa en un equipo de francotiradores. El **observador** (el modelo primario) canta el objetivo y la dirección: "largo, ese de ahí". El **que aprieta el gatillo** (el meta-modelo) decide si el disparo vale de verdad la pena y cuánto comprometer: "alta confianza, tamaño completo" o "dudoso, paso". Separar estos dos trabajos deja que cada uno se especialice: al observador se le permite ser gatillo fácil y cantar montones de objetivos, porque un segundo filtro disciplinado decide sobre qué cantos actuar.
+
+**Definición.** El **meta-etiquetado** usa dos modelos apilados:
+
+1. Un **modelo primario** (o incluso una regla simple) decide el **lado**: largo o corto. Se le permite tener baja precisión; solo necesita pillar los movimientos reales (alto recall).
+2. Un **modelo secundario (meta)** decide si **actuar sobre** el canto del primario, y con qué tamaño. Es un clasificador *binario* cuya etiqueta es "¿fue correcto el canto del primario? (1/0)", así que su predicción es la **probabilidad de que la señal primaria sea correcta**: un filtro de precisión y un dimensionador de posiciones a la vez.
+
+El meta-modelo nunca decide la dirección: ese es el trabajo del primario. Solo responde a "¿debería tomar esta apuesta, y con cuánta convicción?". Esto **separa limpiamente 'en qué dirección' de 'cuánto',** y tiende a subir la **precisión** y la **F1** (la media armónica de precisión y recall) porque suprime los falsos positivos del primario. Bonus: como el meta-modelo emite una probabilidad, puedes **dimensionar por confianza**: apuesta más cuando está seguro, menos cuando es marginal.
+
+Un repaso rápido de las métricas que esto mejora, porque son el quid de la cuestión:
+
+- **Precisión** = de las operaciones que tomaste, qué fracción acertaron. (Pocos falsos positivos.)
+- **Recall** = de las oportunidades reales, qué fracción pillaste. (Pocos falsos negativos.)
+- **F1** = la media armónica de las dos; te castiga por ser desequilibrado.
+
+### Ejemplo resuelto: filtrar falsos positivos
+
+Supón que tu modelo primario es una regla de tendencia agresiva que dispara **100 señales largas.** Tiene alto recall (pilla casi todo movimiento alcista real) pero precisión pésima: solo **40 de las 100** eran genuinamente buenas; las otras **60 son falsos positivos.** Precisión = 40/100 = **40%.**
+
+Ahora entrena un meta-modelo sobre esas 100 señales, etiquetadas con 1 si el primario acertó y 0 si falló, y haz que actúe solo cuando su confianza supere un umbral. Digamos que da luz verde correctamente a **35 de las 40 ganadoras verdaderas** y veta correctamente **45 de los 60 falsos positivos** (actuando solo sobre 15 de ellos):
+
+| | El meta dice ACTUAR | El meta dice PASAR | Total |
+|---|---|---|---|
+| El primario acertó (verdadero +) | 35 | 5 | 40 |
+| El primario falló (falso +) | 15 | 45 | 60 |
+| **Operaciones tomadas de verdad** | **50** | (95 saltadas en total) | |
+
+De las **50 operaciones que ahora tomas**, 35 son ganadoras → precisión = 35/50 = **70%**, frente al 40% anterior. Tiraste 5 ganadoras reales (el recall baja un poco), pero también esquivaste 45 operaciones perdedoras, y puedes verter más capital en las luces verdes de alta confianza y una pizca en las marginales. Misma señal primaria, libro mucho más limpio. Ese salto de precisión del 40% al 70%, comprado sin cambiar en absoluto el modelo de dirección, es por lo que el meta-etiquetado se valora tanto.
+
+<CrossSectionScatter
+  client:visible
+  title="Confianza del meta-modelo frente a cómo salió la operación"
+  xLabel="Confianza del meta-modelo (P de que el primario acierta)"
+  yLabel="Rendimiento realizado de la operación (%)"
+  slopeLabel="Pendiente confianza→rendimiento"
+  interceptLabel="Rendimiento con confianza cero"
+  points={[
+    { label: "Vetada", x: 0.18, y: -3.1 },
+    { label: "Vetada", x: 0.27, y: -2.0 },
+    { label: "Marginal", x: 0.41, y: -0.6 },
+    { label: "Marginal", x: 0.52, y: 0.9 },
+    { label: "Actuada", x: 0.63, y: 1.8 },
+    { label: "Actuada", x: 0.72, y: 2.6 },
+    { label: "Actuada", x: 0.81, y: 3.0 },
+    { label: "Alta conv.", x: 0.9, y: 4.2 }
+  ]}
+  caption="Cada punto es una de las señales del modelo primario: en horizontal, la confianza del meta-modelo en que el canto es correcto; en vertical, cómo pagó de verdad la operación. La pendiente ascendente es el meta-modelo ganándose el pan: su confianza de verdad sigue el rendimiento realizado, así que actuar solo sobre señales de alta confianza (lado derecho) filtra las perdedoras de baja confianza (lado izquierdo) y te deja dimensionar por convicción. Eso es filtrado de precisión más dimensionado de posiciones en una sola imagen." />
+
+<Callout variant="tip" title="Por qué separar 'en qué dirección' de 'cuánto'">
+El meta-etiquetado deja que tu modelo primario sea valiente y tu dimensionado sea cauto. El primario puede perseguir el recall (disparar sobre todo lo que podría ser un movimiento) sin que pagues por sus falsas alarmas, porque el meta-modelo es una segunda verja disciplinada que solo actúa sobre los cantos que cree, y dimensiona según con cuánta fuerza los cree. No estás construyendo un único modelo heroico que sea perfecto en dirección y en convicción a la vez; estás construyendo dos especialistas. Bonus: puedes acoplar el meta-etiquetado a un primario que ni siquiera puedes cambiar (la señal de un proveedor de caja negra, los cantos discrecionales de un gestor humano) y simplemente aprender cuándo fiarte de él.
+</Callout>
+
+<MCQ
+  client:visible
+  question="En un montaje de meta-etiquetado, ¿qué predice exactamente el modelo SECUNDARIO (meta)?"
+  options={[
+    { text: "La probabilidad de que el canto del modelo PRIMARIO (el lado que eligió) sea correcto: una confianza usada para filtrar operaciones y dimensionar posiciones.", correct: true },
+    { text: "La dirección de la operación (largo frente a corto), anulando al modelo primario." },
+    { text: "El rendimiento en bruto del siguiente período del activo, ignorando por completo al modelo primario." },
+    { text: "La volatilidad del activo, usada para fijar las anchuras de la triple barrera." }
+  ]}
+  explanation="El meta-modelo toma como dado el LADO del primario y solo predice P(el primario es correcto): una confianza binaria 'actuar / no actuar'. Nunca elige dirección (eso es trabajo del primario) y no es un previsor de rendimiento ni de volatilidad. Esa probabilidad se usa luego como filtro de precisión (actuar solo por encima de un umbral) y como señal de dimensionado (más grande cuanta más confianza)."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+## Ponderación de muestras y unicidad
+
+Aquí va un supuesto que todo algoritmo de ML de andar por casa hace en silencio y que las etiquetas financieras violan en silencio: que tus muestras de entrenamiento son **IID** (independientes e idénticamente distribuidas), cada una una extracción fresca y separada. Con etiquetas de triple barrera (o cualquier etiqueta basada en horizonte), **no lo son ni de lejos**, e ignorarlo corrompe el entrenamiento en silencio.
+
+**El problema — ventanas de etiqueta solapadas.** Cada etiqueta abarca una ventana de barras futuras (desde la entrada hasta que se toca una barrera). Si etiquetas cada barra, esas ventanas *se solapan mucho*: la etiqueta del lunes y la del martes dependen ambas, pongamos, de los rendimientos del miércoles y el jueves. **El mismo rendimiento impulsa muchas etiquetas.** Así que las muestras no son extracciones independientes: son una maraña de resultados compartidos, y un tramo de mercado abarrotado y de mucha actividad ve sus rendimientos contados una y otra vez. El entrenamiento ingenuo **sobrecuenta** esos períodos abarrotados, dejando que un puñado de eventos solapados domine el ajuste como si fueran docenas de eventos independientes: la mismísima ilusión de "amplitud fantasma" que arruina la diversificación, ahora envenenando el conjunto de entrenamiento de tu modelo.
+
+**El arreglo — ponderar por unicidad.** Pondera a la baja cada muestra según cuánto se solapa su ventana de etiqueta con las demás. La medida más limpia es la **unicidad media**: en cada punto del tiempo, cuenta cuántas ventanas de etiqueta están "vivas" (concurrencia $c_t$); la unicidad de una muestra a lo largo de su vida es la media de $1/c_t$ sobre las barras que abarca. Una etiqueta que comparte cada una de sus barras con otra etiqueta es solo *medio* única, así que debería cargar aproximadamente *la mitad* del peso. Dos refinamientos se apilan encima:
+
+- **Ponderar por el rendimiento absoluto (informatividad de la etiqueta).** Una etiqueta atada a un gran movimiento lleva más información que una atada a un meneo minúsculo, así que pondera por $|r|$: deja que los resultados con significado tiren más fuerte del ajuste.
+- **Decaimiento temporal.** Los mercados evolucionan, así que las muestras más antiguas pueden ponderarse a la baja hacia (pero normalmente no hasta) cero, dejando que los regímenes recientes importen más sin tirar el pasado por completo.
+
+<Callout variant="info" title="La unicidad media, en una línea">
+Si, a lo largo de la vida de una etiqueta, una media de $\bar{c}$ etiquetas están vivas concurrentemente junto a ella, su unicidad media es de en torno a $1/\bar{c}$. Dos etiquetas que se solapan por completo → $\bar{c} = 2$ → unicidad $\approx 0,5$ cada una. Diez etiquetas todas apiladas sobre la misma ventana → unicidad $\approx 0,1$ cada una, así que juntas cuentan como una observación independiente, no diez. Los pesos de las muestras se fijan entonces proporcionales a la unicidad (opcionalmente por $|r|$ y un factor de decaimiento temporal) y se normalizan.
+</Callout>
+
+### Ejemplo resuelto: dos etiquetas solapadas
+
+Dos operaciones abiertas con un día de diferencia, cada una etiquetada sobre una ventana de 2 días, así que comparten un día de rendimientos:
+
+| | Rend. día 1 | Rend. día 2 | Rend. día 3 | Concurrencia en el día compartido |
+|---|---|---|---|---|
+| Etiqueta A (entrada día 1, ventana días 1–2) | exclusivo | **compartido** | — | 2 etiquetas vivas |
+| Etiqueta B (entrada día 2, ventana días 2–3) | — | **compartido** | exclusivo | 2 etiquetas vivas |
+
+El rendimiento del día 2 alimenta *ambas* etiquetas. A grandes rasgos, cada etiqueta es única en uno de sus dos días y compartida en el otro, así que su unicidad media es de en torno a $\tfrac{1}{2}(1 + \tfrac{1}{2}) \approx 0,75$ en esta línea temporal de juguete, y en el día totalmente compartido cada una recibe crédito por solo $1/2$ de esa barra. La intuición estrella que el enunciado quiere: **un rendimiento compartido por dos etiquetas debería repartirse ~0,5 / 0,5 entre ellas, no contarse doble.** Pondera las dos muestras a la baja en consecuencia y el día compartido deja de votar dos veces. Escala esto a un libro real donde docenas de etiquetas pueden estar vivas a la vez, y el entrenamiento sin ponderar dejaría que una sola semana caliente pisotee toda la función de pérdida.
+
+<MatchConcepts
+  client:visible
+  question="Empareja cada idea de ponderación de muestras con lo que corrige."
+  pairs={[
+    { term: "Unicidad media (1/concurrencia)", definition: "Las ventanas de etiqueta solapadas hacen que las muestras no sean IID; ponderar a la baja según cuántas etiquetas están vivas concurrentemente impide que los períodos abarrotados se sobrecuenten." },
+    { term: "Ponderar por |rendimiento|", definition: "Las etiquetas atadas a movimientos mayores llevan más información, así que deberían tirar más fuerte del ajuste que los meneos casi nulos." },
+    { term: "Decaimiento temporal", definition: "Los mercados evolucionan, así que las muestras más antiguas se ponderan a la baja hacia (no hasta) cero, dejando que los regímenes recientes importen más." },
+    { term: "Concurrencia cₜ", definition: "El recuento de ventanas de etiqueta que están simultáneamente 'vivas' en una barra dada: lo que la unicidad invierte." }
+  ]}
+  explanation="La unicidad arregla el solapamiento no-IID; la ponderación por |rendimiento| arregla el desequilibrio de información; el decaimiento temporal arregla la deriva de régimen. La concurrencia es el recuento en bruto de etiquetas solapadas a partir del cual se construye la unicidad (1/cₜ, promediado)."
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  allCorrectLabel="✓ Todo emparejado"
+  termsLabel="Términos"
+  definitionsLabel="Definiciones"
+/>
+
+<Callout variant="warning" title="Trampa — entrenar sobre etiquetas solapadas como si fueran IID">
+Dale a un clasificador estándar un millón de barras etiquetadas por horizonte y asumirá un millón de observaciones independientes. No lo son: las ventanas solapadas significan que una semana ruidosa y de mucha actividad puede contarse en silencio docenas de veces, dominando el ajuste e inflando tu sensación de cuántos datos tienes en realidad. Pondera siempre por unicidad (y plantéate |rendimiento| y decaimiento temporal) antes de ajustar. Y fíjate en que este mismo solapamiento no solo sesga el ajuste: hace añicos la validación cruzada, que es el tema entero de la próxima lección.
+</Callout>
+
+## Juntándolo todo
+
+Fabricar `X` e `y` es donde el ML financiero se gana o se pierde, mucho antes de ajustar ningún modelo. En el lado de las **features**, los precios en bruto son veneno no estacionario y los rendimientos completos son estacionarios pero amnésicos, así que recurres a la **diferenciación fraccional** (el orden de diferenciación $d$ más pequeño que logra la estacionariedad, conservando la máxima memoria) y **escalas por volatilidad** las features para que un movimiento signifique lo mismo en la calma y en el caos. En el lado de las **etiquetas**, las etiquetas ingenuas de horizonte fijo ignoran el camino y cabalgan un umbral fijo a través de un mundo volátil, así que te pasas al **método de la triple barrera** (gana la primera de superior/inferior/vertical, barreras escaladas a $\sigma$), opcionalmente apilas un **meta-modelo** para filtrar los falsos positivos del primario y dimensionar por confianza, y por último **ponderas las muestras por unicidad** (más $|r|$ y decaimiento temporal) porque las ventanas de etiqueta solapadas hacen que tus datos sean cualquier cosa menos IID.
+
+<MindMap
+  client:visible
+  title="Features y etiquetado de un vistazo"
+  caption="Desde features estacionarias-pero-que-siguen-recordando hasta etiquetas conscientes del camino y escaladas por volatilidad, un filtro de meta-modelo y ponderación por unicidad para muestras no IID."
+  eyebrow="Visión de conjunto"
+  outlineLabel="Esquema"
+  root={{
+    label: 'Features y etiquetado',
+    children: [
+      { label: 'Features: estacionarias E informativas', children: [
+        { label: 'Precio en bruto — no estacionario, memoriza niveles' },
+        { label: 'Rendimientos — estacionarios pero sin memoria' },
+        { label: 'Dif. fraccional — el d más pequeño que es estacionario, máx. memoria' },
+        { label: 'Escala por volatilidad — dividir por σ̂ reciente' }
+      ]},
+      { label: 'Etiquetado: ¿qué es Y?', children: [
+        { label: 'Horizonte fijo: signo del rendimiento de h barras frente a τ' },
+        { label: 'Defecto 1 — ignora el camino (stop y luego recuperación)' },
+        { label: 'Defecto 2 — τ fijo ignora la volatilidad cambiante' }
+      ]},
+      { label: 'Triple barrera', children: [
+        { label: 'Superior (+1), inferior (−1), vertical (0)' },
+        { label: 'Etiqueta = PRIMERA barrera tocada' },
+        { label: 'Barreras escaladas a ±kσ̂' }
+      ]},
+      { label: 'Meta-etiquetado', children: [
+        { label: 'El primario elige el LADO' },
+        { label: 'El meta predice P(el primario es correcto)' },
+        { label: 'Filtra falsos positivos; dimensiona por confianza' }
+      ]},
+      { label: 'Ponderación de muestras', children: [
+        { label: 'Etiquetas solapadas → NO IID' },
+        { label: 'Unicidad media = media(1/concurrencia)' },
+        { label: 'También |rendimiento| + decaimiento temporal' },
+        { label: 'Anticipo: el solapamiento rompe la validación cruzada' }
+      ]}
+    ]
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Features y etiquetado: fíjalo"
+  questions={[
+    {
+      question: "Diferencias fraccionalmente una serie de precios y descubres que d = 0,4 ya pasa tu test de estacionariedad (ADF). ¿Por qué preferir este d sobre el d = 1 de los rendimientos completos?",
+      options: [
+        { text: "El d más pequeño que logra la estacionariedad retiene la máxima memoria: d = 0,4 conserva una larga cola desvaneciente de precios pasados que la diferenciación completa (d = 1) borraría.", correct: true },
+        { text: "Un d más pequeño hace la serie más no estacionaria, lo cual prefieren los modelos." },
+        { text: "d = 0,4 es más rápido de calcular que d = 1, pero las dos series son estadísticamente idénticas." },
+        { text: "Cualquier d por debajo de 1 garantiza que la serie es ruido blanco, lo cual es ideal para el ML." }
+      ],
+      explanation: "La diferenciación fraccional negocia estacionariedad contra memoria. Cuanto mayor es d, más memoria destruyes; los rendimientos completos (d = 1) casi no conservan ninguna. Así que quieres el d MÁS PEQUEÑO que aún pase el test de estacionariedad (aquí 0,4) para mantenerte estacionario mientras preservas la cola de memoria más larga posible."
+    },
+    {
+      question: "Una operación entra en 100 con triple barrera en superior 103, inferior 97, vertical en el día 5. Camino: 101 → 96,5 → 102 → 104 → 101. ¿Qué etiqueta asigna el método de la triple barrera?",
+      options: [
+        { text: "−1: la barrera inferior (97) se toca primero, el día 2 (96,5 ≤ 97); los máximos posteriores son irrelevantes porque la posición ya se cerró.", correct: true },
+        { text: "+1: el precio alcanza 104 (por encima de la barrera superior) el día 4." },
+        { text: "+1: el punto final es 101, que está por encima de la entrada de 100." },
+        { text: "0: ninguna barrera importa hasta la vertical del día 5." }
+      ],
+      explanation: "La etiqueta es la PRIMERA barrera tocada. El día 2 marca 96,5 ≤ 97, tocando la barrera inferior (stop-loss): etiqueta −1, posición cerrada. El pico del día 4 a 104 y el punto final +1 son justo la 'recuperación de papel' que un etiquetador de horizonte fijo premiaría erróneamente; la triple barrera registra honestamente la salida por stop."
+    },
+    {
+      question: "Un modelo primario dispara 100 señales con un 40% de precisión (40 verdaderas, 60 falsos positivos). Un meta-modelo da luz verde a 35 de las 40 ganadoras y actúa solo sobre 15 de los 60 falsos positivos. ¿Cuál es la nueva precisión sobre las operaciones tomadas de verdad?",
+      options: [
+        { text: "70%: 35 ganadoras de 50 operaciones tomadas (35 actuaciones de verdadero positivo + 15 de falso positivo).", correct: true },
+        { text: "40%: el meta-etiquetado no puede cambiar la precisión, solo el recall." },
+        { text: "35%: tomas 35 de las 100 señales originales." },
+        { text: "88%: se conservan 35 de las 40 ganadoras verdaderas." }
+      ],
+      explanation: "Operaciones tomadas = 35 (luces verdes correctas) + 15 (falsos positivos sobre los que actuó por error) = 50. De ellas, 35 son ganadoras reales → 35/50 = 70%, frente al 40%. El meta-etiquetado sube la precisión vetando la mayoría de los falsos positivos; el coste son las 5 ganadoras reales que saltó (recall ligeramente menor)."
+    },
+    {
+      question: "Dos etiquetas de triple barrera comparten exactamente el mismo único día de rendimientos (se solapan al 100% en esa barra). ¿Cómo debería tratar la ponderación de muestras ese rendimiento compartido?",
+      options: [
+        { text: "Repartirlo ~0,5 / 0,5: pondera a la baja ambas muestras por su unicidad para que el rendimiento compartido no se cuente doble, ya que las etiquetas solapadas no son IID.", correct: true },
+        { text: "Contarlo por completo para ambas etiquetas: más peso en los rendimientos compartidos mejora el ajuste." },
+        { text: "Descartar ambas etiquetas por completo, porque cualquier solapamiento las vuelve inservibles." },
+        { text: "Mantener ambas a peso completo; el solapamiento solo importa para las features, nunca para las etiquetas." }
+      ],
+      explanation: "Las ventanas de etiqueta solapadas significan que el mismo rendimiento impulsa varias etiquetas, así que las muestras NO son IID. La unicidad media (≈ 1/concurrencia) pondera a la baja cada una: dos etiquetas que comparten una barra reciben unos 0,5 de crédito cada una por ella, de modo que un período abarrotado no vota varias veces. Descartar etiquetas desperdicia datos; ponderarlas a peso completo las cuenta doble. Este mismo solapamiento es lo que rompe la validación cruzada a continuación."
+    }
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  nextLabel="Siguiente"
+  seeResultsLabel="Ver resultados"
+  backLabel="Atrás"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  completeTitleLabel="Cuestionario completado"
+  correctCountLabel="correctas"
+  gateLabel="Comprueba tu respuesta para continuar."
+/>
+
+Ya sabes construir las entradas y los objetivos de la forma correcta: features estacionarias-pero-que-recuerdan, y etiquetas honestas, conscientes del camino y escaladas por volatilidad, con los pesos adecuados. Pero hay una trampa final escondida a plena vista, y es la que convierte un "gran" backtest en un desastre con dinero real: esas etiquetas solapadas no solo sesgan el *ajuste*, sino que filtran el futuro a tu *validación*, de modo que el modelo corrige sus propios deberes con la hoja de respuestas abierta. La validación cruzada k-fold estándar, la técnica en la que todos confían, está silenciosamente rota para los datos financieros. Arreglarla (con **purga**, **embargos** y una contabilidad honesta de la **fuga de información**) es el tema de la próxima lección, **Fuga de información y validación cruzada purgada**.
