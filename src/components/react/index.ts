@@ -306,6 +306,12 @@ export type { SandwichAttackProps } from '@/components/react/SandwichAttack';
 export { BlockOrderTimeline, default as BlockOrderTimelineDefault } from '@/components/react/BlockOrderTimeline';
 export type { BlockOrderTimelineProps } from '@/components/react/BlockOrderTimeline';
 
+export { CrossDexArb, default as CrossDexArbDefault } from '@/components/react/CrossDexArb';
+export type { CrossDexArbProps } from '@/components/react/CrossDexArb';
+
+export { BundleProfitSplit, default as BundleProfitSplitDefault } from '@/components/react/BundleProfitSplit';
+export type { BundleProfitSplitProps } from '@/components/react/BundleProfitSplit';
+
 export { MevSupplyChain, default as MevSupplyChainDefault } from '@/components/react/MevSupplyChain';
 export type { MevSupplyChainProps, MevStage } from '@/components/react/MevSupplyChain';
 

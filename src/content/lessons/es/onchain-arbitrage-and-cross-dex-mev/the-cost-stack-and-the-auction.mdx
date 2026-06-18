@@ -1,0 +1,360 @@
+---
+title: "La pila de costes y la subasta"
+description: "Gas, comisiones de prioridad, la tajada del builder y el slippage; backrunning frente a sandwiching; y el resultado incómodo de que la competencia puja casi todo el spread del arbitraje directamente hacia builders y validadores."
+topic: "es/onchain-arbitrage-and-cross-dex-mev"
+order: 5
+minutes: 11
+updated: 2026-06-18
+---
+
+import { Callout, MCQ, FillBlank, Categorize, MatchConcepts, MindMap, Quiz, Reveal, BundleProfitSplit } from '@/components/react';
+
+Habéis detectado una desalineación limpia de \$1000 entre dos pools. Montáis el bundle, aterriza, hace commit. Enhorabuena: os quedáis con unos cien. El resto se evapora en una pila de costes que medio olvidasteis y en una subasta en la que ni sabíais que estabais pujando. Esta lección es la parte que nadie pone en el resumen de jugadas: la resta lenta e indigna que convierte "he encontrado \$1000" en "me he llevado neto \$96".
+
+## La pila de costes — el spread bruto no es beneficio
+
+<MCQ
+  client:visible
+  pretest
+  question="Encontráis un spread de arbitraje bruto de 1000 USDC. Antes que nada, ¿qué deberíais suponer que os lleváis a casa?"
+  options={[
+    { text: "Menos de 1000 — el gas, el pago al builder y el impacto en precio salen primero de ahí.", correct: true, explanation: "Correcto. El bruto es el titular; el neto es lo que sobrevive a las deducciones. Tratar el bruto como beneficio es como los searchers se arruinan con seguridad." },
+    { text: "Exactamente 1000 — ese es justo el sentido de encontrar el spread.", explanation: "El bruto es la oportunidad, no la nómina. Cada coste de abajo lo va mordiendo." },
+    { text: "Más de 1000, una vez sumáis el reembolso de la comisión de prioridad.", explanation: "No hay reembolso. La comisión de prioridad es dinero que pagáis, no dinero que recibís." },
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  pretestLabel="Antes de leer — arriésgate a adivinar"
+/>
+
+Pensad en el spread bruto como el precio de la carta de un restaurante y en vuestro neto como lo que os queda en el bolsillo tras el IVA, la propina y la multa de aparcamiento que os pusieron al entrar. El número de la carta nunca fue el número que os quedáis.
+
+Aquí va la resta completa, de arriba abajo:
+
+1. **Slippage / impacto en precio** — vuestra propia operación mueve el precio del pool en vuestra contra. Cuanto mayor el tamaño, peor el llenado. Esto ya va *incorporado* al spread realizado: cuando decimos "bruto de \$1000 tras slippage" nos referimos al spread que de verdad podéis ejecutar, no al precio medio de ensueño que visteis en un gráfico.
+2. **Gas** — la EVM os cobra por el cómputo **ganéis o perdáis**. Si el bundle aterriza: pagáis gas. Si os hacen front-run y revierte: *igual* pagáis gas. Es la entrada del local.
+3. **Comisión de prioridad / pago al builder** — el soborno. Para que os incluyan *y ordenen correctamente* (vuestro backrun debe aterrizar justo tras la operación que persigue), pagáis al builder. Este es el grande y variable, y las dos secciones siguientes van enteras sobre lo brutal que se pone.
+
+La fórmula es pura contabilidad honrada:
+
+$$\text{neto} = \text{bruto} - \text{slippage} - \text{gas} - \text{pago al builder}$$
+
+Una pila trabajada sobre una oportunidad bruta de \$1000:
+
+| Concepto | Importe | Acumulado |
+|---|---|---|
+| Spread bruto (ya tras slippage) | +\$1000 | \$1000 |
+| Gas (pagado ganéis o perdáis) | −\$40 | \$960 |
+| Pago al builder (comisión de prioridad) | −\$864 | \$96 |
+| **Neto para el searcher** | | **\$96** |
+
+Encontrasteis mil. Os quedáis con noventa y seis. Bienvenidos al arbitraje.
+
+<Callout variant="warning" title="El gas es coste hundido — incluso al perder">
+El error seductor es modelar el gas como "un coste de ganar". No lo es. Pagáis gas en cada intento que revierte también. Un searcher que prueba diez bundles y aterriza dos ha pagado gas diez veces. Tasad vuestra ventaja contra *intentos*, no contra victorias, o la pila de costes os enterrará en silencio.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Ordena correctamente la pila de costes."
+  text="Partiendo del spread bruto, restáis el {{slippage|pago al builder|gas}} (ya incorporado al spread realizado), luego el {{gas|pago al builder|slippage}} (pagado ganéis o perdáis), y luego el {{pago al builder|gas|slippage}} (el soborno por inclusión y orden correcto) para llegar a vuestro neto."
+  explanation="El slippage ya está dentro del spread realizado; el gas es la entrada incondicional; el pago al builder es el soborno variable que la subasta infla."
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+### Cuándo importa
+
+Siempre — pero sobre todo cuando vuestra ventaja bruta es fina. Un spread de \$1000 absorbe \$40 de gas y se encoge de hombros. Uno de \$50 no puede: solo el gas podría revertirlo a pérdida. La pila de costes es la diferencia entre una oportunidad y una trampa, y cuanto más fino el spread, más decide la pila vuestro destino.
+
+## Backrunning frente a sandwiching
+
+<MCQ
+  client:visible
+  pretest
+  question="Un searcher aterriza una transacción justo DESPUÉS de un swap grande para comprar el token ahora barato y reequilibrar los pools. ¿A quién perjudica?"
+  options={[
+    { text: "A nadie en concreto — solo realinea precios que el swap grande había descolocado.", correct: true, explanation: "Correcto. Un backrun benigno se alimenta de una desalineación que ya existe; no empeora la operación de nadie. El swapper original ya recibió su llenado." },
+    { text: "Al swapper grande — el backrun empeora retroactivamente su llenado.", explanation: "El llenado del swapper ya está liquidado. Un backrun puro aterriza tras él y no puede volver atrás a cambiar su precio." },
+    { text: "A todos los traders posteriores, que ahora afrontan un peor precio.", explanation: "El backrunning empuja los precios de vuelta hacia el valor justo entre venues — si acaso, mejora el mercado para los traders posteriores." },
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  pretestLabel="Antes de leer — arriésgate a adivinar"
+/>
+
+Tanto el backrunning como el sandwiching van de **dónde os colocáis en la cola** respecto a la operación de otro. La diferencia es si sois carroñeros o atracadores.
+
+**Backrunning** = aterrizáis **inmediatamente después** de la operación o el bloque que creó una desalineación. El arbitraje cross-DEX es el **backrun benigno** de manual: una ballena descarga ETH en el pool A, hundiéndolo por debajo del precio del pool B; vosotros seguís con un bucle de comprar-barato-en-A, vender-caro-en-B que arrastra los dos pools de vuelta a la alineación. No perjudicasteis a *ningún usuario concreto*. La ballena ya recibió su llenado; vosotros solo limpiasteis el hueco de precio que dejó, como el barrendero que sigue al desfile. Por eso **los searchers de arbitraje son sobre todo backrunners** — y por eso el arbitraje se considera en general el MEV *bueno*.
+
+**Sandwiching** = envolvéis el swap pendiente de una víctima con dos operaciones vuestras. Compráis delante (subiendo el precio), dejáis que la víctima ejecute al peor precio *que vosotros acabáis de crear*, y luego vendéis detrás para sacar beneficio. Recordad de las lecciones de MEV y ordenación: este es el MEV *dañino* clásico — el slippage de la víctima es el ingreso del atacante. No encontrasteis una desalineación; la *fabricasteis* a costa de alguien.
+
+| | Backrun (arbitraje) | Sándwich |
+|---|---|---|
+| Posición respecto al objetivo | Solo después | Antes **y** después |
+| Fuente del beneficio | Una desalineación que ya existía | Slippage forzado sobre la víctima |
+| A quién perjudica | A ningún usuario concreto | Al swapper envuelto |
+| Reputación | Benigno — realinea precios | Depredador — degrada una operación |
+
+<MatchConcepts
+  client:visible
+  question="Empareja cada comportamiento de MEV con su rasgo definitorio."
+  pairs={[
+    { term: "Backrun benigno (arbitraje)", definition: "Aterriza solo después de la operación que causó la desalineación y no perjudica a ningún usuario concreto." },
+    { term: "Ataque sándwich", definition: "Envuelve el swap de una víctima con una pata delante y otra detrás, beneficiándose del slippage forzado." },
+    { term: "Pata de front-run del sándwich", definition: "Compra por delante de la víctima para empujar el precio de ejecución en su contra." },
+    { term: "Efecto de realineación", definition: "La consecuencia correctora de precio del arbitraje que arrastra los venues hacia un valor común." },
+  ]}
+  explanation="El arbitraje es un backrun de solo-después que se alimenta de un hueco existente; el sándwich enmarca a una víctima y crea el hueco del que se lucra."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  allCorrectLabel="✓ Todo correcto"
+/>
+
+### Cuándo importa
+
+Importa para vuestra estrategia y para vuestra conciencia. El backrunning benigno se tolera ampliamente e incluso se fomenta — hace los mercados más eficientes — mientras que el sandwiching cada vez se detecta, filtra y castiga más mediante orderflow privado y relays anti-MEV. Construir un negocio de arbitraje de solo-backrun os mantiene en el lado del mercado que es *bienvenido* en vez de bloqueado.
+
+## La subasta puja vuestro beneficio fuera
+
+<MCQ
+  client:visible
+  pretest
+  question="Diez searchers detectan la misma oportunidad de 960 USDC tras gas. En una subasta de gas por prioridad, ¿qué le pasa a la comisión de prioridad que pujan?"
+  options={[
+    { text: "Sube hacia el valor completo de la oportunidad, así que el ganador neto solo se lleva la astilla por encima de la puja del segundo.", correct: true, explanation: "Exacto. La competencia es una subasta, y el trabajo de una subasta es extraer el excedente de los pujadores. El beneficio fluye hacia quien vende el slot: el builder/validador." },
+    { text: "Se queda cerca de cero, porque nadie quiere pagar de más.", explanation: "Si la comisión se quedara baja, un rival podría superaros y llevarse la oportunidad entera. Cada searcher se ve forzado a pujar hasta casi su punto de equilibrio." },
+    { text: "El protocolo la limita a un máximo fijo.", explanation: "No hay tope del protocolo a las comisiones de prioridad. El tope es económico — vuestro propio equilibrio — y la competencia empuja a todos hacia él." },
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  pretestLabel="Antes de leer — arriésgate a adivinar"
+/>
+
+Cuando varios searchers persiguen la *misma* oportunidad, no se turnan educadamente. Pujan unos contra otros por el único slot de bloque que la captura — una **subasta de gas por prioridad (PGA)**, o en términos de separación proponente-builder (PBS), una **subasta de espacio de bloque** gestionada por el builder. Y las subastas hacen exactamente lo que están diseñadas para hacer: transfieren el premio de los pujadores al vendedor. Aquí el vendedor es quien ordena el bloque.
+
+Imaginad una subasta por un billete de \$960 donde el único coste de pujar es la puja misma. Un pujador racional llegará a \$959. El siguiente, a \$959,50. El billete se vende esencialmente por \$960 — en beneficio del *subastador* — y el "ganador" se va con calderilla. Ese subastador es el builder/validador, y el billete es vuestro spread tras gas.
+
+Capturamos esto con un único dial, la **intensidad de la competencia** $\beta$ (entre 0 y 1): la fracción del beneficio tras gas que se puja hacia el builder/validador.
+
+$$\text{neto del searcher} = (\text{bruto} - \text{gas})(1 - \beta) \qquad \text{builder/validador} = (\text{bruto} - \text{gas})\,\beta$$
+
+- $\beta = 0$ — **monopolio**. Sois los únicos que la visteis. Os quedáis el beneficio entero tras gas.
+- $\beta = 0,5$ — partís el beneficio tras gas por la mitad con el bloque.
+- $\beta \to 1$ — **competencia perfecta**. La comisión se puja hasta la oportunidad completa; vuestro neto se desploma hacia **cero** y el builder/validador se embolsa casi todo.
+
+Arrastrad los diales de abajo. Mirad cómo se encoge vuestra porción verde según se calienta la subasta:
+
+<BundleProfitSplit
+  client:visible
+  title="¿Quién se queda el beneficio del arbitraje?"
+  unitSuffix=" USDC"
+  grossLabel="Oportunidad bruta (tras slippage)"
+  competitionLabel="Intensidad de la competencia (β)"
+  searcherLabel="Neto del searcher"
+  builderLabel="Builder / validador"
+  gasLabel="Gas"
+  revertLabel="Revierte — el searcher paga el gas"
+  monopolyLabel="searcher monopolista se lo queda todo"
+  perfectLabel="competencia perfecta → todo pujado"
+  caption="El gas se descuenta primero, pase lo que pase. El beneficio que queda se reparte con quien ordena el bloque — y cuanto más feroz es la subasta, más tiene que pujar el searcher para entrar. En competencia total, el spread que encontraste acaba en los bolsillos del builder y del validador, no en los tuyos."
+/>
+
+<Callout variant="warning" title="La competencia es un coste que no puedes facturar">
+El gas y el slippage parecen costes porque veis las partidas. El coste de la subasta es más taimado: aparece como una *comisión de prioridad que elegisteis pagar* — pero solo "elegisteis" porque un rival os forzó la mano. A medida que más searchers ejecutan la misma estrategia, β trepa hacia 1 y vuestra ventaja se desangra en silencio aguas arriba. La oportunidad no empeoró; la competencia por ella sí.
+</Callout>
+
+<MCQ
+  client:visible
+  question="Con β = 0,9 sobre una oportunidad de 960 USDC tras gas, ¿quién captura la mayor parte?"
+  options={[
+    { text: "El builder/validador — 0,9 de 960, unos 864 USDC.", correct: true, explanation: "β es la porción del builder, así que 0,9 × 960 ≈ 864 USDC para el bloque, dejando unos 96 USDC para el searcher." },
+    { text: "El searcher — hizo el trabajo, así que se queda la mayoría.", explanation: "Hacer el trabajo no os da derecho al beneficio cuando una subasta lo está reasignando. Con β = 0,9 el searcher solo se queda el (1 − 0,9) = 10% del beneficio tras gas." },
+    { text: "Lo parten a partes iguales, unos 480 USDC cada uno.", explanation: "Un reparto a medias es β = 0,5. Con β = 0,9 el builder se lleva nueve décimas del beneficio tras gas." },
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+### Cuándo importa
+
+β es más alta justo donde el dinero parece más fácil: spreads grandes, obvios y conocidos en pares líquidos que todo bot ya vigila. Son los más competidos, así que β ronda 1 y os deja casi nada. La ventaja duradera vive donde β es *baja* — oportunidades que otros no pueden ver (orderflow privado, venues nuevos, detección más rápida) o no pueden alcanzar (latencia, relaciones exclusivas). Bajar vuestra β efectiva gana a perseguir un bruto mayor.
+
+## Trabajado: quién se queda los 1000
+
+<MCQ
+  client:visible
+  pretest
+  question="Bruto 1000 USDC tras slippage, gas 40 USDC, β = 0,9. ¿Cuánto neto aproximado se lleva el searcher?"
+  options={[
+    { text: "Unos 96 USDC.", correct: true, explanation: "Tras gas son 1000 − 40 = 960; el searcher se queda (1 − 0,9) × 960 ≈ 96 USDC. Los otros ~864 van al bloque." },
+    { text: "Unos 864 USDC.", explanation: "Esa es la tajada del builder/validador (0,9 × 960), no la del searcher." },
+    { text: "Unos 960 USDC.", explanation: "960 es el total tras gas antes de que la subasta lo reparta. El searcher solo se queda la porción del 10% por encima de su puja." },
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  pretestLabel="Antes de leer — arriésgate a adivinar"
+/>
+
+Corramos los números canónicos de principio a fin, para que el remate aterrice con la aritmética detrás.
+
+**Paso 1 — bruto tras slippage.** La oportunidad realizada es **\$1000** (el impacto en precio ya incorporado).
+
+**Paso 2 — restar gas.** El gas es fijo, **\$40**, pagado ganéis o perdáis:
+
+$$\text{tras gas} = 1000 - 40 = 960$$
+
+**Paso 3 — aplicar la subasta con β = 0,9.** El builder/validador toma β del beneficio tras gas:
+
+$$\text{builder/validador} = 960 \times 0{,}9 = 864$$
+
+**Paso 4 — qué le queda al searcher.** La porción restante $(1 - \beta)$:
+
+$$\text{neto del searcher} = 960 \times (1 - 0{,}9) = 960 \times 0{,}1 = 96$$
+
+| Quién | Importe | Parte de los 1000 originales |
+|---|---|---|
+| Gas (quemado/pagado) | \$40 | 4% |
+| Builder / validador | \$864 | 86,4% |
+| **Searcher (vosotros)** | **\$96** | **9,6%** |
+
+Así que de los \$1000 de spread que *encontrasteis*, os quedáis con **\$96** — menos de una décima. El builder y el validador — que no buscaron nada ni asumieron riesgo de descubrimiento — se embolsan **\$864** solo por controlar el orden de las transacciones.
+
+<Callout variant="info" title="Esto es una característica de la competencia, no un fallo">
+Parece injusto, pero es justo lo que una subasta sana debería hacer: llevar el precio de un recurso escaso (espacio de bloque bien ordenado) hasta su valor, y empujar los beneficios fáciles hacia quien posee ese recurso. La lección para los searchers no es "el sistema está amañado" — es "competid donde la subasta sea *fina*". Si todos encuentran el spread, la subasta se lo lleva. Vuestro producto real es encontrar spreads que otros no pueden.
+</Callout>
+
+<Categorize
+  client:visible
+  question="Clasifica cada importe según dónde aterriza en el ejemplo canónico de 1000 USDC con β = 0,9."
+  buckets={['El searcher se queda', 'Va aguas arriba']}
+  items={[
+    { text: "Unos 96 USDC netos", bucket: 'El searcher se queda' },
+    { text: "La porción (1 − β) del beneficio tras gas", bucket: 'El searcher se queda' },
+    { text: "864 USDC de pago al builder/validador", bucket: 'Va aguas arriba' },
+    { text: "40 USDC de gas, pagados ganéis o perdáis", bucket: 'Va aguas arriba' },
+    { text: "La parte β de los 960 de beneficio tras gas", bucket: 'Va aguas arriba' },
+  ]}
+  explanation="El gas se va pase lo que pase; la porción β del beneficio tras gas va al bloque. Solo os quedáis el fino resto (1 − β) — unos 96 de los 1000 originales."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  allCorrectLabel="✓ Todo correcto"
+/>
+
+### Cuándo importa
+
+Este es el reencuadre más importante de la economía del arbitraje on-chain: **la oportunidad bruta no es vuestro negocio; el neto-tras-subasta sí.** Cuando dimensionéis una estrategia, modelad β con honestidad para los venues que perseguís. Un spread de \$1000 con β = 0,95 (\$48 netos) es peor negocio que uno de \$200 con β = 0,3 (\$112 netos) — aunque el primer titular sea cinco veces mayor. Perseguid β baja, no bruto grande.
+
+## Repaso
+
+<MindMap
+  client:visible
+  title="La pila de costes y la subasta"
+  caption="El bruto es el precio de la carta; el neto es lo que sobrevive a las deducciones y a la subasta por el espacio de bloque."
+  outlineLabel="Esquema en texto"
+  root={{
+    label: 'Pila de costes y subasta',
+    children: [
+      {
+        label: 'Pila de costes',
+        children: [
+          { label: 'Slippage incorporado al bruto' },
+          { label: 'Gas pagado ganes o pierdas' },
+          { label: 'El pago al builder es el soborno' },
+        ],
+      },
+      {
+        label: 'Backrun frente a sándwich',
+        children: [
+          { label: 'El arbitraje es un backrun benigno' },
+          { label: 'Aterriza después y no daña a nadie' },
+          { label: 'El sándwich degrada a una víctima' },
+        ],
+      },
+      {
+        label: 'La subasta',
+        children: [
+          { label: 'Los searchers pujan la comisión al alza' },
+          { label: 'Intensidad de competencia beta' },
+          { label: 'Beta alta significa neto minúsculo' },
+        ],
+      },
+      {
+        label: 'Quién se queda los 1000',
+        children: [
+          { label: 'El gas toma 40' },
+          { label: 'El builder toma 864' },
+          { label: 'El searcher se queda 96' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="La pila de costes y la subasta — repaso mixto"
+  questions={[
+    {
+      question: "El beneficio neto de un arbitraje es igual al spread bruto menos ¿qué tres cosas?",
+      options: [
+        { text: "Slippage, gas y el pago al builder.", correct: true },
+        { text: "Slippage, gas y el principal del flash loan." },
+        { text: "Gas, el pago al builder y la recompensa de staking del validador." },
+      ],
+      explanation: "Neto = bruto − slippage − gas − pago al builder. El principal del flash loan se devuelve dentro del bundle, no se resta del beneficio.",
+    },
+    {
+      question: "¿Por qué el arbitraje cross-DEX se considera un backrun benigno y no uno dañino?",
+      options: [
+        { text: "Aterriza tras una operación que ya creó una desalineación y no daña a ningún usuario concreto — solo realinea precios.", correct: true },
+        { text: "Porque siempre paga a la víctima un reembolso por usar su orderflow." },
+        { text: "Porque ejecuta antes de cualquier víctima, así que nadie se ve afectado." },
+      ],
+      explanation: "Un backrun puro sigue a la operación que desalinea y corrige el hueco de precio; no puede volver atrás a empeorar un llenado ya liquidado.",
+    },
+    {
+      question: "En una subasta de gas por prioridad / PBS con muchos searchers persiguiendo el mismo spread, la comisión de prioridad tiende a...",
+      options: [
+        { text: "subir hacia el valor completo de la oportunidad, dejando al ganador solo una astilla fina.", correct: true },
+        { text: "caer hacia cero según los searchers cooperan para mantener bajos los costes." },
+        { text: "quedarse fija porque el protocolo limita las comisiones de prioridad." },
+      ],
+      explanation: "Los pujadores que compiten empujan la comisión hasta casi su equilibrio; la subasta transfiere el excedente al builder/validador que vende el slot.",
+    },
+    {
+      question: "Con intensidad de competencia β, el neto del searcher sobre un beneficio tras gas P es...",
+      options: [
+        { text: "P × (1 − β).", correct: true },
+        { text: "P × β." },
+        { text: "P − β." },
+      ],
+      explanation: "β es la porción del builder, así que el searcher se queda el complemento, P × (1 − β). Cuando β → 1, el neto del searcher → 0.",
+    },
+    {
+      question: "Ejemplo canónico: bruto 1000 USDC, gas 40 USDC, β = 0,9. El builder/validador toma unos...",
+      options: [
+        { text: "864 USDC.", correct: true },
+        { text: "96 USDC." },
+        { text: "960 USDC." },
+      ],
+      explanation: "Tras gas son 960; el builder toma β × 960 = 0,9 × 960 ≈ 864 USDC, dejando unos 96 USDC para el searcher.",
+    },
+    {
+      question: "Dos estrategias: un spread bruto de 1000 USDC con β = 0,95, o uno de 200 USDC con β = 0,3 (ignorad el gas). ¿Cuál es mejor negocio y por qué?",
+      options: [
+        { text: "El de 200 con β = 0,3 — neto ~140 USDC frente a ~50 USDC, porque la baja competencia gana al bruto grande.", correct: true },
+        { text: "El de 1000 con β = 0,95 — un bruto mayor siempre gana, sea cual sea β." },
+        { text: "Son idénticos, ya que el neto solo depende del bruto." },
+      ],
+      explanation: "Neto = bruto × (1 − β): 1000 × 0,05 = 50 frente a 200 × 0,7 = 140. El spread más fino y menos disputado es mejor negocio. Perseguid β baja, no bruto grande.",
+    },
+  ]}
+  questionLabel="Pregunta"
+  ofLabel="de"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  nextLabel="Siguiente"
+  backLabel="Atrás"
+/>

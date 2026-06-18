@@ -1,0 +1,318 @@
+---
+title: "Triangular Arbitrage"
+description: "Closing a loop of three pools when the product of the exchange rates drifts away from 1: the no-arbitrage condition worked out, the direction of the cycle, and how price impact shrinks the loop's profit."
+topic: "en/onchain-arbitrage-and-cross-dex-mev"
+order: 3
+minutes: 10
+updated: 2026-06-18
+---
+
+import { Callout, MCQ, FillBlank, Categorize, MatchConcepts, MindMap, Quiz, Reveal, ConstantProductCurve } from '@/components/react';
+
+The last lesson needed *two* venues to make money: ETH was cheap on one DEX, dear on another, and you walked the gap. But here's the unsettling part — you don't even need a second exchange. A single DEX, with three perfectly ordinary pools, can quietly contradict itself. Cycle a coin through the right loop and you come out the other side holding *more* of what you started with. No second venue. No price feed disagreeing. Just three pools that, multiplied together, don't quite agree on what a dollar is worth.
+
+## Closing a loop
+
+<MCQ
+  client:visible
+  pretest
+  question="You start with 100,000 USDC, swap it for ETH, swap that ETH for DAI, then swap the DAI back to USDC — all on one DEX. Can you end up with MORE than 100,000 USDC?"
+  options={[
+    { text: "Yes — if the three pools' rates don't perfectly agree, the round trip can return more than you put in.", correct: true, explanation: "Exactly. The three pools are priced independently. If their rates multiply to more than 1 around the loop, the cycle is profitable even though no single pool looks 'wrong.'" },
+    { text: "No — a round trip always returns exactly what you started with by conservation of value.", explanation: "Value isn't conserved across independently-priced pools. The whole point is that the rates can be mutually inconsistent." },
+    { text: "No — you'd need a second exchange quoting a different price.", explanation: "That's cross-DEX arbitrage. Triangular arbitrage lives entirely inside one venue's set of pools." },
+  ]}
+/>
+
+Classic foreign-exchange traders have hunted this for a century. Imagine a money-changer's window quoting dollars, euros, and yen. Suppose you can turn 1 dollar into 0.9 euros, each euro into 160 yen, and each 144 yen back into 1 dollar. Walk that triangle — dollar → euro → yen → dollar — and if the three rates don't line up, you finish the loop with more dollars than you began with, *without ever predicting which way a currency will move*. You just closed a loop that was internally inconsistent.
+
+**Triangular arbitrage** is that exact trick, on-chain: cycle a starting asset through three (or more) pools and end with **more** of the asset you began with. The canonical loop is:
+
+$$\text{USDC} \rightarrow \text{ETH} \rightarrow \text{DAI} \rightarrow \text{USDC}$$
+
+Three swaps, three pools, back to where you started — ideally heavier. The beautiful (and slightly disturbing) part: **no second venue is required.** One DEX holding a USDC/ETH pool, an ETH/DAI pool, and a DAI/USDC pool is fully capable of being internally inconsistent, because each pool sets its price off its own reserves with nobody enforcing agreement between them.
+
+<Callout variant="info" title="One venue, still inconsistent">
+Cross-DEX arbitrage exploits *two exchanges* disagreeing about one pair. Triangular arbitrage exploits *one exchange* disagreeing with *itself* across three pairs. No external price, no second venue — just a loop whose links don't quite multiply to 1.
+</Callout>
+
+<MatchConcepts
+  client:visible
+  question="Match each idea to what it means in a triangular loop."
+  pairs={[
+    { term: "Triangular arbitrage", definition: "Cycling one asset through three pools to end with more of it." },
+    { term: "The loop", definition: "USDC to ETH to DAI and back to USDC." },
+    { term: "Why it exists on one DEX", definition: "Each pool prices off its own reserves with no agreement enforced." },
+    { term: "What you compare it to", definition: "The classic FX dollar to euro to yen currency triangle." },
+  ]}
+  explanation="Triangular arbitrage is a single-venue loop. Its FX ancestor is the currency triangle; its cause is three independently-priced pools that needn't agree."
+  checkLabel="Check"
+  retryLabel="Try again"
+  allCorrectLabel="✓ All correct"
+/>
+
+### When it matters
+
+Most people picture arbitrage as "same thing, two prices." Triangular arbitrage breaks that mental model: the mispricing isn't in any one pair, it's *distributed* around a loop. Bots that only scan pairs for cross-venue gaps miss it entirely. To catch it you have to think in cycles, not pairs — which is why triangular scanning is a distinct, and lucrative, corner of the MEV world.
+
+## The no-arbitrage condition
+
+<MCQ
+  client:visible
+  pretest
+  question="You multiply the three exchange rates around a loop and get exactly 1.000. What does that tell you?"
+  options={[
+    { text: "There's no profit either direction — the loop is in equilibrium.", correct: true, explanation: "A product of exactly 1 means a full cycle returns precisely what you put in. No edge clockwise, no edge counter-clockwise." },
+    { text: "There's profit if you cycle clockwise.", explanation: "A product of 1 is the break-even line. Profit only appears when the product drifts above (or below) 1." },
+    { text: "The loop is broken and one rate must be wrong.", explanation: "A product of 1 is the *healthy* state — it's exactly what equilibrium looks like." },
+  ]}
+/>
+
+Here's the whole game in one expression. Walk the loop and multiply the three exchange rates you receive at each leg. Call them $r_1$, $r_2$, $r_3$ (each one is "how much of the next asset you get per unit of the current asset"). In a perfectly consistent market:
+
+$$r_1 \cdot r_2 \cdot r_3 = 1$$
+
+That's the **no-arbitrage condition**. A full round trip multiplies your starting amount by exactly that product. If the rates are mutually consistent, the product is 1, and you end with precisely what you began with — a pointless lap.
+
+Now the two ways it can break:
+
+- If $r_1 \cdot r_2 \cdot r_3 > 1$, cycling **this** direction multiplies your stake by more than 1 — profit. Run the loop USDC → ETH → DAI → USDC.
+- If $r_1 \cdot r_2 \cdot r_3 < 1$, this direction *loses* money — but the **reverse** loop has product $1/(r_1 r_2 r_3) > 1$, so you cycle the **other way** instead.
+
+So the product isn't just a yes/no signal; its size tells you the edge and its position relative to 1 tells you the direction. A product of 1.005 is a 0.5% edge clockwise; a product of 0.995 is a 0.5% edge counter-clockwise.
+
+<Callout variant="warning" title="Direction is half the trade">
+Spotting "the product isn't 1" is useless if you run the loop the wrong way — you'd *pay* the inefficiency instead of collecting it. Always check whether the product is above or below 1 and cycle in the direction whose product exceeds 1. Below 1 means the profitable loop is the reverse.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Fill in the no-arbitrage logic."
+  text="In equilibrium the product of the three loop rates equals {{1|0|100}}. If that product comes out greater than 1, cycling that direction is {{profitable|break-even|forbidden}}; if it comes out less than 1, you cycle the {{other way|same way|twice}}."
+  explanation="Equilibrium is a product of exactly 1. Above 1, this direction pays; below 1, the reverse loop is the profitable one."
+  instructions="Choose the correct option for each blank and check."
+  checkLabel="Check"
+  retryLabel="Try again"
+/>
+
+### When it matters
+
+This single inequality is the entire detector. A triangular-arb bot doesn't reason about ETH "going up" — it just multiplies rates around every loop it can find and pounces whenever a product strays from 1. The further from 1, the bigger the prize and the harder bots race to grab it. Equilibrium ($=1$) is the boring state the whole ecosystem is constantly dragging the market back toward.
+
+## A worked loop
+
+<MCQ
+  client:visible
+  pretest
+  question="USDC→ETH gives you ETH at 2000 USDC per ETH; ETH→DAI gives 2010 DAI per ETH; DAI→USDC is 1.00. Roughly what's the loop's edge?"
+  options={[
+    { text: "About 0.5% — the loop product is 2010 / 2000 = 1.005.", correct: true, explanation: "You buy ETH at 2000 and effectively sell its value at 2010 (DAI is pegged at 1.00 to USDC), so the round trip multiplies your stake by 1.005 — a 0.5% edge." },
+    { text: "About 5% — 2010 minus 2000 is 10, and 10 is 5% of 200.", explanation: "The edge is the ratio of the two ETH prices: 2010/2000 = 1.005, i.e. 0.5%, not 5%." },
+    { text: "Zero — DAI and USDC are both dollars, so it must wash out.", explanation: "DAI≈USDC is what makes the loop clean to read, but ETH is quoted at two different dollar prices (2000 vs 2010), and that gap is the edge." },
+  ]}
+/>
+
+Let's make it concrete with the canonical numbers. Our one DEX quotes:
+
+| Leg | Asset in | Rate | Asset out |
+|---|---|---|---|
+| 1 | USDC | 2000 USDC per ETH | ETH |
+| 2 | ETH | 2010 DAI per ETH | DAI |
+| 3 | DAI | 1.00 USDC per DAI | USDC |
+
+Multiply the loop. Going in, 1 USDC buys $1/2000$ ETH; that ETH fetches 2010 DAI each; each DAI fetches 1.00 USDC. The product of the rates around the loop is:
+
+$$\frac{1}{2000} \cdot 2010 \cdot 1.00 = \frac{2010}{2000} = 1.005$$
+
+A product of **1.005** — a clean **0.5% edge**, cycling in this direction. Now run real money through it, starting with **100,000 USDC**:
+
+| Step | You hold | Action | You get |
+|---|---|---|---|
+| Start | 100,000 USDC | — | — |
+| Leg 1 | 100,000 USDC | buy ETH at 2000 | 100000 / 2000 = **50 ETH** |
+| Leg 2 | 50 ETH | sell ETH for DAI at 2010 | 50 × 2010 = **100,500 DAI** |
+| Leg 3 | 100,500 DAI | sell DAI for USDC at 1.00 | 100500 × 1.00 = **100,500 USDC** |
+
+You started with 100,000 USDC and finished with **100,500 USDC** — a gross profit of about **500 USDC** for three swaps and a single block of patience. Notice that's exactly $100{,}000 \times 0.005$: the loop product *is* the multiplier on your stake.
+
+<Callout variant="tip" title="Read the product as a multiplier">
+The loop product isn't an abstract diagnostic — it's literally the number your starting balance gets multiplied by. A product of 1.005 on 100,000 USDC means 100,500 USDC out. Want the profit? Stake times (product minus 1). Here: 100,000 × 0.005 = 500 USDC.
+</Callout>
+
+<Categorize
+  client:visible
+  question="Sort each value from the worked loop into what it represents."
+  buckets={['A rate / multiplier', 'A balance along the loop']}
+  items={[
+    { text: "2000 USDC per ETH", bucket: 'A rate / multiplier' },
+    { text: "1.005 loop product", bucket: 'A rate / multiplier' },
+    { text: "50 ETH after leg 1", bucket: 'A balance along the loop' },
+    { text: "100,500 DAI after leg 2", bucket: 'A balance along the loop' },
+    { text: "100,500 USDC at the end", bucket: 'A balance along the loop' },
+  ]}
+  explanation="Rates and the loop product are multipliers; the 50 ETH, 100,500 DAI, and 100,500 USDC are the running balance as you walk the three legs."
+  checkLabel="Check"
+  retryLabel="Try again"
+  allCorrectLabel="✓ All correct"
+/>
+
+### When it matters
+
+This is the headline number — and, just like the cross-DEX "200 USDC spread," it's a *lie of omission*. The 500 USDC assumes every leg fills at the quoted rate no matter how much you push through. It won't. The worked loop tells you an opportunity exists and which way to run it; it overstates what you actually pocket. The next section is where reality docks its cut.
+
+## Price impact shrinks the loop
+
+<MCQ
+  client:visible
+  pretest
+  question="Each leg of the loop is an AMM swap that moves its own pool against you. What does that do to the realized loop product compared to the naive 1.005?"
+  options={[
+    { text: "It pulls the realized product below 1.005, so true profit is less than 500 USDC.", correct: true, explanation: "Every swap walks its pool's price the wrong way for you, so each leg returns a bit less than its headline rate. The realized product sags below 1.005 and real profit comes in under 500 USDC." },
+    { text: "Nothing — the loop product is fixed by the quoted rates.", explanation: "Quoted rates are the first-unit prices. As you trade size through each pool, the effective rate degrades, so the realized product is lower." },
+    { text: "It pushes the realized product above 1.005, boosting profit.", explanation: "Price impact always works against the trader, never for them. It can only erode the loop product." },
+  ]}
+/>
+
+Every leg of our loop is an AMM trade, and we already know what AMM trades do: they slide along the $x \cdot y = k$ curve and move the pool's price **against the trader**. Buy ETH on leg 1 and the USDC/ETH pool's ETH price climbs — you pay more than 2000 for the later units. Sell that ETH on leg 2 and the ETH/DAI pool's ETH price sinks — you collect less than 2010 on the later units. Each leg quietly underdelivers versus its headline rate.
+
+So the **realized** loop product is below the naive 1.005, and the true profit is **less than 500 USDC**. The visual below shows a single leg doing this — sell a token into a pool and the spot price (the slope from the origin) bends the wrong way with every unit:
+
+<ConstantProductCurve
+  client:visible
+  title="One leg walking up its curve"
+  caption="Each leg of the triangle is an AMM swap. Push tokens into a pool and you slide along the x·y = k hyperbola: the reserve you add grows, the reserve you take shrinks, and the effective rate degrades with every unit. Stack three of these and the realized loop product drops below the naive 1.005."
+/>
+
+Because the edge erodes as you scale, there's an **optimal cycle size** — the very same hump from the last lesson. Trade too little and you leave the 0.5% mostly on the table; trade too much and price impact across all three legs claws the edge back, eventually dragging the realized product below 1 (a *losing* loop). Profit rises, peaks, and falls — and the peak depends on how deep the three pools are.
+
+And don't forget direction. Run the loop the wrong way and you start from product 0.995 — every leg compounds *against* you, so price impact isn't your only problem; you were underwater before you pressed go. **Always cycle the direction whose product exceeds 1.**
+
+<Callout variant="warning" title="The naive 500 is a ceiling, not a payout">
+The 500 USDC from the perfect-rate loop is the *most* you could ever extract, approached only in the limit of an infinitesimally small trade. Any real size you push through three pools books less. Size for the hump's peak — not the biggest loop the reserves will swallow — and never run the loop whose product is below 1.
+</Callout>
+
+<MCQ
+  client:visible
+  question="A bot finds a loop with naive product 1.005 (≈500 USDC on 100k). It fires the largest cycle the pools will accept. What most likely happens?"
+  options={[
+    { text: "It nets well under 500 USDC — price impact across three legs drags the realized product down, possibly below 1.", correct: true, explanation: "Maximizing size maximizes price impact. Each oversized leg degrades its rate, the realized product sags toward (and can fall under) 1, and profit lands far below the naive 500 — or turns negative." },
+    { text: "It nets exactly 500 USDC, because the loop product is locked at 1.005.", explanation: "1.005 is the first-unit product. Trading size through all three pools erodes it; the realized product is always lower." },
+    { text: "It nets more than 500 USDC, since a bigger loop captures more of the edge.", explanation: "Bigger loops capture more price impact against themselves, not more edge. Past the optimum, profit falls." },
+  ]}
+/>
+
+### When it matters
+
+This closes the arc from the last lesson cleanly: detection is a multiplication (is the product off 1?), but *extraction* is an optimization (where's the hump, and which direction?). Triangular bots that only check whether a loop is mispriced — without solving for size and direction — routinely fire trades that look like free money and settle for crumbs, or losses, after three rounds of price impact and gas. The edge is real; capturing it is a sizing problem.
+
+## Recap
+
+<MindMap
+  client:visible
+  title="Triangular arbitrage, in one map"
+  caption="From the FX triangle to why the realized loop pays less than the headline."
+  root={{
+    label: 'Triangular arbitrage',
+    children: [
+      {
+        label: 'The loop',
+        children: [
+          { label: 'USDC to ETH to DAI to USDC' },
+          { label: 'One DEX, three pools' },
+          { label: 'End with more than you started' },
+        ],
+      },
+      {
+        label: 'No-arbitrage condition',
+        children: [
+          { label: 'Product of three rates equals 1' },
+          { label: 'Above 1 cycle this way' },
+          { label: 'Below 1 cycle the other way' },
+        ],
+      },
+      {
+        label: 'Worked loop',
+        children: [
+          { label: 'ETH at 2000 then 2010' },
+          { label: 'Product 1.005 a 0.5 percent edge' },
+          { label: '100000 in, 100500 out' },
+        ],
+      },
+      {
+        label: 'Price impact',
+        children: [
+          { label: 'Each leg moves its pool against you' },
+          { label: 'Realized product below 1.005' },
+          { label: 'Optimal cycle size, a hump' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Triangular arbitrage — final check"
+  questions={[
+    {
+      question: "What makes triangular arbitrage different from cross-DEX arbitrage?",
+      options: [
+        { text: "It exploits one venue disagreeing with itself across three pools — no second exchange needed.", correct: true },
+        { text: "It always requires at least two exchanges quoting the same pair.", },
+        { text: "It only works when a price oracle is broken.", },
+      ],
+      explanation: "Cross-DEX needs two venues disagreeing on one pair; triangular needs one venue whose three pools multiply to something other than 1.",
+    },
+    {
+      question: "In equilibrium, the product of the three exchange rates around the loop equals:",
+      options: [
+        { text: "Exactly 1.", correct: true },
+        { text: "Exactly 0.", },
+        { text: "The sum of the three rates.", },
+      ],
+      explanation: "A product of 1 means a full cycle returns precisely your stake — no edge in either direction.",
+    },
+    {
+      question: "A loop's three rates multiply to 0.995. What should you do?",
+      options: [
+        { text: "Cycle the loop in the reverse direction, whose product is about 1.005.", correct: true },
+        { text: "Cycle this direction — any product other than 1 is profit.", },
+        { text: "Skip it — only products above 1 can ever be traded.", },
+      ],
+      explanation: "Below 1 means this direction loses; the reverse loop has product 1/0.995 ≈ 1.005, so cycle the other way.",
+    },
+    {
+      question: "For the canonical loop (ETH at 2000 then 2010, DAI at 1.00), the loop product and edge are:",
+      options: [
+        { text: "2010 / 2000 = 1.005, a 0.5% edge.", correct: true },
+        { text: "2010 / 2000 = 1.05, a 5% edge.", },
+        { text: "2010 − 2000 = 10, a 10% edge.", },
+      ],
+      explanation: "The product is the ratio of the two ETH prices: 2010/2000 = 1.005, i.e. 0.5%.",
+    },
+    {
+      question: "Starting with 100,000 USDC and a naive loop product of 1.005, the gross end balance is about:",
+      options: [
+        { text: "100,500 USDC — stake times the loop product.", correct: true },
+        { text: "150,000 USDC.", },
+        { text: "100,000 USDC — round trips always wash out.", },
+      ],
+      explanation: "The loop product is the multiplier on your stake: 100,000 × 1.005 = 100,500 USDC, a ~500 USDC gross profit.",
+    },
+    {
+      question: "Why is the realized profit on a real triangular loop less than the naive 500 USDC?",
+      options: [
+        { text: "Each leg is an AMM swap that moves its pool against you, pulling the realized loop product below 1.005.", correct: true },
+        { text: "The loop product magically grows with trade size.", },
+        { text: "DAI and USDC drift apart mid-trade, erasing the edge.", },
+      ],
+      explanation: "Price impact on all three legs degrades each effective rate, so the realized product sags below 1.005 — and there's an optimal, finite cycle size.",
+    },
+  ]}
+  questionLabel="Question"
+  ofLabel="of"
+  scoreLabel="Your score"
+  restartLabel="Restart"
+  nextLabel="Next"
+  backLabel="Back"
+/>

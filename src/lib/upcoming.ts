@@ -68,25 +68,6 @@ export interface UpcomingCourse {
  */
 export const upcomingCourses: UpcomingCourse[] = [
   {
-    slug: 'onchain-arbitrage-and-cross-dex-mev',
-    icon: '🔀',
-    difficulty: 'expert',
-    order: 9,
-    accent: 'accent',
-    title: {
-      en: 'On-chain Arbitrage & Cross-DEX MEV',
-      es: 'Arbitraje On-chain y MEV entre DEX',
-    },
-    description: {
-      en: 'Statistical arbitrage meets the blockchain: cross-DEX and triangular arb, atomic bundles, sandwiching, and the searcher–builder economics of MEV.',
-      es: 'El arbitraje estadístico se topa con la blockchain: arbitraje entre DEX y triangular, bundles atómicos, sandwiching y la economía searcher–builder del MEV.',
-    },
-    dependencies: ['defi-amms', 'mev-and-ordering', 'systematic-and-statistical-arbitrage'],
-    tags: ['defi', 'quantitative-finance', 'trading-and-markets'],
-    buildNotes:
-      'Relative-value arbitrage with no shorting and atomic settlement: cross-DEX price discrepancies and how AMM curves create them, triangular arbitrage across pools, atomic arbitrage bundles & flash-loan-funded legs, the cost stack (gas, priority fees, builder payment, slippage), competition in the priority-gas/PBS auction and why most arb profit is bid away to builders/validators, backrunning vs sandwiching, and the statistical edge & capacity limits of on-chain arb vs TradFi stat-arb. Islands: cross-dex-arb + bundle-profit-split.',
-  },
-  {
     slug: 'reinforcement-learning-for-trading',
     icon: '🤖',
     difficulty: 'expert',
@@ -123,6 +104,44 @@ export const upcomingCourses: UpcomingCourse[] = [
     tags: ['quantitative-finance'],
     buildNotes:
       'Deep learning for sequential market data, without the hype: why plain MLPs over-/under-fit low-signal returns, recurrent models (RNN/LSTM/GRU) and their vanishing-gradient story, temporal convolutional networks, attention and transformers applied to returns and to limit-order-book microstructure, embeddings for categorical and alternative data, the tiny-effective-sample-size problem and aggressive regularization (dropout, weight decay, early stopping, data augmentation), purged/embargoed evaluation and the deflated Sharpe applied to DL, and a sober answer to "when does deep learning actually beat gradient boosting in finance?" (usually it does not). Builds directly on machine-learning-for-alpha. Islands: sequence-model-unroll + attention-weights-heatmap.',
+  },
+  {
+    slug: 'cross-chain-arbitrage-and-bridge-mev',
+    icon: '🌉',
+    difficulty: 'expert',
+    order: 12,
+    accent: 'accent',
+    title: {
+      en: 'Cross-Chain Arbitrage & Bridge MEV',
+      es: 'Arbitraje Cross-Chain y MEV de Puentes',
+    },
+    description: {
+      en: 'Arbitrage when settlement is no longer atomic: bridging assets across chains, the inventory and finality risk it reintroduces, shared sequencers, and where MEV reappears in a multi-chain world.',
+      es: 'Arbitraje cuando la liquidación deja de ser atómica: puentear activos entre cadenas, el riesgo de inventario y de finalidad que reintroduce, los secuenciadores compartidos y dónde reaparece el MEV en un mundo multicadena.',
+    },
+    dependencies: ['onchain-arbitrage-and-cross-dex-mev', 'stablecoins', 'ethereum'],
+    tags: ['defi', 'quantitative-finance', 'crypto'],
+    buildNotes:
+      'On-chain arbitrage once the single-transaction atomicity guarantee is gone. How bridges move value across chains (lock-and-mint, burn-and-mint, liquidity-network bridges) and why a cross-chain leg cannot settle in one atomic transaction — so inventory risk, bridge latency and probabilistic finality / reorg risk all return, making cross-chain arb look more like the non-atomic CEX-DEX cousin than pure atomic arb. Capital and rebalancing constraints (you must pre-position inventory on both sides), bridge trust assumptions and the bridge-hack tail risk, shared/centralized sequencers and cross-domain MEV, atomic-cross-chain attempts (bonded relayers, intents, escrow) and why they only approximate atomicity. Carry the cost-stack and capacity themes forward from onchain-arbitrage-and-cross-dex-mev. Islands: cross-chain-settlement-timeline + bridge-inventory-balance.',
+  },
+  {
+    slug: 'order-flow-auctions-and-mev-redistribution',
+    icon: '📡',
+    difficulty: 'expert',
+    order: 13,
+    accent: 'brand',
+    title: {
+      en: 'Order-Flow Auctions & MEV Redistribution',
+      es: 'Subastas de Flujo de Órdenes y Redistribución del MEV',
+    },
+    description: {
+      en: 'The frontier of taming MEV: order-flow auctions, intent-based trading with solvers (CoW, UniswapX), MEV-Share and SUAVE, and the mechanism design that routes extracted value back to users.',
+      es: 'La frontera para domar el MEV: subastas de flujo de órdenes, trading basado en intents con solvers (CoW, UniswapX), MEV-Share y SUAVE, y el diseño de mecanismos que devuelve a los usuarios el valor extraído.',
+    },
+    dependencies: ['mev-and-ordering', 'onchain-arbitrage-and-cross-dex-mev'],
+    tags: ['defi', 'quantitative-finance', 'crypto'],
+    buildNotes:
+      'How the MEV supply chain is being re-architected to give value back to the user who creates it. Order-flow auctions (OFAs): selling the right to backrun/execute a user transaction and refunding the user a share of the bid. Intent-based trading: the user signs a desired outcome, not a transaction, and competing solvers bid to fill it best (CoW Protocol batch auctions with uniform clearing price + coincidence of wants, UniswapX Dutch auctions). MEV-Share and programmable privacy, the SUAVE decentralized-sequencing vision, and the mechanism-design tradeoffs (price improvement vs solver centralization, censorship, trust). Tie back to the cost-stack lesson: this is the "redistribute" verb made concrete. Islands: intent-solver-auction + ofa-refund-split.',
   },
 ];
 

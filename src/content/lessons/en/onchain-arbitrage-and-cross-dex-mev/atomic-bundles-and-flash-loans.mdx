@@ -1,0 +1,302 @@
+---
+title: "Atomic Bundles & Flash Loans"
+description: "Packaging every leg of an arbitrage into one all-or-nothing transaction, and borrowing the entire stake inside that transaction so capital stops being the barrier — plus what atomicity does and does not protect you from."
+topic: "en/onchain-arbitrage-and-cross-dex-mev"
+order: 4
+minutes: 10
+updated: 2026-06-18
+---
+
+import { Callout, MCQ, FillBlank, Categorize, MatchConcepts, MindMap, Quiz, Reveal } from '@/components/react';
+
+You found a 0.5% loop across three pools. Now comes the terrifying middle: you've bought the first leg, you're holding inventory, and the price could move against you before you close the trade. On a normal exchange that gap is where dreams go to die. On-chain, there's a trick that makes the gap *literally impossible* — and a second trick that means you don't even need the money to do it. This lesson is about both.
+
+## The bundle: one transaction, all legs
+
+<MCQ
+  client:visible
+  pretest
+  question="You buy ETH on pool A, then plan to sell it on pool B one block later. What's the danger in that one-block gap?"
+  options={[
+    { text: "The price on B can move against you before you sell, leaving you stuck holding ETH at a loss.", correct: true, explanation: "Exactly — inventory risk. Any delay between legs is time for the market to erase your edge while you're holding the bag." },
+    { text: "Nothing — once you've bought leg one, the profit is locked in.", explanation: "Profit is only locked when both legs are done. Holding the middle inventory is pure exposure." },
+    { text: "The blockchain will automatically reverse leg one if leg two is late.", explanation: "There's no automatic reversal across separate transactions. That guarantee only exists if you put both legs inside one transaction — which is the whole point of this lesson." },
+  ]}
+/>
+
+Think of a relay race where the runners are handcuffed together: either the whole team crosses the line or none of them move at all. There's no scenario where one runner finishes and the rest are left stranded mid-track. That's **atomic execution**.
+
+An **atomic bundle** packs every leg of your arbitrage — buy on A, sell on B, and any extra hops in between — into a **single transaction** that the EVM runs as one indivisible unit. The contract executes the legs in order, then checks: *did I end up with more than I started?* If yes, the transaction commits and you keep the profit. If no, the transaction **reverts** — every state change is undone as if nothing happened.
+
+The sequence inside one atomic transaction looks like this:
+
+1. Buy ETH on pool A (cheap).
+2. Sell that ETH on pool B (dear) — and any intermediate hops if it's a triangular loop.
+3. Check the final balance: is profit greater than zero (after costs)?
+4. If yes, commit. If no, `revert()` — the buy on A is unwound too, and you never held the inventory.
+
+The magic is step 4. Because the *whole* thing reverts on a failed profit check, you can never get stuck having done leg one but not leg two. The searcher never holds inventory between blocks, never wakes up to a position that moved against them. The risk that haunts every off-chain trader — "I bought, then the market ran away before I could sell" — is engineered out of existence.
+
+<Callout variant="info" title="Revert is a feature, not a failure">
+Off-chain, a half-finished trade is a real, money-losing event you have to clean up. On-chain, a half-finished bundle simply *doesn't exist* — the EVM rewinds the tape. "It reverted" means "it cost gas and nothing else happened," which is a wildly better failure mode than "I'm now long ETH I didn't want."
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Fill in how atomicity protects the searcher."
+  text="An atomic bundle runs all legs as one {{indivisible|optional|delayed}} transaction. If the final profit check fails, the whole thing {{reverts|partially settles|queues}}, so the searcher never ends up {{holding inventory|paying twice|owning the pool}} between legs."
+  explanation="One indivisible transaction, all-or-nothing: a failed profit check reverts everything, so there's no in-between state where you're stuck holding a half-done trade."
+  instructions="Choose the correct option for each blank and check."
+  checkLabel="Check"
+  retryLabel="Try again"
+/>
+
+### When it matters
+
+Atomicity is what turns a fragile multi-step arbitrage into a single safe bet. It's why on-chain searchers can chase razor-thin spreads that no off-chain trader would touch: the downside of a missed leg isn't a loss, it's a wasted gas fee. Every strategy in the rest of this course assumes the legs are bundled — it's the bedrock.
+
+## Flash loans: rent the whole stake for one block
+
+<MCQ
+  client:visible
+  pretest
+  question="A profitable arbitrage needs 100,000 USDC of capital you don't have. On a normal exchange you're stuck. What does a flash loan let you do?"
+  options={[
+    { text: "Borrow the full 100,000 USDC with no collateral, as long as you repay it before the same transaction ends.", correct: true, explanation: "That's the trick. The loan exists only inside one transaction; if you can't repay by the end, the whole thing reverts — so the lender is never actually at risk." },
+    { text: "Borrow 100,000 USDC for a week, posting your house as collateral.", explanation: "That's an ordinary loan. A flash loan is collateral-free and lasts a fraction of a second — one transaction." },
+    { text: "Print 100,000 USDC out of thin air with no obligation to repay.", explanation: "You absolutely must repay, plus a fee, before the transaction ends — otherwise everything reverts. It's borrowed, not minted." },
+  ]}
+/>
+
+Imagine a bank that hands you a million dollars at the door, *on the condition* that you walk a loop through the building and hand it all back — plus a small tip — before you reach the exit. If you can't return it by the exit, the security cameras rewind and it's as if you never walked in. No collateral, no credit check, because the bank physically cannot lose: the door won't open until you've repaid.
+
+A **flash loan** is exactly that. You borrow a large sum with **no collateral**, on the sole condition that it's **repaid before the same transaction ends**. If repayment fails, the entire transaction reverts — the loan, your trades, all of it — as if it never happened. Because repayment is enforced atomically (same trick as the bundle), the lender takes on zero default risk and can lend to a complete stranger.
+
+The economic consequence is enormous: **capital stops being the barrier to entry.** You no longer need a war chest to run a big arbitrage. You borrow the entire stake for the duration of one block, run your atomic loop, repay the loan out of the proceeds, and keep whatever's left. What decides the winner is no longer *how much money you have* — it's **speed and search quality**: who spots the opportunity and lands the bundle first.
+
+Lenders don't do this for free. A typical flash-loan fee is **0.05%** — that's **5 basis points** — charged on the borrowed amount and paid back alongside the principal inside the same transaction.
+
+<MatchConcepts
+  client:visible
+  question="Match each flash-loan property to what it means."
+  pairs={[
+    { term: "No collateral", definition: "You post nothing up front to borrow the funds." },
+    { term: "Repay-or-revert", definition: "Fail to return the loan by transaction end and everything unwinds." },
+    { term: "Typical fee", definition: "About 0.05%, or 5 basis points, on the borrowed sum." },
+    { term: "What now decides the winner", definition: "Speed and search quality, not the size of your bankroll." },
+  ]}
+  explanation="Flash loans are collateral-free because repayment is enforced atomically; the lender charges a small fee (~5 bps) and faces no default risk. With capital no longer scarce, the edge shifts entirely to speed and search."
+  checkLabel="Check"
+  retryLabel="Try again"
+  allCorrectLabel="✓ All correct"
+/>
+
+### When it matters
+
+Flash loans democratized MEV. A teenager with a clever bot and a laptop can deploy the same capital as a hedge fund — for the length of one transaction. That's why on-chain arbitrage competition is brutal and margins are thin: the moat that protected the well-capitalized everywhere else simply doesn't exist here.
+
+## Worked: capital-free arbitrage
+
+<MCQ
+  client:visible
+  pretest
+  question="You borrow 100,000 USDC via flash loan and run a loop that returns 0.5% gross. Roughly how much gross profit does the loop produce, before the loan fee?"
+  options={[
+    { text: "About 500 USDC", correct: true, explanation: "0.5% of 100,000 USDC is 500 USDC gross. The flash-loan fee and gas come out of that — but the gross edge is 500." },
+    { text: "About 5,000 USDC", explanation: "That would be 5%. The loop returns 0.5%, which is 500 USDC on a 100,000 stake." },
+    { text: "About 50 USDC", explanation: "That's 0.05% — the flash-loan fee, not the gross profit. The loop's 0.5% gross is ten times larger." },
+  ]}
+/>
+
+Let's run the numbers from the triangular-arbitrage loop you priced earlier, now financed entirely with borrowed money. You bring almost none of your own capital to the table.
+
+| Step | Amount |
+|---|---|
+| Flash-loan principal borrowed | \$100,000 |
+| Gross return from the 0.5% loop | +\$500 |
+| Flash-loan fee at 0.05% (5 bps) on \$100,000 | −\$50 |
+| **Profit before gas** | **≈ \$450** |
+
+Walk it through: you borrow **\$100,000** of USDC with no money down. You run the atomic loop and it returns **0.5%**, which is **\$500** gross. You repay the principal *plus* the **0.05%** fee — that fee is **\$50** on a \$100,000 loan. What's left in your pocket, before paying gas, is about **\$450**.
+
+The headline isn't the \$450 — it's *whose* \$450 it is. You captured a \$450 edge having staked **almost none of your own capital**. The flash loan supplied the entire \$100,000; your only out-of-pocket cost is the gas to submit the transaction. That is the whole reason on-chain arbitrage looks nothing like its off-chain cousin: the capital requirement collapsed to roughly zero.
+
+<Callout variant="warning" title="The fee scales with the loan, the edge with the spread">
+Notice the fee (\$50) is fixed by the *loan size*, while the gross profit (\$500) is fixed by the *spread*. Borrow more than your loop can profitably deploy and the 0.05% fee starts eating a thin edge alive. The flash loan is free leverage, not free money — size it to the opportunity, not to the lender's limit.
+</Callout>
+
+<Categorize
+  client:visible
+  question="Sort each line of the worked example by what it represents."
+  buckets={['Money in (gross)', 'Cost subtracted']}
+  items={[
+    { text: "The 500 USDC return from the 0.5% loop", bucket: 'Money in (gross)' },
+    { text: "The 50 USDC flash-loan fee", bucket: 'Cost subtracted' },
+    { text: "Gas paid to submit the transaction", bucket: 'Cost subtracted' },
+    { text: "The 0.5% edge captured across the pools", bucket: 'Money in (gross)' },
+  ]}
+  explanation="Gross in is the 500 USDC loop return (the 0.5% edge). Costs are the 50 USDC loan fee plus gas. 500 − 50 = ~450 before gas."
+  checkLabel="Check"
+  retryLabel="Try again"
+  allCorrectLabel="✓ All correct"
+/>
+
+### When it matters
+
+This is the math that explains why MEV is a high-volume, low-margin grind. When capital is free, *everyone* can chase the same \$450, so the edge gets bid down to the thinnest sliver that still beats gas and the loan fee. The winner isn't the richest — it's the one whose bundle is cheapest to run and fastest to land.
+
+## What atomicity does NOT protect you from
+
+<MCQ
+  client:visible
+  pretest
+  question="If your bundle reverts because a profit check failed, what did it still cost you?"
+  options={[
+    { text: "Gas — you pay for the computation even though the trade unwound and produced no profit.", correct: true, explanation: "Right. Reverting refunds your trades, not your gas. A failed attempt is a real, if small, cost — and they add up when you're firing many attempts." },
+    { text: "Nothing at all — a revert is completely free.", explanation: "The state unwinds, but the EVM still charged you for the work it did before reverting. Gas is spent regardless." },
+    { text: "The full 100,000 USDC principal you borrowed.", explanation: "No — the flash loan reverts too, so you never owe the principal. The cost of a failed bundle is gas, not the loan." },
+  ]}
+/>
+
+Here's where overconfidence kills accounts. It's tempting to read "atomic = the whole thing reverts if it's not profitable" as "**atomic = risk-free**." That's only *half* true, and the missing half is where searchers actually lose money. Atomicity is a fortress against exactly **one** danger — inventory risk — and offers nothing against the others.
+
+Three risks survive atomicity entirely:
+
+1. **Gas on a reverted attempt.** Revert refunds your *trades*, not your *gas*. Every failed bundle still burns the gas spent computing it. Fire a hundred speculative attempts that all revert and you've paid a hundred gas bills for zero profit.
+2. **Outbid or not included.** A block **builder** chooses which bundles go in and in what order. A competitor offering a juicier payment can outbid you, or the builder may simply leave your bundle out. Atomicity guarantees your bundle is *correct*, not that it's *chosen*.
+3. **The opportunity vanishes.** If a competitor's transaction lands *first* and changes the pool state, the gap you targeted may be gone by the time your bundle runs. Your profit check then fails — correctly — and you revert, having paid gas to discover the edge evaporated.
+
+So atomicity kills **inventory risk** stone dead. It does **nothing** about **competition risk** or **gas-on-failure**. Confusing "my trade can't get stuck half-done" with "my trade can't lose" is the classic rookie error.
+
+<Callout variant="warning" title="'Atomic' means safe inventory, not guaranteed profit">
+A reverted bundle is not a free undo. You still pay gas, you can still be outbid or excluded by the builder, and the opportunity can vanish before your transaction lands. Atomicity removes the risk of holding a half-finished position — it does not remove the risk of *competition* or the cost of *trying*. Budget for failed attempts, because there will be many.
+</Callout>
+
+<MCQ
+  client:visible
+  question="A searcher submits 50 bundles in an hour. 45 revert because faster competitors changed the pool state first; 5 succeed. What's the most accurate description of the 45 reverts?"
+  options={[
+    { text: "They cost gas but no principal or inventory — a real expense the searcher must cover from the 5 wins.", correct: true, explanation: "Reverts unwind trades and the loan, so no inventory or principal is lost — but gas is spent on each attempt. Profitable searching means the 5 wins must exceed the gas of all 50 attempts." },
+    { text: "They cost nothing, so only the 5 wins matter.", explanation: "Each revert still burned gas. Ignoring failed-attempt gas is how a 'profitable' strategy quietly bleeds out." },
+    { text: "They each cost the full 100,000 USDC flash-loan principal.", explanation: "The flash loan reverts with the bundle, so the principal is never lost. Only gas is spent on a revert." },
+  ]}
+/>
+
+### When it matters
+
+This is the line between a searcher who survives and one who quietly goes broke. The survivor prices in gas-on-failure and competition, simulates aggressively before submitting to avoid doomed bundles, and only fires when the expected win clears the expected cost of trying. "It's atomic, so I can't lose" is the epitaph on a lot of dead bots.
+
+## Recap
+
+<MindMap
+  client:visible
+  title="Atomic bundles and flash loans, in one map"
+  caption="From all-or-nothing execution to what it can and cannot protect."
+  root={{
+    label: 'Atomic arbitrage',
+    children: [
+      {
+        label: 'The bundle',
+        children: [
+          { label: 'All legs in one transaction' },
+          { label: 'Runs as an indivisible unit' },
+          { label: 'Failed profit check reverts all' },
+          { label: 'Never stuck holding inventory' },
+        ],
+      },
+      {
+        label: 'Flash loans',
+        children: [
+          { label: 'Borrow large sum no collateral' },
+          { label: 'Repay before transaction ends' },
+          { label: 'Typical fee 5 basis points' },
+          { label: 'Capital stops being the barrier' },
+        ],
+      },
+      {
+        label: 'Worked example',
+        children: [
+          { label: 'Borrow 100000 USDC' },
+          { label: 'Gross 500 from the loop' },
+          { label: 'Pay 50 loan fee' },
+          { label: 'About 450 before gas' },
+        ],
+      },
+      {
+        label: 'What it does not stop',
+        children: [
+          { label: 'Gas on a reverted attempt' },
+          { label: 'Outbid or excluded by builder' },
+          { label: 'Opportunity vanishing first' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Atomic bundles & flash loans — final check"
+  questions={[
+    {
+      question: "What does packaging every leg of an arbitrage into one atomic transaction guarantee?",
+      options: [
+        { text: "Either all legs execute or the whole thing reverts — you never end up holding a half-done trade.", correct: true },
+        { text: "Each leg settles independently, so a successful leg one is locked in even if leg two fails." },
+        { text: "The transaction is guaranteed to be included in the next block." },
+      ],
+      explanation: "Atomic = indivisible. A failed profit check reverts every leg, so there's no in-between state and no inventory risk.",
+    },
+    {
+      question: "Which best describes a flash loan?",
+      options: [
+        { text: "An uncollateralized loan that must be repaid before the same transaction ends, or everything reverts.", correct: true },
+        { text: "A collateralized loan you repay over several blocks." },
+        { text: "Newly minted tokens you never have to return." },
+      ],
+      explanation: "No collateral, repaid within the same transaction or the whole thing unwinds — which is why the lender takes no default risk.",
+    },
+    {
+      question: "Borrowing 100,000 USDC and running a 0.5% loop, with a 0.05% flash-loan fee, leaves roughly how much before gas?",
+      options: [
+        { text: "About 450 USDC", correct: true },
+        { text: "About 500 USDC" },
+        { text: "About 950 USDC" },
+      ],
+      explanation: "500 USDC gross minus the 50 USDC fee (0.05% of 100,000) is about 450 USDC before gas.",
+    },
+    {
+      question: "With flash loans available, what mainly decides who wins an arbitrage?",
+      options: [
+        { text: "Speed and search quality — capital is no longer the barrier.", correct: true },
+        { text: "Whoever has the largest bankroll up front." },
+        { text: "Whoever holds the asset longest between blocks." },
+      ],
+      explanation: "Free leverage erases the capital moat, so the edge shifts to spotting the opportunity and landing the bundle first.",
+    },
+    {
+      question: "Your bundle reverts because a competitor changed the pool state first. What did that cost you?",
+      options: [
+        { text: "Gas for the attempt — but no principal and no inventory, since the loan and trades unwound.", correct: true },
+        { text: "The full 100,000 USDC principal you borrowed." },
+        { text: "Nothing whatsoever — reverts are completely free." },
+      ],
+      explanation: "Reverts refund trades and the flash loan, but the EVM still charges gas for the work it did. Failed attempts cost gas.",
+    },
+    {
+      question: "Which risk does atomicity actually eliminate?",
+      options: [
+        { text: "Inventory risk — being stuck holding a half-finished position.", correct: true },
+        { text: "Competition risk — being outbid or excluded by the builder." },
+        { text: "Gas-on-failure — paying for attempts that revert." },
+      ],
+      explanation: "Atomicity kills inventory risk only. Competition and gas-on-failure survive it entirely — 'atomic' is not 'risk-free.'",
+    },
+  ]}
+  questionLabel="Question"
+  ofLabel="of"
+  scoreLabel="Your score"
+  restartLabel="Restart"
+  nextLabel="Next"
+  backLabel="Back"
+/>

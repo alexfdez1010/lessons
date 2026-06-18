@@ -1,0 +1,303 @@
+---
+title: "Bundles atómicos y flash loans"
+description: "Empaquetar cada tramo de un arbitraje en una sola transacción de todo-o-nada, y pedir prestada la apuesta entera dentro de esa transacción para que el capital deje de ser la barrera — además de lo que la atomicidad sí protege y lo que no."
+topic: "es/onchain-arbitrage-and-cross-dex-mev"
+order: 4
+minutes: 10
+updated: 2026-06-18
+---
+
+import { Callout, MCQ, FillBlank, Categorize, MatchConcepts, MindMap, Quiz, Reveal } from '@/components/react';
+
+Habéis encontrado un bucle del 0,5% a través de tres pools. Ahora llega el medio aterrador: habéis comprado el primer tramo, estáis sujetando el inventario y el precio podría moverse en vuestra contra antes de cerrar la operación. En un mercado normal, ese hueco es donde mueren los sueños. On-chain existe un truco que vuelve ese hueco *literalmente imposible* — y un segundo truco que hace que ni siquiera necesitéis el dinero para hacerlo. Esta lección va de los dos.
+
+## El bundle: una transacción, todos los tramos
+
+<MCQ
+  client:visible
+  pretest
+  question="Compráis ETH en el pool A y planeáis venderlo en el pool B un bloque después. ¿Cuál es el peligro de ese hueco de un bloque?"
+  options={[
+    { text: "El precio en B puede moverse en vuestra contra antes de vender, dejándoos atrapados sujetando ETH con pérdidas.", correct: true, explanation: "Exacto: riesgo de inventario. Cualquier retraso entre tramos es tiempo para que el mercado borre vuestra ventaja mientras sujetáis el muerto." },
+    { text: "Nada — una vez comprado el tramo uno, el beneficio está asegurado.", explanation: "El beneficio solo queda asegurado cuando ambos tramos están hechos. Sujetar el inventario intermedio es pura exposición." },
+    { text: "La blockchain revertirá automáticamente el tramo uno si el tramo dos llega tarde.", explanation: "No hay reversión automática entre transacciones separadas. Esa garantía solo existe si metéis ambos tramos dentro de una sola transacción, que es justo de lo que va esta lección." },
+  ]}
+/>
+
+Imaginad una carrera de relevos donde los corredores van esposados entre sí: o cruza la meta el equipo entero o no se mueve nadie. No hay escenario en el que un corredor termine y los demás se queden tirados a mitad de pista. Eso es la **ejecución atómica**.
+
+Un **bundle atómico** empaqueta cada tramo de vuestro arbitraje — comprar en A, vender en B y los saltos intermedios que haya — en una **sola transacción** que la EVM ejecuta como una unidad indivisible. El contrato ejecuta los tramos en orden y luego comprueba: *¿he terminado con más de lo que empecé?* Si sí, la transacción se confirma y os quedáis el beneficio. Si no, la transacción **revierte** — todo cambio de estado se deshace como si nada hubiera pasado.
+
+La secuencia dentro de una transacción atómica tiene esta pinta:
+
+1. Comprar ETH en el pool A (barato).
+2. Vender ese ETH en el pool B (caro) — y cualquier salto intermedio si es un bucle triangular.
+3. Comprobar el saldo final: ¿es el beneficio mayor que cero (tras costes)?
+4. Si sí, confirmar. Si no, `revert()` — la compra en A también se deshace y nunca llegáis a sujetar el inventario.
+
+La magia está en el paso 4. Como *todo* revierte ante una comprobación de beneficio fallida, nunca podéis quedaros habiendo hecho el tramo uno pero no el dos. El buscador nunca sujeta inventario entre bloques, nunca se despierta con una posición que se le ha movido en contra. El riesgo que persigue a todo trader fuera de cadena — "compré, y luego el mercado se escapó antes de que pudiera vender" — queda diseñado para no existir.
+
+<Callout variant="info" title="Revertir es una función, no un fracaso">
+Fuera de cadena, una operación a medias es un evento real que pierde dinero y que tenéis que limpiar. On-chain, un bundle a medias simplemente *no existe* — la EVM rebobina la cinta. "Revirtió" significa "costó gas y no pasó nada más", que es un modo de fallo muchísimo mejor que "ahora estoy largo en un ETH que no quería".
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Completa cómo la atomicidad protege al buscador."
+  text="Un bundle atómico ejecuta todos los tramos como una sola transacción {{indivisible|opcional|retrasada}}. Si la comprobación final de beneficio falla, todo {{revierte|se liquida en parte|se encola}}, así que el buscador nunca acaba {{sujetando inventario|pagando dos veces|siendo dueño del pool}} entre tramos."
+  explanation="Una sola transacción indivisible, todo-o-nada: una comprobación de beneficio fallida revierte todo, así que no hay estado intermedio donde quedéis atrapados con una operación a medias."
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+### Cuándo importa
+
+La atomicidad es lo que convierte un arbitraje frágil de varios pasos en una única apuesta segura. Es la razón por la que los buscadores on-chain pueden perseguir spreads finísimos que ningún trader fuera de cadena tocaría: la pega de un tramo fallido no es una pérdida, es una comisión de gas desperdiciada. Cada estrategia del resto de este curso asume que los tramos van empaquetados — es el cimiento.
+
+## Flash loans: alquilar la apuesta entera por un bloque
+
+<MCQ
+  client:visible
+  pretest
+  question="Un arbitraje rentable necesita 100.000 USDC de capital que no tenéis. En un mercado normal estáis atascados. ¿Qué os permite hacer un flash loan?"
+  options={[
+    { text: "Pedir prestados los 100.000 USDC completos sin colateral, siempre que los devolváis antes de que termine la misma transacción.", correct: true, explanation: "Ese es el truco. El préstamo solo existe dentro de una transacción; si no podéis devolverlo al final, todo revierte, así que el prestamista nunca está realmente en riesgo." },
+    { text: "Pedir prestados 100.000 USDC durante una semana, poniendo vuestra casa como colateral.", explanation: "Eso es un préstamo corriente. Un flash loan es sin colateral y dura una fracción de segundo: una transacción." },
+    { text: "Imprimir 100.000 USDC de la nada sin obligación de devolverlos.", explanation: "Tenéis que devolverlo sí o sí, más una comisión, antes de que termine la transacción; si no, todo revierte. Es prestado, no acuñado." },
+  ]}
+/>
+
+Imaginad un banco que os entrega un millón de euros en la puerta, *con la condición* de que deis una vuelta por el edificio y lo devolváis todo — más una pequeña propina — antes de llegar a la salida. Si no podéis devolverlo a la salida, las cámaras de seguridad rebobinan y es como si nunca hubierais entrado. Sin colateral, sin estudio de crédito, porque el banco físicamente no puede perder: la puerta no se abre hasta que habéis devuelto.
+
+Un **flash loan** es justo eso. Pedís prestada una suma grande **sin colateral**, con la única condición de que se **devuelva antes de que termine la misma transacción**. Si la devolución falla, la transacción entera revierte — el préstamo, vuestras operaciones, todo — como si nunca hubiera pasado. Como la devolución se exige de forma atómica (el mismo truco que el bundle), el prestamista no asume ningún riesgo de impago y puede prestar a un completo desconocido.
+
+La consecuencia económica es enorme: **el capital deja de ser la barrera de entrada.** Ya no necesitáis un cofre de guerra para correr un arbitraje grande. Pedís prestada la apuesta entera durante un bloque, ejecutáis vuestro bucle atómico, devolvéis el préstamo con lo recaudado y os quedáis lo que sobre. Lo que decide al ganador ya no es *cuánto dinero tenéis* — es la **velocidad y la calidad de búsqueda**: quién detecta la oportunidad y aterriza el bundle primero.
+
+Los prestamistas no hacen esto gratis. Una comisión típica de flash loan es del **0,05%** — es decir, **5 puntos básicos** — cobrada sobre la cantidad prestada y devuelta junto al principal dentro de la misma transacción.
+
+<MatchConcepts
+  client:visible
+  question="Empareja cada propiedad del flash loan con lo que significa."
+  pairs={[
+    { term: "Sin colateral", definition: "No depositáis nada por adelantado para pedir los fondos." },
+    { term: "Devolver-o-revertir", definition: "Si no devolvéis el préstamo al final de la transacción, todo se deshace." },
+    { term: "Comisión típica", definition: "En torno al 0,05%, o 5 puntos básicos, sobre la suma prestada." },
+    { term: "Qué decide ahora al ganador", definition: "Velocidad y calidad de búsqueda, no el tamaño de vuestra cartera." },
+  ]}
+  explanation="Los flash loans son sin colateral porque la devolución se exige de forma atómica; el prestamista cobra una pequeña comisión (~5 pb) y no afronta riesgo de impago. Con el capital ya no escaso, la ventaja se desplaza por completo a la velocidad y la búsqueda."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  allCorrectLabel="✓ Todo correcto"
+/>
+
+### Cuándo importa
+
+Los flash loans democratizaron el MEV. Un adolescente con un bot ingenioso y un ordenador portátil puede desplegar el mismo capital que un fondo de cobertura — durante una transacción. Por eso la competencia en el arbitraje on-chain es brutal y los márgenes finos: el foso que protegía a los bien capitalizados en todas partes simplemente no existe aquí.
+
+## Resuelto: arbitraje sin capital
+
+<MCQ
+  client:visible
+  pretest
+  question="Pedís prestados 100.000 USDC vía flash loan y ejecutáis un bucle que devuelve un 0,5% bruto. ¿Cuánto beneficio bruto produce el bucle, aproximadamente, antes de la comisión del préstamo?"
+  options={[
+    { text: "Unos 500 USDC", correct: true, explanation: "El 0,5% de 100.000 USDC son 500 USDC brutos. La comisión del flash loan y el gas salen de ahí — pero la ventaja bruta es 500." },
+    { text: "Unos 5.000 USDC", explanation: "Eso sería un 5%. El bucle devuelve un 0,5%, que son 500 USDC sobre una apuesta de 100.000." },
+    { text: "Unos 50 USDC", explanation: "Eso es el 0,05% — la comisión del flash loan, no el beneficio bruto. El 0,5% bruto del bucle es diez veces mayor." },
+  ]}
+/>
+
+Hagamos los números del bucle de arbitraje triangular que valorasteis antes, ahora financiado por completo con dinero prestado. Ponéis casi nada de capital propio sobre la mesa.
+
+| Paso | Cantidad |
+|---|---|
+| Principal del flash loan pedido | \$100.000 |
+| Retorno bruto del bucle del 0,5% | +\$500 |
+| Comisión del flash loan al 0,05% (5 pb) sobre \$100.000 | −\$50 |
+| **Beneficio antes de gas** | **≈ \$450** |
+
+Seguidlo paso a paso: pedís prestados **\$100.000** de USDC sin poner dinero. Ejecutáis el bucle atómico y devuelve un **0,5%**, que son **\$500** brutos. Devolvéis el principal *más* la comisión del **0,05%** — esa comisión son **\$50** sobre un préstamo de \$100.000. Lo que queda en vuestro bolsillo, antes de pagar gas, son unos **\$450**.
+
+El titular no son los \$450 — es de *quién* son esos \$450. Capturasteis una ventaja de \$450 habiendo arriesgado **casi nada de capital propio**. El flash loan aportó los \$100.000 enteros; vuestro único coste de bolsillo es el gas para enviar la transacción. Esa es toda la razón por la que el arbitraje on-chain no se parece en nada a su primo fuera de cadena: el requisito de capital se hundió hasta casi cero.
+
+<Callout variant="warning" title="La comisión escala con el préstamo, la ventaja con el spread">
+Fijaos en que la comisión (\$50) la fija el *tamaño del préstamo*, mientras que el beneficio bruto (\$500) lo fija el *spread*. Pedid más de lo que vuestro bucle puede desplegar con beneficio y la comisión del 0,05% empieza a comerse viva una ventaja fina. El flash loan es apalancamiento gratis, no dinero gratis — dimensionadlo a la oportunidad, no al límite del prestamista.
+</Callout>
+
+<Categorize
+  client:visible
+  question="Clasifica cada línea del ejemplo resuelto según lo que representa."
+  buckets={['Dinero que entra (bruto)', 'Coste a restar']}
+  items={[
+    { text: "Los 500 USDC de retorno del bucle del 0,5%", bucket: 'Dinero que entra (bruto)' },
+    { text: "La comisión del flash loan de 50 USDC", bucket: 'Coste a restar' },
+    { text: "El gas pagado por enviar la transacción", bucket: 'Coste a restar' },
+    { text: "La ventaja del 0,5% capturada entre los pools", bucket: 'Dinero que entra (bruto)' },
+  ]}
+  explanation="Lo bruto que entra son los 500 USDC de retorno del bucle (la ventaja del 0,5%). Los costes son los 50 USDC de comisión más el gas. 500 − 50 = ~450 antes de gas."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  allCorrectLabel="✓ Todo correcto"
+/>
+
+### Cuándo importa
+
+Esta es la matemática que explica por qué el MEV es una mina de alto volumen y bajo margen. Cuando el capital es gratis, *todo el mundo* puede perseguir los mismos \$450, así que la ventaja se subasta a la baja hasta la astilla más fina que aún supere el gas y la comisión del préstamo. El ganador no es el más rico — es aquel cuyo bundle es más barato de ejecutar y más rápido de aterrizar.
+
+## Lo que la atomicidad NO os protege
+
+<MCQ
+  client:visible
+  pretest
+  question="Si vuestro bundle revierte porque una comprobación de beneficio falló, ¿qué os costó igualmente?"
+  options={[
+    { text: "Gas — pagáis por el cómputo aunque la operación se deshiciera y no produjera beneficio.", correct: true, explanation: "Correcto. Revertir reembolsa vuestras operaciones, no vuestro gas. Un intento fallido es un coste real, aunque pequeño — y se acumula cuando disparáis muchos intentos." },
+    { text: "Nada en absoluto — un revert es completamente gratis.", explanation: "El estado se deshace, pero la EVM igual os cobró por el trabajo que hizo antes de revertir. El gas se gasta de todas formas." },
+    { text: "Los 100.000 USDC completos de principal que pedisteis prestados.", explanation: "No — el flash loan también revierte, así que nunca debéis el principal. El coste de un bundle fallido es gas, no el préstamo." },
+  ]}
+/>
+
+Aquí es donde el exceso de confianza mata cuentas. Es tentador leer "atómico = todo revierte si no es rentable" como "**atómico = sin riesgo**". Eso solo es *medio* cierto, y la mitad que falta es donde los buscadores pierden dinero de verdad. La atomicidad es una fortaleza contra exactamente **un** peligro — el riesgo de inventario — y no ofrece nada contra los demás.
+
+Tres riesgos sobreviven enteros a la atomicidad:
+
+1. **Gas en un intento revertido.** Revertir reembolsa vuestras *operaciones*, no vuestro *gas*. Cada bundle fallido igual quema el gas gastado en computarlo. Disparad cien intentos especulativos que reviertan todos y habréis pagado cien facturas de gas por cero beneficio.
+2. **Superados en puja o no incluidos.** Un **constructor** (builder) de bloques elige qué bundles entran y en qué orden. Un competidor que ofrezca un pago más jugoso puede superaros, o el constructor puede simplemente dejar vuestro bundle fuera. La atomicidad garantiza que vuestro bundle es *correcto*, no que sea *elegido*.
+3. **La oportunidad se esfuma.** Si la transacción de un competidor aterriza *primero* y cambia el estado del pool, el hueco que apuntabais puede haber desaparecido para cuando se ejecute vuestro bundle. Vuestra comprobación de beneficio falla entonces — correctamente — y revertís, habiendo pagado gas para descubrir que la ventaja se evaporó.
+
+Así que la atomicidad mata el **riesgo de inventario** en seco. No hace **nada** contra el **riesgo de competencia** ni contra el **gas-al-fallar**. Confundir "mi operación no puede quedarse a medias" con "mi operación no puede perder" es el error clásico de novato.
+
+<Callout variant="warning" title="'Atómico' significa inventario seguro, no beneficio garantizado">
+Un bundle revertido no es un deshacer gratis. Igual pagáis gas, igual podéis ser superados en puja o excluidos por el constructor, y la oportunidad puede esfumarse antes de que vuestra transacción aterrice. La atomicidad elimina el riesgo de sujetar una posición a medias — no elimina el riesgo de *competencia* ni el coste de *intentarlo*. Presupuestad los intentos fallidos, porque habrá muchos.
+</Callout>
+
+<MCQ
+  client:visible
+  question="Un buscador envía 50 bundles en una hora. 45 revierten porque competidores más rápidos cambiaron antes el estado del pool; 5 tienen éxito. ¿Cuál es la descripción más precisa de los 45 reverts?"
+  options={[
+    { text: "Costaron gas pero ni principal ni inventario — un gasto real que el buscador debe cubrir con las 5 victorias.", correct: true, explanation: "Los reverts deshacen las operaciones y el préstamo, así que no se pierde inventario ni principal — pero se gasta gas en cada intento. Buscar con beneficio exige que las 5 victorias superen el gas de los 50 intentos." },
+    { text: "No costaron nada, así que solo importan las 5 victorias.", explanation: "Cada revert igual quemó gas. Ignorar el gas de los intentos fallidos es como una estrategia 'rentable' se desangra en silencio." },
+    { text: "Cada uno costó los 100.000 USDC completos del principal del flash loan.", explanation: "El flash loan revierte con el bundle, así que el principal nunca se pierde. En un revert solo se gasta gas." },
+  ]}
+/>
+
+### Cuándo importa
+
+Esta es la línea entre un buscador que sobrevive y uno que quiebra en silencio. El superviviente presupuesta el gas-al-fallar y la competencia, simula con agresividad antes de enviar para evitar bundles condenados, y solo dispara cuando la victoria esperada supera el coste esperado de intentarlo. "Es atómico, así que no puedo perder" es el epitafio de muchos bots muertos.
+
+## Repaso
+
+<MindMap
+  client:visible
+  title="Bundles atómicos y flash loans, en un mapa"
+  caption="De la ejecución todo-o-nada a lo que sí protege y lo que no."
+  outlineLabel="Esquema en texto"
+  root={{
+    label: 'Arbitraje atómico',
+    children: [
+      {
+        label: 'El bundle',
+        children: [
+          { label: 'Todos los tramos en una transacción' },
+          { label: 'Se ejecuta como unidad indivisible' },
+          { label: 'Comprobación fallida revierte todo' },
+          { label: 'Nunca atrapado sujetando inventario' },
+        ],
+      },
+      {
+        label: 'Flash loans',
+        children: [
+          { label: 'Pedir gran suma sin colateral' },
+          { label: 'Devolver antes de terminar la transacción' },
+          { label: 'Comisión típica 5 puntos básicos' },
+          { label: 'El capital deja de ser la barrera' },
+        ],
+      },
+      {
+        label: 'Ejemplo resuelto',
+        children: [
+          { label: 'Pedir 100000 USDC' },
+          { label: 'Bruto 500 del bucle' },
+          { label: 'Pagar 50 de comisión' },
+          { label: 'Unos 450 antes de gas' },
+        ],
+      },
+      {
+        label: 'Lo que no detiene',
+        children: [
+          { label: 'Gas en un intento revertido' },
+          { label: 'Superado o excluido por el constructor' },
+          { label: 'La oportunidad se esfuma antes' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Bundles atómicos y flash loans — comprobación final"
+  questions={[
+    {
+      question: "¿Qué garantiza empaquetar cada tramo de un arbitraje en una transacción atómica?",
+      options: [
+        { text: "O se ejecutan todos los tramos o todo revierte — nunca acabáis sujetando una operación a medias.", correct: true },
+        { text: "Cada tramo se liquida de forma independiente, así que un tramo uno exitoso queda asegurado aunque el tramo dos falle." },
+        { text: "La transacción está garantizada de ser incluida en el siguiente bloque." },
+      ],
+      explanation: "Atómico = indivisible. Una comprobación de beneficio fallida revierte cada tramo, así que no hay estado intermedio ni riesgo de inventario.",
+    },
+    {
+      question: "¿Qué describe mejor un flash loan?",
+      options: [
+        { text: "Un préstamo sin colateral que hay que devolver antes de que termine la misma transacción, o todo revierte.", correct: true },
+        { text: "Un préstamo con colateral que devolvéis a lo largo de varios bloques." },
+        { text: "Tokens recién acuñados que nunca tenéis que devolver." },
+      ],
+      explanation: "Sin colateral, devuelto dentro de la misma transacción o todo se deshace — por eso el prestamista no asume riesgo de impago.",
+    },
+    {
+      question: "Pidiendo 100.000 USDC y ejecutando un bucle del 0,5%, con una comisión de flash loan del 0,05%, ¿cuánto queda aproximadamente antes de gas?",
+      options: [
+        { text: "Unos 450 USDC", correct: true },
+        { text: "Unos 500 USDC" },
+        { text: "Unos 950 USDC" },
+      ],
+      explanation: "500 USDC brutos menos los 50 USDC de comisión (0,05% de 100.000) son unos 450 USDC antes de gas.",
+    },
+    {
+      question: "Con flash loans disponibles, ¿qué decide principalmente quién gana un arbitraje?",
+      options: [
+        { text: "Velocidad y calidad de búsqueda — el capital ya no es la barrera.", correct: true },
+        { text: "Quien tenga la mayor cartera por adelantado." },
+        { text: "Quien sujete el activo más tiempo entre bloques." },
+      ],
+      explanation: "El apalancamiento gratis borra el foso de capital, así que la ventaja se desplaza a detectar la oportunidad y aterrizar el bundle primero.",
+    },
+    {
+      question: "Vuestro bundle revierte porque un competidor cambió antes el estado del pool. ¿Qué os costó eso?",
+      options: [
+        { text: "Gas por el intento — pero ni principal ni inventario, ya que el préstamo y las operaciones se deshicieron.", correct: true },
+        { text: "Los 100.000 USDC completos del principal que pedisteis prestados." },
+        { text: "Nada en absoluto — los reverts son completamente gratis." },
+      ],
+      explanation: "Los reverts reembolsan las operaciones y el flash loan, pero la EVM igual cobra gas por el trabajo que hizo. Los intentos fallidos cuestan gas.",
+    },
+    {
+      question: "¿Qué riesgo elimina de verdad la atomicidad?",
+      options: [
+        { text: "El riesgo de inventario — quedarse atrapado sujetando una posición a medias.", correct: true },
+        { text: "El riesgo de competencia — ser superado en puja o excluido por el constructor." },
+        { text: "El gas-al-fallar — pagar por intentos que revierten." },
+      ],
+      explanation: "La atomicidad solo mata el riesgo de inventario. La competencia y el gas-al-fallar sobreviven enteros — 'atómico' no es 'sin riesgo'.",
+    },
+  ]}
+  questionLabel="Pregunta"
+  ofLabel="de"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  nextLabel="Siguiente"
+  backLabel="Atrás"
+/>

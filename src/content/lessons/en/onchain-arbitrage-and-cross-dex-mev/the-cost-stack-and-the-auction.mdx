@@ -1,0 +1,331 @@
+---
+title: "The Cost Stack & the Auction"
+description: "Gas, priority fees, the builder's cut and slippage; backrunning vs sandwiching; and the uncomfortable result that competition bids most of the arbitrage spread straight through to builders and validators."
+topic: "en/onchain-arbitrage-and-cross-dex-mev"
+order: 5
+minutes: 11
+updated: 2026-06-18
+---
+
+import { Callout, MCQ, FillBlank, Categorize, MatchConcepts, MindMap, Quiz, Reveal, BundleProfitSplit } from '@/components/react';
+
+You spotted a clean \$1000 mispricing across two pools. You build the bundle, it lands, it commits. Congratulations — you keep maybe a hundred of it. The rest evaporates into a stack of costs you half-forgot and an auction you didn't realize you were bidding in. This lesson is the part nobody puts on the highlight reel: the slow, undignified subtraction that turns "I found \$1000" into "I netted \$96."
+
+## The cost stack — gross spread is not profit
+
+<MCQ
+  client:visible
+  pretest
+  question="You find a gross arbitrage spread of 1000 USDC. Before anything else, what should you assume your take-home is?"
+  options={[
+    { text: "Less than 1000 — gas, the builder payment, and price impact all come out of it first.", correct: true, explanation: "Right. Gross is the headline; net is what survives the deductions. Treating gross as profit is how searchers go broke confidently." },
+    { text: "Exactly 1000 — that's the whole point of finding the spread.", explanation: "Gross is the opportunity, not the paycheck. Every cost below chews into it." },
+    { text: "More than 1000, once you add the priority fee rebate.", explanation: "There's no rebate. The priority fee is money you pay out, not money you get back." },
+  ]}
+/>
+
+Think of the gross spread as a restaurant's menu price and your net as what's in your pocket after tax, tip, and the parking ticket you got walking in. The number on the menu was never the number you keep.
+
+Here's the full subtraction, top to bottom:
+
+1. **Slippage / price impact** — your own trade moves the pool price against you. The bigger your size, the worse the fill. This is already *baked into* the realized spread: when we say "gross of \$1000 after slippage," we mean the spread you can actually execute, not the dreamy mid-price you saw on a chart.
+2. **Gas** — the EVM charges you for computation **whether you win or lose**. Land the bundle: you pay gas. Get front-run and revert: you *still* pay gas. It's the cover charge.
+3. **Priority fee / builder payment** — the bribe. To get included *and ordered correctly* (your backrun must land right after the trade it targets), you pay the block builder. This is the big, variable one, and the next two sections are entirely about how brutal it gets.
+
+The formula is just honest bookkeeping:
+
+$$\text{net} = \text{gross} - \text{slippage} - \text{gas} - \text{builder payment}$$
+
+A worked stack on a \$1000 gross opportunity:
+
+| Line item | Amount | Running total |
+|---|---|---|
+| Gross spread (already after slippage) | +\$1000 | \$1000 |
+| Gas (paid win or lose) | −\$40 | \$960 |
+| Builder payment (priority fee) | −\$864 | \$96 |
+| **Net to searcher** | | **\$96** |
+
+You found a thousand. You keep ninety-six. Welcome to arbitrage.
+
+<Callout variant="warning" title="Gas is sunk — even on a loss">
+The seductive mistake is modeling gas as "a cost of winning." It isn't. You pay gas on every reverted attempt too. A searcher who tries ten bundles and lands two has paid gas ten times. Price your edge against *attempts*, not wins, or the cost stack will quietly bury you.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Order the cost stack correctly."
+  text="Starting from the gross spread, you subtract {{slippage|the builder payment|gas}} (already folded into the realized spread), then {{gas|the builder payment|slippage}} (paid win or lose), then {{the builder payment|gas|slippage}} (the bribe for inclusion and correct ordering) to reach your net."
+  explanation="Slippage is already inside the realized spread; gas is the unconditional cover charge; the builder payment is the variable bribe that the auction inflates."
+  instructions="Choose the correct option for each blank and check."
+/>
+
+### When it matters
+
+Always — but most of all when your gross edge is thin. A \$1000 spread can absorb \$40 of gas and shrug. A \$50 spread cannot: gas alone might revert it into a loss. The cost stack is the difference between an opportunity and a trap, and the thinner the spread, the more the stack decides your fate.
+
+## Backrunning vs sandwiching
+
+<MCQ
+  client:visible
+  pretest
+  question="A searcher lands a transaction right AFTER a big swap to buy the now-cheaper token and rebalance the pools. Who gets hurt?"
+  options={[
+    { text: "Nobody specific — it just realigns prices that the big swap knocked out of line.", correct: true, explanation: "Correct. A benign backrun feeds on a misalignment that already exists; it doesn't worsen anyone's trade. The original swapper already got their fill." },
+    { text: "The big swapper — the backrun retroactively worsens their fill.", explanation: "The swapper's fill is already settled. A pure backrun lands after them and can't reach back to change their price." },
+    { text: "All later traders, who now face a worse price.", explanation: "Backrunning pushes prices back toward fair value across venues — if anything it improves the market for later traders." },
+  ]}
+/>
+
+Both backrunning and sandwiching are about **where you stand in line** relative to someone else's trade. The difference is whether you're a scavenger or a mugger.
+
+**Backrunning** = you land **immediately after** the trade or block that created a misalignment. Cross-DEX arbitrage is the textbook **benign backrun**: a whale dumps ETH on pool A, knocking it below pool B's price; you follow with a buy-low-on-A, sell-high-on-B loop that drags the two pools back into alignment. You harmed *no specific user*. The whale already got their fill; you just cleaned up the price gap they left behind, the way a janitor follows the parade. This is why **arbitrage searchers are mostly backrunners** — and why arbitrage is generally considered the *good* MEV.
+
+**Sandwiching** = you wrap a victim's pending swap with two of your own. You buy in front (pushing the price up), let the victim execute at the worse price *you just created*, then sell behind them for profit. Recall from the MEV & ordering lessons: this is the classic *harmful* MEV — the victim's slippage is the attacker's revenue. You didn't find a misalignment; you *manufactured* one at someone's expense.
+
+| | Backrun (arbitrage) | Sandwich |
+|---|---|---|
+| Position relative to target | After only | Before **and** after |
+| Source of profit | A misalignment that already existed | Slippage forced onto the victim |
+| Who's harmed | No specific user | The wrapped swapper |
+| Reputation | Benign — realigns prices | Predatory — degrades a trade |
+
+<MatchConcepts
+  client:visible
+  question="Match each MEV behavior to its defining trait."
+  pairs={[
+    { term: "Benign backrun (arbitrage)", definition: "Lands only after the trade that caused a misalignment and harms no specific user." },
+    { term: "Sandwich attack", definition: "Wraps a victim's swap with a front and a back leg, profiting from forced slippage." },
+    { term: "Front-run leg of a sandwich", definition: "Buys ahead of the victim to push the execution price against them." },
+    { term: "Realignment effect", definition: "The price-correcting consequence of arbitrage that pulls venues back toward a common value." },
+  ]}
+  explanation="Arbitrage is an after-only backrun feeding on an existing gap; the sandwich brackets a victim and creates the gap it profits from."
+  checkLabel="Check"
+  retryLabel="Retry"
+  allCorrectLabel="✓ All correct"
+/>
+
+### When it matters
+
+It matters for both your strategy and your conscience. Benign backrunning is broadly tolerated and even encouraged — it makes markets more efficient — while sandwiching is increasingly detected, filtered, and punished by private orderflow and anti-MEV relays. Building a backrun-only arbitrage business keeps you on the side of the market that gets *welcomed* rather than blocked.
+
+## The auction bids your profit away
+
+<MCQ
+  client:visible
+  pretest
+  question="Ten searchers all spot the same 960-USDC post-gas opportunity. In a priority-gas auction, what happens to the priority fee they bid?"
+  options={[
+    { text: "It rises toward the full value of the opportunity, so the winner nets only the sliver above the runner-up's bid.", correct: true, explanation: "Exactly. Competition is an auction, and an auction's job is to extract the bidders' surplus. The profit flows to whoever sells the slot — the builder/validator." },
+    { text: "It stays near zero, because nobody wants to overpay.", explanation: "If the fee stayed low, a rival could outbid you and take the whole opportunity. Each searcher is forced to bid up to nearly their breakeven." },
+    { text: "It's capped by the protocol at a fixed maximum.", explanation: "There's no protocol cap on priority fees. The cap is economic — your own breakeven — and competition pushes everyone toward it." },
+  ]}
+/>
+
+When several searchers chase the *same* opportunity, they don't politely take turns. They bid against each other for the one block slot that captures it — a **priority-gas auction (PGA)**, or in proposer-builder separation (PBS) terms, a **block-space auction** run by the builder. And auctions do exactly what auctions are designed to do: they transfer the prize from the bidders to the seller. Here the seller is whoever orders the block.
+
+Picture an auction for a \$960 banknote where the only cost of bidding is the bid itself. A rational bidder will go to \$959. The next will go to \$959.50. The note sells for essentially \$960 — to the *auctioneer's* benefit — and the "winner" walks away with pennies. That auctioneer is the builder/validator, and the banknote is your post-gas spread.
+
+We capture this with a single dial, the **competition intensity** $\beta$ (between 0 and 1): the fraction of the post-gas profit that gets bid away to the builder/validator.
+
+$$\text{searcher net} = (\text{gross} - \text{gas})(1 - \beta) \qquad \text{builder/validator} = (\text{gross} - \text{gas})\,\beta$$
+
+- $\beta = 0$ — **monopoly**. You're the only one who saw it. You keep the entire post-gas profit.
+- $\beta = 0.5$ — you split the post-gas profit down the middle with the block.
+- $\beta \to 1$ — **perfect competition**. The fee is bid up to the full opportunity; your net collapses toward **zero** and the builder/validator pockets nearly all of it.
+
+Drag the dials below. Watch your green slice shrink as the auction heats up:
+
+<BundleProfitSplit client:visible unitSuffix=" USDC" />
+
+<Callout variant="warning" title="Competition is a cost you can't invoice">
+Gas and slippage feel like costs because you can see the line items. The auction cost is sneakier: it shows up as a *priority fee you chose to pay* — but you only "chose" it because a rival forced your hand. As more searchers run the same strategy, β creeps toward 1 and your edge silently bleeds upstream. The opportunity didn't get worse; the competition for it did.
+</Callout>
+
+<MCQ
+  client:visible
+  question="At β = 0.9 on a 960-USDC post-gas opportunity, who captures the larger share?"
+  options={[
+    { text: "The builder/validator — 0.9 of 960, about 864 USDC.", correct: true, explanation: "β is the builder's slice, so 0.9 × 960 ≈ 864 USDC to the block, leaving roughly 96 USDC for the searcher." },
+    { text: "The searcher — they did the work, so they keep the majority.", explanation: "Doing the work doesn't entitle you to the profit when an auction is reallocating it. At β = 0.9 the searcher keeps only (1 − 0.9) = 10% of the post-gas profit." },
+    { text: "They split it evenly at about 480 USDC each.", explanation: "An even split is β = 0.5. At β = 0.9 the builder takes nine-tenths of the post-gas profit." },
+  ]}
+/>
+
+### When it matters
+
+β is highest exactly where the money looks easiest: large, obvious, well-known spreads on liquid pairs that every bot already monitors. Those are the most competitive, so β sits near 1 and nets you almost nothing. The durable edge lives where β is *low* — opportunities others can't see (private orderflow, novel venues, faster detection) or can't reach (latency, exclusive relationships). Lowering your effective β beats chasing a bigger gross.
+
+## Worked: who keeps the 1000
+
+<MCQ
+  client:visible
+  pretest
+  question="Gross 1000 USDC after slippage, gas 40 USDC, β = 0.9. Roughly what does the searcher net?"
+  options={[
+    { text: "About 96 USDC.", correct: true, explanation: "Post-gas is 1000 − 40 = 960; the searcher keeps (1 − 0.9) × 960 ≈ 96 USDC. The other ~864 goes to the block." },
+    { text: "About 864 USDC.", explanation: "That's the builder/validator's cut (0.9 × 960), not the searcher's." },
+    { text: "About 960 USDC.", explanation: "960 is the post-gas total before the auction splits it. The searcher only keeps the 10% slice above their bid." },
+  ]}
+/>
+
+Let's run the canonical numbers end to end, so the punchline lands with arithmetic behind it.
+
+**Step 1 — gross after slippage.** The realized opportunity is **\$1000** (price impact already folded in).
+
+**Step 2 — subtract gas.** Gas is a fixed **\$40**, paid win or lose:
+
+$$\text{post-gas} = 1000 - 40 = 960$$
+
+**Step 3 — apply the auction at β = 0.9.** The builder/validator takes β of the post-gas profit:
+
+$$\text{builder/validator} = 960 \times 0.9 = 864$$
+
+**Step 4 — what's left for the searcher.** The remaining $(1 - \beta)$ slice:
+
+$$\text{searcher net} = 960 \times (1 - 0.9) = 960 \times 0.1 = 96$$
+
+| Who | Amount | Share of the original 1000 |
+|---|---|---|
+| Gas (burned/paid) | \$40 | 4% |
+| Builder / validator | \$864 | 86.4% |
+| **Searcher (you)** | **\$96** | **9.6%** |
+
+So of the \$1000 spread you *found*, you keep **\$96** — under a tenth. The block builder and validator — who did none of the searching and took none of the discovery risk — pocket **\$864** just for controlling the order of transactions.
+
+<Callout variant="info" title="This is a feature of competition, not a bug">
+It feels unfair, but it's exactly what a healthy auction should do: drive the price of a scarce resource (well-ordered block space) up to its value, and push easy profits toward whoever owns that resource. The lesson for searchers isn't "the system is rigged" — it's "compete where the auction is *thin*." If everyone can find the spread, the auction takes it. Your real product is finding spreads others can't.
+</Callout>
+
+<Categorize
+  client:visible
+  question="Sort each amount by where it lands in the canonical 1000-USDC example at β = 0.9."
+  buckets={['Searcher keeps', 'Goes upstream']}
+  items={[
+    { text: "About 96 USDC net", bucket: 'Searcher keeps' },
+    { text: "The (1 − β) slice of post-gas profit", bucket: 'Searcher keeps' },
+    { text: "864 USDC builder/validator payment", bucket: 'Goes upstream' },
+    { text: "40 USDC gas, paid win or lose", bucket: 'Goes upstream' },
+    { text: "The β share of the 960 post-gas profit", bucket: 'Goes upstream' },
+  ]}
+  explanation="Gas leaves you no matter what; the β slice of post-gas profit goes to the block. You keep only the thin (1 − β) remainder — about 96 of the original 1000."
+  checkLabel="Check"
+  retryLabel="Retry"
+  allCorrectLabel="✓ All correct"
+/>
+
+### When it matters
+
+This is the single most important reframe in on-chain arbitrage economics: **gross opportunity is not your business; net-after-auction is.** When you size a strategy, model β honestly for the venues you target. A \$1000 spread at β = 0.95 (\$48 net) is a worse business than a \$200 spread at β = 0.3 (\$112 net) — even though the first headline number is five times bigger. Chase low β, not big gross.
+
+## Recap
+
+<MindMap
+  client:visible
+  title="The cost stack and the auction"
+  caption="Gross is the menu price; net is what survives the deductions and the auction for block space."
+  outlineLabel="Text outline"
+  root={{
+    label: 'Cost stack and auction',
+    children: [
+      {
+        label: 'Cost stack',
+        children: [
+          { label: 'Slippage baked into gross' },
+          { label: 'Gas paid win or lose' },
+          { label: 'Builder payment is the bribe' },
+        ],
+      },
+      {
+        label: 'Backrun vs sandwich',
+        children: [
+          { label: 'Arbitrage is a benign backrun' },
+          { label: 'Lands after, harms no one' },
+          { label: 'Sandwich degrades a victim' },
+        ],
+      },
+      {
+        label: 'The auction',
+        children: [
+          { label: 'Searchers bid the fee up' },
+          { label: 'Competition intensity beta' },
+          { label: 'High beta means tiny net' },
+        ],
+      },
+      {
+        label: 'Who keeps the 1000',
+        children: [
+          { label: 'Gas takes 40' },
+          { label: 'Builder takes 864' },
+          { label: 'Searcher keeps 96' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="The cost stack and the auction — mixed recap"
+  questions={[
+    {
+      question: "Net profit on an arbitrage equals the gross spread minus which three things?",
+      options: [
+        { text: "Slippage, gas, and the builder payment.", correct: true },
+        { text: "Slippage, gas, and the flash-loan principal." },
+        { text: "Gas, the builder payment, and the validator's staking reward." },
+      ],
+      explanation: "Net = gross − slippage − gas − builder payment. The flash-loan principal is returned inside the bundle, not subtracted from profit.",
+    },
+    {
+      question: "Why is cross-DEX arbitrage considered a benign backrun rather than a harmful one?",
+      options: [
+        { text: "It lands after a trade that already created a misalignment and harms no specific user — it just realigns prices.", correct: true },
+        { text: "Because it always pays the victim a rebate for using their orderflow." },
+        { text: "Because it executes before any victim, so nobody is affected." },
+      ],
+      explanation: "A pure backrun follows the misaligning trade and corrects the price gap; it can't reach back to worsen anyone's already-settled fill.",
+    },
+    {
+      question: "In a priority-gas / PBS auction with many searchers chasing the same spread, the priority fee tends to...",
+      options: [
+        { text: "rise toward the full value of the opportunity, leaving the winner only a thin sliver.", correct: true },
+        { text: "fall toward zero as searchers cooperate to keep costs down." },
+        { text: "stay fixed because the protocol caps priority fees." },
+      ],
+      explanation: "Competing bidders push the fee up to near their breakeven; the auction transfers the surplus to the builder/validator who sells the slot.",
+    },
+    {
+      question: "With competition intensity β, the searcher's net on a post-gas profit P is...",
+      options: [
+        { text: "P × (1 − β).", correct: true },
+        { text: "P × β." },
+        { text: "P − β." },
+      ],
+      explanation: "β is the builder's slice, so the searcher keeps the complement, P × (1 − β). As β → 1, the searcher's net → 0.",
+    },
+    {
+      question: "Canonical example: gross 1000 USDC, gas 40 USDC, β = 0.9. The builder/validator takes about...",
+      options: [
+        { text: "864 USDC.", correct: true },
+        { text: "96 USDC." },
+        { text: "960 USDC." },
+      ],
+      explanation: "Post-gas is 960; the builder takes β × 960 = 0.9 × 960 ≈ 864 USDC, leaving roughly 96 USDC for the searcher.",
+    },
+    {
+      question: "Two strategies: a 1000-USDC gross spread at β = 0.95, or a 200-USDC gross spread at β = 0.3 (ignore gas). Which is the better business, and why?",
+      options: [
+        { text: "The 200 at β = 0.3 — it nets ~140 USDC versus ~50 USDC, because low competition beats big gross.", correct: true },
+        { text: "The 1000 at β = 0.95 — a bigger gross always wins regardless of β." },
+        { text: "They're identical, since net depends only on gross." },
+      ],
+      explanation: "Net = gross × (1 − β): 1000 × 0.05 = 50 vs 200 × 0.7 = 140. The thinner, less-contested spread is the better business. Chase low β, not big gross.",
+    },
+  ]}
+  questionLabel="Question"
+  ofLabel="of"
+  scoreLabel="Your score"
+  restartLabel="Restart"
+  nextLabel="Next"
+  backLabel="Back"
+/>
