@@ -1,0 +1,508 @@
+---
+title: "Adverse Selection & Glosten–Milgrom"
+description: "Why a spread exists even with zero inventory and zero cost: the Glosten–Milgrom model, Bayesian price discovery, toxicity measures, and maker defenses."
+topic: "en/high-frequency-market-making"
+order: 4
+minutes: 19
+updated: 2026-06-18
+---
+
+import { Callout, MCQ, Quiz, ThinkReveal, MatchConcepts, Categorize, FillBlank, MindMap, AdverseSelectionFlow, BayesGrid } from '@/components/react';
+
+Inventory risk is a worry. Order-processing cost is a nuisance. But the market maker's *deepest* enemy is none of those — it's the counterparty who simply knows more than you do. Every time someone hits your bid or lifts your offer, you have to ask the uncomfortable question: *did they trade because they need liquidity, or because they know which way the price is about to move?* In 1985, Glosten and Milgrom proved something startling: even if you had **zero inventory risk and zero costs**, you would *still* have to quote a spread — purely to survive the traders who know more. This lesson builds that model from scratch, with the Bayes arithmetic worked out to the penny.
+
+<MCQ
+  client:visible
+  pretest
+  question="Pretest. Imagine a frictionless world: no inventory limits, no exchange fees, no processing cost, infinite capital. Would a competitive market maker still quote a bid below the ask?"
+  options={[
+    { text: 'Yes — because a fraction of the order flow is informed, so a buy order is bad news and a sell order is good news; the spread is the only defense against trading with someone who knows the value', correct: true },
+    { text: 'No — with zero costs and zero inventory risk there is nothing left to charge for, so bid would equal ask' },
+    { text: 'No — spreads come entirely from exchange fees and clearing costs, which are zero here' },
+    { text: 'Yes, but only because the maker still wants a tip for providing the service' },
+  ]}
+  explanation="This is the whole point of Glosten–Milgrom. Even with no inventory and no costs, the spread survives — because order flow is informative. A buy is statistically more likely to come from someone who knows the value is high, so the competitive maker must sell above its prior mid (the ask) and buy below it (the bid). The spread exactly offsets expected losses to informed traders. Everything below makes this precise."
+/>
+
+## The two kinds of trader
+
+**Analogy.** You're selling a used car at a fixed price to whoever walks up. Some buyers are just regular people who happen to need a car today — they don't know more than you about this specific vehicle. But occasionally a mechanic walks up who can hear from the engine that the transmission is fine and worth more than your sticker price. The mechanic *only* buys when your price is too low. If you can't tell the mechanic from the regular buyer, you must raise your price a little for *everyone* to cover the times you get picked off by the expert. That premium is adverse selection.
+
+**Definition.** In market microstructure we split order flow into two populations:
+
+- **Informed traders** know the asset's true value $V$ before it's public. They buy only when $V$ is above the quoted price and sell only when it's below. They are *always* on the right side — the toxic flow.
+- **Uninformed traders** — also called **noise traders** or **liquidity traders** — trade for reasons unrelated to value: rebalancing, cash needs, hedging, index flows. They buy or sell roughly 50/50, independent of $V$. This is the benign flow the maker *wants*.
+
+The maker cannot see which type each order came from. It only sees the order. The entire game is inferring the type from the trade.
+
+<MatchConcepts
+  client:visible
+  question="Match each trader type to its defining behavior."
+  pairs={[
+    { term: 'Informed trader', definition: 'Knows V in advance; buys only when value exceeds price and sells only when value is below — always on the right side' },
+    { term: 'Noise / liquidity trader', definition: 'Trades for reasons unrelated to value (cash, hedging, rebalancing); buys or sells ~50/50' },
+    { term: 'Adverse selection', definition: 'The expected loss a maker suffers because the counterparty who chose to trade is, on net, better informed' },
+    { term: 'Toxic flow', definition: 'Order flow disproportionately likely to be informed and to move the price against the maker after the fill' },
+  ]}
+  explanation="Informed traders are the mechanic who only buys an underpriced car; noise traders are everyone else. Adverse selection is the cost of not being able to tell them apart, and toxic flow is the slice that's predominantly informed."
+/>
+
+## Why a market order is information
+
+**Analogy.** A poker player who suddenly shoves all-in is *telling* you something, even without showing cards. The action itself is a signal. A market order is the same: the *direction* of the trade is news, because the people most eager to trade in a given direction are disproportionately the ones who know it's the right direction.
+
+**The core insight.** A buy order is more likely to have come from an informed trader (who buys only when $V$ is high) than a sell order is. So:
+
+$$
+P(V = V_H \mid \text{buy}) > P(V = V_H) > P(V = V_H \mid \text{sell})
+$$
+
+A buy *raises* your belief that the value is high; a sell *lowers* it. The rational maker therefore must **sell higher than its prior mid** (the ask reflects "given that you're buying, value is probably high") and **buy lower than its prior mid** (the bid reflects "given that you're selling, value is probably low"). The gap between those two conditional expectations *is* the spread — and it exists with no inventory and no cost.
+
+<ThinkReveal
+  client:visible
+  eyebrow="Think first"
+  prompt="Before any model: why should the ask be ABOVE the unconditional mid E[V], rather than equal to it?"
+  hint="The ask is the price at which you sell. Who is on the other side of your sale? Condition on the fact that they chose to buy."
+  text="Because the only people who fill your ask are people who chose to BUY, and buyers are disproportionately informed traders who know the value is high. So the relevant expectation is not E[V] but E[V | buy], which is strictly greater than E[V]. If you quoted the ask at the unconditional mid, you'd sell at a price below what the value is — conditional on someone wanting it — and lose money on average. The ask must equal E[V | buy] to break even."
+/>
+
+## The Glosten–Milgrom model setup
+
+**Definition.** The model is the cleanest possible world for isolating adverse selection:
+
+- True value is binary: $V \in \{V_H, V_L\}$ with $V_H > V_L$.
+- A prior $P(V = V_H) = \theta$ (often $\theta = \tfrac{1}{2}$).
+- A fraction $\alpha$ of arriving traders are **informed** (they know $V$); the remaining $1 - \alpha$ are **noise** traders who buy or sell with probability $\tfrac12$ each.
+- Trades are unit size, one at a time. The maker is **competitive** and risk-neutral, so it earns **zero expected profit** on each trade (Bertrand competition drives any positive margin to zero).
+
+The zero-profit condition pins the quotes exactly:
+
+$$
+\text{ask} = E[V \mid \text{buy}], \qquad \text{bid} = E[V \mid \text{sell}]
+$$
+
+The maker sells at the value *conditional on a buy arriving* and buys at the value *conditional on a sell arriving*. No fudge factor, no cost markup — those conditional expectations are the whole price.
+
+**Order probabilities.** An informed trader buys iff $V = V_H$ and sells iff $V = V_L$. A noise trader is 50/50. So:
+
+$$
+P(\text{buy} \mid V_H) = \alpha\cdot 1 + (1-\alpha)\cdot\tfrac12 = \tfrac12 + \tfrac{\alpha}{2}
+$$
+$$
+P(\text{buy} \mid V_L) = \alpha\cdot 0 + (1-\alpha)\cdot\tfrac12 = \tfrac12 - \tfrac{\alpha}{2}
+$$
+
+A buy is more likely when the value is high — by exactly $\alpha$. That $\alpha$ gap is the entire engine of the spread.
+
+<MCQ
+  client:visible
+  question="In the Glosten–Milgrom setup, what does the competitive (zero-profit) condition force the ask to equal?"
+  options={[
+    { text: 'E[V | buy] — the expected value conditional on a buy order arriving', correct: true },
+    { text: 'E[V] — the unconditional prior mean of the value' },
+    { text: 'V_H — the high value, since only optimists buy' },
+    { text: 'E[V] plus the order-processing cost per trade' },
+  ]}
+  explanation="Competition drives expected profit per trade to zero. The maker only sells when someone buys, so the relevant expectation conditions on a buy: ask = E[V | buy]. Symmetrically, bid = E[V | sell]. There is no cost term — that's the point of the model."
+/>
+
+## Worked example: computing the spread to the penny
+
+Let's nail down every number. Take:
+
+$$
+V_H = 110, \quad V_L = 90, \quad \theta = P(V_H) = 0.5, \quad \alpha = 0.4
+$$
+
+So the prior mid is $E[V] = 0.5(110) + 0.5(90) = 100$, and the value is uncertain by $V_H - V_L = 20$.
+
+**Step 1 — order probabilities.**
+
+$$
+P(\text{buy} \mid V_H) = \tfrac12 + \tfrac{0.4}{2} = 0.7, \qquad P(\text{buy} \mid V_L) = \tfrac12 - \tfrac{0.4}{2} = 0.3
+$$
+
+**Step 2 — unconditional probability of a buy** (law of total probability):
+
+$$
+P(\text{buy}) = \theta\,P(\text{buy}\mid V_H) + (1-\theta)\,P(\text{buy}\mid V_L) = 0.5(0.7) + 0.5(0.3) = 0.5
+$$
+
+**Step 3 — posterior after a buy** (Bayes):
+
+$$
+P(V_H \mid \text{buy}) = \frac{P(\text{buy}\mid V_H)\,\theta}{P(\text{buy})} = \frac{0.7 \times 0.5}{0.5} = \frac{0.35}{0.5} = 0.7
+$$
+
+**Step 4 — the ask** $= E[V \mid \text{buy})$:
+
+$$
+\text{ask} = 0.7(110) + 0.3(90) = 77 + 27 = 104
+$$
+
+**Step 5 — the bid.** By symmetry, $P(\text{sell}) = 0.5$ and $P(V_H \mid \text{sell}) = \frac{0.3 \times 0.5}{0.5} = 0.3$, so:
+
+$$
+\text{bid} = E[V \mid \text{sell}] = 0.3(110) + 0.7(90) = 33 + 63 = 96
+$$
+
+**Step 6 — the spread:**
+
+$$
+\text{spread} = \text{ask} - \text{bid} = 104 - 96 = 8
+$$
+
+The mid stays at $\tfrac{104+96}{2} = 100$, equal to the prior — symmetric prior, symmetric quotes. The full picture in one table:
+
+| Quantity | Formula | Value |
+|---|---|---|
+| Prior mid $E[V]$ | $\theta V_H + (1-\theta)V_L$ | 100 |
+| $P(\text{buy}\mid V_H)$ | $\tfrac12 + \tfrac{\alpha}{2}$ | 0.70 |
+| $P(\text{buy}\mid V_L)$ | $\tfrac12 - \tfrac{\alpha}{2}$ | 0.30 |
+| $P(\text{buy})$ | $\theta\,P(b\mid H) + (1-\theta)P(b\mid L)$ | 0.50 |
+| $P(V_H \mid \text{buy})$ | Bayes | 0.70 |
+| **Ask** $=E[V\mid\text{buy}]$ | $P(V_H\mid b)V_H + P(V_L\mid b)V_L$ | **104** |
+| **Bid** $=E[V\mid\text{sell}]$ | symmetric | **96** |
+| **Spread** | ask − bid | **8** |
+
+With a symmetric prior ($\theta = \tfrac12$) this collapses to a beautiful shortcut: $\text{spread} = \alpha\,(V_H - V_L) = 0.4 \times 20 = 8$. The spread is the informed fraction times the value uncertainty. Pure adverse selection, no cost anywhere.
+
+This Bayes update is exactly the natural-frequency picture — drag the sliders to see the posterior $P(V_H \mid \text{buy})$ move (base rate = prior $\theta$, "sensitivity" = $P(\text{buy}\mid V_H)=0.7$, "false-positive" = $P(\text{buy}\mid V_L)=0.3$, and the headline posterior reads 70%):
+
+<BayesGrid
+  client:visible
+  title="A buy order updates the maker's belief"
+  baseRateLabel="Prior P(V_H)"
+  sensitivityLabel="P(buy | V_H)"
+  falsePositiveLabel="P(buy | V_L)"
+  truePositiveLabel="High value & a buy arrives"
+  falsePositiveBucketLabel="Low value & a buy arrives"
+  falseNegativeLabel="High value & a sell arrives"
+  trueNegativeLabel="Low value & a sell arrives"
+  posteriorLabel="P(V_H | buy)"
+  populationLabel="possible worlds"
+  baseRate={0.5}
+  sensitivity={0.7}
+  falsePositiveRate={0.3}
+  caption="Set the prior to 50%, P(buy | V_H) to 70% and P(buy | V_L) to 30% to match the worked example: of all worlds where a buy arrives, 70% have the high value — so the posterior P(V_H | buy) is 0.70, which prices the ask at 104. Crank the prior down and you'll see how a surprising buy moves belief even more."
+/>
+
+<FillBlank
+  client:visible
+  question="Lock in the arithmetic of the worked example."
+  text="With a symmetric prior, the Glosten–Milgrom spread equals the informed fraction times the value uncertainty: alpha × (V_H − V_L) = 0.4 × 20 = {{8|4|20|2}}, so the ask sits at 104 and the bid at {{96|100|104|90}}."
+  explanation="spread = α(V_H − V_L) = 0.4 × 20 = 8. The symmetric prior keeps the mid at 100, so the ask is 100 + 4 = 104 and the bid is 100 − 4 = 96."
+/>
+
+## The spread as a pure adverse-selection premium
+
+**Analogy.** Insurance has three pieces in a premium: the cost of running the office (processing), a buffer for unlucky claim clusters (inventory/risk), and the expected payout itself (adverse selection — the policyholders who buy *because* they expect to claim). Even a magically free, infinitely-capitalized insurer must still charge the third piece, or it loses money to the people who know they'll claim. Glosten–Milgrom is that third piece in isolation.
+
+**The decomposition link.** A real quoted spread bundles three classic components:
+
+| Component | What it pays for | Present in Glosten–Milgrom? |
+|---|---|---|
+| **Order-processing** | Exchange fees, tech, clearing, the cost of doing business | No — assumed zero |
+| **Inventory** | Variance/financing of carrying an unwanted position | No — risk-neutral, no inventory limits |
+| **Adverse selection** | Expected loss to better-informed counterparties | **Yes — the entire spread** |
+
+In the worked example, the maker has zero inventory cost and zero processing cost, yet quotes a spread of 8. That 8 is *exactly* the expected loss to the informed. Check the balance: against a noise trader the maker earns the half-spread (4) regardless of side; against an informed trader the maker loses the full move. The zero-profit condition guarantees those net to zero — the spread is calibrated precisely so the half-spread harvested from noise flow pays back the losses to informed flow.
+
+<Categorize
+  client:visible
+  question="Sort each statement by which spread component it describes."
+  buckets={["Order-processing", "Inventory", "Adverse selection"]}
+  items={[
+    { label: 'Cost of exchange fees, colocation, and clearing per trade', bucket: 'Order-processing' },
+    { label: 'Compensation for carrying an unwanted position whose value can drift', bucket: 'Inventory' },
+    { label: 'Expected loss to counterparties who knew the value before you did', bucket: 'Adverse selection' },
+    { label: 'The only component that survives in a frictionless Glosten–Milgrom world', bucket: 'Adverse selection' },
+    { label: 'Grows with your position limit being binding and with volatility of inventory value', bucket: 'Inventory' },
+    { label: 'Vanishes if trades were free and instant but information were symmetric', bucket: 'Adverse selection' },
+  ]}
+  explanation="Glosten–Milgrom strips away processing and inventory and shows the spread persists on adverse selection alone. The last item is subtle: even free, instant trading can't kill the spread — only making information symmetric (α = 0) can, since then spread = α(V_H − V_L) = 0."
+/>
+
+## Bayesian price discovery: how information enters prices
+
+**Analogy.** A detective doesn't learn the culprit from one clue; each clue nudges the suspect list until the picture sharpens. The maker is the detective and each trade is a clue. After every trade, the maker treats its posterior as the *new prior* and re-quotes. Buys ratchet the mid up; sells ratchet it down; over many trades the mid converges to the true $V$. **This is the mechanism by which private information becomes public price.**
+
+**Definition.** After observing a trade, the maker's posterior becomes its new belief, and the next mid is the new $E[V]$. Continue from the example: a buy just arrived, so the posterior is now $P(V_H) = 0.7$. The mid jumps from 100 to $E[V] = 0.7(110)+0.3(90) = 104$. The next quotes are recomputed *around 104*. If another buy arrives, the posterior climbs again toward 1 and the mid toward 110; a sell pulls it back. Walk the chain:
+
+| Trade # | Event | Posterior $P(V_H)$ | New mid $E[V]$ |
+|---|---|---|---|
+| start | — | 0.50 | 100.0 |
+| 1 | buy | 0.70 | 104.0 |
+| 2 | buy | $\frac{0.7\times0.7}{0.7\times0.7+0.3\times0.3}=0.845$ | 106.9 |
+| 3 | sell | $\frac{0.845\times0.3}{0.845\times0.3+0.155\times0.7}\approx0.700$ | 104.0 |
+
+(Each update reuses $P(\text{buy}\mid V_H)=0.7$, $P(\text{buy}\mid V_L)=0.3$, and the flipped values for a sell.) If $V$ is truly $V_H$, buys outnumber sells in the long run and the mid drifts to 110; the informed traders' edge is *competed away* as the price catches up to what they knew. That convergence is the social function of markets — and the source of the maker's pain.
+
+The same tension drives the maker's economics: it earns the half-spread from noise flow but bleeds to informed flow. Drag the sliders to feel the trade-off (informed share = $\alpha$; widen the spread and the maker survives more toxicity):
+
+<AdverseSelectionFlow
+  client:visible
+  title="The maker earns from noise, bleeds to the informed"
+  caption="Every uninformed fill pays the half-spread; every informed fill hands over a bigger move. Push the informed share up and the net edge collapses — the only defense is a wider spread, exactly as Glosten–Milgrom predicts. The break-even informed share is where the harvested half-spread just covers the losses to the informed."
+/>
+
+<MCQ
+  client:visible
+  question="In Glosten–Milgrom, what happens to the maker's quoted mid after it observes a buy order?"
+  options={[
+    { text: 'It rises, because a buy raises the posterior probability that V = V_H; the maker re-quotes around the new, higher expected value', correct: true },
+    { text: 'It stays fixed, because the maker already priced all information into the prior mid' },
+    { text: 'It falls, because a buy means the maker is now short and must mark down to attract a seller' },
+    { text: 'It rises only if the buyer is verified to be informed' },
+  ]}
+  explanation="A buy is evidence the value is high, so the posterior P(V_H) increases and the mid moves up. The maker never verifies anyone's type — it can't — it just updates on the action. Repeated trades push the mid toward the true V, which is how private information becomes public price."
+/>
+
+## Comparative statics: what widens the spread
+
+**Definition.** With a symmetric prior the spread is $\alpha(V_H - V_L)$, so two levers move it:
+
+- **More informed flow ($\uparrow \alpha$):** a higher fraction of toxic counterparties means each fill is more dangerous, so the spread widens linearly in $\alpha$.
+- **More value uncertainty ($\uparrow (V_H - V_L)$):** when the two possible values are further apart, being picked off costs more, so the spread widens proportionally.
+
+| Scenario | $\alpha$ | $V_H - V_L$ | Spread $=\alpha(V_H-V_L)$ |
+|---|---|---|---|
+| Base case | 0.40 | 20 | 8.0 |
+| Twice as much informed flow | 0.80 | 20 | 16.0 |
+| Twice the uncertainty (e.g. pre-earnings) | 0.40 | 40 | 16.0 |
+| Calm, mostly retail flow | 0.10 | 20 | 2.0 |
+| Pure noise (no informed traders) | 0.00 | 20 | **0.0** |
+
+The last row is the punchline: with $\alpha = 0$, the spread is *zero*. No informed traders means no adverse selection means no reason for a frictionless maker to charge anything. Conversely, the spread blows out exactly when you'd expect markets to get thin — around news, earnings, and volatility spikes, where both $\alpha$ and $(V_H - V_L)$ jump at once.
+
+<MCQ
+  client:visible
+  allowMultiple
+  question="Select EVERY change that widens the Glosten–Milgrom spread (symmetric prior). Choose all that apply."
+  options={[
+    { text: 'A larger fraction α of informed traders in the flow', correct: true },
+    { text: 'A wider gap V_H − V_L between the possible values (more uncertainty)', correct: true },
+    { text: 'An impending earnings release that raises both α and the value spread', correct: true },
+    { text: 'Lower exchange fees', },
+    { text: 'A faster matching engine that processes orders more cheaply', },
+  ]}
+  explanation="Spread = α(V_H − V_L). Both more informed flow and more value uncertainty widen it, and an earnings event raises both at once. Fees and processing speed are absent from the model — they're the order-processing component, not adverse selection, so they don't move this spread at all."
+/>
+
+## Measuring toxicity in practice
+
+**Analogy.** A casino watches for card counters with cameras and pit bosses; a maker watches for informed flow with statistics. You can't see intent, so you estimate it.
+
+**The practical measures** (brief, expert-level):
+
+- **PIN (Probability of Informed Trading).** From Easley–O'Hara, PIN estimates the share of trades that are information-based by fitting a model to the daily imbalance of buys vs. sells. Roughly $\text{PIN} = \frac{\alpha\mu}{\alpha\mu + 2\varepsilon}$, where $\alpha$ is the probability of an information event, $\mu$ the informed arrival rate, and $\varepsilon$ the uninformed rate. It's a slow, daily-frequency gauge.
+- **VPIN (Volume-Synchronized PIN).** A high-frequency cousin that buckets trades by *volume* rather than clock time and measures order-flow imbalance within each bucket. VPIN spiked notably before the 2010 Flash Crash and is used as a real-time **order-flow toxicity** alarm.
+- **Markouts.** The most practical, model-free measure: mark each fill against the mid a few seconds/minutes later. If the price systematically moves against the maker post-fill, that drift *is* the realized adverse selection — the empirical face of the $A$ term from the P&L lesson. Markouts turn the abstract $\alpha$ into a dollar number per fill.
+
+<MCQ
+  client:visible
+  question="What does a consistently negative short-horizon markout (e.g. price 5 seconds after each fill moving against the maker) directly measure?"
+  options={[
+    { text: 'Realized adverse selection — the empirical cost of trading with better-informed counterparties', correct: true },
+    { text: 'The order-processing component of the spread' },
+    { text: 'The exchange rebate the maker earned on the fill' },
+    { text: 'Inventory financing cost over the holding period' },
+  ]}
+  explanation="A markout is the post-fill price drift relative to the mid at fill time. Systematic adverse drift is the realized, dollar-denominated version of adverse selection — the same A term decomposed in the P&L lesson, now measured directly from the tape rather than modeled."
+/>
+
+## The maker's defenses
+
+**Definition.** Once you can estimate toxicity, you act on it. The defensive toolkit:
+
+1. **Widen the spread with toxicity.** Higher estimated $\alpha$ → quote a bigger spread, exactly as $\alpha(V_H - V_L)$ prescribes. The first and bluntest lever.
+2. **Cut quoted size.** If the flow is toxic, post less depth so each adverse fill costs fewer shares.
+3. **Skew quotes away from toxic flow.** If buys are arriving informed, lift the ask and pull the bid back so you're less likely to be the one selling into a rising market.
+4. **Pull quotes entirely.** Around scheduled news or when VPIN spikes, the right spread can be effectively infinite — so step out of the market until the dust settles.
+5. **Seek uninformed flow.** The structural defense: route to or pay for **retail** order flow, which is overwhelmingly noise. This is the economic engine behind the maker-taker rebate model and payment for order flow (PFOF) — covered in the next lesson.
+
+<MatchConcepts
+  client:visible
+  question="Match each defense to the problem it solves."
+  pairs={[
+    { term: 'Widen the spread', definition: 'Directly charges more per fill when estimated informed fraction α rises' },
+    { term: 'Cut quoted size', definition: 'Limits how many shares each toxic fill can hit' },
+    { term: 'Skew quotes', definition: 'Tilts bid/ask away from the side that is arriving informed' },
+    { term: 'Pull quotes', definition: 'Exits entirely around scheduled news when no finite spread is safe' },
+    { term: 'Seek retail flow', definition: 'Structurally raises the noise share by sourcing benign, uninformed orders' },
+  ]}
+  explanation="The first four are tactical responses to measured toxicity; the fifth is strategic — change the population of who trades against you. Paying for retail flow is the cleanest way to raise 1 − α, which is exactly why PFOF and maker-taker rebates exist (next lesson)."
+/>
+
+## Misconception: "the spread is just a transaction fee"
+
+<Callout variant="warning" title="The spread is not a fee — it's mostly an insurance premium">
+The intuitive story is that the spread is the maker's *commission* for matching buyers and sellers — a service charge. Glosten–Milgrom shows that's largely wrong. In the model there is **no fee, no cost, no service charge** — and the spread is still 8. The spread is overwhelmingly **compensation for adverse selection**: the maker's expected loss to traders who know more. Treat it as a fee and you'll mis-predict everything — you'd expect spreads to track processing costs (they don't) instead of tracking *information asymmetry and volatility* (they do, tightly). Spreads gap out before earnings not because matching got expensive, but because the flow got dangerous.
+</Callout>
+
+<MCQ
+  client:visible
+  question="Why is 'the spread is just a transaction fee for the matching service' a poor model of the bid-ask spread?"
+  options={[
+    { text: 'Because a frictionless maker with zero costs still quotes a positive spread — the spread is mainly compensation for adverse selection, which tracks information asymmetry and volatility, not service cost', correct: true },
+    { text: 'Because spreads are actually set by regulators, not makers' },
+    { text: 'Because the spread is always exactly equal to the exchange fee' },
+    { text: 'Because makers never actually capture the spread, so calling it a fee is meaningless' },
+  ]}
+  explanation="Glosten–Milgrom is the counterexample: zero costs, positive spread. Empirically spreads widen with volatility and around news (rising α and value uncertainty), not with processing costs. The spread is mostly an adverse-selection premium — an insurance charge against informed flow — not a service fee."
+/>
+
+## Recap
+
+<MindMap
+  client:visible
+  title="Adverse selection & Glosten–Milgrom"
+  caption="The spread can exist on adverse selection alone — and that's how prices discover value."
+  root={{
+    label: 'Adverse Selection',
+    children: [
+      {
+        label: 'Two traders',
+        children: [
+          { label: 'Informed: know V, always right side' },
+          { label: 'Noise: trade ~50/50, value-blind' },
+        ],
+      },
+      {
+        label: 'Core insight',
+        children: [
+          { label: 'A trade is information' },
+          { label: 'Buy → value likely high; sell → low' },
+        ],
+      },
+      {
+        label: 'Glosten–Milgrom',
+        children: [
+          { label: 'ask = E[V | buy], bid = E[V | sell]' },
+          { label: 'Symmetric prior: spread = α(V_H − V_L)' },
+          { label: 'Zero cost, zero inventory — spread still > 0' },
+        ],
+      },
+      {
+        label: 'Price discovery',
+        children: [
+          { label: 'Posterior becomes new prior' },
+          { label: 'Buys ratchet mid up, sells down → mid → V' },
+        ],
+      },
+      {
+        label: 'Comparative statics',
+        children: [
+          { label: '↑α → wider spread' },
+          { label: '↑(V_H − V_L) → wider spread' },
+        ],
+      },
+      {
+        label: 'Toxicity & defense',
+        children: [
+          { label: 'Measure: PIN, VPIN, markouts' },
+          { label: 'Defend: widen, cut size, skew, pull, seek retail' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  questions={[
+    {
+      question: 'What is the single force that produces the spread in the Glosten–Milgrom model?',
+      options: [
+        { text: 'Adverse selection — a fraction of order flow is informed, so trades are informative', correct: true },
+        { text: 'Inventory risk from holding unwanted positions' },
+        { text: 'Order-processing costs like exchange fees' },
+        { text: 'The maker’s desired profit margin' },
+      ],
+      explanation: 'The model deliberately zeroes out inventory and processing. The spread survives purely because order flow is informative — adverse selection.',
+    },
+    {
+      question: 'Numeric. V_H = 110, V_L = 90, prior P(V_H) = 0.5, informed fraction α = 0.5. With a symmetric prior, what is the spread?',
+      options: [
+        { text: '10', correct: true },
+        { text: '8' },
+        { text: '20' },
+        { text: '5' },
+      ],
+      explanation: 'spread = α(V_H − V_L) = 0.5 × (110 − 90) = 0.5 × 20 = 10. (Check: P(buy | V_H) = 0.75, P(buy | V_L) = 0.25, P(buy) = 0.5, posterior 0.75, ask = 0.75·110 + 0.25·90 = 105, bid = 95, spread = 10.)',
+    },
+    {
+      question: 'After the maker observes a SELL order, how does its quoted mid move and why?',
+      options: [
+        { text: 'Down — a sell raises the posterior that V = V_L, so the maker re-quotes around a lower expected value', correct: true },
+        { text: 'Up — a sell means the maker is now long and marks up to attract a buyer' },
+        { text: 'It does not move — the prior already reflects all information' },
+        { text: 'Down only if the seller proves they are informed' },
+      ],
+      explanation: 'A sell is evidence the value is low, lowering the posterior P(V_H) and the mid. Repeated sells push the mid toward V_L. The maker never verifies type; it updates on the action.',
+    },
+    {
+      question: 'Which pair of changes would BOTH widen the spread?',
+      options: [
+        { text: 'A higher informed fraction α and a wider value gap V_H − V_L', correct: true },
+        { text: 'Lower exchange fees and a faster matching engine' },
+        { text: 'A higher prior P(V_H) and a lower informed fraction' },
+        { text: 'More noise traders and less value uncertainty' },
+      ],
+      explanation: 'Spread = α(V_H − V_L), so raising either α or the value gap widens it. Fees and engine speed are outside the model; more noise flow and less uncertainty would tighten the spread.',
+    },
+    {
+      question: 'A maker computes that fills are followed, 10 seconds later, by an average mid move of −3 cents against its position. What is this measuring?',
+      options: [
+        { text: 'Realized adverse selection (a markout) — the empirical dollar cost of informed flow', correct: true },
+        { text: 'The maker’s rebate income per fill' },
+        { text: 'The order-processing component of the spread' },
+        { text: 'The risk-free financing rate on inventory' },
+      ],
+      explanation: 'A markout is post-fill mid drift. Systematic adverse drift is realized adverse selection — the same A term from the P&L lesson, measured directly from the tape.',
+    },
+    {
+      question: 'In the model, what is the maker’s expected profit on each individual trade, and why?',
+      options: [
+        { text: 'Zero — competition forces the quotes to E[V | buy] and E[V | sell], leaving no expected margin', correct: true },
+        { text: 'Exactly half the spread, captured on every fill' },
+        { text: 'The full spread, since it buys low and sells high' },
+        { text: 'Negative, because the informed always win' },
+      ],
+      explanation: 'The competitive zero-profit condition is what pins the quotes. The half-spread earned on noise flow exactly offsets the losses to informed flow, netting to zero in expectation.',
+    },
+    {
+      question: 'If α = 0 (no informed traders at all), what does the frictionless Glosten–Milgrom spread equal?',
+      options: [
+        { text: 'Zero — with no adverse selection and no costs, there is nothing to charge for', correct: true },
+        { text: 'Still positive, because the maker needs a profit margin' },
+        { text: 'Equal to V_H − V_L, the full value uncertainty' },
+        { text: 'Undefined, because the model breaks down' },
+      ],
+      explanation: 'spread = α(V_H − V_L) = 0 × 20 = 0. No informed flow means no adverse selection, and the model has no other cost — so a competitive maker quotes a zero spread.',
+    },
+    {
+      question: 'Why does paying for retail order flow help a market maker, in Glosten–Milgrom terms?',
+      options: [
+        { text: 'Retail flow is overwhelmingly uninformed, so it raises 1 − α (the noise share) and lowers adverse selection', correct: true },
+        { text: 'Retail traders pay higher fees, directly funding the spread' },
+        { text: 'Retail flow is more volatile, which the maker prefers' },
+        { text: 'It lets the maker see V before everyone else' },
+      ],
+      explanation: 'Sourcing benign retail flow lowers the effective informed fraction α, which tightens required spreads and improves the maker’s edge. This is the economic basis for PFOF and maker-taker rebates — the next lesson.',
+    },
+  ]}
+/>
+
+## Key Takeaways
+
+<Callout variant="success" title="What to remember">
+- **The spread can exist on adverse selection alone.** Glosten–Milgrom (1985): with zero inventory risk and zero costs, a competitive maker *still* quotes a positive spread — purely to survive informed traders.
+- **A trade is information.** A buy raises the posterior that value is high; a sell lowers it. So the competitive maker sets $\text{ask} = E[V\mid\text{buy}]$ and $\text{bid} = E[V\mid\text{sell}]$.
+- **Worked result.** With $V_H=110$, $V_L=90$, $\theta=0.5$, $\alpha=0.4$: ask = 104, bid = 96, **spread = 8**. The symmetric-prior shortcut: $\text{spread} = \alpha(V_H - V_L)$.
+- **Bayesian price discovery.** Each trade updates the posterior, which becomes the next mid; buys ratchet it up, sells down, and over many trades the price converges to true $V$. That's *how* information enters prices.
+- **Comparative statics.** Spread widens with the informed fraction $\alpha$ and with value uncertainty $V_H - V_L$ — which is why spreads gap out around news and volatility.
+- **Measure & defend.** Toxicity is gauged by PIN, VPIN, and (most practically) markouts; defenses are widening, cutting size, skewing, pulling quotes, and sourcing uninformed retail flow.
+- **Myth busted.** The spread is *not* a transaction fee — it's mostly an adverse-selection (insurance) premium against better-informed counterparties.
+</Callout>

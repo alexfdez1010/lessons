@@ -760,5 +760,12 @@ export type { OnchainVolProps } from '@/components/react/OnchainVol';
 export { PurgedCvSplit, default as PurgedCvSplitDefault } from '@/components/react/PurgedCvSplit';
 export type { PurgedCvSplitProps } from '@/components/react/PurgedCvSplit';
 
+// High-frequency market-making islands
+export { AsQuotingSim, default as AsQuotingSimDefault } from '@/components/react/AsQuotingSim';
+export type { AsQuotingSimProps } from '@/components/react/AsQuotingSim';
+
+export { InventorySkew, default as InventorySkewDefault } from '@/components/react/InventorySkew';
+export type { InventorySkewProps } from '@/components/react/InventorySkew';
+
 export { DeflatedSharpe, default as DeflatedSharpeDefault } from '@/components/react/DeflatedSharpe';
 export type { DeflatedSharpeProps } from '@/components/react/DeflatedSharpe';

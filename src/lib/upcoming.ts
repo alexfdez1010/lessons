@@ -68,25 +68,6 @@ export interface UpcomingCourse {
  */
 export const upcomingCourses: UpcomingCourse[] = [
   {
-    slug: 'high-frequency-market-making',
-    icon: '⚡',
-    difficulty: 'expert',
-    order: 8,
-    accent: 'brand',
-    title: {
-      en: 'High-Frequency Market Making',
-      es: 'Creación de Mercado de Alta Frecuencia',
-    },
-    description: {
-      en: 'Quoting both sides for a living: the Avellaneda–Stoikov model, inventory risk, optimal spreads, adverse selection, and the latency arms race.',
-      es: 'Cotizar ambos lados para vivir: el modelo de Avellaneda–Stoikov, riesgo de inventario, spreads óptimos, selección adversa y la carrera de latencia.',
-    },
-    dependencies: ['market-microstructure', 'algorithmic-trading-and-execution', 'systematic-and-statistical-arbitrage'],
-    tags: ['quantitative-finance', 'trading-and-markets'],
-    buildNotes:
-      'The other side of every order: how a market maker earns the spread while managing inventory. The market-making P&L (spread capture minus adverse selection minus inventory risk), the Avellaneda–Stoikov optimal-quoting model (reservation price, optimal bid/ask skew vs inventory and risk aversion), inventory mean-reversion & skewing quotes, adverse selection & the Glosten–Milgrom intuition, queue position & order-book dynamics, latency and the speed arms race, and maker-taker / rebate economics. Islands: as-quoting-sim + inventory-skew.',
-  },
-  {
     slug: 'onchain-arbitrage-and-cross-dex-mev',
     icon: '🔀',
     difficulty: 'expert',

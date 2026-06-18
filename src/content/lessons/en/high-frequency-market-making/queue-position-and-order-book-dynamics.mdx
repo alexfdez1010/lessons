@@ -1,0 +1,434 @@
+---
+title: "Queue Position & Order-Book Dynamics"
+description: "At a one-tick spread you can't undercut, so makers compete on TIME. Master FIFO queue position, fill probability, queue-as-option, imbalance, and tick regimes."
+topic: "en/high-frequency-market-making"
+order: 5
+minutes: 18
+updated: 2026-06-18
+---
+
+import { Callout, MCQ, Quiz, ThinkReveal, MatchConcepts, Categorize, FillBlank, MindMap, LiveOrderBook, DepthLadder } from '@/components/react';
+
+By now you can price a spread and decompose a P&L. But there's a brutal fact the textbook spread model quietly ignores: most of the time, in most liquid markets, **the spread is already one tick wide and you cannot make it narrower.** You can't undercut — a better price would cross the spread and turn you into a taker. So how do two makers compete for the same fill at the *same* price? They compete on **time.** Whoever got there first gets filled first. Half of market making, at this point, stops being about price and becomes about your **position in the queue**. This lesson is about that queue — how it forms, how it empties, when being first is a gift and when it's a trap.
+
+<MCQ
+  client:visible
+  pretest
+  question="Pretest. The spread on a name is locked at one tick and you want to add liquidity on the bid. What is the ONLY real lever you have to improve your fill rate?"
+  options={[
+    { text: 'Get earlier queue position at the best bid — post sooner, because you cannot post a better price without crossing', correct: true },
+    { text: 'Quote a slightly higher bid to jump ahead on price' },
+    { text: 'Quote a slightly lower bid so you take less risk' },
+    { text: 'Increase your size so you fill more per trade regardless of position' },
+  ]}
+  explanation="At a one-tick spread, a higher bid would cross into the ask and execute immediately as a taker — you'd no longer be a maker. A lower bid simply joins the back of a worse price level (or no level at all) and rarely fills. The only passive lever left is TIME: be earlier in the FIFO queue at the touch. That single insight drives this entire lesson."
+/>
+
+## Price–time priority and the FIFO queue
+
+**Analogy.** Walk into a busy deli. Everyone wants the same thing at the same posted price, so the price isn't how you compete — you grab a paper ticket. Number 47 is served before number 48 no matter who is hungrier or richer. The order book at a single price level is exactly that ticket line: a **FIFO (first-in, first-out) queue** of resting orders, served in the order they arrived.
+
+**Definition.** Matching engines almost universally use **price–time priority**. First, orders are ranked by **price** (better prices match first — higher bids, lower asks). Then, *among orders at the same price*, they are ranked by **time** (earlier arrivals match first). So the book at the best bid is an ordered list:
+
+$$
+Q = [\, o_1, o_2, \dots, o_n \,], \qquad t(o_1) \le t(o_2) \le \dots \le t(o_n)
+$$
+
+When a marketable sell order arrives and hits that bid level, it consumes shares **from the front**: $o_1$ first, then $o_2$, and so on. Your order sits somewhere in that list. Everything resting **ahead** of you must trade or cancel before a single share reaches you.
+
+**Worked micro-example.** You join the best bid at 100.00 behind 30,000 resting shares. A market sell of 12,000 shares arrives. It eats the front 12,000 of the queue. Shares ahead of you fall from 30,000 to 18,000; you got nothing. A second sell of 25,000 arrives: it eats the remaining 18,000 ahead of you, then reaches you and fills 7,000 of your shares. Only the volume that trades *past* the 30,000 in front of you ever touches your order.
+
+**Pitfall.** Newcomers think "I'm at the best price, so I'll get filled." Being *at* the best price only buys you a spot in line. **Price priority gets you to the level; time priority decides whether you eat.** A huge queue at the touch can mean you wait minutes — or never fill at all before the price moves.
+
+### When it matters
+
+Price–time priority is the dominant model on most equity, futures, and FX venues. The main alternative, **pro-rata** (fills split proportionally to size, common in some short-term interest-rate futures), changes the strategy entirely — there, *size* buys priority, not time. Know which regime your venue runs before you optimize for it.
+
+<MatchConcepts
+  client:visible
+  question="Match each matching-engine term to what it actually determines."
+  pairs={[
+    { term: 'Price priority', definition: 'Which price level matches first — better prices ahead of worse ones' },
+    { term: 'Time priority', definition: 'The order of fills AMONG resting orders sitting at the same price' },
+    { term: 'FIFO queue', definition: 'The first-in-first-out line of resting orders at a single price level' },
+    { term: 'Pro-rata', definition: 'An alternative where fills split by size, so size — not time — buys priority' },
+  ]}
+  explanation="Price ranks levels; time ranks within a level. FIFO is the ordering rule for that within-level line under price–time priority. Pro-rata is the regime where size dethrones time — a fundamentally different game."
+/>
+
+## Why queue position matters at a one-tick spread
+
+**Analogy.** Imagine an auction where the law forbids anyone from bidding a cent more than the current top bid. You literally cannot outbid the leader. The only way to win is to have raised your hand *before* them. Competition collapses from "who pays most" to "who was earliest."
+
+**The mechanism.** The spread is the gap between best bid and best ask. The smallest legal increment is one **tick**. When best bid and best ask are already one tick apart, the spread is **as tight as the rules allow**. To "improve" your bid you'd have to raise it by a tick — but that *equals* the ask, so your order crosses and executes immediately against the resting ask. You've paid the spread and become a **taker**, not a maker. Posting a better price is simply impossible without abandoning the maker role.
+
+So at a one-tick spread, every maker on the bid is stuck at the *same* price. Differentiation by price is off the table. The **only** dimension left is time — your rank in the FIFO queue. And what determines whether you ever fill is the **size resting ahead of you**, call it $Q_{\text{ahead}}$. You don't fill until cumulative volume traded at your level exceeds $Q_{\text{ahead}}$ (net of cancellations in front of you).
+
+**Worked example.** Two makers, A and B, both want to buy 5,000 shares at the locked best bid of 50.00.
+- A posts at 09:30:00.100 when the queue ahead is 8,000 shares.
+- B posts at 09:30:00.140 — 40 ms later — when the queue ahead is now 13,000 shares (A's 5,000 slotted in front of B).
+
+Over the next minute, 11,000 shares sell into the bid. A fills completely (8,000 ahead consumed, then A's 5,000 — wait: 8,000 + 5,000 = 13,000 > 11,000, so A fills 3,000). B fills **zero** — the trade never reached B's slot. A 40-millisecond head start was the entire difference between a partial fill and nothing.
+
+<Callout variant="info" title="The number that rules a one-tick book">
+At a locked spread, your fill is governed by one quantity: $Q_{\text{ahead}}$, the shares resting in front of you. Lowering it is the whole job — by posting earlier, by detecting and racing to newly forming levels, or by posting when the queue is shallow.
+</Callout>
+
+<MCQ
+  client:visible
+  question="A maker and a competitor both rest at the locked best bid of $20.00. The maker is 60,000 shares deep in the queue; the competitor is 5,000 deep. Over the next minute 30,000 shares trade at $20.00. Who fills?"
+  options={[
+    { text: 'Only the competitor — 30,000 traded clears its 5,000-share backlog and fills it, but never reaches the 60,000-deep maker', correct: true },
+    { text: 'Both fill equally, because they share the same price' },
+    { text: 'Only the maker, because it posted more size' },
+    { text: 'Neither fills, because 30,000 is less than the total queue' },
+  ]}
+  explanation="Price is identical, so price priority is a tie — time decides. 30,000 shares of selling clears the 5,000 ahead of the competitor and fills it, but it falls far short of the 60,000 sitting in front of the deep maker, who gets nothing. Same price, opposite outcomes: queue position is the entire story."
+/>
+
+## Fill probability as a function of the queue
+
+**Analogy.** Your queue ticket is a lottery whose odds depend on three flows: how fast the line moves *forward* (trades executing at your level), how fast people *ahead of you give up and leave* (cancellations help you), and whether the whole deli *closes and reopens elsewhere* (the price moves away and your level evaporates).
+
+**The model.** Treat the level as a flow problem. Let:
+- $Q_{\text{ahead}}$ = shares resting ahead of you,
+- $\lambda_{\text{trade}}$ = rate (shares/sec) of marketable orders consuming the level from the front,
+- $\mu_{\text{cancel}}$ = rate (shares/sec) at which orders *ahead of you* cancel (this also drains the queue in front of you),
+- $p_{\text{move}}$ = probability per unit time the price moves away before you reach the front.
+
+The front of the queue drains at roughly $\lambda_{\text{trade}} + \mu_{\text{cancel}}$ shares/sec. Crucially, only the **trade** part actually fills you; the cancel part just shortens the line ahead. Your expected time to reach the front is approximately:
+
+$$
+\mathbb{E}[\,T_{\text{fill}}\,] \approx \frac{Q_{\text{ahead}}}{\lambda_{\text{trade}} + \mu_{\text{cancel}}}
+$$
+
+and the probability you fill *before* the level disappears falls as $Q_{\text{ahead}}$, $p_{\text{move}}$ rise and as $\lambda_{\text{trade}}$ rises.
+
+**Worked example — show the arithmetic.** You rest with $Q_{\text{ahead}} = 50{,}000$ shares. At your level, marketable flow executes at $\lambda_{\text{trade}} = 4{,}000$ shares/sec and orders ahead cancel at $\mu_{\text{cancel}} = 6{,}000$ shares/sec. The line in front drains at $4{,}000 + 6{,}000 = 10{,}000$ shares/sec, so:
+
+$$
+\mathbb{E}[\,T_{\text{fill}}\,] \approx \frac{50{,}000}{10{,}000} = 5 \text{ seconds.}
+$$
+
+But notice the split: of every 10,000 shares draining the line, only 4,000 (40%) are *trades*. The other 6,000 are cancellations that move you up **without** filling anyone. Now layer in the price move: if there's roughly a 50% chance the price ticks away within those ~5 seconds, your unconditional fill probability is closer to $0.5 \times (\text{chance the trade flow reaches you in time})$ — well under half. A "good" 5-second wait can still be a coin flip.
+
+**Pitfall.** Counting cancellations as progress toward your fill. They shorten the queue, yes — but a level emptied mostly by cancellations is a level *nobody is trading*, which often means the price is about to move. Fast queue drain via cancels is frequently a **warning**, not good news.
+
+<FillBlank
+  client:visible
+  question="Fill in the fill-probability intuition."
+  text="At a locked spread, expected time to the front scales with the size {{ahead of you|behind you|of your order}}, divided by the rate the queue drains. Only the {{trade|cancel|quote}} portion of that drain actually fills you; the {{cancel|trade|move}} portion just shortens the line. And a {{price move|larger spread|new tick}} away can wipe your level before you ever reach the front."
+  explanation="E[T_fill] ≈ Q_ahead / (λ_trade + μ_cancel). Cancellations shorten the line but don't fill you; only trades do. And an adverse price move can dissolve the whole level before your turn comes."
+/>
+
+## Queue position as an option
+
+**Analogy.** A front-of-queue spot is like holding a short-dated option: it has real value *right now* (you're close to a fill), and that value **decays** as conditions change and as competitors stack in. And just like an option is cheapest deep out-of-the-money, queue position is **cheapest to acquire when a brand-new price level first forms** — there's no line yet, so the first order in is at the front for free.
+
+**The idea.** When the price ticks to a new level, the queue there is *empty*. The first maker to post claims position #1 at zero cost. The second pays the cost of resting behind one order, and so on. As the level matures, getting a good spot becomes expensive (you must wait behind everyone). This is why HFT makers obsess over **detecting new levels forming** and racing an order in microseconds — the value of front position is highest exactly when the level is born and decays thereafter.
+
+**Why "option."** Your resting order is a free option *for the market*: you've given everyone else the right (not obligation) to trade against you at your price. You hold it hoping to capture the spread; you'd cancel if the world turns against you. Queue position determines the **probability that option gets exercised in your favor** before you'd want to pull it. Front position = high exercise probability soon = valuable; back position = the option may expire (level disappears) worthless.
+
+**Worked intuition.** Two strategies on the same newly-forming level:
+- *Race-to-front:* post within 50 µs of the level forming → queue position ≈ #1, near-certain to be early enough that trade flow reaches you. High fill rate.
+- *Lazy join:* post 200 ms later → 40,000 shares already ahead → you've converted a free front spot into a 40,000-deep wait. The option you grabbed is already deep "out of the money."
+
+**Pitfall / trade-off.** The race to be early costs infrastructure (colocation, fast feeds, fast order entry) and risk: you commit to a price before you've seen how the level develops. You're buying the *cheap* option, but you're also the most exposed to whatever happens next — which the next section makes brutal.
+
+<ThinkReveal
+  client:visible
+  prompt="Why is the moment a brand-new price level first forms the CHEAPEST time to acquire front-of-queue position?"
+  hint="How many orders are resting ahead of you the instant the level is created?"
+  text="Because the queue is empty at birth — the first order to post claims position #1 with zero shares ahead of it, at no time cost. Every microsecond later, more orders stack in front, so the same front-ish position now requires either being faster than them or waiting behind them. Queue position, like an option, is cheapest to acquire before everyone else piles in; its value decays as the level matures and the line lengthens."
+/>
+
+## The front-of-queue paradox: priority is adversely selected
+
+**Analogy.** Being first in line at a store sounds great — until the only reason the doors burst open is a fire alarm, and the front of the line is first into the smoke. Front of queue means you fill **first**, including first when the people trading against you *know something you don't*.
+
+**The paradox.** Everything above says front position is valuable — it fills fastest. But *what* fills you matters as much as *whether* you fill. When informed flow decides to sweep a level (because it knows the price is about to move through you), it consumes the queue **from the front**. So the front-of-queue order is the **first to be picked off by the toxic trade.** Priority maximizes both your fill rate *and* your **adverse selection.**
+
+**Tie to adverse selection.** Recall from the P&L lesson: your realized edge is spread captured *minus* adverse selection. Front position raises fills (good) but those fills are disproportionately the **informed** ones (bad). A back-of-queue order, by contrast, only fills when so much volume trades that even uninformed flow reaches it — its fills are *less* toxic on average, but it fills far less often.
+
+**Worked example.** Suppose at the front of the queue, 70% of your fills come from informed sweeps that move 2 ticks against you, and 30% are benign. Average markout per fill might be: $0.30 \times (+1 \text{ tick}) + 0.70 \times (-2 \text{ ticks}) = +0.30 - 1.40 = -1.10$ ticks — you *fill a lot* and *lose on average*. A back-of-queue order fills a tenth as often, but only on heavy, benign-dominated flow: say $0.70 \times (+1) + 0.30 \times (-2) = +0.10$ ticks per fill — *positive*, but rare. **Fill rate and toxicity trade off.**
+
+**Pitfall.** Optimizing purely for fill rate / queue position and ignoring markouts. A strategy can have a beautiful fill rate and bleed money, because the fills it wins are the ones it should have lost. The pros measure **post-fill markout** (price drift 1 ms / 100 ms / 1 s after the fill) precisely to detect this.
+
+<MCQ
+  client:visible
+  allowMultiple
+  question="Select EVERY statement that correctly describes the front-of-queue paradox. (Multiple answers.)"
+  options={[
+    { text: 'Front position fills first, so it is also first to be consumed by an informed sweep — maximizing adverse selection', correct: true },
+    { text: 'A back-of-queue order is, per fill, typically LESS toxic, because it only fills on heavy volume that includes benign flow', correct: true },
+    { text: 'Maximizing fill rate can lower profit if the extra fills are disproportionately informed', correct: true },
+    { text: 'Front position is unambiguously best because more fills always means more profit' },
+    { text: 'Post-fill markout is irrelevant once you know your queue position' },
+  ]}
+  explanation="Priority is a double-edged sword: it wins fills AND eats the most toxic ones first. Back-of-queue fills are rarer but cleaner per fill. So raw fill rate is not the objective — markout-adjusted edge is. Measuring post-fill markout is exactly how you catch a high-fill, money-losing book."
+/>
+
+## Order-book dynamics: add, cancel, replace, flicker
+
+**Analogy.** The book looks like a stable ladder in a screenshot, but in motion it's a strobe light — orders blink in and out hundreds of times a second. Most "quotes" you see were never meant to trade; they're the market constantly re-optioning itself.
+
+**The churn.** A modern book is dominated by three message types: **add** (post a new order), **cancel** (pull a resting order), and **replace/modify** (cancel-and-repost, often to chase price or reset queue intentions). The headline statistic: in liquid markets, the **vast majority of submitted orders are cancelled before they ever execute** — order-to-trade ratios of 20:1, 50:1, even higher are routine. Quoting is mostly cancelling.
+
+**Why so many cancels?**
+- **Repricing.** When the fair value moves, a maker must cancel its stale quote and repost at the new level — or get picked off at the old one.
+- **Fleeting / flickering quotes.** Orders posted and pulled within milliseconds — sometimes to test the book, sometimes a side effect of fast requoting, sometimes (abusively) to mislead. They make the *displayed* book a noisy, partly-phantom signal.
+- **Risk management.** A maker pulls all quotes instantly when its inventory or risk limits trip.
+
+**The cancel/replace race.** Here's the cruel part. When fair value jumps, you need to cancel your now-stale quote *before* a taker hits it. That is a **race**: your cancel message versus the incoming marketable order, both flying to the matching engine. Lose the race and you're filled at a price you no longer want — classic adverse selection, and the dominant cost of being slow. This is *why* latency matters: not (mainly) to fill faster, but to **cancel faster** when you're wrong.
+
+**Worked intuition.** Fair value ticks up by 1 tick. Your resting offer is now 1 tick *cheap*. Two things race to the engine: (a) your cancel, (b) every fast taker's buy order lifting your stale offer. If your cancel arrives in 5 µs and the fastest taker's order in 8 µs, you escape. If the taker is at 3 µs, you're run over and sell a tick too cheap. Microseconds, repeated millions of times, are the entire margin.
+
+<Categorize
+  client:visible
+  question="Sort each order-book event by its primary nature."
+  buckets={["Helps/neutral for the maker", "A cost or threat to the maker"]}
+  items={[
+    { label: 'Successfully cancelling a stale quote before a taker hits it', bucket: 'Helps/neutral for the maker' },
+    { label: 'A cancel ahead of you in the queue shortening your wait', bucket: 'Helps/neutral for the maker' },
+    { label: 'Losing the cancel/replace race and getting filled on a stale quote', bucket: 'A cost or threat to the maker' },
+    { label: 'An informed sweep consuming your front-of-queue order', bucket: 'A cost or threat to the maker' },
+    { label: 'Flickering quotes making the displayed book a noisy signal', bucket: 'A cost or threat to the maker' },
+  ]}
+  explanation="Cancelling in time and queue-shortening cancels ahead of you are good or harmless. Losing the cancel race, being swept while at the front, and noise from flickering quotes all cost the maker — directly (bad fills) or indirectly (degraded signal)."
+/>
+
+## Order-book imbalance as a short-horizon predictor
+
+**Analogy.** Stand at a tug-of-war. If one side has visibly more people straining on the rope, you can guess which way the flag is about to lurch — before it actually moves. **Order-book imbalance** is that headcount: far more resting size on the bid than the ask means buyers are crowding, and the next tick is more likely **up**.
+
+**Definition.** The classic top-of-book imbalance is:
+
+$$
+I = \frac{Q_{\text{bid}} - Q_{\text{ask}}}{Q_{\text{bid}} + Q_{\text{ask}}}, \qquad I \in [-1, +1]
+$$
+
+where $Q_{\text{bid}}$ and $Q_{\text{ask}}$ are the resting sizes at (or near) the best bid and ask. $I \to +1$ means the bid dwarfs the ask (pressure up); $I \to -1$ means the ask dwarfs the bid (pressure down); $I \approx 0$ is balanced. Empirically, the **sign and size of $I$ predict the direction of the next mid-price move** over very short horizons — one of the most robust micro-signals in all of microstructure.
+
+**Worked example — show the arithmetic.** Best bid shows $Q_{\text{bid}} = 18{,}000$ shares; best ask shows $Q_{\text{ask}} = 4{,}000$:
+
+$$
+I = \frac{18{,}000 - 4{,}000}{18{,}000 + 4{,}000} = \frac{14{,}000}{22{,}000} \approx +0.64.
+$$
+
+A strongly positive imbalance: thin ask, heavy bid. The thin ask is *easy to clear*, the heavy bid is *hard to clear*, so the mid is more likely to tick **up** next. A maker reads this and reacts: it might **skew** — quote a slightly more aggressive (or larger) bid to grab fills it expects to be benign, and **cancel or thin its ask** to avoid being run over as the price rises. If instead $Q_{\text{bid}} = 4{,}000$ and $Q_{\text{ask}} = 18{,}000$, then $I \approx -0.64$ and the maker does the mirror image: pull/thin the bid, lean on the ask.
+
+**How makers use it.** Imbalance feeds (1) **micro-price** estimation — a size-weighted fair value $\text{mid} + \tfrac{1}{2}\,\text{spread}\cdot I$ that leans toward the heavier side; (2) **quote skewing** — shading quotes in the predicted direction; and (3) **defensive cancellation** — pulling the side about to be swept.
+
+**Pitfall.** Imbalance is a **short-horizon** signal and is itself gameable — a large resting order can be *spoof-like* or simply get cancelled the instant before it would trade. Naively chasing imbalance can mean leaning into flow that vanishes. And displayed size hides icebergs (hidden quantity), so the visible $Q$ is an estimate, not ground truth.
+
+<LiveOrderBook
+  client:visible
+  title="Read the imbalance, then fire a market order"
+  caption="Watch the resting sizes flicker on each side — that churn is the add/cancel/replace dynamic. When one side is visibly heavier, that's positive or negative imbalance, and the next move leans that way. Fire a market buy or sell to walk the book and watch the touched levels light up and re-form."
+/>
+
+<MCQ
+  client:visible
+  question="The best bid rests 9,000 shares; the best ask rests 1,000 shares. Compute the top-of-book imbalance and read it."
+  options={[
+    { text: 'I = (9,000 − 1,000)/(9,000 + 1,000) = +0.8 — heavy bid, thin ask, so the next mid move leans UP', correct: true },
+    { text: 'I = (9,000 − 1,000)/(9,000 − 1,000) = +1.0 — denominator is the difference, not the sum' },
+    { text: 'I = +8,000 — imbalance is just the raw size difference in shares' },
+    { text: 'I = −0.8 — a heavy bid predicts a DOWN move' },
+  ]}
+  explanation="I = (Q_bid − Q_ask)/(Q_bid + Q_ask) = 8,000/10,000 = +0.8. The denominator is the SUM, which normalizes I into [−1, +1]. A strongly positive I means the bid dwarfs the ask: the thin ask is easy to clear and the next mid tick leans up. A maker would skew bid-friendly and protect its ask."
+/>
+
+## Tick size and the queue regime
+
+**Analogy.** Tick size is the *width of the stairs* in a stairwell. Wide, tall steps (a large relative tick) force everyone to bunch up on the same few steps — long lines form, and being early on a step is everything. Shallow, narrow steps (a small relative tick) let people slip onto a half-step just below you — so lines stay short and you compete by stepping down a hair, not by waiting.
+
+**The two regimes.** The key quantity is the tick **relative to price** (and to volatility), often summarized by whether the spread is *frequently locked at one tick*:
+
+- **Large relative tick → "queue regime."** One tick is economically meaningful, so the spread is *pinned* at one tick almost always. You can't profitably undercut (a tick is too much to give up), so makers pile onto the same price and **queue position dominates** — time priority is the whole game. Long queues, high order-to-trade ratios, fierce races to the front. Typical of many liquid ETFs, large-cap stocks under a coarse tick, and many futures.
+
+- **Small relative tick → "spread/undercutting regime."** One tick is economically trivial, so it's cheap to **undercut**: post one tick better and jump the *entire* queue on price priority. Makers compete on **price**, the spread floats above one tick and flickers, and queues are **short** (no point stacking when someone will undercut you in a millisecond). Typical of high-priced stocks, crypto with fine ticks, and tick-constrained-but-not regimes.
+
+**Comparison table.**
+
+| Feature | Large relative tick (queue regime) | Small relative tick (undercutting regime) |
+|---|---|---|
+| Spread | Pinned at 1 tick almost always | Floats above 1 tick; varies |
+| Main competition | **Time** (queue position) | **Price** (undercut by a tick) |
+| Queue length | Long, deep | Short, shallow |
+| Key skill | Race to the front; manage adverse selection of priority | Detect & undercut; manage flicker |
+| Order-to-trade ratio | Very high | High but driven by repricing |
+| Examples | Many ETFs, coarse-tick large caps, index futures | High-priced equities, fine-tick crypto |
+
+**Worked contrast.** A 25-dollar ETF with a 1-cent tick: a 1-cent spread is 4 basis points — meaningful, so it locks at a penny and a 200,000-share queue forms. Here you live or die by queue position. Now a 2,000-dollar stock with a 1-cent tick: a penny is 0.05 bp — trivial, so makers freely undercut, the spread sits at several cents and wobbles, and queues are a few hundred shares deep. *Same tick in dollars, opposite regime,* because what matters is the tick **relative to price**.
+
+**Pitfall.** Porting a queue-regime strategy (optimize position, race to front) into an undercutting regime, where someone simply posts a tick better and your hard-won front position is now behind a *better price.* Time priority only protects you *within* a price level — it's worthless the instant a competitor improves the price. Read the regime first.
+
+<DepthLadder
+  client:visible
+  title="Thin vs deep books and the cost of size"
+  caption="Toggle Thin / Normal / Deep to feel how much resting size sits near the top. A deep book (queue regime) lets large size rest and queue up; a thin book (often the undercutting regime) means short ladders and quick repricing. Drag the order size to walk the book and watch slippage grow."
+/>
+
+<MCQ
+  client:visible
+  pretest
+  question="A $30 stock and a $3,000 stock both have a one-cent minimum tick. Which is more likely to be in the queue regime (where time priority dominates and queues are long)?"
+  options={[
+    { text: 'The $30 stock — one cent is a large relative tick (~3.3 bp), so the spread pins at a penny and makers queue up rather than undercut', correct: true },
+    { text: 'The $3,000 stock — higher price means more dollars per tick, so longer queues' },
+    { text: 'Both identical, because the tick is one cent in each' },
+    { text: 'Neither — tick size has no effect on queue length' },
+  ]}
+  explanation="What matters is tick RELATIVE to price. On the $30 stock a penny is ~3.3 bp — large, so undercutting is too costly, the spread locks at one tick, and long queues form (queue regime). On the $3,000 stock a penny is ~0.03 bp — trivial, so makers undercut freely, the spread floats, and queues stay short. Same nominal tick, opposite regime."
+/>
+
+## Putting it together
+
+<MindMap
+  client:visible
+  title="Queue position & order-book dynamics"
+  caption="From price–time priority down to the tick regime that decides whether time even matters."
+  root={{
+    label: 'Queue & Book Dynamics',
+    children: [
+      {
+        label: 'Price–time priority',
+        children: [
+          { label: 'Price ranks levels' },
+          { label: 'Time ranks within a level (FIFO)' },
+          { label: 'Pro-rata: size buys priority instead' },
+        ],
+      },
+      {
+        label: 'Queue position',
+        children: [
+          { label: 'Locked spread ⇒ compete on time' },
+          { label: 'Q_ahead governs your fill' },
+          { label: 'Cheap front spot at level birth (option-like)' },
+        ],
+      },
+      {
+        label: 'Fill probability',
+        children: [
+          { label: 'E[T] ≈ Q_ahead / (λ_trade + μ_cancel)' },
+          { label: 'Only trades fill you; cancels just shorten line' },
+          { label: 'Price move can erase the level first' },
+        ],
+      },
+      {
+        label: 'Priority paradox',
+        children: [
+          { label: 'Front fills first — incl. informed sweeps' },
+          { label: 'Fill rate vs toxicity trade-off' },
+          { label: 'Measure post-fill markout' },
+        ],
+      },
+      {
+        label: 'Book churn',
+        children: [
+          { label: 'Add / cancel / replace' },
+          { label: 'Most orders cancelled (high O:T ratio)' },
+          { label: 'Cancel/replace race = why latency matters' },
+        ],
+      },
+      {
+        label: 'Imbalance & regime',
+        children: [
+          { label: 'I = (Q_bid − Q_ask)/(Q_bid + Q_ask)' },
+          { label: 'Predicts next mid move; drives skew/cancel' },
+          { label: 'Large tick = queue regime; small tick = undercut' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  questions={[
+    {
+      question: 'Why can you not simply post a better price to win fills when the spread is locked at one tick?',
+      options: [
+        { text: 'A bid one tick higher would equal the ask and execute immediately as a TAKER, so you stop being a maker', correct: true },
+        { text: 'Exchanges forbid changing your price once posted' },
+        { text: 'A better price is allowed but always rejected by the matching engine' },
+        { text: 'You can — undercutting always works regardless of tick size' },
+      ],
+      explanation: 'At a one-tick spread, raising your bid by a tick makes it cross into the ask and fill immediately as an aggressor. You pay the spread and become a taker. With price off the table, time (queue position) is the only passive lever.',
+    },
+    {
+      question: 'You rest with 80,000 shares ahead of you. Trades execute at your level at 5,000 shares/sec and orders ahead cancel at 15,000 shares/sec. What is the approximate expected time to reach the front?',
+      options: [
+        { text: 'About 4 seconds: 80,000 / (5,000 + 15,000) = 80,000 / 20,000', correct: true },
+        { text: 'About 16 seconds: 80,000 / 5,000, ignoring cancellations' },
+        { text: 'About 0.4 seconds: 80,000 / (5,000 × 15,000)' },
+        { text: 'It cannot be estimated without the spread width' },
+      ],
+      explanation: 'The line ahead drains at λ_trade + μ_cancel = 20,000 shares/sec, so E[T] ≈ 80,000 / 20,000 = 4 s. Note: of that drain only 5,000/sec are trades that could fill you; the 15,000/sec of cancels just shorten the line.',
+    },
+    {
+      question: 'Best bid rests 24,000 shares; best ask rests 6,000 shares. What is the top-of-book imbalance and what does it imply?',
+      options: [
+        { text: 'I = (24,000 − 6,000)/(24,000 + 6,000) = +0.6 — heavy bid, thin ask, next mid move leans UP', correct: true },
+        { text: 'I = +18,000 — the raw share difference' },
+        { text: 'I = +3.0 — bid divided by ask' },
+        { text: 'I = −0.6 — a heavy bid predicts a down move' },
+      ],
+      explanation: 'I = (Q_bid − Q_ask)/(Q_bid + Q_ask) = 18,000/30,000 = +0.6. A strongly positive imbalance means the thin ask clears easily while the heavy bid resists, so the next mid tick leans up. Makers skew bid-friendly and protect the ask.',
+    },
+    {
+      question: 'What is the front-of-queue paradox?',
+      options: [
+        { text: 'Being first fills you first — including first against informed sweeps — so priority maximizes fill rate AND adverse selection', correct: true },
+        { text: 'Front position never fills because everyone cancels ahead of you' },
+        { text: 'Front position is taxed more by the exchange' },
+        { text: 'There is no paradox: more fills always means more profit' },
+      ],
+      explanation: 'Priority is double-edged. Front position wins the most fills, but informed flow sweeps from the front, so your fastest fills are the most toxic. Back-of-queue fills are rarer but cleaner per fill. Raw fill rate is not the objective — markout-adjusted edge is.',
+    },
+    {
+      question: 'Why are order-to-trade ratios so high (most orders cancelled) and why does cancellation latency matter so much?',
+      options: [
+        { text: 'Makers constantly reprice as fair value moves; when value jumps they must cancel a stale quote BEFORE a taker hits it — a race they lose if slow', correct: true },
+        { text: 'Exchanges require a minimum number of cancellations per trade' },
+        { text: 'Cancelling is free and trading is expensive, so makers cancel for fun' },
+        { text: 'High cancel rates have no relationship to repricing or latency' },
+      ],
+      explanation: 'Quotes go stale the instant fair value moves, so makers cancel and repost constantly — hence 20:1, 50:1+ order-to-trade ratios. When value jumps your cancel races the incoming marketable order; lose and you fill on a stale, mispriced quote. Latency matters mainly to cancel in time, not just to fill fast.',
+    },
+    {
+      question: 'A $20 ETF and a $2,000 stock share a one-cent tick. Which sits in the queue regime where time priority dominates?',
+      options: [
+        { text: 'The $20 ETF — a penny is ~5 bp (large relative tick), so the spread locks at one tick and long queues form', correct: true },
+        { text: 'The $2,000 stock — more dollars per tick means longer queues' },
+        { text: 'Both equally, since the tick is one cent in each' },
+        { text: 'Neither — regime is unrelated to tick size' },
+      ],
+      explanation: 'Regime is set by tick relative to price. On the $20 ETF a penny is ~5 bp — too costly to give up by undercutting, so the spread pins at a tick and queues grow (queue regime). On the $2,000 stock a penny is ~0.05 bp — trivial, so makers undercut, the spread floats, and queues stay short.',
+    },
+    {
+      question: 'A maker has a 95% fill rate but loses money. What is the most likely diagnosis?',
+      options: [
+        { text: 'Its fills are disproportionately informed (toxic) — adverse selection on its front-of-queue priority exceeds the spread it captures', correct: true },
+        { text: 'Its fill rate is too high; lowering it always raises profit mechanically' },
+        { text: 'The exchange is overcharging it on every fill' },
+        { text: 'Fill rate and profit are unrelated, so the loss is random' },
+      ],
+      explanation: 'A high fill rate paired with losses screams adverse selection: the fills it wins are the ones it should have lost, because priority eats the toxic flow first. The fix is to measure post-fill markout and skew/cancel to avoid the informed side — not to chase fills blindly.',
+    },
+  ]}
+/>
+
+## Key Takeaways
+
+<Callout variant="success" title="What to remember">
+- **Price–time priority:** price ranks levels, then **time** ranks orders within a level as a **FIFO queue**. Being at the best price only buys a *spot in line*.
+- **Locked spread ⇒ compete on time.** At a one-tick spread you can't undercut without crossing, so fills are governed by $Q_{\text{ahead}}$ — the size resting in front of you.
+- **Fill probability:** $\mathbb{E}[T_{\text{fill}}] \approx Q_{\text{ahead}} / (\lambda_{\text{trade}} + \mu_{\text{cancel}})$. Only **trades** fill you; cancels just shorten the line, and a price move can erase your level first.
+- **Queue position is option-like:** valuable, decaying, and **cheapest to grab when a new level is born** — hence the microsecond race to the front.
+- **The priority paradox:** front position fills first, including first against informed sweeps, so it's the **most adversely selected.** Fill rate trades off against toxicity — measure **post-fill markout.**
+- **Book churn:** add/cancel/replace dominate; **most orders are cancelled** (high order-to-trade ratios). The **cancel/replace race** is why latency matters — chiefly to cancel a stale quote before a taker hits it.
+- **Imbalance** $I = (Q_{\text{bid}} - Q_{\text{ask}})/(Q_{\text{bid}} + Q_{\text{ask}})$ predicts the next short-horizon mid move and drives **skewing** and **defensive cancellation** — but it's gameable and hides icebergs.
+- **Tick regime:** large relative tick ⇒ **queue regime** (time priority, long queues); small relative tick ⇒ **undercutting regime** (price priority, short queues). What matters is the tick **relative to price**, not its dollar size.
+</Callout>
