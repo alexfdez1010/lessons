@@ -1,0 +1,413 @@
+---
+title: "Modelos recurrentes: RNN, LSTM y GRU"
+description: "Leer una secuencia de mercado paso a paso — el modelo mental de la recurrencia y el desenrollado, el problema del gradiente que se desvanece o explota que tumba a las RNN simples, y cómo las puertas de LSTM y GRU construyen una autopista de información que sobrevive a una ventana larga."
+topic: "es/deep-learning-for-market-data"
+order: 2
+minutes: 16
+updated: 2026-06-19
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, SequenceModelUnroll, TsOverfitCurve } from '@/components/react';
+
+En la lección pasada vimos cómo un perceptrón multicapa tropezaba en finanzas: con un tamaño de muestra *efectivo* minúsculo (unos pocos cientos de regímenes no solapados escondidos tras miles de filas autocorrelacionadas), o memorizaba ruido o no aprendía nada. Pero el MLP tenía un pecado más profundo — trataba cada día como una bolsa desordenada de características. No sabía que el ayer venía antes que el hoy.
+
+Los mercados son secuencias. Los rendimientos llegan en orden, la volatilidad se agrupa (vuestra lección de GARCH) y el shock de ayer se filtra hasta hoy. El arreglo natural es un modelo que **lea la serie paso a paso, arrastrando una memoria en curso** — un resumen de todo lo que ha visto hasta ahora. Eso es exactamente lo que hace una red neuronal recurrente. Si ayuda más de lo que perjudica es la pregunta que iremos pinchando.
+
+## La celda recurrente y el desenrollado
+
+<MCQ
+  client:visible
+  pretest
+  question="Una celda 'recurrente' procesa una secuencia de longitud T. ¿Cuántos conjuntos distintos de pesos entrenables usa a lo largo de los T pasos?"
+  options={[
+    { text: "Un único conjunto compartido, reutilizado en cada paso", correct: true },
+    { text: "T conjuntos independientes, uno por paso" },
+    { text: "Dos conjuntos, alternando en cada paso" },
+    { text: "Escala con el tamaño del batch, no con T" },
+  ]}
+  explanation="Todo el sentido de la recurrencia es compartir pesos: la misma celda (misma W, U, b) se aplica en cada paso temporal. 'Desenrollar' sobre T pasos no crea T conjuntos de parámetros."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+Una celda recurrente mantiene un **estado oculto** $h_t$ — su resumen mental hasta el momento — y lo actualiza a medida que llega cada nueva entrada $x_t$:
+
+$$h_t = \tanh\left(W x_t + U h_{t-1} + b\right)$$
+
+Léelo de izquierda a derecha: la nueva entrada $x_t$ se transforma con $W$, la memoria antigua $h_{t-1}$ se transforma con $U$, sumas un sesgo $b$ y lo aplastas con $\tanh$ para mantener los valores en $[-1, 1]$. Una salida (digamos, una predicción de rendimiento) se lee de $h_t$ mediante otra capa lineal. Las matrices $W$, $U$, $b$ son **las mismas en cada paso** — son la celda, y la celda es el modelo.
+
+**Analogía.** Estás leyendo una frase. No relees todo el párrafo en cada palabra — mantienes una idea general en la cabeza y la actualizas con cada palabra nueva. $h_{t-1}$ es tu idea antes de la palabra actual, $x_t$ es la palabra, $h_t$ es tu idea actualizada. "Desenrollar" no es más que dibujar a ese único lector como una cadena de copias, una por palabra — pero sigue siendo *un solo lector*, no un comité de $T$ lectores.
+
+### Ejemplo resuelto
+
+Toma una celda de juguete escalar: $W = 0.5$, $U = 0.8$, $b = 0$, y una secuencia de rendimientos $x_1 = 1.0$, $x_2 = -0.5$. Empieza con $h_0 = 0$.
+
+- Paso 1: $h_1 = \tanh(0.5 \cdot 1.0 + 0.8 \cdot 0) = \tanh(0.5) \approx 0.462$.
+- Paso 2: $h_2 = \tanh(0.5 \cdot (-0.5) + 0.8 \cdot 0.462) = \tanh(-0.25 + 0.370) = \tanh(0.120) \approx 0.119$.
+
+Fíjate en que $h_2$ depende de $x_1$ *solo a través de* $h_1$ — la memoria es el canal por el que el pasado alcanza el presente. Rompe ese canal y la historia desaparece.
+
+<SequenceModelUnroll client:visible caption="Una celda, desenrollada sobre T pasos: cada entrada x_t alimenta la celda oculta h_t, que también recibe una flecha de h_{t-1}. El sombreado muestra cuánto de la PRIMERA entrada sobrevive a lo largo de la cadena. Alterna RNN simple vs Con puertas y arrastra el deslizador de longitud." />
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Estado oculto hₜ", definition: "El resumen en curso que se arrastra de un paso al siguiente" },
+    { term: "Matriz de recurrencia U", definition: "Cómo se mezcla la memoria previa en la nueva memoria" },
+    { term: "Matriz de entrada W", definition: "Cómo entra la observación actual en la celda" },
+    { term: "Desenrollado", definition: "Dibujar la única celda compartida como una cadena de T copias" },
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Une cada concepto con su definición."
+/>
+
+<Callout variant="warning" title="Desenrollar no significa más parámetros">
+Un error típico de principiante: "Voy a desenrollar sobre 60 días, así que mi modelo tiene 60× la capacidad". No. Desenrollar es una *visualización* de una sola celda compartida aplicada 60 veces. El número de parámetros es fijo independientemente de la longitud de la secuencia. Lo que crece con $T$ es el *grafo de cálculo* (y la memoria necesaria para retropropagar a través de él), no el número de pesos.
+</Callout>
+
+### Cuándo usarlo
+
+Recurre a la recurrencia cuando **el orden lleva información de verdad** y la misma regla de actualización local deba aplicarse en cada paso: flujo de órdenes tick a tick, barras intradía, una ventana móvil de rendimientos que alimenta una previsión del paso siguiente. Si tus características son un corte transversal desordenado (valor de hoy, momentum, puntuaciones de calidad para 500 acciones), la recurrencia no te aporta nada — ese es trabajo para el MLP o, más probablemente, para árboles potenciados por gradiente.
+
+## El gradiente que se desvanece (y explota)
+
+<MCQ
+  client:visible
+  pretest
+  question="Entrenar una RNN significa retropropagar la pérdida hacia atrás por cada paso temporal. ¿Qué operación matemática se acumula a medida que el gradiente viaja del paso T de vuelta al paso 1?"
+  options={[
+    { text: "Un largo producto de jacobianas por paso", correct: true },
+    { text: "Una suma de gradientes independientes por paso" },
+    { text: "Una única inversión de matriz" },
+    { text: "Una media sobre la dimensión del batch" },
+  ]}
+  explanation="La retropropagación a través del tiempo (BPTT) aplica la regla de la cadena a lo largo de la cadena desenrollada, así que el gradiente respecto a un estado temprano es un PRODUCTO de jacobianas de cada paso. Los productos de muchos factores se disparan o se colapsan rápido."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+Para entrenar, retropropagamos la pérdida a través de la cadena desenrollada — **retropropagación a través del tiempo** (BPTT, *backpropagation through time*). La regla de la cadena dice que el gradiente de una pérdida tardía respecto a un estado oculto temprano es un *producto* de una jacobiana por paso:
+
+$$\frac{\partial h_T}{\partial h_t} = \prod_{k=t+1}^{T} \frac{\partial h_k}{\partial h_{k-1}}$$
+
+Si cada factor tiene una magnitud aproximada de $\rho$, el producto entero escala como $\rho^{\,T-t}$. Los productos de muchos números son implacables: un poco por debajo de 1 y se colapsan hacia cero (**se desvanece**); un poco por encima de 1 y detonan (**explota**).
+
+**Analogía.** Un rumor susurrado que va pasando por una fila de personas. Si cada persona conserva el 60 % del mensaje, después de 20 personas casi nada del original sobrevive — eso es desvanecerse. Si cada persona lo *exagera* 1,2×, después de 20 personas tienes una teoría de la conspiración a gritos — eso es explotar.
+
+### Ejemplo resuelto
+
+Supón que el factor típico por paso es $\rho = 0.6$. A lo largo de $T = 20$ pasos el gradiente hacia la primera entrada escala por
+
+$$0.6^{20} = e^{20 \ln 0.6} = e^{20 \cdot (-0.511)} = e^{-10.2} \approx 3.6 \times 10^{-5}.$$
+
+El pasado lejano aporta esencialmente **nada** a la actualización de pesos — el modelo es estructuralmente ciego a dependencias más antiguas que un puñado de pasos. Ahora dale la vuelta: $\rho = 1.2$ da $1.2^{20} \approx 38.3$, y a lo largo de 60 pasos $1.2^{60} \approx 5.6 \times 10^{4}$ — un gradiente que se desborda y produce pérdidas `NaN`.
+
+| Factor por paso $\rho$ | Tras 10 pasos | Tras 20 pasos | Tras 60 pasos | Veredicto |
+|---|---|---|---|---|
+| 0.6 | $6.0\times10^{-3}$ | $3.6\times10^{-5}$ | $4.7\times10^{-14}$ | se desvanece |
+| 0.9 | 0.349 | 0.122 | $1.8\times10^{-3}$ | se atenúa |
+| 1.0 | 1.0 | 1.0 | 1.0 | filo del cuchillo |
+| 1.2 | 6.19 | 38.3 | $5.6\times10^{4}$ | explota |
+
+El caso de la explosión tiene un parche barato — **recorte de gradiente** (*gradient clipping*): si la norma del gradiente supera un umbral $\tau$, lo reescalas a $\tau$ antes de la actualización. Eso pone tope a la explosión. El desvanecimiento no tiene tal parche; no puedes reescalar un gradiente casi nulo de vuelta a algo informativo, porque la *señal* se ha ido, no solo la magnitud. Esa asimetría es la razón por la que la propia arquitectura tuvo que cambiar.
+
+<FillBlank
+  client:visible
+  question="Rellena el modo de fallo y su remedio."
+  text="Cuando la magnitud de la jacobiana por paso queda por debajo de 1, el gradiente de BPTT {{se desvanece|explota|oscila}} geométricamente con la profundidad, lo que {{no tiene arreglo sencillo de reescalado|se arregla con recorte de gradiente|se arregla con un batch mayor}}; el caso por encima de 1 se domestica con {{recorte de gradiente|dropout|batch norm}}."
+  explanation="Por debajo de 1 → desvanecimiento, y el recorte no puede revivir una señal que ya no está. Por encima de 1 → explosión, que el recorte maneja poniendo tope a la norma del gradiente."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+/>
+
+<Callout variant="warning" title="Ventanas largas no significan memoria larga">
+Alimentar una RNN simple con una ventana de 250 días no le da 250 días de memoria. Con $\rho < 1$, su memoria *efectiva* es de solo unos pocos pasos; el resto de la ventana es decoración que ralentiza el entrenamiento y añade varianza. Si necesitas dependencia de largo alcance, la longitud de la ventana no es la palanca — la arquitectura de la celda lo es.
+</Callout>
+
+Vuelve a mirar la isla principal: activa **RNN simple** y arrastra el deslizador de longitud hacia fuera. Observa cómo el sombreado de la contribución de la primera entrada se desvanece hasta casi negro en una docena de pasos — eso es $\rho^{T}$ renderizado como opacidad.
+
+### Cuándo usarlo
+
+Una RNN simple va bien cuando la dependencia genuina es **corta** (unos pocos pasos) y quieres un modelo de secuencia barato y de pocos parámetros — a veces una virtud en muestras financieras minúsculas. En cuanto sospeches de una dependencia que abarque decenas de pasos (un cambio de régimen lento, una acumulación de volatilidad de varios días), la RNN simple es la herramienta equivocada, y te gradúas a una celda con puertas.
+
+## LSTM: la autopista del estado de celda
+
+<MCQ
+  client:visible
+  pretest
+  question="¿Cuál es el cambio estructural clave en una LSTM que permite a los gradientes sobrevivir secuencias largas?"
+  options={[
+    { text: "Un estado de celda aditivo regulado por una puerta de olvido cercana a 1", correct: true },
+    { text: "Una pila de tanh más profunda en cada paso" },
+    { text: "Sustituir tanh por una activación lineal en todas partes" },
+    { text: "Ejecutar la secuencia hacia atrás además de hacia delante" },
+  ]}
+  explanation="La LSTM añade un estado de celda separado c_t actualizado de forma ADITIVA (c_t = f⊙c_{t-1} + i⊙c̃). Cuando la puerta de olvido f está cerca de 1, el camino hacia atrás es casi una multiplicación por 1, así que los gradientes fluyen casi sin amortiguar."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+La celda de Memoria a Largo y Corto Plazo (LSTM, *Long Short-Term Memory*) mantiene dos estados: el habitual estado oculto $h_t$ *y* un **estado de celda** separado $c_t$ — una cinta transportadora protegida para la información de largo plazo. Tres **puertas** sigmoideas (cada una emite valores en $[0,1]$, es decir, "cuánto dejar pasar") lo regulan:
+
+- **Puerta de olvido** $f_t$ — cuánto del estado de celda antiguo conservar.
+- **Puerta de entrada** $i_t$ — cuánto del nuevo candidato escribir.
+- **Puerta de salida** $o_t$ — cuánto del estado de celda exponer como $h_t$.
+
+El candidato es $\tilde{c}_t = \tanh(W_c x_t + U_c h_{t-1} + b_c)$, y el estado de celda se actualiza de forma **aditiva**:
+
+$$c_t = f_t \odot c_{t-1} + i_t \odot \tilde{c}_t, \qquad h_t = o_t \odot \tanh(c_t)$$
+
+($\odot$ es la multiplicación elemento a elemento.) Esa suma es todo el truco. El camino de $c_{t-1}$ a $c_t$ es aproximadamente *multiplicar por $f_t$*, y si la celda aprende $f_t \approx 1$, el gradiente a lo largo de la cinta se multiplica por ~1 en cada paso en lugar de por ~$\rho < 1$. La autopista de información se mantiene abierta.
+
+**Analogía.** La RNN simple obliga a cada recuerdo a pasar por un mezclador `tanh` con pérdidas en cada paso — como fotocopiar una fotocopia. La LSTM añade un sobre sellado (el estado de celda) que puedes elegir llevar contigo intacto, abriéndolo (puerta de salida) o editándolo (puerta de entrada) solo cuando tú decidas.
+
+### Ejemplo resuelto
+
+Compara la supervivencia de largo alcance de un factor simple frente a una puerta de olvido de LSTM. Supón que la celda aprende $f_t = 0.97$. A lo largo de 20 pasos la contribución del estado de celda escala por
+
+$$0.97^{20} = e^{20 \ln 0.97} = e^{20 \cdot (-0.03046)} = e^{-0.609} \approx 0.54.$$
+
+Aproximadamente **la mitad** de la señal sobrevive 20 pasos. El $0.6^{20} \approx 3.6\times10^{-5}$ de la RNN simple ya se ha desvanecido por seis órdenes de magnitud. Empuja hasta 60 pasos: $0.97^{60} \approx 0.16$ sigue siendo significativo, frente a $0.6^{60} \approx 4.7\times10^{-14}$ — muerto.
+
+| Pasos $T$ | Simple $0.6^{T}$ | LSTM $0.97^{T}$ |
+|---|---|---|
+| 5 | 0.078 | 0.859 |
+| 20 | $3.6\times10^{-5}$ | 0.544 |
+| 60 | $4.7\times10^{-14}$ | 0.161 |
+| 120 | $2.2\times10^{-27}$ | 0.026 |
+
+La puerta de olvido no está fijada en 0,97 — se *aprende paso a paso*, así que la celda puede mantener un recuerdo abierto a lo largo de un régimen y cerrarlo de golpe cuando el régimen se rompe. Esa adaptabilidad es lo que el $\rho^T$ en bruto nunca puede hacer.
+
+<Categorize
+  client:visible
+  question="Clasifica cada pieza según si pertenece a una RNN simple o es nueva en la LSTM."
+  buckets={["RNN simple", "Nuevo en LSTM"]}
+  items={[
+    { text: "Único estado oculto h_t a través de tanh", bucket: "RNN simple" },
+    { text: "Pesos compartidos a lo largo del tiempo", bucket: "RNN simple" },
+    { text: "Estado de celda aditivo c_t", bucket: "Nuevo en LSTM" },
+    { text: "Puertas de olvido, entrada y salida", bucket: "Nuevo en LSTM" },
+    { text: "Retención aprendida por paso cercana a 1", bucket: "Nuevo en LSTM" },
+  ]}
+  explanation="Compartir pesos y un estado oculto mezclado con tanh se heredan de la RNN simple. El estado de celda, las tres puertas y la retención aprendida cercana a 1 son las aportaciones de la LSTM."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Coloca cada elemento en su grupo."
+/>
+
+<Callout variant="warning" title="Las puertas cuestan parámetros — y los parámetros cuestan muestras">
+Una LSTM tiene aproximadamente 4× los parámetros recurrentes de una RNN simple (un conjunto de pesos por puerta más el candidato). Con los tamaños de muestra efectivos minúsculos de la lección 1, esa capacidad extra es un arma de doble filo: resuelve el desvanecimiento pero invita al sobreajuste. Un modelo de secuencia más potente sobre 300 observaciones efectivas todavía puede memorizar ruido — exactamente la trampa que martilleó la lección anterior.
+</Callout>
+
+### Cuándo usarlo
+
+Usa una LSTM cuando tengas **dependencia de largo alcance genuina y datos suficientes para alimentar los parámetros extra** — series de alta frecuencia o intradía donde las muestras abundan, o secuencias donde mantener un estado abierto durante decenas de pasos importe claramente. Sobre unos pocos cientos de regímenes diarios no solapados, una LSTM suele estar sobrearmada; regulariza con agresividad o recurre al primo más esbelto de abajo.
+
+## GRU: el primo simplificado
+
+<MCQ
+  client:visible
+  pretest
+  question="Frente a una LSTM, la Unidad Recurrente con Puertas (GRU) se diferencia principalmente por..."
+  options={[
+    { text: "Usar menos puertas y fusionar el estado de celda y el oculto, así que tiene menos parámetros", correct: true },
+    { text: "Añadir una cuarta puerta para más capacidad" },
+    { text: "Eliminar todas las puertas para correr más rápido" },
+    { text: "Procesar la secuencia solo en sentido inverso" },
+  ]}
+  explanation="La GRU se reduce a dos puertas (reinicio y actualización) y un único vector de estado, descartando el estado de celda separado y la puerta de salida. Menos parámetros — a menudo una ventaja, no un defecto, en muestras pequeñas."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+La GRU es la LSTM después de una dieta. Mantiene un único vector de estado (sin estado de celda separado) y usa solo **dos** puertas:
+
+- **Puerta de actualización** $z_t$ — cuánto del estado antiguo conservar frente a sobrescribir (hace el trabajo de olvido *y* de entrada a la vez).
+- **Puerta de reinicio** $r_t$ — cuánto del estado pasado dejar entrar en el nuevo candidato.
+
+$$\tilde{h}_t = \tanh\!\big(W x_t + U (r_t \odot h_{t-1}) + b\big), \qquad h_t = (1 - z_t)\odot h_{t-1} + z_t \odot \tilde{h}_t$$
+
+Esa mezcla convexa $h_t = (1-z_t)h_{t-1} + z_t\tilde{h}_t$ es la autopista de la GRU: cuando $z_t \approx 0$ el estado se arrastra casi intacto (memoria larga), cuando $z_t \approx 1$ se reescribe por completo (reacciona a un shock). El mismo truco del camino aditivo que la LSTM, con menos piezas móviles.
+
+**Analogía.** Si la LSTM es un coche con acelerador, freno y una guantera sellada por separado, la GRU es un coche eléctrico con un único pedal regenerativo que acelera y frena a la vez. Menos controles, normalmente igual de buena la conducción.
+
+### Ejemplo resuelto
+
+El número de parámetros es el titular. Para un tamaño oculto $H$ y un tamaño de entrada $D$, los bloques recurrentes necesitan aproximadamente:
+
+| Celda | Bloques de puerta/candidato | Parámetros aprox. |
+|---|---|---|
+| RNN simple | 1 | $H(D+H) + H$ |
+| GRU | 3 (reinicio, actualización, candidato) | $3\,[H(D+H)+H]$ |
+| LSTM | 4 (olvido, entrada, salida, candidato) | $4\,[H(D+H)+H]$ |
+
+Con $D = 10$ entradas y $H = 32$ unidades ocultas, un bloque es $32(10+32)+32 = 1376$. Así que GRU $\approx 4128$ y LSTM $\approx 5504$ parámetros recurrentes — la GRU ahorra ~25 %. En un conjunto de datos con unos pocos cientos de observaciones efectivas, **cada parámetro que no tienes es un parámetro que no puedes sobreajustar**. Por eso las GRU frecuentemente igualan o superan a las LSTM en series financieras pequeñas y ruidosas a pesar de ser "menos potentes".
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Una GRU tiene menos parámetros que una LSTM, así que debe ser estrictamente más débil. Verdadero o falso — ¿y por qué importa en finanzas?</summary>
+
+**Respuesta.** Falso. "Más débil" solo importa si la capacidad extra de la LSTM se *usa de forma productiva*. En las muestras efectivas minúsculas de las finanzas, los parámetros extra de la LSTM ajustan ruido más a menudo que señal. El espacio de hipótesis más pequeño de la GRU es un regularizador incorporado, así que a menudo *generaliza mejor* fuera de muestra. La capacidad solo es un activo cuando tienes los datos para disciplinarla — la lección central del capítulo anterior.
+
+</details>
+</Reveal>
+
+### Cuándo usarlo
+
+Opta por la GRU sobre la LSTM por defecto cuando **los datos sean escasos y quieras puertas sin la hinchazón de parámetros** — lo que describe la mayoría de los problemas financieros de frecuencia diaria. Prefiere la LSTM solo cuando tengas datos abundantes y empíricamente descubras que su puerta extra se gana su sitio (a veces cierto en secuencias muy largas y ricas en información, como flujos completos de libro de órdenes).
+
+## ¿Ayudan realmente las RNN en finanzas?
+
+<MCQ
+  client:visible
+  pretest
+  question="En la mayoría de las tareas de previsión financiera de frecuencia diaria, ¿cómo suelen comportarse las LSTM/GRU frente a los árboles potenciados por gradiente?"
+  options={[
+    { text: "Con frecuencia los árboles potenciados las igualan o superan", correct: true },
+    { text: "Las superan de forma fiable y drástica" },
+    { text: "Tienen garantizado matemáticamente ganar porque modelan secuencia" },
+    { text: "No se pueden comparar porque los árboles no pueden usar características rezagadas" },
+  ]}
+  explanation="Los árboles devoran encantados características rezagadas/diseñadas y son mucho más eficientes en muestras. Con datos diarios pequeños y ruidosos, los árboles potenciados por gradiente con frecuencia igualan o superan a las redes recurrentes. Las RNN se ganan su sitio sobre todo con datos grandes, estructurados y de mayor frecuencia."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+Aquí viene la parte aleccionadora. Todo lo de arriba es elegante — y en la mayoría de los problemas financieros, una RNN todavía pierde frente a un árbol potenciado. ¿Por qué?
+
+- **Muestra efectiva minúscula (vuelta a la lección 1).** Recuerda: miles de filas diarias autocorrelacionadas colapsan a unos pocos cientos de regímenes independientes y no solapados. Las redes recurrentes tienen *más* parámetros que un MLP y los mismos datos famélicos — el riesgo de sobreajuste sube, no baja.
+- **Entrenamiento secuencial, no paralelizable.** BPTT debe procesar los pasos en orden; no puedes paralelizar a lo largo del eje del tiempo como sí pueden un Transformer o un barrido de divisiones de árbol. El entrenamiento es lento, lo que significa menos experimentos, lo que significa más sobreajuste vía grados de libertad del investigador (tus instintos de Sharpe deflactado deberían estar haciendo tic).
+- **Los árboles y las TCN te comen el bocadillo.** Los árboles potenciados por gradiente devoran características de rezago diseñadas y son tremendamente eficientes en muestras. Las Redes Convolucionales Temporales (TCN, convoluciones causales dilatadas) consiguen campos receptivos largos *con* paralelismo total y a menudo mejor estabilidad que las RNN.
+
+¿Dónde se ganan de verdad su sitio las redes recurrentes? **Datos grandes, estructurados y de mayor frecuencia** con rica microestructura secuencial: secuencias de libro de órdenes (LOB), flujos de ticks, secuencias de eventos intradía — lugares donde las muestras abundan y el orden de los micro-eventos lleva señal de verdad. Allí el problema de la muestra efectiva se alivia y el sesgo inductivo de secuencia rinde.
+
+<TsOverfitCurve client:visible caption="La pérdida dentro de muestra sigue cayendo a medida que sube la complejidad del modelo, pero la pérdida fuera de muestra repunta — y una LSTM de alta capacidad sobre unos pocos cientos de observaciones efectivas se sitúa bien a la derecha del punto óptimo." />
+
+<Callout variant="warning" title="El IC dentro de muestra de una RNN te deslumbrará. Ignóralo.">
+Una red recurrente flexible puede exhibir un coeficiente de información dentro de muestra precioso — y un IC fuera de muestra deflactado, purgado, cercano a cero. Evalúa siempre con validación cruzada walk-forward purgada y con embargo (Aprendizaje Automático para el Alfa), reporta el Sharpe *deflactado* y presupuesta tus ensayos. Si una RNN no puede superar a un GBM regularizado en números honestos fuera de muestra, no se despliega.
+</Callout>
+
+### Cuándo usarlo
+
+Usa un modelo recurrente en finanzas cuando (1) los datos sean de alta frecuencia o por lo demás grandes en muestra *efectiva*, (2) la microestructura secuencial plausiblemente lleve señal, y (3) ya hayas confirmado que una línea base más simple (lineal regularizada, GBM, TCN) no domina. Si no, el valor por defecto honesto es: empieza con árboles, y haz que la RNN *demuestre* que aporta valor fuera de muestra. Regulariza con dureza en cualquier caso — dropout, decaimiento de pesos, tamaños ocultos minúsculos, ventanas cortas.
+
+<MCQ
+  client:visible
+  allowMultiple
+  question="¿Cuáles de estas son razones legítimas por las que las RNN suelen rendir por debajo en datos financieros de frecuencia diaria? (Selecciona todas las que apliquen.)"
+  options={[
+    { text: "Tamaño de muestra efectivo pequeño en relación con el número de parámetros", correct: true },
+    { text: "La BPTT secuencial no puede paralelizar sobre el eje del tiempo, ralentizando la iteración", correct: true },
+    { text: "Los árboles potenciados por gradiente y las TCN son líneas base fuertes y eficientes en muestras", correct: true },
+    { text: "Las RNN son incapaces de representar autocorrelación" },
+  ]}
+  explanation="Las tres primeras son reales. La última es falsa — las RNN sí pueden representar autocorrelación; el problema es la economía de datos y entrenamiento, no la capacidad de representación."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+## Repaso
+
+<MindMap
+  client:visible
+  title="Modelos recurrentes para secuencias de mercado"
+  caption="De la celda recurrente compartida a las autopistas con puertas y al baño de realidad de las finanzas."
+  root={{
+    label: "Modelos recurrentes",
+    children: [
+      { label: "Celda recurrente", children: [
+        { label: "h_t = tanh(Wx + Uh_{t-1} + b)" },
+        { label: "Desenrollar = una celda compartida, T copias" },
+      ]},
+      { label: "Desvanece/explota", children: [
+        { label: "BPTT = producto de jacobianas ≈ ρ^T" },
+        { label: "ρ<1 se desvanece; ρ>1 explota (recorta)" },
+      ]},
+      { label: "LSTM", children: [
+        { label: "Estado de celda aditivo c_t" },
+        { label: "Puerta de olvido ≈1 mantiene abierta la autopista" },
+      ]},
+      { label: "GRU", children: [
+        { label: "Puertas de reinicio + actualización, un estado" },
+        { label: "Menos params → menos sobreajuste" },
+      ]},
+      { label: "En finanzas", children: [
+        { label: "Muestra efectiva minúscula; BPTT lenta" },
+        { label: "Brilla con datos de LOB/alta frecuencia" },
+      ]},
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Modelos recurrentes — repaso mixto"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  nextLabel="Siguiente pregunta"
+  backLabel="Atrás"
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  seeResultsLabel="Ver resultados"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  gateLabel="Comprueba tu respuesta para continuar."
+  questions={[
+    {
+      question: "La magnitud de la jacobiana por paso de una RNN simple es de unos 0,9. ¿Qué fracción del gradiente sobrevive aproximadamente 20 pasos hacia atrás?",
+      options: [
+        { text: "Alrededor de 0,12" },
+        { text: "Alrededor de 0,9", correct: false },
+        { text: "Alrededor de 0,12, es decir, 0,9^20 ≈ 0,122", correct: true },
+        { text: "Alrededor de 1,0" },
+      ],
+      explanation: "0,9^20 = e^{20 ln 0,9} = e^{-2,107} ≈ 0,122 — atenuándose pero todavía no muerto, a diferencia de 0,6^20.",
+    },
+    {
+      question: "¿Qué elemento de diseño explica de forma más directa por qué la LSTM resiste los gradientes que se desvanecen?",
+      options: [
+        { text: "La actualización aditiva del estado de celda con una puerta de olvido cercana a 1", correct: true },
+        { text: "Usar más unidades ocultas" },
+        { text: "Sustituir tanh por sigmoide" },
+        { text: "Ejecutar BPTT durante más épocas" },
+      ],
+      explanation: "El aditivo c_t = f⊙c_{t-1} + i⊙c̃ con f≈1 hace que el camino hacia atrás sea casi una multiplicación por 1, manteniendo vivos los gradientes.",
+    },
+    {
+      question: "En un conjunto de datos pequeño de frecuencia diaria, ¿por qué podría una GRU generalizar mejor que una LSTM?",
+      options: [
+        { text: "Tiene menos parámetros, así que menos margen para sobreajustar el ruido", correct: true },
+        { text: "Tiene un estado de celda separado del que carece la LSTM" },
+        { text: "Se entrena en paralelo a lo largo del tiempo mientras que la LSTM no puede" },
+        { text: "No puede representar memoria de largo alcance, evitando el problema" },
+      ],
+      explanation: "El diseño de dos puertas y un solo estado de la GRU es más esbelto; en muestras famélicas, menos parámetros actúan como regularización. (Sí tiene memoria larga vía la puerta de actualización.)",
+    },
+    {
+      question: "Ves un modelo recurrente con un IC dentro de muestra estelar. Detecta la trampa.",
+      options: [
+        { text: "El IC dentro de muestra es casi inútil sin un fuera de muestra purgado y con embargo, deflactado por ensayos", correct: true },
+        { text: "Un IC alto dentro de muestra garantiza alfa fuera de muestra" },
+        { text: "El IC solo se aplica a modelos lineales" },
+        { text: "Deberías desplegarlo en vivo de inmediato" },
+      ],
+      explanation: "Los modelos flexibles sobreajustan trivialmente dentro de muestra. Júzgalo por el IC fuera de muestra walk-forward purgado y el Sharpe deflactado, con un presupuesto de ensayos — directo de Aprendizaje Automático para el Alfa.",
+    },
+    {
+      question: "Causa → efecto: la memoria efectiva de una RNN con ρ = 0,6 es de solo unos pocos pasos. ¿Qué consigue alimentarla con una ventana de 250 días?",
+      options: [
+        { text: "Añade cómputo y varianza sin extender la memoria real", correct: true },
+        { text: "Aumenta linealmente su memoria a 250 días" },
+        { text: "Arregla el gradiente que se desvanece automáticamente" },
+        { text: "Reduce el número de parámetros" },
+      ],
+      explanation: "La longitud de la ventana no es la palanca de la memoria — la arquitectura de la celda lo es. Con ρ<1, la ventana extra es decoración que ralentiza el entrenamiento y añade varianza.",
+    },
+  ]}
+/>

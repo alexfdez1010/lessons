@@ -1,0 +1,378 @@
+---
+title: "Recurrent Models: RNN, LSTM & GRU"
+description: "Reading a market sequence one step at a time — the recurrence and the unrolling mental model, the vanishing- and exploding-gradient problem that cripples plain RNNs, and how LSTM and GRU gating build an information highway that survives a long window."
+topic: "en/deep-learning-for-market-data"
+order: 2
+minutes: 16
+updated: 2026-06-19
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, SequenceModelUnroll, TsOverfitCurve } from '@/components/react';
+
+Last lesson we watched a multilayer perceptron stumble in finance: with a tiny *effective* sample size (a few hundred non-overlapping regimes hiding behind thousands of autocorrelated rows), it either memorized noise or learned nothing. But the MLP had a deeper sin — it treated each day as an unordered bag of features. It didn't know that yesterday came before today.
+
+Markets are sequences. Returns arrive in order, volatility clusters (your GARCH lesson), and yesterday's shock leaks into today. The natural fix is a model that **reads the series one step at a time, carrying a running memory** — a summary of everything it has seen so far. That is exactly what a recurrent neural network does. Whether it helps more than it hurts is the question we'll keep poking at.
+
+## The recurrent cell and unrolling
+
+<MCQ
+  client:visible
+  pretest
+  question="A 'recurrent' cell processes a length-T sequence. How many distinct sets of trainable weights does it use across the T steps?"
+  options={[
+    { text: "One shared set, reused at every step", correct: true },
+    { text: "T independent sets, one per step" },
+    { text: "Two sets, alternating each step" },
+    { text: "It scales with the batch size, not T" },
+  ]}
+  explanation="The whole point of recurrence is weight sharing: the same cell (same W, U, b) is applied at every time step. 'Unrolling' over T steps does not create T sets of parameters."
+/>
+
+A recurrent cell keeps a **hidden state** $h_t$ — its mental summary so far — and updates it as each new input $x_t$ arrives:
+
+$$h_t = \tanh\left(W x_t + U h_{t-1} + b\right)$$
+
+Read it left to right: the new input $x_t$ gets transformed by $W$, the old memory $h_{t-1}$ gets transformed by $U$, you add a bias $b$, and squash through $\tanh$ to keep values in $[-1, 1]$. An output (say, a return prediction) is read off $h_t$ via another linear layer. The matrices $W$, $U$, $b$ are **the same at every step** — they are the cell, and the cell is the model.
+
+**Analogy.** You're reading a sentence. You don't re-read the whole paragraph at every word — you keep a running gist in your head and update it with each new word. $h_{t-1}$ is your gist before the current word, $x_t$ is the word, $h_t$ is your updated gist. "Unrolling" is just drawing that one reader as a chain of copies, one per word — but it's still *one reader*, not a committee of $T$ readers.
+
+### Worked example
+
+Take a scalar toy cell: $W = 0.5$, $U = 0.8$, $b = 0$, and a sequence of returns $x_1 = 1.0$, $x_2 = -0.5$. Start $h_0 = 0$.
+
+- Step 1: $h_1 = \tanh(0.5 \cdot 1.0 + 0.8 \cdot 0) = \tanh(0.5) \approx 0.462$.
+- Step 2: $h_2 = \tanh(0.5 \cdot (-0.5) + 0.8 \cdot 0.462) = \tanh(-0.25 + 0.370) = \tanh(0.120) \approx 0.119$.
+
+Notice $h_2$ depends on $x_1$ *only through* $h_1$ — the memory is the channel through which the past reaches the present. Break that channel and history disappears.
+
+<SequenceModelUnroll client:visible caption="One cell, unrolled over T steps: each input x_t feeds the hidden cell h_t, which also receives an arrow from h_{t-1}. Shading shows how much of the FIRST input survives down the chain. Toggle Vanilla RNN vs Gated and drag the length slider." />
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Hidden state hₜ", definition: "The running summary carried from one step to the next" },
+    { term: "Recurrence matrix U", definition: "How the previous memory is mixed into the new memory" },
+    { term: "Input matrix W", definition: "How the current observation enters the cell" },
+    { term: "Unrolling", definition: "Drawing the single shared cell as a chain of T copies" },
+  ]}
+/>
+
+<Callout variant="warning" title="Unrolling does not mean more parameters">
+A common beginner mistake: "I'll unroll over 60 days, so my model has 60× the capacity." No. Unrolling is a *visualization* of one shared cell applied 60 times. The parameter count is fixed regardless of sequence length. What grows with $T$ is the *computation graph* (and the memory needed to backprop through it), not the number of weights.
+</Callout>
+
+### When to use it
+
+Reach for recurrence when **order genuinely carries information** and the same local update rule should apply at every step: tick-by-tick order-flow, intraday bars, a rolling window of returns feeding a next-step forecast. If your features are an unordered cross-section (today's value, momentum, quality scores for 500 stocks), recurrence buys you nothing — that's a job for the MLP or, more likely, gradient-boosted trees.
+
+## The vanishing (and exploding) gradient
+
+<MCQ
+  client:visible
+  pretest
+  question="Training an RNN means backpropagating the loss back through every time step. What mathematical operation accumulates as the gradient travels from step T back to step 1?"
+  options={[
+    { text: "A long product of per-step Jacobians", correct: true },
+    { text: "A sum of independent per-step gradients" },
+    { text: "A single matrix inversion" },
+    { text: "An average over the batch dimension" },
+  ]}
+  explanation="Backpropagation through time (BPTT) applies the chain rule across the unrolled chain, so the gradient w.r.t. an early state is a PRODUCT of Jacobians from each step. Products of many factors blow up or collapse fast."
+/>
+
+To train, we backpropagate the loss through the unrolled chain — **backpropagation through time** (BPTT). The chain rule says the gradient of a late loss with respect to an early hidden state is a *product* of one Jacobian per step:
+
+$$\frac{\partial h_T}{\partial h_t} = \prod_{k=t+1}^{T} \frac{\partial h_k}{\partial h_{k-1}}$$
+
+If each factor has magnitude roughly $\rho$, the whole product scales like $\rho^{\,T-t}$. Products of many numbers are unforgiving: a little under 1 and they collapse toward zero (**vanishing**); a little over 1 and they detonate (**exploding**).
+
+**Analogy.** A whispered rumor passed down a line of people. If each person preserves 60% of the message, after 20 people almost nothing of the original survives — that's vanishing. If each person *exaggerates* it 1.2× , after 20 people you've got a screaming conspiracy theory — that's exploding.
+
+### Worked example
+
+Suppose the typical per-step factor is $\rho = 0.6$. Over $T = 20$ steps the gradient to the first input scales by
+
+$$0.6^{20} = e^{20 \ln 0.6} = e^{20 \cdot (-0.511)} = e^{-10.2} \approx 3.6 \times 10^{-5}.$$
+
+The distant past contributes essentially **nothing** to the weight update — the model is structurally blind to dependencies older than a handful of steps. Now flip it: $\rho = 1.2$ gives $1.2^{20} \approx 38.3$, and over 60 steps $1.2^{60} \approx 5.6 \times 10^{4}$ — a gradient that overflows and produces `NaN` losses.
+
+| Per-step factor $\rho$ | After 10 steps | After 20 steps | After 60 steps | Verdict |
+|---|---|---|---|---|
+| 0.6 | $6.0\times10^{-3}$ | $3.6\times10^{-5}$ | $4.7\times10^{-14}$ | vanishes |
+| 0.9 | 0.349 | 0.122 | $1.8\times10^{-3}$ | fades |
+| 1.0 | 1.0 | 1.0 | 1.0 | knife-edge |
+| 1.2 | 6.19 | 38.3 | $5.6\times10^{4}$ | explodes |
+
+The exploding case has a cheap patch — **gradient clipping**: if the gradient's norm exceeds a threshold $\tau$, rescale it to $\tau$ before the update. That caps the blow-up. Vanishing has no such patch; you can't rescale a near-zero gradient back into something informative, because the *signal* is gone, not just the magnitude. That asymmetry is why the architecture itself had to change.
+
+<FillBlank
+  client:visible
+  question="Fill in the failure mode and its remedy."
+  text="When the per-step Jacobian magnitude sits below 1, the BPTT gradient {{vanishes|explodes|oscillates}} geometrically with depth, which {{has no simple rescaling fix|is fixed by gradient clipping|is fixed by a larger batch}}; the above-1 case is tamed by {{gradient clipping|dropout|batch norm}}."
+  explanation="Below 1 → vanishing, and clipping can't revive a signal that's gone. Above 1 → exploding, which clipping handles by capping the gradient norm."
+/>
+
+<Callout variant="warning" title="Long windows don't mean long memory">
+Feeding a plain RNN a 250-day window does not give it 250 days of memory. With $\rho < 1$, its *effective* memory is only a few steps; the rest of the window is decoration that slows training and adds variance. If you need long-range dependence, the window length is not the lever — the cell architecture is.
+</Callout>
+
+Look back at the hero island: toggle **Vanilla RNN** and drag the length slider out. Watch the shading of the first input's contribution fade to near-black within a dozen steps — that's $\rho^{T}$ rendered as opacity.
+
+### When to use it
+
+A vanilla RNN is fine when the genuine dependency is **short** (a few steps) and you want a cheap, low-parameter sequence model — sometimes a virtue on tiny finance samples. The moment you suspect dependence spanning dozens of steps (a slow regime shift, a multi-day vol build-up), the vanilla RNN is the wrong tool, and you graduate to a gated cell.
+
+## LSTM: the cell-state highway
+
+<MCQ
+  client:visible
+  pretest
+  question="What is the key structural change in an LSTM that lets gradients survive long sequences?"
+  options={[
+    { text: "An additive cell state regulated by a forget gate near 1", correct: true },
+    { text: "A deeper tanh stack at every step" },
+    { text: "Replacing tanh with a linear activation everywhere" },
+    { text: "Running the sequence backwards as well as forwards" },
+  ]}
+  explanation="The LSTM adds a separate cell state c_t updated ADDITIVELY (c_t = f⊙c_{t-1} + i⊙c̃). When the forget gate f is near 1, the backward path is near-multiplication-by-1, so gradients flow almost undamped."
+/>
+
+The Long Short-Term Memory cell keeps two states: the usual hidden state $h_t$ *and* a separate **cell state** $c_t$ — a protected conveyor belt for long-term information. Three sigmoid **gates** (each outputs values in $[0,1]$, i.e. "how much to let through") regulate it:
+
+- **Forget gate** $f_t$ — how much of the old cell state to keep.
+- **Input gate** $i_t$ — how much of the new candidate to write.
+- **Output gate** $o_t$ — how much of the cell state to expose as $h_t$.
+
+The candidate is $\tilde{c}_t = \tanh(W_c x_t + U_c h_{t-1} + b_c)$, and the cell state updates **additively**:
+
+$$c_t = f_t \odot c_{t-1} + i_t \odot \tilde{c}_t, \qquad h_t = o_t \odot \tanh(c_t)$$
+
+($\odot$ is elementwise multiplication.) That addition is the whole trick. The path from $c_{t-1}$ to $c_t$ is roughly *multiply by $f_t$*, and if the cell learns $f_t \approx 1$, the gradient along the belt is multiplied by ~1 each step instead of ~$\rho < 1$. The information highway stays open.
+
+**Analogy.** The vanilla RNN forces every memory through a lossy `tanh` mixer at every step — like photocopying a photocopy. The LSTM adds a sealed envelope (the cell state) you can choose to carry forward untouched, only opening it (output gate) or editing it (input gate) when you decide to.
+
+### Worked example
+
+Compare the long-range survival of a vanilla factor versus an LSTM forget gate. Suppose the cell learns $f_t = 0.97$. Over 20 steps the cell-state contribution scales by
+
+$$0.97^{20} = e^{20 \ln 0.97} = e^{20 \cdot (-0.03046)} = e^{-0.609} \approx 0.54.$$
+
+Roughly **half** the signal survives 20 steps. The vanilla RNN's $0.6^{20} \approx 3.6\times10^{-5}$ has already vanished by six orders of magnitude. Push to 60 steps: $0.97^{60} \approx 0.16$ still meaningful, versus $0.6^{60} \approx 4.7\times10^{-14}$ — dead.
+
+| Steps $T$ | Vanilla $0.6^{T}$ | LSTM $0.97^{T}$ |
+|---|---|---|
+| 5 | 0.078 | 0.859 |
+| 20 | $3.6\times10^{-5}$ | 0.544 |
+| 60 | $4.7\times10^{-14}$ | 0.161 |
+| 120 | $2.2\times10^{-27}$ | 0.026 |
+
+The forget gate isn't fixed at 0.97 — it's *learned per step*, so the cell can hold a memory open across a regime and slam it shut when the regime breaks. That adaptivity is what raw $\rho^T$ can never do.
+
+<Categorize
+  client:visible
+  question="Sort each piece by whether it belongs to a vanilla RNN or is new in the LSTM."
+  buckets={["Vanilla RNN", "New in LSTM"]}
+  items={[
+    { text: "Single hidden state h_t through tanh", bucket: "Vanilla RNN" },
+    { text: "Shared weights across time", bucket: "Vanilla RNN" },
+    { text: "Additive cell state c_t", bucket: "New in LSTM" },
+    { text: "Forget, input and output gates", bucket: "New in LSTM" },
+    { text: "Learned per-step retention near 1", bucket: "New in LSTM" },
+  ]}
+  explanation="Weight sharing and a tanh-mixed hidden state are inherited from the vanilla RNN. The cell state, the three gates, and the near-1 learned retention are the LSTM's contributions."
+/>
+
+<Callout variant="warning" title="Gates cost parameters — and parameters cost samples">
+An LSTM has roughly 4× the recurrent parameters of a vanilla RNN (one weight set per gate plus the candidate). On the small effective sample sizes from lesson 1, that extra capacity is a double-edged sword: it solves vanishing but invites overfitting. A more powerful sequence model on 300 effective observations can still memorize noise — exactly the trap the previous lesson hammered.
+</Callout>
+
+### When to use it
+
+Use an LSTM when you have **genuine long-range dependence and enough data to feed the extra parameters** — high-frequency or intraday series where samples are plentiful, or sequences where holding a state open for dozens of steps clearly matters. On a few hundred non-overlapping daily regimes, an LSTM is usually over-armed; regularize aggressively or reach for the leaner cousin below.
+
+## GRU: the streamlined cousin
+
+<MCQ
+  client:visible
+  pretest
+  question="Versus an LSTM, the Gated Recurrent Unit (GRU) primarily differs by..."
+  options={[
+    { text: "Using fewer gates and merging cell and hidden state, so it has fewer parameters", correct: true },
+    { text: "Adding a fourth gate for extra capacity" },
+    { text: "Removing all gating to run faster" },
+    { text: "Processing the sequence only in reverse" },
+  ]}
+  explanation="The GRU collapses to two gates (reset and update) and a single state vector, dropping the separate cell state and output gate. Fewer parameters — often a feature, not a bug, on small samples."
+/>
+
+The GRU is the LSTM after a diet. It keeps a single state vector (no separate cell state) and uses just **two** gates:
+
+- **Update gate** $z_t$ — how much of the old state to keep versus overwrite (it does the forget *and* input job at once).
+- **Reset gate** $r_t$ — how much past state to let into the new candidate.
+
+$$\tilde{h}_t = \tanh\!\big(W x_t + U (r_t \odot h_{t-1}) + b\big), \qquad h_t = (1 - z_t)\odot h_{t-1} + z_t \odot \tilde{h}_t$$
+
+That convex blend $h_t = (1-z_t)h_{t-1} + z_t\tilde{h}_t$ is the GRU's highway: when $z_t \approx 0$ the state is carried almost untouched (long memory), when $z_t \approx 1$ it's fully rewritten (react to a shock). Same additive-path trick as the LSTM, fewer moving parts.
+
+**Analogy.** If the LSTM is a car with separate accelerator, brake, and a sealed glovebox, the GRU is an electric car with one regenerative pedal that does both accelerate and brake. Fewer controls, usually just as good a drive.
+
+### Worked example
+
+Parameter count is the headline. For hidden size $H$ and input size $D$, the recurrent blocks need roughly:
+
+| Cell | Gate/candidate blocks | Approx. parameters |
+|---|---|---|
+| Vanilla RNN | 1 | $H(D+H) + H$ |
+| GRU | 3 (reset, update, candidate) | $3\,[H(D+H)+H]$ |
+| LSTM | 4 (forget, input, output, candidate) | $4\,[H(D+H)+H]$ |
+
+With $D = 10$ inputs and $H = 32$ hidden units, one block is $32(10+32)+32 = 1376$. So GRU $\approx 4128$ and LSTM $\approx 5504$ recurrent parameters — the GRU saves ~25%. On a dataset with a few hundred effective observations, **every parameter you don't have is a parameter you can't overfit**. That's why GRUs frequently match or beat LSTMs on small, noisy financial series despite being "less powerful."
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">A GRU has fewer parameters than an LSTM, so it must be strictly weaker. True or false — and why does it matter in finance?</summary>
+
+**Answer.** False. "Weaker" only matters if the extra LSTM capacity is *used productively*. On finance's tiny effective samples, the LSTM's extra parameters more often fit noise than signal. The GRU's smaller hypothesis space is a built-in regularizer, so it often *generalizes better* out of sample. Capacity is only an asset when you have the data to discipline it — the central lesson of the previous chapter.
+
+</details>
+</Reveal>
+
+### When to use it
+
+Default to the GRU over the LSTM when **data is scarce and you want gating without the parameter bloat** — which describes most daily-frequency finance problems. Prefer the LSTM only when you have abundant data and empirically find its extra gate earns its keep (sometimes true on very long, information-rich sequences like full limit-order-book streams).
+
+## Do RNNs actually help in finance?
+
+<MCQ
+  client:visible
+  pretest
+  question="In most daily-frequency financial forecasting tasks, how do LSTMs/GRUs typically fare against gradient-boosted trees?"
+  options={[
+    { text: "They are frequently matched or beaten by boosted trees", correct: true },
+    { text: "They reliably and dramatically outperform" },
+    { text: "They are mathematically guaranteed to win because they model sequence" },
+    { text: "They cannot be compared because trees can't use lagged features" },
+  ]}
+  explanation="Trees happily eat lagged/engineered features and are far more sample-efficient. On small, noisy daily data, gradient-boosted trees frequently match or beat recurrent nets. RNNs earn their keep mainly on large, structured, higher-frequency data."
+/>
+
+Here's the sobering part. Everything above is elegant — and on most finance problems, an RNN still loses to a boosted tree. Why?
+
+- **Tiny effective sample (callback to lesson 1).** Recall: thousands of autocorrelated daily rows collapse to a few hundred non-overlapping, independent regimes. Recurrent nets have *more* parameters than an MLP and the same starved data — overfitting risk goes up, not down.
+- **Sequential, un-parallel training.** BPTT must process steps in order; you can't parallelize across the time axis the way a Transformer or a tree-split scan can. Training is slow, which means fewer experiments, which means more overfitting via researcher degrees of freedom (your deflated-Sharpe instincts should be twitching).
+- **Trees and TCNs eat your lunch.** Gradient-boosted trees devour engineered lag features and are wildly sample-efficient. Temporal Convolutional Networks (dilated causal convolutions) get long receptive fields *with* full parallelism and often better stability than RNNs.
+
+Where do recurrent nets genuinely earn their keep? **Large, structured, higher-frequency data** with rich sequential micro-structure: limit-order-book (LOB) sequences, tick streams, intraday event sequences — places where samples are abundant and the order of micro-events truly carries signal. There, the effective sample problem eases and the sequence inductive bias pays off.
+
+<TsOverfitCurve client:visible caption="In-sample loss keeps falling as model complexity rises, but out-of-sample loss turns up — and a high-capacity LSTM on a few hundred effective observations sits well to the right of the sweet spot." />
+
+<Callout variant="warning" title="An RNN's in-sample IC will dazzle you. Ignore it.">
+A flexible recurrent net can post a gorgeous in-sample information coefficient — and a deflated, purged, out-of-sample IC near zero. Always evaluate with purged, embargoed walk-forward CV (Machine Learning for Alpha), report the *deflated* Sharpe, and budget your trials. If an RNN can't beat a regularized GBM on honest out-of-sample numbers, it doesn't ship.
+</Callout>
+
+### When to use it
+
+Use a recurrent model in finance when (1) the data is high-frequency or otherwise large in *effective* sample, (2) sequential micro-structure plausibly carries signal, and (3) you've already confirmed a simpler baseline (regularized linear, GBM, TCN) doesn't dominate. Otherwise, the honest default is: start with trees, and make the RNN *prove* it adds out-of-sample value. Regularize hard either way — dropout, weight decay, tiny hidden sizes, short windows.
+
+<MCQ
+  client:visible
+  allowMultiple
+  question="Which of these are legitimate reasons RNNs often underperform on daily-frequency finance data? (Select all that apply.)"
+  options={[
+    { text: "Small effective sample size relative to parameter count", correct: true },
+    { text: "Sequential BPTT can't parallelize over the time axis, slowing iteration", correct: true },
+    { text: "Gradient-boosted trees and TCNs are strong, sample-efficient baselines", correct: true },
+    { text: "RNNs are incapable of representing autocorrelation" },
+  ]}
+  explanation="The first three are real. The last is false — RNNs absolutely can represent autocorrelation; the issue is data and training economics, not representational capacity."
+/>
+
+## Recap
+
+<MindMap
+  client:visible
+  title="Recurrent models for market sequences"
+  caption="From the shared recurrent cell to gated highways to the finance reality check."
+  root={{
+    label: "Recurrent models",
+    children: [
+      { label: "Recurrent cell", children: [
+        { label: "h_t = tanh(Wx + Uh_{t-1} + b)" },
+        { label: "Unrolling = one shared cell, T copies" },
+      ]},
+      { label: "Vanishing/exploding", children: [
+        { label: "BPTT = product of Jacobians ≈ ρ^T" },
+        { label: "ρ<1 vanishes; ρ>1 explodes (clip)" },
+      ]},
+      { label: "LSTM", children: [
+        { label: "Additive cell state c_t" },
+        { label: "Forget gate ≈1 keeps highway open" },
+      ]},
+      { label: "GRU", children: [
+        { label: "Reset + update gates, one state" },
+        { label: "Fewer params → less overfit" },
+      ]},
+      { label: "In finance", children: [
+        { label: "Tiny effective sample; slow BPTT" },
+        { label: "Shines on LOB/high-frequency data" },
+      ]},
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Recurrent models — mixed check"
+  questions={[
+    {
+      question: "A vanilla RNN's per-step Jacobian magnitude is about 0.9. Roughly what fraction of the gradient survives 20 steps back?",
+      options: [
+        { text: "About 0.12" },
+        { text: "About 0.9", correct: false },
+        { text: "About 0.12, i.e. 0.9^20 ≈ 0.122", correct: true },
+        { text: "About 1.0" },
+      ],
+      explanation: "0.9^20 = e^{20 ln 0.9} = e^{-2.107} ≈ 0.122 — fading but not yet dead, unlike 0.6^20.",
+    },
+    {
+      question: "Which design element most directly explains why the LSTM resists vanishing gradients?",
+      options: [
+        { text: "The additive cell-state update with a forget gate near 1", correct: true },
+        { text: "Using more hidden units" },
+        { text: "Replacing tanh with sigmoid" },
+        { text: "Running BPTT for more epochs" },
+      ],
+      explanation: "Additive c_t = f⊙c_{t-1} + i⊙c̃ with f≈1 makes the backward path near-multiply-by-1, keeping gradients alive.",
+    },
+    {
+      question: "On a small daily-frequency dataset, why might a GRU generalize better than an LSTM?",
+      options: [
+        { text: "It has fewer parameters, so less room to overfit the noise", correct: true },
+        { text: "It has a separate cell state the LSTM lacks" },
+        { text: "It trains in parallel across time while the LSTM can't" },
+        { text: "It cannot represent long-range memory, avoiding the issue" },
+      ],
+      explanation: "The GRU's two-gate, single-state design is leaner; on starved samples, fewer parameters act as regularization. (It does have long memory via the update gate.)",
+    },
+    {
+      question: "You see a recurrent model with a stellar in-sample IC. Spot the trap.",
+      options: [
+        { text: "In-sample IC is nearly worthless without purged, embargoed out-of-sample, deflated for trials", correct: true },
+        { text: "A high in-sample IC guarantees out-of-sample alpha" },
+        { text: "IC only applies to linear models" },
+        { text: "You should immediately deploy it live" },
+      ],
+      explanation: "Flexible models trivially overfit in-sample. Judge on purged walk-forward out-of-sample IC and deflated Sharpe, with a trial budget — straight from Machine Learning for Alpha.",
+    },
+    {
+      question: "Cause → effect: an RNN's effective memory with ρ = 0.6 is only a few steps. What does feeding it a 250-day window do?",
+      options: [
+        { text: "Adds compute and variance without extending real memory", correct: true },
+        { text: "Linearly increases its memory to 250 days" },
+        { text: "Fixes the vanishing gradient automatically" },
+        { text: "Reduces the parameter count" },
+      ],
+      explanation: "Window length is not the memory lever — the cell architecture is. With ρ<1, the extra window is decoration that slows training and adds variance.",
+    },
+  ]}
+/>

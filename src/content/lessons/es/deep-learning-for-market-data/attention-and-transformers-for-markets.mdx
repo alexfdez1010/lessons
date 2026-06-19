@@ -1,0 +1,452 @@
+---
+title: "Atención y Transformers para mercados"
+description: "La autoatención como 'quién mira a quién' — atención por producto escalar escalado, por qué un enlace directo de un salto a través del tiempo gana a un estado oculto que decae, atención multicabeza y codificación posicional, transformers sobre el libro de órdenes (el linaje DeepLOB) y el hambre de datos que los castiga en muestras pequeñas."
+topic: "es/deep-learning-for-market-data"
+order: 4
+minutes: 18
+updated: 2026-06-19
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, AttentionWeightsHeatmap, SequenceModelUnroll } from '@/components/react';
+
+A estas alturas ya conocéis dos formas de hacer que una red recuerde el pasado. La RNN/LSTM/GRU enhebra un único estado oculto a través del tiempo como un juego del teléfono — cada paso le susurra al siguiente, y los gradientes se desvanecen a lo largo de la cadena (el problema del gradiente que se desvanece de la lección 2). La Red Convolucional Temporal, en cambio, apila convoluciones dilatadas y causales para ensanchar un campo receptivo *fijo* (lección 3) — rápida y paralela, pero el horizonte es el que cableaste a fuego en el esquema de dilatación.
+
+La atención es la tercera respuesta, y es casi insultantemente directa: **no enhebres memoria ni ensanches una ventana — simplemente deja que cada paso temporal mire directamente a cada otro paso temporal y decida por sí mismo quién importa.** Sin cadena por la que decaer. Sin ventana fija que se quede pequeña. El paso 200 puede leer el paso 1 en un solo salto. Ese es todo el truco, y el Transformer es lo que obtienes cuando construyes una arquitectura entera sin nada más que ese truco.
+
+Vamos a ganárnoslo.
+
+## Autoatención: quién mira a quién
+
+<MCQ
+  client:visible
+  pretest
+  question="Antes de definir nada: en la autoatención, ¿qué calcula realmente cada posición de salida?"
+  options={[
+    { text: "Una media ponderada de vectores de valor de todas las posiciones (permitidas), donde los pesos dicen lo relevante que es cada posición", correct: true },
+    { text: "La única posición pasada más relevante, elegida con un argmax" },
+    { text: "Un decaimiento exponencial fijo de todos los estados ocultos anteriores" },
+    { text: "La convolución de la entrada con un núcleo causal aprendido" }
+  ]}
+  explanation="La autoatención produce una mezcla suave y ponderada de vectores de valor. Los pesos vienen de un softmax sobre similitudes consulta-clave, así que es una selección suave, no un argmax duro, ni un decaimiento fijo, ni una convolución."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+**La analogía.** Imaginad una reunión de la mesa de trading. Tú (la *consulta*) haces una pregunta: "¿qué es relevante para saber hacia dónde va el precio a continuación?". Cada analista de la sala tiene una etiqueta con su nombre (una *clave*) que describe lo que sabe, y un informe (un *valor*) que entregará. Echas un vistazo a cada etiqueta, puntúas lo bien que encaja cada una con tu pregunta, conviertes esas puntuaciones en porcentajes de atención y sales con una *mezcla* de informes ponderada por relevancia. La autoatención es esa reunión, ejecutada para cada paso temporal a la vez, con cada paso haciendo de analista y de preguntón.
+
+**Definición precisa.** Cada token de entrada (digamos, el vector de características en el instante $t$) se proyecta linealmente en tres vectores: una consulta $q_t$, una clave $k_t$ y un valor $v_t$, mediante matrices aprendidas $W_Q, W_K, W_V$. Apílalos en matrices $Q, K, V$. La atención por producto escalar escalado es:
+
+$$\text{Atención}(Q,K,V)=\text{softmax}\!\left(\frac{QK^\top}{\sqrt{d_k}}\right)V$$
+
+La matriz $QK^\top$ contiene todos los productos escalares consulta-clave (las puntuaciones de relevancia en bruto). Dividir por $\sqrt{d_k}$ — donde $d_k$ es la dimensión de las claves — reescala esas puntuaciones. El softmax convierte cada fila en una distribución de probabilidad que suma 1, y multiplicar por $V$ produce la media ponderada de los vectores de valor.
+
+**¿Por qué $\sqrt{d_k}$?** Si $q$ y $k$ tienen entradas aproximadamente independientes de varianza unitaria, su producto escalar $q\cdot k=\sum_{i=1}^{d_k} q_i k_i$ tiene una varianza de aproximadamente $d_k$ — así que crece con la dimensión. Puntuaciones grandes empujan el softmax a la saturación: un peso se va a ~1, el resto a ~0, y el gradiente a través del softmax casi se desvanece. Dividir por $\sqrt{d_k}$ devuelve la varianza a aproximadamente 1, manteniendo el softmax en su régimen sensible y bien condicionado.
+
+**Ejemplo resuelto — un softmax diminuto de 3 claves.** Una consulta atiende a tres claves con $d_k = 4$, así que $\sqrt{d_k}=2$. Supongamos que los productos escalares en bruto son $q\cdot k_1 = 8$, $q\cdot k_2 = 4$, $q\cdot k_3 = 2$.
+
+Escala cada uno por $\sqrt{d_k}=2$: las puntuaciones escaladas son $4,\ 2,\ 1$.
+
+Exponencia: $e^{4}=54{,}60$, $e^{2}=7{,}389$, $e^{1}=2{,}718$. Suma $=64{,}71$.
+
+Normaliza: $w_1 = 54{,}60/64{,}71 = 0{,}844$, $w_2 = 7{,}389/64{,}71 = 0{,}114$, $w_3 = 2{,}718/64{,}71 = 0{,}042$ (suma 1,000).
+
+Ahora mezcla los vectores de valor. Digamos $v_1=[1,0]$, $v_2=[0,1]$, $v_3=[1,1]$. La salida es
+
+$$0{,}844\,[1,0] + 0{,}114\,[0,1] + 0{,}042\,[1,1] = [0{,}886,\ 0{,}156].$$
+
+Fíjate en que la salida se apoya fuertemente en $v_1$ (la clave que mejor encaja) pero no es una elección dura — es una mezcla suave y diferenciable. Ahora compara qué pasa *sin* escalar: las puntuaciones sin escalar $8,4,2$ dan $e^8=2981$, $e^4=54{,}6$, $e^2=7{,}39$, pesos $0{,}980, 0{,}018, 0{,}002$ — el softmax casi se ha colapsado sobre la clave 1, tirando a la basura la mayor parte de la estructura de relevancia y aplanando el gradiente. Eso es exactamente la saturación que $\sqrt{d_k}$ está ahí para prevenir.
+
+Para mercados añadimos una **máscara causal**: una salida en el instante $t$ solo puede atender a claves en instantes $\le t$ (no puedes espiar el futuro). En la matriz de puntuaciones eso pone a cero el triángulo superior *antes* del softmax, así que las posiciones futuras reciben peso 0.
+
+<AttentionWeightsHeatmap client:visible caption="Una matriz de autoatención causal T×T. Cada fila es un paso de salida (consulta); las columnas son los pasos de entrada (clave) a los que atiende; el triángulo superior está enmascarado (sin espiar el futuro) y los pesos de cada fila suman 1 vía softmax. Alterna entre un patrón 'Reciente (momentum)' que se pega a la diagonal, un patrón 'Dirigido por eventos' que pega un pico en una barra pasada y un patrón 'Difuso' que reparte la atención; luego arrastra el deslizador de temperatura del softmax y observa cómo el número efectivo de claves atendidas se expande o se colapsa." />
+
+<Callout variant="warning" title="Los pesos del softmax no son importancias de características">
+Un peso de atención alto significa "esta posición fue útil para mezclar los vectores de valor *aquí*", no "esta entrada causa el objetivo". Los mapas de atención son seductores — parecen una explicación — pero se calculan a partir de proyecciones aprendidas, no son únicos (puedes permutar cabezas y reescalar) y, como es bien sabido, no equivalen a una atribución causal. Trata un mapa de calor bonito como una pista de depuración, nunca como evidencia de que la barra 37 *impulsa* el siguiente retorno.
+</Callout>
+
+### Cuándo usarla
+
+Recurre a la autoatención cuando la relevancia sea **dependiente del contenido e irregular** — cuando qué barra pasada importa dependa de *lo que ocurrió*, no de un retardo fijo. Una sorpresa de resultados, una ruptura de régimen o el reposicionamiento sobre un nivel concreto son cosas a las que la atención puede dirigirse directamente. Si la dependencia es un decaimiento suave de retardo fijo (ayer importa más, luego anteayer, monótonamente), un filtro exponencial barato o un pequeño término AR pueden ajustarla con una fracción de los parámetros — no invoques un Transformer para reaprender una media móvil.
+
+<FillBlank
+  client:visible
+  question="Completa la razón del escalado."
+  text="Dividimos las puntuaciones en bruto por √(d_k) para que el softmax no {{se sature en una distribución casi one-hot|memorice las etiquetas de entrenamiento directamente|ignore por completo los vectores de valor}}, lo que aplanaría el gradiente y descartaría la estructura de relevancia."
+  explanation="Los productos escalares grandes (la varianza crece con d_k) empujan el softmax hacia one-hot, matando el gradiente. Escalar por sqrt(d_k) restaura una varianza más o menos unitaria y un softmax sensible."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+/>
+
+## Por qué la atención gana a la recurrencia en largo alcance
+
+<MCQ
+  client:visible
+  pretest
+  question="Dos posiciones están separadas por 200 pasos. ¿Cuántos saltos computacionales recorre la señal entre ellas en la autoatención frente a una RNN básica?"
+  options={[
+    { text: "O(1) para la atención (un enlace directo); O(T) para la RNN (a través de cada estado oculto intermedio)", correct: true },
+    { text: "O(1) para ambas — son equivalentes en longitud de camino" },
+    { text: "O(T) para la atención; O(1) para la RNN" },
+    { text: "O(log T) para la atención; O(T²) para la RNN" }
+  ]}
+  explanation="La atención conecta dos posiciones cualesquiera directamente: un camino de longitud constante. La RNN debe propagarse a través de todos los estados ocultos intermedios: un camino de longitud proporcional a la distancia T."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+**La analogía.** La RNN es un mensaje pasado de mano en mano por una fila de 200 personas — al final es "mono morado lavavajillas", y cada relevo multiplica otro factor jacobiano, así que el gradiente o se desvanece o explota (exactamente el fallo de la lección 2). La atención es un grupo de chat: la posición 200 menciona con @ a la posición 1 directamente, y el mensaje llega intacto en un solo salto.
+
+**Enunciado preciso.** Define la *longitud máxima de camino* como la mayor distancia, en pasos computacionales, que la información debe recorrer entre dos posiciones de entrada cualesquiera para que interactúen. Para una red recurrente, dos posiciones $i$ y $j$ solo interactúan a través de la cadena de estados ocultos entre ellas, así que la longitud del camino es $O(|i-j|)$, hasta $O(T)$. Para la autoatención, cada posición atiende a todas las demás en una sola capa, así que la longitud del camino es $O(1)$ — independiente de $T$. Caminos cortos significan que los gradientes no tienen que sobrevivir a un largo producto de jacobianos, así que el aprendizaje de largo alcance no decae.
+
+La factura llega como **cómputo y memoria**. La matriz de puntuaciones $QK^\top$ es $T\times T$, así que la autoatención cuesta $O(T^2 \cdot d)$ en tiempo y $O(T^2)$ en memoria. Duplica la longitud de la secuencia y el coste de la atención se cuadruplica.
+
+**Ejemplo resuelto — contando el coste.** Toma $T = 500$ barras y anchura del modelo $d = 64$.
+
+- Camino secuencial de la RNN entre la primera y la última barra: $\approx 500$ saltos; el número de operaciones para procesar la secuencia es $O(T \cdot d^2) = 500 \times 64^2 = 2{.}048{.}000$, pero es *secuencial* — el paso $t+1$ espera al paso $t$.
+- Camino de la autoatención entre dos barras cualesquiera: $1$ salto; el coste dominante es $O(T^2 \cdot d) = 500^2 \times 64 = 16{.}000{.}000$ — unas 8× la aritmética de la RNN aquí, pero **totalmente paralelo** entre posiciones (un gran matmul, sin esperas).
+
+Así que la atención cambia más aritmética (paralelizable) por un camino de gradiente muchísimo más corto y sin cuello de botella secuencial. En hardware moderno el paralelismo suele ganar en tiempo de pared, justo hasta que $T$ se hace lo bastante grande como para que muerda el término de memoria $T^2$.
+
+<SequenceModelUnroll client:visible caption="El contraste hecho visual: el desenrollado recurrente enhebra un estado oculto por la cadena, y la barra de retención de memoria decae cuanto más atrás le pides que recuerde — ese decaimiento ES el gradiente que se desvanece. La autoatención reemplazaría toda esta cadena por una única arista directa del paso i al paso j. Un salto, sin decaimiento." />
+
+| Propiedad | RNN / LSTM | TCN | Transformer |
+|---|---|---|---|
+| Longitud máxima de camino entre posiciones | $O(T)$ | $O(\log T)$ (dilatada) | $O(1)$ |
+| Paralelismo en el tiempo | Ninguno (secuencial) | Total | Total |
+| Cómputo por capa | $O(T\,d^2)$ | $O(T\,k\,d)$ | $O(T^2 d)$ |
+| Horizonte de memoria | Blando, decae (las puertas ayudan) | Fijado por el esquema de dilatación | Secuencia entera, direccionada por contenido |
+| Modo de fallo principal | Gradiente que se desvanece/explota | Se queda pequeño frente al campo receptivo fijo | Coste $O(T^2)$ + hambre de datos |
+
+<Callout variant="warning" title="Longitud de camino O(1) no es cómputo O(1)">
+"Longitud de camino constante" suena a comida gratis — no lo es. El camino de gradiente corto se compra con cómputo y memoria cuadráticos en la longitud de la secuencia. En secuencias financieras largas (piensa en datos tick durante una sesión entera) el término de memoria $T^2$ es la restricción real, y es por lo que los montajes de producción recurren a ventaneo, troceado o variantes de atención eficiente. No confundas la ventaja de *aprendizaje* (caminos cortos) con una ventaja de *coste* (no la hay).
+</Callout>
+
+### Cuándo usarla
+
+Prefiere la atención sobre la recurrencia cuando la dependencia sea **genuinamente de largo alcance y enrutada por contenido**, y tus secuencias sean lo bastante cortas como para que $T^2$ sea asumible. Si $T$ es pequeño (un puñado de retardos) y la señal es local, una LSTM o una TCN son más baratas y más difíciles de sobreajustar. Si $T$ es enorme y la dependencia es mayormente local con raros saltos largos, el campo receptivo de profundidad logarítmica de una TCN suele ser el punto óptimo.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Longitud máxima de camino O(1)", definition: "Dos posiciones cualesquiera interactúan a través de un único enlace directo, así que los gradientes no decaen a lo largo de una cadena" },
+    { term: "Gradiente que se desvanece (lección 2)", definition: "La señal decae a través del largo producto de jacobianos en una cadena recurrente" },
+    { term: "Convolución causal dilatada (lección 3)", definition: "Ensancha un campo receptivo fijo con profundidad logarítmica, sin recurrencia" },
+    { term: "Memoria O(T²)", definition: "La matriz de puntuaciones es T×T, así que duplicar la longitud de la secuencia cuadruplica el coste de la atención" }
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Une cada concepto con su definición."
+/>
+
+## Atención multicabeza y codificación posicional
+
+<MCQ
+  client:visible
+  pretest
+  question="La autoatención calcula una media ponderada sobre posiciones. ¿Qué implica eso si barajas el orden de las barras de entrada antes de añadir cualquier información de posición?"
+  options={[
+    { text: "La salida para un token dado no cambia — la atención por sí sola es invariante a permutaciones, así que el orden debe inyectarse por separado", correct: true },
+    { text: "La salida cambia de signo, porque el orden codifica la dirección" },
+    { text: "No se puede calcular nada en absoluto — la atención requiere entradas ordenadas" },
+    { text: "El softmax recupera automáticamente el orden original a partir de los valores" }
+  ]}
+  explanation="La autoatención básica trata la entrada como un conjunto: permutar las posiciones simplemente permuta las salidas en correspondencia, sin ninguna noción de 'antes' o 'después'. El orden hay que añadirlo explícitamente vía codificaciones posicionales."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+**La analogía de las cabezas.** Un analista solo puede sostener una tesis a la vez. Una mesa contrata a varios — un especialista en momentum, uno en eventos, uno en liquidez — y cada uno lee la misma cinta a través de una lente distinta; luego agrupas sus notas. La **atención multicabeza** ejecuta $h$ cálculos de atención en paralelo, cada uno con sus propias proyecciones $W_Q, W_K, W_V$ de menor dimensión, y concatena los resultados a través de una proyección de salida. Una cabeza puede aprender a seguir la deriva reciente, otra a pegar un pico en un evento pasado concreto, otra a vigilar un nivel.
+
+**Definición precisa.** Con la dimensión del modelo $d_{\text{model}}$ repartida entre $h$ cabezas, cada cabeza trabaja en dimensión $d_k = d_{\text{model}}/h$:
+
+$$\text{cabeza}_i = \text{Atención}(QW_i^Q, KW_i^K, VW_i^V), \qquad \text{MultiCabeza} = \text{Concat}(\text{cabeza}_1,\dots,\text{cabeza}_h)\,W^O.$$
+
+Repartir el presupuesto mantiene el coste total aproximadamente igual que con una sola cabeza, mientras deja que las cabezas se especialicen.
+
+**Codificación posicional.** Como la atención es invariante a permutaciones, añadimos un vector dependiente de la posición $p_t$ al embedding de cada token $x_t$ para que características idénticas en instantes distintos sean distinguibles. Las codificaciones sinusoidales usan
+
+$$PE_{(t,2i)} = \sin\!\left(\frac{t}{10000^{2i/d}}\right), \qquad PE_{(t,2i+1)} = \cos\!\left(\frac{t}{10000^{2i/d}}\right),$$
+
+dando a cada posición una huella multifrecuencia única; los embeddings posicionales aprendidos son, en su lugar, una tabla de búsqueda entrenada. En cualquier caso, el modelo ahora sabe *cuándo* se situó cada token.
+
+**Mini-ejemplo resuelto — por qué el orden importa para los retornos.** Considera dos secuencias de retornos diarios construidas a partir del mismo multiconjunto de movimientos $\{+5\%, -5\%\}$:
+
+- Secuencia A: $+5\%$ y luego $-5\%$. Riqueza acumulada: $1{,}05 \times 0{,}95 = 0{,}9975$ (baja un 0,25%).
+- Secuencia B: $-5\%$ y luego $+5\%$. Riqueza acumulada: $0{,}95 \times 1{,}05 = 0{,}9975$ (también baja un 0,25%).
+
+La capitalización resulta conmutar aquí, así que la *riqueza terminal* es idéntica — pero el **camino** no lo es, y el riesgo vive en el camino. La secuencia A se hundió hasta 1,05 y luego cayó; la secuencia B se hundió hasta 0,95 primero. Una señal de momentum, un stop dinámico, una llamada de margen o una estimación de volatilidad leen estas dos como mundos distintos. Un modelo que no puede distinguir A de B (sin información posicional) literalmente no puede representar "la caída vino primero". El orden no es decoración; es señal.
+
+<Categorize
+  client:visible
+  question="Clasifica cada afirmación bajo el mecanismo que describe."
+  buckets={["Atención multicabeza", "Codificación posicional"]}
+  items={[
+    { text: "Deja que una subcomputación siga el momentum mientras otra pega un pico en un evento pasado", bucket: "Atención multicabeza" },
+    { text: "Divide d_model en h proyecciones de menor dimensión y luego concatena", bucket: "Atención multicabeza" },
+    { text: "Inyecta el 'cuándo' para que permutar las entradas ya no deje las salidas inalteradas", bucket: "Codificación posicional" },
+    { text: "Puede ser sinusoidal multifrecuencia o una tabla de búsqueda aprendida", bucket: "Codificación posicional" }
+  ]}
+  explanation="Las cabezas aportan vistas especializadas y paralelas de la misma secuencia; las codificaciones posicionales suministran la información de orden que la atención en bruto descarta."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Coloca cada elemento en su grupo."
+/>
+
+<Callout variant="warning" title="Las cabezas no vienen pre-etiquetadas como 'momentum' y 'eventos'">
+Es tentador narrar "la cabeza 3 es la cabeza de resultados". En la práctica los roles de las cabezas son emergentes, enredados y a menudo redundantes — los estudios de poda eliminan rutinariamente un buen pellizco de cabezas con pérdida insignificante. No cablees a fuego una interpretación de una cabeza en tu relato de investigación, y no confíes en que una cabeza que a ojo viste como "la cabeza de eventos" vaya a jugar ese papel con datos fuera de muestra o tras un reentrenamiento.
+</Callout>
+
+### Cuándo usarla
+
+Usa varias cabezas siempre que sospeches que coexisten varios patrones relacionales *distintos* (tendencia, reversión a la media, respuesta a eventos) — es casi gratis dado un $d_{\text{model}}$ fijo. Incluye siempre codificación posicional para series temporales; la única vez que la dejarías fuera es para entradas genuinamente de conjunto sin orden (p. ej., atender a través del *corte transversal* de activos en un solo instante, donde no hay un orden intrínseco que codificar).
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Si la riqueza terminal es idéntica para ambos órdenes, ¿por qué necesita un modelo información posicional?</summary>
+
+**Respuesta.** Porque casi todo lo que de verdad nos importa en finanzas es dependiente del camino, aunque el punto final no lo sea. El drawdown, los stops dinámicos, las llamadas de margen, la volatilidad realizada y cualquier señal de momentum o autocorrelación leen los dos órdenes como estados del mundo distintos. La autoatención sin codificación posicional ve ambas secuencias como el mismo *conjunto* de retornos y es estructuralmente incapaz de distinguir "el crash vino primero" de "el rally vino primero". La codificación posicional restaura esa distinción.
+
+</details>
+</Reveal>
+
+## Transformers sobre el libro de órdenes
+
+<MCQ
+  client:visible
+  pretest
+  question="La lección 1 argumentaba que el deep learning se gana el sueldo en subproblemas de alta relación señal-ruido. ¿Qué tarea encaja mejor con el apetito de un Transformer?"
+  options={[
+    { text: "Clasificar el siguiente movimiento del precio medio (sube/plano/baja) a partir de los niveles superiores del libro de órdenes en los próximos ticks", correct: true },
+    { text: "Pronosticar el retorno anual del próximo año de una sola acción a partir de su historial mensual" },
+    { text: "Predecir si el S&P cierra al alza o a la baja mañana a partir del cierre de ayer" },
+    { text: "Estimar el flujo de caja descontado a 10 años de una empresa a partir de sus informes anuales" }
+  ]}
+  explanation="La tarea de nowcasting del LOB es de alta SNR y rica en datos: millones de instantáneas estructuradas, un horizonte corto y una etiqueta mecánicamente cercana a las entradas. Las tareas de retorno a largo horizonte son de baja SNR y hambrientas de datos — lo opuesto a donde brilla el DL."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+**La analogía.** Pronosticar el retorno del próximo año a partir de unas pocas observaciones anuales es como predecir la media de por vida de una moneda a partir de tres lanzamientos — casi todo ruido. Hacer nowcasting del siguiente tick del precio medio a partir del libro de órdenes en vivo se parece más a leer una sala de subastas abarrotada en tiempo real: las pujas y ofertas están *ahí mismo*, apiladas y cuantificadas, y el siguiente movimiento está mecánicamente relacionado con esa presión. Ese es el régimen de alta SNR y rico en datos para el que la lección 1 dijo que el DL estaba hecho.
+
+**El libro de órdenes (LOB) como entrada.** En cada instante el libro lista los mejores $N$ niveles de precio en cada lado con sus tamaños en reposo. Una entrada estándar al estilo DeepLOB son los $N=10$ niveles superiores: para cada nivel, precio de compra, tamaño de compra, precio de venta, tamaño de venta — $10 \times 4 = 40$ características por instantánea — apiladas sobre una ventana de, digamos, las últimas 100 instantáneas. Esto es un tensor *estructurado, normalizado y de alta frecuencia*, no un puñado de barras diarias ruidosas.
+
+**Las etiquetas.** Define el precio medio $m_t = (p^{\text{ask}}_t + p^{\text{bid}}_t)/2$. Para denoisar el temblor a nivel de tick, compara medias suavizadas antes y después: sea $m_-$ el promedio del precio medio sobre los $k$ ticks anteriores y $m_+$ el promedio sobre los $k$ siguientes. La etiqueta es el signo del cambio suavizado frente a un umbral $\alpha$:
+
+$$\ell_t = \begin{cases} \text{sube} & (m_+ - m_-)/m_- > +\alpha \\ \text{plano} & |m_+ - m_-|/m_- \le \alpha \\ \text{baja} & (m_+ - m_-)/m_- < -\alpha \end{cases}$$
+
+Una clasificación de tres clases sube/plano/baja sobre un horizonte de unos pocos ticks.
+
+**Ejemplo resuelto — etiquetar un evento.** Mejor compra $= 100,00$, mejor venta $= 100,02$, así que $m_t = 100{,}01$. Sobre los $k=5$ ticks anteriores el precio medio promedió $m_- = 100{,}00$; sobre los 5 siguientes promedia $m_+ = 100{,}05$. El retorno suavizado es $(100{,}05 - 100{,}00)/100{,}00 = 0{,}0005 = 5$ puntos básicos. Con un umbral $\alpha = 2$ pb, $5 > 2$, así que esta instantánea se etiqueta como **sube**. Si hubiera sido $m_+ = 100{,}01$ (un movimiento de $1$ pb), $1 < 2$, sería **plano** — el umbral absorbe el micro-ruido para que el modelo no se entrene a perseguir redondeos.
+
+**El linaje DeepLOB.** La receta influyente (Zhang, Zohren y Roberts, 2019) es una pila: **convoluciones** sobre los niveles de precio/volumen primero comprimen la instantánea de 40 características en características microestructurales locales (tratando niveles adyacentes como píxeles adyacentes), un **módulo inception** captura patrones multiescala y luego un **modelo temporal** — originalmente una LSTM, en variantes posteriores un bloque de atención/Transformer — integra sobre la ventana temporal antes de un softmax sobre sube/plano/baja. El papel de la atención: dirigir la predicción a los momentos del libro reciente que de verdad importaron (un gran barrido, un desequilibrio repentino) en lugar de difuminarse por toda la ventana.
+
+| | Nowcasting del LOB | Pronóstico de retornos diarios |
+|---|---|---|
+| Relación señal-ruido | Alta (siguiente tick ≈ presión actual) | Brutalmente baja |
+| Número de muestras | Millones de instantáneas/día | Cientos de observaciones/año |
+| Horizonte | Unos pocos ticks / milisegundos | Días a años |
+| Etiqueta | Mecánica, movimiento medio suavizado | Dominada por ruido impronosticable |
+| Veredicto del DL (lección 1) | Juega a favor de las fortalezas del DL | Juega a favor de las debilidades del DL |
+
+<Callout variant="warning" title="El éxito en el LOB no se generaliza hacia arriba a los retornos diarios">
+Los resultados al estilo DeepLOB son reales — pero viven en un régimen concreto: horizonte ultracorto, números de muestras enormes, alta SNR. La gente rutinariamente (y erróneamente) los cita como prueba de que "los Transformers ganan a los modelos clásicos en finanzas", luego atornilla la misma arquitectura a retornos diarios o semanales y se da de bruces. Hacer nowcasting de microestructura y pronosticar retornos macro son deportes distintos. Peor aún, los resultados intradía del LOB que ignoran la latencia, la posición en cola y los costes de transacción pueden ser inoperables incluso cuando la precisión de clasificación es genuina.
+</Callout>
+
+### Cuándo usarlo
+
+Despliega un Transformer-sobre-LOB cuando tengas **datos genuinos de libro de alta frecuencia, un horizonte corto y millones de instantáneas etiquetadas** — y cuando tu backtest modele honestamente la latencia, las comisiones y el realismo de ejecución. No transplantes la arquitectura al pronóstico de retornos de baja frecuencia esperando que la magia siga; ahí los datos son demasiado escasos y demasiado ruidosos para la capacidad del modelo, que es exactamente el problema de la siguiente sección.
+
+<FillBlank
+  client:visible
+  question="Completa el régimen donde los Transformers de LOB se ganan el sueldo."
+  text="La tarea DeepLOB funciona porque el nowcasting del precio medio es un problema {{de alta señal-ruido y rico en datos|de horizonte largo y baja frecuencia|fundamentalmente impronosticable}}, lo opuesto a pronosticar retornos diarios a partir de unos cientos de observaciones anuales."
+  explanation="El nowcasting de microestructura ofrece millones de instantáneas estructuradas y una etiqueta mecánicamente cercana — alta SNR y rico en datos, exactamente el punto óptimo del deep learning de la lección 1."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+/>
+
+## El problema del hambre de datos
+
+<MCQ
+  client:visible
+  pretest
+  question="Entre RNNs, TCNs y Transformers, ¿por qué tiende el Transformer a sobreajustar más rápido en conjuntos pequeños de retornos?"
+  options={[
+    { text: "Tiene la mayor cantidad de parámetros y el sesgo inductivo incorporado más débil, así que con pocos datos memoriza ruido en lugar de aprender estructura", correct: true },
+    { text: "Su atención O(T²) es numéricamente inestable y diverge con pocos datos" },
+    { text: "El softmax solo puede entrenarse con millones de ejemplos por construcción" },
+    { text: "No puede usar regularización, a diferencia de las RNNs y las TCNs" }
+  ]}
+  explanation="La atención impone casi ningún prior estructural (una convolución asume localidad; la recurrencia asume una cadena temporal). Máxima flexibilidad más máximos parámetros más datos ruidosos diminutos igual a sobreajuste rápido. La regularización y el preentrenamiento son las mitigaciones estándar."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+**La analogía.** Una convolución llega con una opinión ("las cosas cercanas se relacionan"), y la recurrencia llega con otra ("el tiempo es una cadena") — estos *sesgos inductivos* son barandillas que restringen lo que el modelo puede ajustar. Un Transformer llega casi sin opinión: cualquier posición puede relacionarse con cualquier posición, aprendido libremente. La máxima flexibilidad es un superpoder cuando los datos abundan y una maldición cuando escasean. Con unos cientos de retornos anuales ruidosos, un modelo sin sesgo y cargado de parámetros es una esponja que absorbe ruido y lo llama señal.
+
+**Enunciado preciso.** El error de generalización se descompone, a grandes rasgos, en sesgo más varianza. Un sesgo inductivo fuerte reduce la varianza a costa de algo de sesgo; el sesgo débil del Transformer y su gran número de parámetros $P$ maximizan la varianza, y la varianza se rige por la razón entre $P$ y el número efectivo de muestras independientes $N$. Las series de retornos financieros tienen un $N$ efectivo diminuto (solapadas, autocorrelacionadas, con cambios de régimen), así que $P/N$ es enorme y el modelo sobreajusta antes de generalizar.
+
+**Ejemplo resuelto — la razón parámetros-muestras.** Supón que un bloque Transformer modesto tiene $P \approx 200{.}000$ parámetros y entrenas con 20 años de retornos diarios de renta variable: $20 \times 252 \approx 5{.}040$ observaciones — y como los retornos están serialmente correlacionados y los regímenes se solapan, el número *efectivo* de muestras independientes podría estar más cerca de unos pocos cientos. Toma $N_{\text{ef}} \approx 250$. Entonces $P/N_{\text{ef}} \approx 200{.}000/250 = 800$ parámetros por muestra efectiva. Un montaje supervisado sano quiere esa razón muy por debajo de 1. A 800 contra 1 el modelo puede ajustar el conjunto de entrenamiento a la perfección y aprender esencialmente nada que sobreviva fuera de muestra.
+
+**Remedios.**
+
+| Remedio | Qué hace | Coste / advertencia |
+|---|---|---|
+| Regularización fuerte (dropout, decaimiento de pesos, parada temprana) | Reduce la capacidad efectiva | Ajustar cada parámetro es en sí mismo una prueba (ver abajo) |
+| Preentrenamiento / transferencia | Aprende estructura de un corpus grande relacionado, afina sobre el objetivo pequeño | Los datos de preentrenamiento deben ser relevantes; el desajuste de régimen perjudica |
+| Modelo más simple | Menor $P$, sesgo más fuerte (LSTM, TCN o simplemente un modelo lineal) | Puede infraajustar estructura genuina de largo alcance |
+| Agrupa el corte transversal | Entrena un modelo a través de muchos activos para elevar el $N$ efectivo | Asume dinámicas compartidas; filtra si no está alineado en el tiempo |
+
+<Callout variant="warning" title="Cada arquitectura que pruebas infla tu recuento de pruebas">
+Aquí está la trampa que hunde carreras: pruebas un modelo de 4 cabezas, luego 8 cabezas, luego añades una capa, luego cambias codificaciones sinusoidales por aprendidas, luego ajustas el dropout — y silenciosamente ejecutas docenas de configuraciones contra los mismos datos. Cada una es una prueba, y cuantas más pruebas ejecutas, más alto será el mejor Sharpe que encuentres *por pura suerte*. Este es exactamente el problema de las pruebas múltiples de Machine Learning para Alfa: debes deflactar tu Sharpe por el número de pruebas. El enorme espacio de diseño de un Transformer lo convierte en un campo de minas de pruebas múltiples — la propia búsqueda de arquitectura fabrica falsos descubrimientos. Preregistra tu diseño y cuenta cada variante.
+</Callout>
+
+### Cuándo usarlo
+
+Usa un Transformer para predicción de retornos solo cuando puedas elevar honestamente el número efectivo de muestras — agrupando un corte transversal amplio, apoyándote en preentrenamiento relevante o trabajando en un régimen de alta frecuencia con millones de instantáneas. De lo contrario, el modelo de menor sesgo y más fuerte (o incluso un modelo lineal regularizado) suele ganar fuera de muestra, y has gastado muchas menos pruebas para llegar ahí. La conclusión sobria — que la lección 6 martilleará — es que **la arquitectura rara vez rescata un problema de baja SNR y hambriento de datos; ajustar la capacidad del modelo al contenido genuino de información es todo el juego.**
+
+<Categorize
+  client:visible
+  question="Cada palanca de abajo o eleva el tamaño efectivo de muestra o reduce la capacidad efectiva. Clasifícalas."
+  buckets={["Eleva el N efectivo", "Reduce la capacidad efectiva"]}
+  items={[
+    { text: "Agrupar el entrenamiento a través de un corte transversal amplio de activos", bucket: "Eleva el N efectivo" },
+    { text: "Preentrenar en un corpus grande relacionado y luego afinar", bucket: "Eleva el N efectivo" },
+    { text: "Aplicar dropout, decaimiento de pesos y parada temprana", bucket: "Reduce la capacidad efectiva" },
+    { text: "Cambiar el Transformer por una LSTM o TCN más pequeña", bucket: "Reduce la capacidad efectiva" }
+  ]}
+  explanation="Más datos (alineados) elevan el N efectivo; la regularización y un modelo de sesgo más fuerte / más pequeño reducen la capacidad efectiva. Ambos empujan la razón P/N hacia la cordura."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Coloca cada elemento en su grupo."
+/>
+
+## Repaso
+
+<MindMap
+  client:visible
+  title="Atención y Transformers para mercados"
+  caption="La autoatención es un enlace directo de un salto a través del tiempo — potente donde la dependencia es de largo alcance y enrutada por contenido, peligrosa donde los datos escasean."
+  root={{
+    label: "Atención y Transformers",
+    children: [
+      {
+        label: "Autoatención",
+        children: [
+          { label: "Mezcla consulta / clave / valor" },
+          { label: "softmax(QKᵀ/√dₖ)V" },
+          { label: "√dₖ previene la saturación del softmax" },
+          { label: "Máscara causal: sin espiar el futuro" }
+        ]
+      },
+      {
+        label: "Por qué gana a la recurrencia",
+        children: [
+          { label: "Longitud de camino O(1) vs O(T)" },
+          { label: "Sin gradiente que se desvanece (lección 2)" },
+          { label: "Coste: O(T²) cómputo y memoria" }
+        ]
+      },
+      {
+        label: "Multicabeza + posición",
+        children: [
+          { label: "Cabezas = vistas relacionales paralelas" },
+          { label: "Invariante a permutaciones → necesita codificación posicional" },
+          { label: "Sinusoidal o aprendida" }
+        ]
+      },
+      {
+        label: "Transformers de LOB",
+        children: [
+          { label: "Precio y tamaño compra/venta de los N superiores" },
+          { label: "Etiqueta: precio medio suavizado sube/plano/baja" },
+          { label: "DeepLOB: conv → inception → temporal" },
+          { label: "Nowcasting de alta SNR (lección 1)" }
+        ]
+      },
+      {
+        label: "Hambre de datos",
+        children: [
+          { label: "Más parámetros, menos sesgo inductivo" },
+          { label: "P/N enorme en retornos → sobreajuste" },
+          { label: "Cada variante infla el recuento de pruebas" },
+          { label: "Preentrenar / agrupar / regularizar / simplificar" }
+        ]
+      }
+    ]
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Atención y Transformers — ponte a prueba"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  nextLabel="Siguiente pregunta"
+  backLabel="Atrás"
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  seeResultsLabel="Ver resultados"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  gateLabel="Comprueba tu respuesta para continuar."
+  questions={[
+    {
+      question: "Una consulta atiende a dos claves con d_k = 4. Los productos escalares en bruto son 6 y 2. Tras escalar por √dₖ, ¿cuáles son las puntuaciones escaladas que se alimentan al softmax?",
+      options: [
+        { text: "3 y 1", correct: true },
+        { text: "6 y 2 (sin escalar)" },
+        { text: "1,5 y 0,5" },
+        { text: "12 y 4" }
+      ],
+      explanation: "√dₖ = √4 = 2, así que cada puntuación en bruto se divide por 2: 6/2 = 3 y 2/2 = 1."
+    },
+    {
+      question: "¿Qué afirmaciones sobre el coste y el alcance de la autoatención son correctas?",
+      allowMultiple: true,
+      options: [
+        { text: "La longitud de camino entre dos posiciones cualesquiera es O(1)", correct: true },
+        { text: "El cómputo y la memoria escalan como O(T²) en la longitud de la secuencia", correct: true },
+        { text: "No necesita información posicional porque el softmax recupera el orden" },
+        { text: "Su corta longitud de camino ayuda a evitar el decaimiento del gradiente de la recurrencia", correct: true }
+      ],
+      explanation: "El camino O(1) y el coste O(T²) son ambos ciertos, y el camino corto es exactamente por lo que los gradientes no decaen a lo largo de una cadena. Pero la atención es invariante a permutaciones — hay que indicarle el orden vía codificaciones posicionales."
+    },
+    {
+      question: "¿Por qué la clasificación del siguiente tick del precio medio a partir del libro de órdenes encaja mejor con un Transformer que pronosticar el retorno bursátil del próximo año?",
+      options: [
+        { text: "Es de alta SNR y rica en datos — millones de instantáneas estructuradas con una etiqueta mecánicamente cercana", correct: true },
+        { text: "Los retornos anuales son demasiado volátiles para poder etiquetarlos" },
+        { text: "El libro de órdenes no tiene ruido, así que cualquier modelo alcanza el 100% de precisión" },
+        { text: "Los Transformers solo pueden procesar datos a escala de milisegundos" }
+      ],
+      explanation: "La lógica de la lección 1: el DL se gana el sueldo en subproblemas de alta SNR y ricos en datos. El nowcasting del LOB es uno; el pronóstico de retornos a largo horizonte, escaso y ruidoso, es lo opuesto."
+    },
+    {
+      question: "Un bloque Transformer tiene 200.000 parámetros; el número efectivo de muestras independientes de tu serie de retornos es de unos 250. ¿Cuál es el riesgo central que señala esta razón de 800 a 1?",
+      options: [
+        { text: "Sobreajuste severo — la capacidad supera con creces la información disponible, así que memoriza ruido", correct: true },
+        { text: "Infraajuste — demasiados pocos parámetros para capturar la señal" },
+        { text: "Desbordamiento numérico en el softmax" },
+        { text: "Nada; la razón es irrelevante para la generalización" }
+      ],
+      explanation: "Cuando P/N_ef es de cientos a uno, el modelo puede ajustar el conjunto de entrenamiento a la perfección mientras no aprende nada que sobreviva fuera de muestra. El sesgo inductivo débil del Transformer lo empeora."
+    },
+    {
+      question: "Pruebas 4 vs 8 cabezas, añades una capa, cambias las codificaciones posicionales y ajustas el dropout — todo contra los mismos datos. ¿Por qué es sospechoso el mejor Sharpe que encuentras?",
+      options: [
+        { text: "Cada configuración es una prueba; más pruebas inflan el mejor Sharpe en muestra por suerte, así que debe deflactarse por pruebas múltiples", correct: true },
+        { text: "Las ratios de Sharpe no se pueden calcular para redes neuronales" },
+        { text: "Ocho cabezas siempre ganan a cuatro, así que la comparación carece de sentido" },
+        { text: "El dropout invalida por completo la ratio de Sharpe" }
+      ],
+      explanation: "Este es el problema de las pruebas múltiples de Machine Learning para Alfa. El vasto espacio de diseño de un Transformer significa que la propia búsqueda de arquitectura fabrica falsos descubrimientos a menos que cuentes cada variante y deflactes en consecuencia."
+    }
+  ]}
+/>

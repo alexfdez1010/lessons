@@ -68,25 +68,6 @@ export interface UpcomingCourse {
  */
 export const upcomingCourses: UpcomingCourse[] = [
   {
-    slug: 'deep-learning-for-market-data',
-    icon: '🔮',
-    difficulty: 'expert',
-    order: 11,
-    accent: 'brand',
-    title: {
-      en: 'Deep Learning for Market Data',
-      es: 'Deep Learning para Datos de Mercado',
-    },
-    description: {
-      en: 'Sequence models on the hardest data there is: RNNs, temporal convolutions and attention for returns and the limit-order book, embeddings for alt-data, and honest, deflated evaluation.',
-      es: 'Modelos de secuencia sobre los datos más difíciles que existen: RNN, convoluciones temporales y atención para retornos y el libro de órdenes, embeddings para datos alternativos, y una evaluación honesta y desinflada.',
-    },
-    dependencies: ['machine-learning-for-alpha', 'time-series-finance'],
-    tags: ['quantitative-finance'],
-    buildNotes:
-      'Deep learning for sequential market data, without the hype: why plain MLPs over-/under-fit low-signal returns, recurrent models (RNN/LSTM/GRU) and their vanishing-gradient story, temporal convolutional networks, attention and transformers applied to returns and to limit-order-book microstructure, embeddings for categorical and alternative data, the tiny-effective-sample-size problem and aggressive regularization (dropout, weight decay, early stopping, data augmentation), purged/embargoed evaluation and the deflated Sharpe applied to DL, and a sober answer to "when does deep learning actually beat gradient boosting in finance?" (usually it does not). Builds directly on machine-learning-for-alpha. Islands: sequence-model-unroll + attention-weights-heatmap.',
-  },
-  {
     slug: 'cross-chain-arbitrage-and-bridge-mev',
     icon: '🌉',
     difficulty: 'expert',
@@ -123,6 +104,44 @@ export const upcomingCourses: UpcomingCourse[] = [
     tags: ['defi', 'quantitative-finance', 'crypto'],
     buildNotes:
       'How the MEV supply chain is being re-architected to give value back to the user who creates it. Order-flow auctions (OFAs): selling the right to backrun/execute a user transaction and refunding the user a share of the bid. Intent-based trading: the user signs a desired outcome, not a transaction, and competing solvers bid to fill it best (CoW Protocol batch auctions with uniform clearing price + coincidence of wants, UniswapX Dutch auctions). MEV-Share and programmable privacy, the SUAVE decentralized-sequencing vision, and the mechanism-design tradeoffs (price improvement vs solver centralization, censorship, trust). Tie back to the cost-stack lesson: this is the "redistribute" verb made concrete. Islands: intent-solver-auction + ofa-refund-split.',
+  },
+  {
+    slug: 'deep-rl-for-execution-and-market-making',
+    icon: '🤖',
+    difficulty: 'expert',
+    order: 14,
+    accent: 'brand',
+    title: {
+      en: 'Deep RL for Execution & Market Making',
+      es: 'Deep RL para Ejecución y Creación de Mercado',
+    },
+    description: {
+      en: 'Where deep learning meets reinforcement learning on the order book: deep policy/value networks for optimal execution and market making, the sim-to-real gap, reward shaping, and why a learned agent so often loses to a simple baseline.',
+      es: 'Donde el deep learning se cruza con el aprendizaje por refuerzo sobre el libro de órdenes: redes profundas de política/valor para ejecución óptima y creación de mercado, la brecha sim-a-real, el diseño de recompensas y por qué un agente aprendido pierde tan a menudo frente a una referencia simple.',
+    },
+    dependencies: ['reinforcement-learning-for-trading', 'deep-learning-for-market-data', 'high-frequency-market-making'],
+    tags: ['quantitative-finance'],
+    buildNotes:
+      'Fuse the RL-for-trading course with the new deep-learning-for-market-data course, pointed at the two canonical control problems: optimal execution (beat Almgren-Chriss/TWAP/VWAP) and market making (Avellaneda-Stoikov as the analytic baseline). Deep function approximation for RL: DQN and its instability on financial state, policy-gradient/REINFORCE, actor-critic (A2C/PPO), and continuous-action control for quoting. The state (LOB features, inventory, time-left), action (child-order size/aggression or bid/ask skew), and reward (implementation shortfall, spread capture minus inventory penalty) design — and how reward shaping silently changes the learned policy. The sim-to-real gap: market impact models, non-stationarity, and why backtested RL agents overfit the simulator. Honest evaluation: compare against Almgren-Chriss and A-S baselines, not against doing nothing. Carry forward the deflated-Sharpe and overfitting discipline. Islands: rl-execution-schedule + market-making-quote-ladder.',
+  },
+  {
+    slug: 'generative-models-for-synthetic-market-data',
+    icon: '🌀',
+    difficulty: 'expert',
+    order: 15,
+    accent: 'accent',
+    title: {
+      en: 'Generative Models for Synthetic Market Data',
+      es: 'Modelos Generativos para Datos de Mercado Sintéticos',
+    },
+    description: {
+      en: 'Manufacturing more market when you have too little: GANs, VAEs and diffusion models for synthetic price paths, the stylized facts a good generator must reproduce, and the hard problem of evaluating — and not fooling yourself with — fake data.',
+      es: 'Fabricar más mercado cuando tienes demasiado poco: GAN, VAE y modelos de difusión para trayectorias de precios sintéticas, los hechos estilizados que un buen generador debe reproducir, y el problema difícil de evaluar —y no engañarte con— datos falsos.',
+    },
+    dependencies: ['deep-learning-for-market-data', 'monte-carlo-finance', 'time-series-finance'],
+    tags: ['quantitative-finance'],
+    buildNotes:
+      'The deep-learning answer to the tiny-effective-sample-size problem from deep-learning-for-market-data: generate more data. Generative models for financial time series — GANs (and the QuantGAN/TimeGAN lineage), variational autoencoders, and diffusion/score-based models — versus the classical Monte-Carlo simulators from monte-carlo-finance (GBM, block bootstrap, regime-switching). The stylized facts a generator MUST reproduce to be useful (fat tails, volatility clustering, autocorrelation of absolute returns, leverage effect) — tie hard to time-series-finance. Uses: data augmentation for training, scenario generation and stress testing, privacy-preserving data sharing, and synthetic backtesting. The central trap, in the spirit of the ML-for-alpha creed: how do you EVALUATE synthetic data, and why training/validating on a generator that learned your history can leak and inflate every downstream backtest? Mode collapse, memorization, and the "is it real or did the GAN just copy?" test. Islands: stylized-facts-checklist + synthetic-vs-real-paths.',
   },
 ];
 

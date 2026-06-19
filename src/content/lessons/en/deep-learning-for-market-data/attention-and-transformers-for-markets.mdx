@@ -1,0 +1,413 @@
+---
+title: "Attention & Transformers for Markets"
+description: "Self-attention as 'who looks at whom' — scaled dot-product attention, why a direct one-hop link across time beats a decaying hidden state, multi-head attention and positional encoding, transformers on the limit-order book (the DeepLOB lineage), and the data-hunger that punishes them on small samples."
+topic: "en/deep-learning-for-market-data"
+order: 4
+minutes: 18
+updated: 2026-06-19
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, AttentionWeightsHeatmap, SequenceModelUnroll } from '@/components/react';
+
+By now you've met two ways to make a network remember the past. The RNN/LSTM/GRU threads a single hidden state through time like a game of telephone — every step whispers to the next, and gradients fade out over the chain (lesson 2's vanishing-gradient problem). The Temporal Convolutional Network instead stacks dilated, causal convolutions to widen a *fixed* receptive field (lesson 3) — fast and parallel, but the horizon is whatever you hard-wired into the dilation schedule.
+
+Attention is the third answer, and it's almost insultingly direct: **don't thread memory, and don't widen a window — just let every time step look directly at every other time step and decide for itself who matters.** No chain to decay through. No fixed window to outgrow. Step 200 can read step 1 in a single hop. That's the whole trick, and the Transformer is what you get when you build an entire architecture out of nothing but that trick.
+
+Let's earn it.
+
+## Self-attention: who looks at whom
+
+<MCQ
+  client:visible
+  pretest
+  question="Before we define anything: in self-attention, what does each output position actually compute?"
+  options={[
+    { text: "A weighted average of value vectors from all (allowed) positions, where the weights say how relevant each position is", correct: true },
+    { text: "The single most relevant past position, picked with an argmax" },
+    { text: "A fixed exponential decay of all earlier hidden states" },
+    { text: "The convolution of the input with a learned causal kernel" }
+  ]}
+  explanation="Self-attention outputs a soft, weighted blend of value vectors. The weights come from a softmax over query-key similarities, so it's a soft selection, not a hard argmax, not a fixed decay, and not a convolution."
+/>
+
+**The analogy.** Picture a trading desk meeting. You (the *query*) ask a question: "what's relevant to where price goes next?" Every analyst in the room has a name tag (a *key*) describing what they know, and a briefing (a *value*) they'll hand over. You glance at every name tag, score how well each matches your question, turn those scores into attention percentages, and walk out with a *blend* of briefings weighted by relevance. Self-attention is that meeting, run for every time step at once, with every step playing both analyst and asker.
+
+**Precise definition.** Each input token (say, the feature vector at time $t$) is linearly projected into three vectors: a query $q_t$, a key $k_t$, and a value $v_t$, via learned matrices $W_Q, W_K, W_V$. Stack them into matrices $Q, K, V$. Scaled dot-product attention is:
+
+$$\text{Attention}(Q,K,V)=\text{softmax}\!\left(\frac{QK^\top}{\sqrt{d_k}}\right)V$$
+
+The matrix $QK^\top$ holds every query-key dot product (the raw relevance scores). Dividing by $\sqrt{d_k}$ — where $d_k$ is the key dimension — rescales those scores. The softmax turns each row into a probability distribution that sums to 1, and multiplying by $V$ produces the weighted average of value vectors.
+
+**Why $\sqrt{d_k}$?** If $q$ and $k$ are roughly independent unit-variance entries, their dot product $q\cdot k=\sum_{i=1}^{d_k} q_i k_i$ has variance about $d_k$ — so it grows with dimension. Large scores push the softmax into saturation: one weight goes to ~1, the rest to ~0, and the gradient through softmax nearly vanishes. Dividing by $\sqrt{d_k}$ pulls the variance back to roughly 1, keeping the softmax in its responsive, well-conditioned regime.
+
+**Worked example — a tiny 3-key softmax.** One query attends to three keys with $d_k = 4$, so $\sqrt{d_k}=2$. Suppose the raw dot products are $q\cdot k_1 = 8$, $q\cdot k_2 = 4$, $q\cdot k_3 = 2$.
+
+Scale each by $\sqrt{d_k}=2$: scaled scores are $4,\ 2,\ 1$.
+
+Exponentiate: $e^{4}=54.60$, $e^{2}=7.389$, $e^{1}=2.718$. Sum $=64.71$.
+
+Normalize: $w_1 = 54.60/64.71 = 0.844$, $w_2 = 7.389/64.71 = 0.114$, $w_3 = 2.718/64.71 = 0.042$ (sums to 1.000).
+
+Now blend the value vectors. Say $v_1=[1,0]$, $v_2=[0,1]$, $v_3=[1,1]$. The output is
+
+$$0.844\,[1,0] + 0.114\,[0,1] + 0.042\,[1,1] = [0.886,\ 0.156].$$
+
+Notice the output leans heavily on $v_1$ (the best-matching key) but isn't a hard pick — it's a soft, differentiable blend. Now compare what happens *without* scaling: the unscaled scores $8,4,2$ give $e^8=2981$, $e^4=54.6$, $e^2=7.39$, weights $0.980, 0.018, 0.002$ — the softmax has nearly collapsed onto key 1, throwing away most of the relevance structure and flattening the gradient. That's exactly the saturation $\sqrt{d_k}$ is there to prevent.
+
+For markets we add a **causal mask**: an output at time $t$ may only attend to keys at times $\le t$ (you can't peek at the future). In the score matrix that zeroes out the upper triangle *before* the softmax, so future positions get weight 0.
+
+<AttentionWeightsHeatmap client:visible caption="A causal T×T self-attention matrix. Each row is one output (query) step; columns are the input (key) steps it attends to; the upper triangle is masked (no peeking at the future) and every row's weights softmax-sum to 1. Flip between a 'Recent (momentum)' pattern that hugs the diagonal, an 'Event-driven' pattern that spikes on one past bar, and a 'Diffuse' pattern that spreads attention; then drag the softmax-temperature slider and watch the effective number of keys attended expand or collapse." />
+
+<Callout variant="warning" title="Softmax weights are not feature importances">
+A high attention weight means "this position was useful for blending the value vectors *here*", not "this input causes the target." Attention maps are seductive — they look like an explanation — but they're computed from learned projections, are not unique (you can permute heads and rescale), and famously do not equal causal attribution. Treat a pretty heatmap as a debugging hint, never as evidence that bar 37 *drives* the next return.
+</Callout>
+
+### When to use it
+
+Reach for self-attention when relevance is **content-dependent and irregular** — when which past bar matters depends on *what happened*, not on a fixed lag. An earnings surprise, a regime break, or a specific level being retested are things attention can route to directly. If the dependency is a smooth, fixed-lag decay (yesterday matters most, then the day before, monotonically), a cheap exponential filter or a small AR term may match it with a fraction of the parameters — don't summon a Transformer to relearn a moving average.
+
+<FillBlank
+  client:visible
+  question="Fill in the scaling rationale."
+  text="We divide the raw scores by √(d_k) so the softmax does not {{saturate into a near one-hot distribution|memorize the training labels directly|ignore the value vectors entirely}}, which would flatten the gradient and discard relevance structure."
+  explanation="Large dot products (variance grows with d_k) push softmax toward one-hot, killing the gradient. Scaling by sqrt(d_k) restores unit-ish variance and a responsive softmax."
+/>
+
+## Why attention beats recurrence for long range
+
+<MCQ
+  client:visible
+  pretest
+  question="Two positions are 200 steps apart. How many computational hops does the signal travel between them in self-attention versus in a vanilla RNN?"
+  options={[
+    { text: "O(1) for attention (one direct link); O(T) for the RNN (through every intermediate hidden state)", correct: true },
+    { text: "O(1) for both — they're equivalent in path length" },
+    { text: "O(T) for attention; O(1) for the RNN" },
+    { text: "O(log T) for attention; O(T²) for the RNN" }
+  ]}
+  explanation="Attention connects any two positions directly: a constant-length path. The RNN must propagate through all intermediate hidden states: a path of length proportional to the distance T."
+/>
+
+**The analogy.** The RNN is a message passed hand-to-hand down a line of 200 people — by the end it's "purple monkey dishwasher," and each handoff multiplies in another Jacobian factor, so the gradient either vanishes or explodes (exactly the failure from lesson 2). Attention is a group chat: position 200 @-mentions position 1 directly, and the message arrives intact in one hop.
+
+**Precise statement.** Define *maximum path length* as the longest distance, in computational steps, that information must travel between any two input positions for them to interact. For a recurrent net, two positions $i$ and $j$ interact only through the chain of hidden states between them, so the path length is $O(|i-j|)$, up to $O(T)$. For self-attention, every position attends to every other in a single layer, so the path length is $O(1)$ — independent of $T$. Short paths mean gradients don't have to survive a long product of Jacobians, so long-range learning doesn't decay.
+
+The bill arrives as **compute and memory**. The score matrix $QK^\top$ is $T\times T$, so self-attention costs $O(T^2 \cdot d)$ time and $O(T^2)$ memory. Double the sequence length and the attention cost quadruples.
+
+**Worked example — counting the cost.** Take $T = 500$ bars and model width $d = 64$.
+
+- RNN sequential path between the first and last bar: $\approx 500$ hops; the operation count to process the sequence is $O(T \cdot d^2) = 500 \times 64^2 = 2{,}048{,}000$, but it's *sequential* — step $t+1$ waits for step $t$.
+- Self-attention path between any two bars: $1$ hop; the dominant cost is $O(T^2 \cdot d) = 500^2 \times 64 = 16{,}000{,}000$ — about 8× the RNN's arithmetic here, but **fully parallel** across positions (one big matmul, no waiting).
+
+So attention trades more (parallelizable) arithmetic for a vastly shorter gradient path and no sequential bottleneck. On modern hardware the parallelism usually wins on wall-clock, right up until $T$ gets large enough that the $T^2$ memory term bites.
+
+<SequenceModelUnroll client:visible caption="The contrast made visual: the recurrent unroll threads one hidden state down the chain, and the memory-retention bar decays the further back you ask it to remember — that decay IS the vanishing gradient. Self-attention would replace this entire chain with a single direct edge from step i to step j. One hop, no decay." />
+
+| Property | RNN / LSTM | TCN | Transformer |
+|---|---|---|---|
+| Max path length between positions | $O(T)$ | $O(\log T)$ (dilated) | $O(1)$ |
+| Parallelism over time | None (sequential) | Full | Full |
+| Compute per layer | $O(T\,d^2)$ | $O(T\,k\,d)$ | $O(T^2 d)$ |
+| Memory horizon | Soft, decays (gating helps) | Fixed by dilation schedule | Whole sequence, content-addressed |
+| Main failure mode | Vanishing/exploding gradient | Outgrows fixed receptive field | $O(T^2)$ cost + data hunger |
+
+<Callout variant="warning" title="O(1) path length is not O(1) compute">
+"Constant path length" sounds like a free lunch — it isn't. The short gradient path is bought with quadratic compute and memory in sequence length. On long financial sequences (think tick data over a full session) the $T^2$ memory term is the real constraint, and it's why production setups reach for windowing, chunking, or efficient-attention variants. Don't confuse the *learning* advantage (short paths) with a *cost* advantage (there isn't one).
+</Callout>
+
+### When to use it
+
+Prefer attention over recurrence when the dependency is **genuinely long-range and content-routed**, and your sequences are short enough that $T^2$ is affordable. If $T$ is small (a handful of lags) and the signal is local, an LSTM or a TCN is cheaper and harder to overfit. If $T$ is enormous and the dependency is mostly local with rare long jumps, a TCN's logarithmic-depth receptive field is often the sweet spot.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Maximum path length O(1)", definition: "Any two positions interact through a single direct link, so gradients don't decay along a chain" },
+    { term: "Vanishing gradient (lesson 2)", definition: "Signal decays through the long product of Jacobians in a recurrent chain" },
+    { term: "Dilated causal convolution (lesson 3)", definition: "Widens a fixed receptive field with logarithmic depth, no recurrence" },
+    { term: "O(T²) memory", definition: "The score matrix is T×T, so doubling sequence length quadruples the attention cost" }
+  ]}
+/>
+
+## Multi-head attention & positional encoding
+
+<MCQ
+  client:visible
+  pretest
+  question="Self-attention computes a weighted average over positions. What does that imply if you shuffle the order of the input bars before adding any position information?"
+  options={[
+    { text: "The output for a given token is unchanged — attention alone is permutation-invariant, so order must be injected separately", correct: true },
+    { text: "The output flips sign, because order encodes direction" },
+    { text: "Nothing can be computed at all — attention requires sorted inputs" },
+    { text: "The softmax automatically recovers the original order from the values" }
+  ]}
+  explanation="Vanilla self-attention treats the input as a set: permuting positions just permutes the outputs correspondingly, with no notion of 'before' or 'after'. Order has to be added explicitly via positional encodings."
+/>
+
+**The analogy for heads.** One analyst can only hold one thesis at a time. A desk hires several — a momentum specialist, an events specialist, a liquidity specialist — and each reads the same tape through a different lens, then you pool their notes. **Multi-head attention** runs $h$ attention computations in parallel, each with its own lower-dimensional $W_Q, W_K, W_V$ projections, and concatenates the results through an output projection. One head can learn to track recent drift, another to spike on a specific past event, another to watch a level.
+
+**Precise definition.** With model dimension $d_{\text{model}}$ split across $h$ heads, each head works in dimension $d_k = d_{\text{model}}/h$:
+
+$$\text{head}_i = \text{Attention}(QW_i^Q, KW_i^K, VW_i^V), \qquad \text{MultiHead} = \text{Concat}(\text{head}_1,\dots,\text{head}_h)\,W^O.$$
+
+Splitting the budget keeps total cost roughly the same as single-head while letting heads specialize.
+
+**Positional encoding.** Because attention is permutation-invariant, we add a position-dependent vector $p_t$ to each token's embedding $x_t$ so identical features at different times are distinguishable. Sinusoidal encodings use
+
+$$PE_{(t,2i)} = \sin\!\left(\frac{t}{10000^{2i/d}}\right), \qquad PE_{(t,2i+1)} = \cos\!\left(\frac{t}{10000^{2i/d}}\right),$$
+
+giving each position a unique multi-frequency fingerprint; learned positional embeddings are a trained lookup table instead. Either way, the model now knows *when* each token sat.
+
+**Worked mini-example — why order matters for returns.** Consider two day-return sequences built from the same multiset of moves $\{+5\%, -5\%\}$:
+
+- Sequence A: $+5\%$ then $-5\%$. Cumulative wealth: $1.05 \times 0.95 = 0.9975$ (down 0.25%).
+- Sequence B: $-5\%$ then $+5\%$. Cumulative wealth: $0.95 \times 1.05 = 0.9975$ (also down 0.25%).
+
+Compounding happens to commute here, so the *terminal wealth* is identical — but the **path** is not, and path is what risk lives on. Sequence A drew down to 1.05 then fell; Sequence B drew down to 0.95 first. A momentum signal, a trailing stop, a margin call, or a volatility estimate all read these two as different worlds. A model that can't tell A from B (no positional info) literally cannot represent "the drop came first." Order is not decoration; it's signal.
+
+<Categorize
+  client:visible
+  question="Sort each statement under the mechanism it describes."
+  buckets={["Multi-head attention", "Positional encoding"]}
+  items={[
+    { text: "Lets one sub-computation track momentum while another spikes on a past event", bucket: "Multi-head attention" },
+    { text: "Splits d_model into h lower-dimensional projections, then concatenates", bucket: "Multi-head attention" },
+    { text: "Injects 'when' so permuting inputs no longer leaves outputs unchanged", bucket: "Positional encoding" },
+    { text: "Can be sinusoidal multi-frequency or a learned lookup table", bucket: "Positional encoding" }
+  ]}
+  explanation="Heads provide parallel specialized views of the same sequence; positional encodings supply the order information that raw attention discards."
+/>
+
+<Callout variant="warning" title="Heads do not come pre-labeled 'momentum' and 'events'">
+It's tempting to narrate "head 3 is the earnings head." In practice head roles are emergent, entangled, and often redundant — pruning studies routinely delete a chunk of heads with negligible loss. Don't hard-code an interpretation of a head into your research story, and don't trust that a head you eyeballed as "the event head" will play that role on out-of-sample data or after a retrain.
+</Callout>
+
+### When to use it
+
+Use multiple heads whenever you suspect several *distinct* relational patterns coexist (trend, mean-reversion, event-response) — it's nearly free given a fixed $d_{\text{model}}$. Always include positional encoding for time series; the only time you'd drop it is for genuinely orderless set inputs (e.g. attending across the *cross-section* of assets at a single timestamp, where there is no intrinsic order to encode).
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">If terminal wealth is identical for both orderings, why does a model still need positional information?</summary>
+
+**Answer.** Because almost everything we actually care about in finance is path-dependent, even when the endpoint isn't. Drawdown, trailing stops, margin calls, realized volatility, and any momentum or autocorrelation signal all read the two orderings as different states of the world. Self-attention without positional encoding sees both sequences as the same *set* of returns and is structurally incapable of distinguishing "the crash came first" from "the rally came first." Positional encoding restores that distinction.
+
+</details>
+</Reveal>
+
+## Transformers on the limit order book
+
+<MCQ
+  client:visible
+  pretest
+  question="Lesson 1 argued deep learning earns its keep on high signal-to-noise subproblems. Which task best fits a Transformer's appetite?"
+  options={[
+    { text: "Classifying the next mid-price move (up/flat/down) from the top levels of the limit order book over the next few ticks", correct: true },
+    { text: "Forecasting next year's annual return of a single stock from its monthly history" },
+    { text: "Predicting whether the S&P closes up or down tomorrow from yesterday's close" },
+    { text: "Estimating a firm's 10-year discounted cash flow from its annual reports" }
+  ]}
+  explanation="The LOB nowcasting task is high-SNR and data-rich: millions of structured snapshots, a short horizon, and a label that's mechanically close to the inputs. The long-horizon return tasks are low-SNR and data-starved — the opposite of where DL shines."
+/>
+
+**The analogy.** Forecasting next year's return from a few yearly observations is like predicting a coin's lifetime average from three flips — mostly noise. Nowcasting the next mid-price tick from the live order book is more like reading a crowded auction room in real time: the bids and offers are *right there*, stacked and quantified, and the next move is mechanically related to that pressure. That's the high-SNR, data-rich regime lesson 1 said DL was built for.
+
+**The limit order book (LOB) as input.** At each instant the book lists the best $N$ price levels on each side with their resting sizes. A standard DeepLOB-style input is the top $N=10$ levels: for each level, the bid price, bid size, ask price, ask size — $10 \times 4 = 40$ features per snapshot — stacked over a window of, say, the last 100 snapshots. This is a *structured, normalized, high-frequency* tensor, not a handful of noisy daily bars.
+
+**The labels.** Define the mid-price $m_t = (p^{\text{ask}}_t + p^{\text{bid}}_t)/2$. To denoise the tick-level wiggle, compare smoothed means before and after: let $m_-$ be the average mid over the previous $k$ ticks and $m_+$ the average over the next $k$. The label is the sign of the smoothed change against a threshold $\alpha$:
+
+$$\ell_t = \begin{cases} \text{up} & (m_+ - m_-)/m_- > +\alpha \\ \text{flat} & |m_+ - m_-|/m_- \le \alpha \\ \text{down} & (m_+ - m_-)/m_- < -\alpha \end{cases}$$
+
+A three-class up/flat/down classification over a horizon of a few ticks.
+
+**Worked example — labeling one event.** Best bid $= 100.00$, best ask $= 100.02$, so $m_t = 100.01$. Over the previous $k=5$ ticks the mid averaged $m_- = 100.00$; over the next 5 it averages $m_+ = 100.05$. The smoothed return is $(100.05 - 100.00)/100.00 = 0.0005 = 5$ basis points. With a threshold $\alpha = 2$ bp, $5 > 2$, so this snapshot is labeled **up**. Had $m_+ = 100.01$ (a $1$ bp move), $1 < 2$, it would be **flat** — the threshold absorbs micro-noise so the model isn't trained to chase rounding.
+
+**The DeepLOB lineage.** The influential recipe (Zhang, Zohren & Roberts, 2019) is a stack: **convolutions** over the price/volume levels first compress the 40-feature snapshot into local microstructure features (treating adjacent levels like adjacent pixels), an **inception module** captures multi-scale patterns, and then a **temporal model** — originally an LSTM, in later variants an attention/Transformer block — integrates over the time window before a softmax over up/flat/down. Attention's role: route the prediction to the moments in the recent book that actually mattered (a big sweep, a sudden imbalance) rather than smearing across the window.
+
+| | LOB nowcasting | Daily-return forecasting |
+|---|---|---|
+| Signal-to-noise | High (next tick ≈ current pressure) | Brutally low |
+| Sample count | Millions of snapshots/day | Hundreds of obs/year |
+| Horizon | A few ticks / milliseconds | Days to years |
+| Label | Mechanical, smoothed mid move | Dominated by unforecastable noise |
+| DL verdict (lesson 1) | Plays to DL's strengths | Plays to DL's weaknesses |
+
+<Callout variant="warning" title="LOB success does not generalize up to daily returns">
+DeepLOB-style results are real — but they live in a specific regime: ultra-short horizon, enormous sample counts, high SNR. People routinely (and wrongly) cite them as proof that "Transformers beat classical models in finance," then bolt the same architecture onto daily or weekly returns and faceplant. Nowcasting microstructure and forecasting macro returns are different sports. Worse, intraday LOB results that ignore latency, queue position, and transaction costs can be untradeable even when the classification accuracy is genuine.
+</Callout>
+
+### When to use it
+
+Deploy a Transformer-on-LOB when you have **genuine high-frequency book data, a short horizon, and millions of labeled snapshots** — and when your backtest models latency, fees, and fill realism honestly. Do not transplant the architecture to low-frequency return forecasting and expect the magic to follow; there the data is too scarce and too noisy for the model's capacity, which is exactly the next section's problem.
+
+<FillBlank
+  client:visible
+  question="Fill in the regime where LOB Transformers earn their keep."
+  text="The DeepLOB task works because mid-price nowcasting is a {{high signal-to-noise, data-rich|long-horizon, low-frequency|fundamentally unforecastable}} problem, the opposite of forecasting daily returns from a few hundred yearly observations."
+  explanation="Microstructure nowcasting offers millions of structured snapshots and a mechanically close label — high SNR and data-rich, exactly lesson 1's sweet spot for deep learning."
+/>
+
+## The data-hunger problem
+
+<MCQ
+  client:visible
+  pretest
+  question="Among RNNs, TCNs, and Transformers, why does the Transformer tend to overfit fastest on small return datasets?"
+  options={[
+    { text: "It has the most parameters and the weakest built-in inductive bias, so with little data it memorizes noise instead of learning structure", correct: true },
+    { text: "Its O(T²) attention is numerically unstable and diverges on small data" },
+    { text: "Softmax can only be trained on millions of examples by construction" },
+    { text: "It cannot use regularization, unlike RNNs and TCNs" }
+  ]}
+  explanation="Attention imposes almost no structural prior (a convolution assumes locality; recurrence assumes a temporal chain). Maximum flexibility plus maximum parameters plus tiny noisy data equals fast overfitting. Regularization and pretraining are the standard mitigations."
+/>
+
+**The analogy.** A convolution arrives with an opinion ("nearby things relate"), and recurrence arrives with another ("time is a chain") — these *inductive biases* are guardrails that constrain what the model can fit. A Transformer arrives with almost no opinion: any position can relate to any position, learned freely. Maximum flexibility is a superpower when data is abundant and a curse when it's scarce. On a few hundred noisy yearly returns, a bias-free, parameter-heavy model is a sponge that soaks up noise and calls it signal.
+
+**Precise statement.** Generalization error decomposes loosely as bias plus variance. Strong inductive bias lowers variance at the cost of some bias; the Transformer's weak bias and large parameter count $P$ maximize variance, and variance is governed by the ratio of $P$ to the effective number of independent samples $N$. Financial return series have a tiny effective $N$ (overlapping, autocorrelated, regime-shifting), so $P/N$ is enormous and the model overfits before it generalizes.
+
+**Worked example — the parameter-to-sample ratio.** Suppose a modest Transformer block has $P \approx 200{,}000$ parameters and you train on 20 years of daily equity returns: $20 \times 252 \approx 5{,}040$ observations — and because returns are serially correlated and regimes overlap, the *effective* independent sample count might be closer to a few hundred. Take $N_{\text{eff}} \approx 250$. Then $P/N_{\text{eff}} \approx 200{,}000/250 = 800$ parameters per effective sample. A healthy supervised setup wants that ratio well below 1. At 800-to-1 the model can fit the training set perfectly and learn essentially nothing that survives out of sample.
+
+**Remedies.**
+
+| Remedy | What it does | Cost / caveat |
+|---|---|---|
+| Heavy regularization (dropout, weight decay, early stopping) | Shrinks effective capacity | Tuning each setting is itself a trial (see below) |
+| Pretraining / transfer | Learns structure from a large related corpus, fine-tunes on the small target | Pretraining data must be relevant; regime mismatch hurts |
+| Simpler model | Lower $P$, stronger bias (LSTM, TCN, or just a linear model) | May underfit genuine long-range structure |
+| Pool the cross-section | Train one model across many assets to raise effective $N$ | Assumes shared dynamics; leaks if not aligned in time |
+
+<Callout variant="warning" title="Every architecture you try inflates your trial count">
+Here's the trap that sinks careers: you try a 4-head model, then 8 heads, then add a layer, then swap sinusoidal for learned encodings, then tune dropout — and quietly run dozens of configurations against the same data. Each one is a trial, and the more trials you run, the higher the best-looking Sharpe you'll find *by pure luck*. This is exactly the multiple-testing problem from Machine Learning for Alpha: you must deflate your Sharpe by the number of trials. A Transformer's huge design space makes it a multiple-testing minefield — the architecture search itself manufactures false discoveries. Pre-register your design and count every variant.
+</Callout>
+
+### When to use it
+
+Use a Transformer for return prediction only when you can honestly raise the effective sample count — pooling a broad cross-section, leaning on relevant pretraining, or working in a high-frequency regime with millions of snapshots. Otherwise, the smaller-bias-stronger model (or even a regularized linear model) usually wins out of sample, and you've spent far fewer trials getting there. The sober bottom line — which lesson 6 will hammer — is that **architecture rarely rescues a low-SNR, data-starved problem; matching model capacity to genuine information content is the whole game.**
+
+<Categorize
+  client:visible
+  question="Each lever below either raises effective sample size or shrinks effective capacity. Sort them."
+  buckets={["Raises effective N", "Shrinks effective capacity"]}
+  items={[
+    { text: "Pool training across a broad cross-section of assets", bucket: "Raises effective N" },
+    { text: "Pretrain on a large related corpus, then fine-tune", bucket: "Raises effective N" },
+    { text: "Apply dropout, weight decay, and early stopping", bucket: "Shrinks effective capacity" },
+    { text: "Swap the Transformer for a smaller LSTM or TCN", bucket: "Shrinks effective capacity" }
+  ]}
+  explanation="More (aligned) data raises effective N; regularization and a stronger-bias / smaller model shrink effective capacity. Both push the P/N ratio toward sanity."
+/>
+
+## Recap
+
+<MindMap
+  client:visible
+  title="Attention & Transformers for markets"
+  caption="Self-attention is a direct one-hop link across time — powerful where the dependency is long-range and content-routed, dangerous where data is scarce."
+  root={{
+    label: "Attention & Transformers",
+    children: [
+      {
+        label: "Self-attention",
+        children: [
+          { label: "Query / key / value blend" },
+          { label: "softmax(QKᵀ/√dₖ)V" },
+          { label: "√dₖ prevents softmax saturation" },
+          { label: "Causal mask: no future peeking" }
+        ]
+      },
+      {
+        label: "Why it beats recurrence",
+        children: [
+          { label: "Path length O(1) vs O(T)" },
+          { label: "No vanishing gradient (lesson 2)" },
+          { label: "Cost: O(T²) compute & memory" }
+        ]
+      },
+      {
+        label: "Multi-head + position",
+        children: [
+          { label: "Heads = parallel relational views" },
+          { label: "Permutation-invariant → need positional encoding" },
+          { label: "Sinusoidal or learned" }
+        ]
+      },
+      {
+        label: "LOB transformers",
+        children: [
+          { label: "Top-N bid/ask price & size" },
+          { label: "Label: smoothed mid up/flat/down" },
+          { label: "DeepLOB: conv → inception → temporal" },
+          { label: "High-SNR nowcasting (lesson 1)" }
+        ]
+      },
+      {
+        label: "Data hunger",
+        children: [
+          { label: "Most params, least inductive bias" },
+          { label: "P/N huge on returns → overfit" },
+          { label: "Each variant inflates trial count" },
+          { label: "Pretrain / pool / regularize / simplify" }
+        ]
+      }
+    ]
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Attention & Transformers — check yourself"
+  questions={[
+    {
+      question: "A query attends to two keys with d_k = 4. The raw dot products are 6 and 2. After scaling by √dₖ, what are the scaled scores fed to the softmax?",
+      options: [
+        { text: "3 and 1", correct: true },
+        { text: "6 and 2 (no scaling applied)" },
+        { text: "1.5 and 0.5" },
+        { text: "12 and 4" }
+      ],
+      explanation: "√dₖ = √4 = 2, so each raw score is divided by 2: 6/2 = 3 and 2/2 = 1."
+    },
+    {
+      question: "Which statements about self-attention's cost and reach are correct?",
+      allowMultiple: true,
+      options: [
+        { text: "The path length between any two positions is O(1)", correct: true },
+        { text: "Compute and memory scale as O(T²) in sequence length", correct: true },
+        { text: "It needs no positional information because softmax recovers order" },
+        { text: "Its short path length helps avoid the vanishing-gradient decay of recurrence", correct: true }
+      ],
+      explanation: "O(1) path and O(T²) cost are both true, and the short path is exactly why gradients don't decay through a chain. But attention is permutation-invariant — it must be told the order via positional encodings."
+    },
+    {
+      question: "Why is next-tick mid-price classification from the order book a better fit for a Transformer than forecasting next year's stock return?",
+      options: [
+        { text: "It's high-SNR and data-rich — millions of structured snapshots with a mechanically close label", correct: true },
+        { text: "Annual returns are too volatile to label at all" },
+        { text: "The order book has no noise, so any model achieves 100% accuracy" },
+        { text: "Transformers can only process millisecond-scale data" }
+      ],
+      explanation: "Lesson 1's logic: DL earns its keep on high-SNR, data-rich subproblems. LOB nowcasting is one; sparse, noisy long-horizon return forecasting is the opposite."
+    },
+    {
+      question: "A Transformer block has 200,000 parameters; the effective independent sample count of your return series is about 250. What's the core risk this 800-to-1 ratio signals?",
+      options: [
+        { text: "Severe overfitting — capacity vastly exceeds the information available, so it memorizes noise", correct: true },
+        { text: "Underfitting — too few parameters to capture the signal" },
+        { text: "Numerical overflow in the softmax" },
+        { text: "Nothing; the ratio is irrelevant to generalization" }
+      ],
+      explanation: "When P/N_eff is hundreds-to-one, the model can fit the training set perfectly while learning nothing that survives out of sample. The Transformer's weak inductive bias makes this worse."
+    },
+    {
+      question: "You test 4 vs 8 heads, add a layer, swap positional encodings, and tune dropout — all against the same data. Why is the best Sharpe you find suspect?",
+      options: [
+        { text: "Each configuration is a trial; more trials inflate the best in-sample Sharpe by luck, so it must be deflated for multiple testing", correct: true },
+        { text: "Sharpe ratios cannot be computed for neural networks" },
+        { text: "Eight heads always beat four, so the comparison is meaningless" },
+        { text: "Dropout invalidates the Sharpe ratio entirely" }
+      ],
+      explanation: "This is the multiple-testing problem from Machine Learning for Alpha. A Transformer's vast design space means the architecture search itself manufactures false discoveries unless you count every variant and deflate accordingly."
+    }
+  ]}
+/>

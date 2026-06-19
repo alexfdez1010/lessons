@@ -1,0 +1,356 @@
+---
+title: "Temporal Convolutional Networks"
+description: "Treat a return series like a 1-D signal: causal convolutions that never peek at the future, dilations that grow the receptive field exponentially with few parameters, residual blocks, and why TCNs often beat RNNs on tabular financial sequences."
+topic: "en/deep-learning-for-market-data"
+order: 3
+minutes: 15
+updated: 2026-06-19
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, SequenceModelUnroll, TsOverfitCurve } from '@/components/react';
+
+Last lesson you watched an LSTM heroically thread a memory cell through a long
+recurrent chain, fighting the vanishing gradient at every step like a relay
+runner who keeps dropping the baton. The gating helped. It always helps. But
+there's a quieter, slightly smug alternative that sidesteps the whole drama:
+**stop threading memory through a fragile chain, and just slide a filter over
+the entire window at once.**
+
+That's the Temporal Convolutional Network (TCN). It borrows the convolution from
+image models, points it at time instead of pixels, and reads your lagged returns
+directly rather than summarizing them into a hidden state that may or may not
+survive the trip. No recurrence, no baton, no apologies.
+
+Here is the contrast we're walking away from — recurrence carrying memory step
+by step through a chain that *gates* can patch but not abolish:
+
+<SequenceModelUnroll client:visible caption="Recurrence (top) passes information hand-to-hand down a chain; gating (bottom) protects the signal but the chain is still the bottleneck. A TCN deletes the chain and reads the window directly with stacked filters." />
+
+The trade we're about to make: give up the RNN's unbounded-but-fragile memory in
+exchange for a **fixed, known, and gradient-stable** memory horizon. For finance,
+where you mostly care about the last few hundred bars and you *desperately* want
+reproducible behavior, that trade is often a steal.
+
+## Causal convolutions
+
+Open with a gut check before the machinery.
+
+<MCQ client:visible pretest question="A 1-D convolution at time t mixes a few neighboring inputs with shared filter weights. What must change so that the output at t can NEVER depend on inputs from after t?" options={[{text: "Pad so the filter only reaches backward in time — output at t uses inputs at t, t-1, t-2, … (causal padding)", correct: true}, {text: "Increase the filter width so it covers the whole series"}, {text: "Normalize the inputs to zero mean before convolving"}, {text: "Use a larger learning rate so future weights decay"}]} explanation="Causality is a padding/alignment property, not a width or training-rate property. You shift the filter so it only looks at the present and the past." />
+
+**Analogy.** A standard convolution is a small sliding stencil — a filter of
+width $k$ — that lays itself over a few consecutive time steps, multiplies each
+input by a learned weight, and sums. A *causal* convolution is that same stencil
+with a strict house rule: it may only rest on the present bar and bars to its
+**left** (the past). It is physically forbidden from leaning into the future.
+Think of a trader who can read the tape only up to *now* — exactly the discipline
+you internalized as **no look-ahead leakage** back in Machine Learning for Alpha.
+
+**Definition.** For input series $x_1, x_2, \dots, x_T$ and a filter with weights
+$w_0, w_1, \dots, w_{k-1}$, a causal 1-D convolution produces
+
+$$
+y_t = \sum_{i=0}^{k-1} w_i \, x_{t-i}.
+$$
+
+Every term has index $t - i \le t$. Nothing from the future enters. In practice
+you implement this by left-padding the sequence with $k-1$ zeros so the output
+length matches the input and the alignment stays causal.
+
+**Worked example.** Take a width-$k=3$ causal filter with weights
+$w_0 = 0.5,\; w_1 = 0.3,\; w_2 = 0.2$ (a little smoothed momentum detector).
+Feed it the last three daily returns ending at $t$:
+
+| index | input return $x$ | weight $w$ | product |
+|---|---|---|---|
+| $t$ | $+0.012$ | $w_0 = 0.5$ | $+0.0060$ |
+| $t-1$ | $-0.004$ | $w_1 = 0.3$ | $-0.0012$ |
+| $t-2$ | $+0.020$ | $w_2 = 0.2$ | $+0.0040$ |
+
+$$
+y_t = 0.0060 - 0.0012 + 0.0040 = 0.0088.
+$$
+
+One output, three multiply-adds, zero peeking. The same three weights then slide
+to compute $y_{t+1}$ from $x_{t+1}, x_t, x_{t-1}$ — weight **sharing** across time
+is what makes the layer cheap and translation-invariant.
+
+<Callout variant="warning" title="The off-by-one that becomes a backtest fairy tale">
+The single most common TCN bug in finance is accidentally building a
+*non-causal* (centered) convolution — the kind image libraries default to —
+which lets $y_t$ peek at $x_{t+1}$. Your model "predicts" returns with eerie
+accuracy in the backtest, you book the Sharpe in your head, and then live trading
+flatlines. Always confirm the padding is left-only and that output $t$ is a pure
+function of inputs $\le t$. A one-step leak is indistinguishable from genius
+until real money disagrees.
+</Callout>
+
+<FillBlank client:visible question="Fill in the alignment rule." text="A convolution is causal when output at time t depends only on inputs at times {{less than or equal to t|strictly greater than t|exactly equal to t|symmetric around t}}, which we enforce by {{left-padding the sequence|right-padding the sequence|center-padding evenly|removing all padding}}." explanation="Causal = uses present and past only (≤ t), implemented with left padding so no future value leaks into the current output." />
+
+### When to use it
+
+Reach for causal convolutions whenever the target is a forecast made *at* time
+$t$ using information available *by* $t$ — basically every honest financial
+prediction task. The single-layer version only sees $k$ steps back, so on its own
+it's a short-memory feature extractor (a learnable moving average, roughly).
+You'd use it standalone for very local patterns; for real memory you stack them
+with dilation, which is next.
+
+## Dilation: a telescope into the past
+
+<MCQ client:visible pretest question="You stack causal conv layers to see further back. With ordinary (dilation-1) filters of width k, how does the receptive field grow as you add layers?" options={[{text: "Linearly — each layer adds only about (k-1) more steps of reach", correct: true}, {text: "Exponentially — each layer doubles the reach for free"}, {text: "Quadratically in the number of layers"}, {text: "It does not grow; depth never increases reach"}]} explanation="Plain stacking is linear: L layers reach ~1+L(k-1). To cover hundreds of steps you'd need hundreds of layers. Dilation is the fix." />
+
+**Analogy.** Ordinary stacking is climbing a ladder one rung per layer — slow.
+**Dilated** convolution is a telescope: each layer skips more of the gaps between
+the bars it samples, so each step up multiplies how far you can see rather than
+merely adding to it. You still touch only $k$ inputs per filter — but they're
+spaced further apart.
+
+**Definition.** A dilated causal convolution with dilation $d$ skips $d-1$ inputs
+between consecutive taps:
+
+$$
+y_t = \sum_{i=0}^{k-1} w_i \, x_{t - d\cdot i}.
+$$
+
+At $d=1$ it's the ordinary causal conv. Stack $L$ layers with dilations
+$1, 2, 4, \dots, 2^{L-1}$ (doubling each layer) and the **receptive field** — how
+many past steps can influence the output — is
+
+$$
+R = 1 + (k-1)\bigl(2^{L} - 1\bigr).
+$$
+
+The reach $2^L$ grows **exponentially** in the number of layers, while the
+parameter count grows only **linearly** (each layer adds the same $\sim k$ weights
+per channel). That asymmetry is the entire selling point.
+
+**Worked example.** Set $k = 2$ and $L = 8$ layers with dilations
+$1, 2, 4, \dots, 128$. Then
+
+$$
+R = 1 + (2-1)\,(2^{8} - 1) = 1 + 1 \cdot 255 = 256.
+$$
+
+Eight layers reach **256 time steps** back — roughly a year of daily bars — using
+a trivial number of weights. Here's the growth laid out layer by layer
+(width $k=2$, so each layer adds $2^{\ell}$ to the reach):
+
+| layer $\ell$ | dilation $d=2^{\ell}$ | reach added $(k-1)d = d$ | cumulative receptive field $R$ | params (weights/channel) |
+|---|---|---|---|---|
+| 0 | 1 | 1 | 2 | 2 |
+| 1 | 2 | 2 | 4 | 2 |
+| 2 | 4 | 4 | 8 | 2 |
+| 3 | 8 | 8 | 16 | 2 |
+| 4 | 16 | 16 | 32 | 2 |
+| 5 | 32 | 32 | 64 | 2 |
+| 6 | 64 | 64 | 128 | 2 |
+| 7 | 128 | 128 | 256 | 2 |
+
+Notice the receptive-field column **doubles** every row while the params column
+sits flat at 2. Reach is exponential; cost is linear. (To double the reach again
+to 512, you add *one* more layer, not 256 more.)
+
+<Callout variant="warning" title="Holes in the telescope: gridding artifacts">
+Doubling dilations is efficient, but if your widths and dilations are chosen
+carelessly, some input positions in the receptive field are never actually
+sampled by any tap — the filters "see through" the gaps and leave checkerboard
+holes (the *gridding* artifact from segmentation literature). With $k=2$ and
+doubling dilations you're fine — coverage is dense — but if you widen dilation
+steps faster than the filter can bridge, you'll have a 256-step "reach" that
+secretly ignores half the bars in it. Verify coverage, don't assume it.
+</Callout>
+
+<MatchConcepts client:visible pairs={[{term: "Dilation d", definition: "Number of input steps between consecutive filter taps; d−1 inputs are skipped"}, {term: "Receptive field R", definition: "How many past time steps can influence a single output, 1+(k−1)(2^L−1) for doubling dilations"}, {term: "Filter width k", definition: "How many inputs one filter touches per application, regardless of how far apart they are"}, {term: "Linear parameter growth", definition: "Adding a layer adds a fixed ~k weights per channel even as reach doubles"}]} />
+
+### When to use it
+
+Dilation is the answer whenever you need long memory without paying for it in
+parameters or depth-induced instability. Pick the dilation schedule so the top
+layer's receptive field **comfortably exceeds** the longest dependency you
+believe exists in the data (e.g. if you think effects persist ~120 bars, build
+$R \ge 200$ for slack). Don't over-build: a receptive field of 4096 on a series
+with 90-bar memory just adds capacity to overfit. More on that next.
+
+## Residual blocks and the full TCN
+
+<MCQ client:visible pretest question="Stacking many dilated conv layers can degrade training — accuracy gets WORSE as you add depth, even on training data. What architectural trick most directly fixes this?" options={[{text: "Residual (skip) connections that add the block's input to its output, so a block need only learn a correction", correct: true}, {text: "Switching the optimizer from Adam to plain SGD"}, {text: "Removing all dropout so gradients flow freely"}, {text: "Using a single giant filter instead of stacking"}]} explanation="Residual connections give gradients a direct highway and let each block default to the identity, which is exactly what cured degradation in deep ResNets — and TCNs inherit it." />
+
+**Analogy.** A residual block is an *edit*, not a *rewrite*. Instead of asking each
+layer to reconstruct the whole signal from scratch, you ask it to produce a small
+correction and then add it back to what came in: "here's the input, plus my two
+cents." If a block has nothing useful to add, it can learn to output ~zero and
+pass the input straight through — so adding depth can't easily *hurt* you.
+
+**Definition.** A TCN residual block wraps two dilated causal convolutions and
+outputs
+
+$$
+\text{out} = \text{Activation}\bigl(x + \mathcal{F}(x)\bigr),
+$$
+
+where $\mathcal{F}$ is the stack of (dilated causal conv → weight norm →
+nonlinearity → dropout), applied twice. The $x +$ term is the skip connection.
+When the input and output channel counts differ, a $1\times1$ convolution
+reshapes $x$ before adding. The standard TCN block ingredients:
+
+| component | what it does | why it's there |
+|---|---|---|
+| Dilated causal conv | the actual time mixing | long memory, no leakage |
+| Weight normalization | rescales filter weights | stabilizes/accelerates training |
+| ReLU (or similar) | nonlinearity | lets the net model non-linear patterns |
+| **Spatial** dropout | drops whole feature channels | regularization that respects time structure |
+| Residual / skip add | adds input back to output | trainable depth, gradient highway |
+
+**Worked example.** Suppose a block's two-conv stack outputs a correction
+$\mathcal{F}(x) = -0.03$ at some step where the input feature is $x = 0.50$.
+The residual output before activation is $0.50 + (-0.03) = 0.47$ — a gentle 6%
+nudge, not a from-scratch rebuild. Now imagine you stack 8 such blocks. With plain
+stacking, an unlucky early layer that learns garbage corrupts everything
+downstream; with residuals, that block can collapse toward $\mathcal{F}(x)\approx 0$,
+output $\approx x$, and the rest of the network is unharmed. That's why you can
+stack deep TCNs (the 8 layers from our dilation example, wrapped in residual
+blocks) without the accuracy *degradation* that plagues naive deep stacks.
+
+Why **spatial** dropout specifically? Ordinary dropout zeros random individual
+activations, which on a smooth time series is like deleting scattered single
+ticks — the network just interpolates around them and the regularization barely
+bites. Spatial dropout zeros entire **channels** across all time steps, forcing
+the network not to lean on any one learned feature. It's regularization that
+takes the temporal correlation seriously.
+
+<Callout variant="warning" title="Receptive field ≠ free memory; you can still overfit ferociously">
+Residual blocks let you stack deep, and dilation lets reach explode — which is
+exactly how you talk yourself into a 12-layer monster with a 4096-step receptive
+field on a series with maybe 2,000 effectively-independent observations. Capacity
+balloons; your *effective* sample size does not (autocorrelation, lesson 1). The
+in-sample curve looks gorgeous and the out-of-sample curve quietly diverges:
+</Callout>
+
+<TsOverfitCurve client:visible title="Bigger TCN, smaller out-of-sample edge" caption="As you add depth/width/receptive field, in-sample loss keeps falling but out-of-sample loss turns up. The minimum of the out-of-sample curve — not the in-sample one — sets the right model size. Regularize hard (dropout, weight norm, modest depth)." />
+
+<Categorize client:visible question="Sort each TCN ingredient by its primary job." buckets={["Extends memory / reach", "Stabilizes or regularizes training"]} items={[{text: "Doubling the dilation each layer", bucket: "Extends memory / reach"}, {text: "Adding more residual blocks (more layers)", bucket: "Extends memory / reach"}, {text: "Spatial dropout on whole channels", bucket: "Stabilizes or regularizes training"}, {text: "Weight normalization", bucket: "Stabilizes or regularizes training"}, {text: "Residual skip connections", bucket: "Stabilizes or regularizes training"}]} explanation="Dilation and depth buy reach; spatial dropout, weight norm, and residual adds keep the deep stack trainable and from overfitting. (Residual adds also slightly extend reach, but their headline job is gradient flow / trainability.)" />
+
+### When to use it
+
+Use the full residual-block TCN — not bare stacked convs — any time you stack
+more than a couple of layers. Below ~3 layers you might skip the skip
+connections; above that, residuals are essentially mandatory to avoid
+degradation. Tune *regularization strength* (dropout rate, depth) against the
+out-of-sample curve, never the in-sample one.
+
+## TCN vs RNN
+
+<MCQ client:visible pretest question="Which property is UNIQUE to convolutional sequence models (TCNs) and NOT shared by a vanilla RNN/LSTM processed step by step?" options={[{text: "The whole sequence can be processed in parallel during training, since output t doesn't wait for output t-1", correct: true}, {text: "It can model nonlinear relationships between inputs and target"}, {text: "It can be regularized with dropout"}, {text: "It produces one output per time step"}]} explanation="RNNs are inherently sequential — step t needs the hidden state from t-1. A TCN's outputs are independent convolutions, so the whole sequence computes at once, which GPUs love." />
+
+**Analogy.** An RNN reads the tape like a person reading a novel — one word at a
+time, holding the plot in (fallible) working memory. A TCN reads it like a
+speed-reader with the whole page open at once, eyes jumping to fixed positions:
+no working memory to lose, but also a hard edge to the page — it literally cannot
+see past the margin (the receptive field).
+
+**The core trade-offs.**
+
+| dimension | TCN (convolutional) | RNN / LSTM / GRU (recurrent) |
+|---|---|---|
+| Training compute | **Parallel** — whole sequence at once, GPU-friendly, fast | **Sequential** — step $t$ waits for $t-1$; slow |
+| Gradient behavior | **Stable** — shallow paths via residuals/dilation; no through-time decay | Prone to **vanishing/exploding** through time (gating mitigates, not cures) |
+| Memory horizon | **Fixed & known** — exactly $R$ steps; hard cutoff | **Unbounded in principle** but fragile and uncertain in practice |
+| Memory beyond horizon | Cannot see past $R$ — period | Can *in theory* retain arbitrarily long context |
+| Inference latency | Slightly heavier per step (re-convolves the window) | Light — carries a small state vector forward |
+| Parameter efficiency for long memory | Excellent (dilation: log-depth) | State must encode everything in one vector |
+
+**Worked example — the speedup is concrete.** Suppose a sequence has $T = 500$
+steps and each layer's arithmetic costs one unit of "work" per step. An RNN must
+execute its 500 steps **in order**: wall-clock $\approx 500$ sequential units,
+because step 437 cannot start before step 436 finishes. A TCN layer applies the
+same filter to all 500 positions **simultaneously**: with enough parallel lanes,
+wall-clock $\approx 1$ unit for that layer, and an 8-layer TCN finishes in
+$\approx 8$ sequential units total instead of $500$. Same FLOPs in aggregate — but
+the *dependency chain* is depth (8), not sequence length (500). On a GPU that's
+the difference between minutes and hours.
+
+The empirical kicker: across many benchmark sequence tasks — and notably on the
+**tabular, medium-horizon** financial series this course cares about — TCNs
+frequently **match or beat** LSTMs while training faster and more stably. The
+recurrent inductive bias isn't magic; for a lot of market data, "read the last
+$R$ bars with stable gradients" wins.
+
+<Callout variant="warning" title="The fixed horizon is a feature AND a trap">
+A TCN's receptive field is a hard wall: a dependency at lag $R+1$ is invisible,
+full stop — no amount of training reveals it. With an LSTM you'd at least have a
+*chance* (however slim) of capturing it through the recurrent state. So if your
+signal genuinely lives in very long-range structure (regime memory spanning
+years of intraday bars), either size $R$ to cover it explicitly or don't assume
+a modest TCN can see it. The known horizon protects you from delusion only if you
+set it honestly.
+</Callout>
+
+<MCQ client:visible allowMultiple question="Select EVERY statement that is true about TCNs relative to recurrent models." options={[{text: "TCN training parallelizes across time; RNN training is sequential", correct: true}, {text: "TCN gradients avoid the through-time vanishing problem that motivated LSTM gating", correct: true}, {text: "A TCN's memory horizon is fixed by its receptive field, not unbounded", correct: true}, {text: "TCNs can capture dependencies arbitrarily far back regardless of receptive field"}, {text: "RNNs are always more accurate than TCNs on financial sequences"}]} explanation="True: parallel training, stable gradients, fixed horizon. False: TCNs are hard-capped at R, and RNNs are NOT reliably more accurate — TCNs often match or beat them on tabular financial data." />
+
+### When to use it
+
+Default to a TCN when you want speed, reproducibility, and a memory horizon you
+can state in a sentence — most intraday and daily forecasting fits here. Lean RNN
+only when you have strong reason to believe the useful memory is both very long
+*and* irregular enough that an honestly-sized receptive field would be
+impractically deep.
+
+## When to use a TCN
+
+<FillBlank client:visible question="Complete the deployment guideline." text="A TCN is a strong default for {{medium-length, leakage-sensitive sequences|extremely tiny tabular datasets|purely cross-sectional snapshots|single-row feature vectors}}, but you should still {{regularize hard given the small effective N|skip dropout to save compute|maximize depth unconditionally|ignore the receptive field}} because financial samples are heavily autocorrelated." explanation="TCNs shine on medium-horizon sequence forecasting with strict causality, but autocorrelation shrinks your effective N (lesson 1), so heavy regularization is non-negotiable." />
+
+**Analogy.** Picking a TCN is like choosing a fixed-focal-length lens: tack-sharp
+and fast within its field of view, useless for what's outside the frame. You buy
+it when you know roughly how wide a shot you need.
+
+**Reach for a TCN when:**
+
+- The sequence is **medium-length** and the dependency horizon is *finite and
+  estimable* — set $R$ to comfortably exceed it (recall $R = 1 + (k-1)(2^L - 1)$).
+- You're working **intraday / microstructure** data where parallel training speed
+  and a **known memory horizon** genuinely matter for iteration and risk control.
+- You want **reproducible, gradient-stable** training and are tired of LSTMs that
+  train differently every Tuesday.
+- **But regularize hard.** Effective $N$ is small because returns are
+  autocorrelated (lesson 1, "Why Deep Learning Struggles in Finance"); lean on
+  spatial dropout, weight norm, modest depth, and walk-forward validation.
+
+**Don't reach for a TCN when:**
+
+- The genuinely-needed memory **exceeds any reasonable receptive field** — the
+  hard horizon will silently amputate the signal.
+- The dataset is **tiny** (a few hundred rows, a handful of features). A
+  gradient-boosted tree or a regularized linear model will usually beat any deep
+  net here — fewer assumptions, less variance, no GPU.
+- The relationships are essentially **cross-sectional / non-temporal**, in which
+  case the convolution-over-time machinery buys you nothing.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">You have ~3 years of 1-minute bars and suspect intraday momentum decays within about 90 minutes. Sketch a TCN that covers it — and say what guards against overfitting.</summary>
+
+**Answer.** A 90-minute horizon is 90 one-minute bars. With $k = 2$ and doubling
+dilations, $L = 7$ layers gives $R = 1 + (2-1)(2^7 - 1) = 128$ steps — comfortably
+over 90 with slack. Wrap the dilated convs in residual blocks (so 7 layers train
+without degradation), add spatial dropout and weight norm, and validate
+walk-forward. The reach is set deliberately just above the believed dependency
+(not 4096), and regularization plus honest out-of-sample validation guard against
+the autocorrelation-shrunk effective $N$. That's a TCN sized with intent rather
+than ego.
+
+</details>
+</Reveal>
+
+### Trade-off summary
+
+The whole pitch in one breath: a TCN trades the RNN's *unbounded-but-fragile*
+memory for a *fixed-but-stable-and-fast* one. When your problem fits inside a
+receptive field you can name, that's a great trade. When it doesn't, the wall is
+real and silent — so name the horizon honestly, regularize like the effective
+sample is small (it is), and validate out of sample.
+
+## Recap
+
+<MindMap client:visible title="Temporal Convolutional Networks" caption="Causal convs read the past only; dilation buys exponential reach for linear cost; residual blocks make depth trainable; the result is a fast, stable, fixed-horizon alternative to RNNs." root={{label: "TCN", children: [{label: "Causal convolution", children: [{label: "Output t uses inputs ≤ t (no leakage)"}, {label: "Left padding enforces it"}, {label: "Weight sharing across time"}]}, {label: "Dilation", children: [{label: "Skip d-1 inputs between taps"}, {label: "Reach R = 1+(k-1)(2^L-1)"}, {label: "Exponential reach, linear params"}]}, {label: "Residual blocks", children: [{label: "out = x + F(x)"}, {label: "Weight norm + spatial dropout"}, {label: "Deep stacks without degradation"}]}, {label: "vs RNN", children: [{label: "Parallel training, stable gradients"}, {label: "Fixed horizon vs fragile unbounded memory"}, {label: "Often matches/beats LSTM on tabular finance"}]}, {label: "When to use", children: [{label: "Medium-length, finite horizon, intraday"}, {label: "Regularize hard (small effective N)"}, {label: "Avoid if memory > R or data tiny"}]}]}} />
+
+<Quiz client:visible title="TCN check" questions={[{question: "A width-2 causal filter with weights w0=0.6, w1=0.4 sees returns x_t=+0.010 and x_{t-1}=-0.005. What is the output y_t?", options: [{text: "0.004", correct: true}, {text: "0.006"}, {text: "0.010"}, {text: "0.001"}], explanation: "y_t = 0.6(0.010) + 0.4(-0.005) = 0.0060 - 0.0020 = 0.0040."}, {question: "A TCN uses k=2 and doubling dilations across L=6 layers. What is its receptive field R?", options: [{text: "64", correct: true}, {text: "32"}, {text: "128"}, {text: "12"}], explanation: "R = 1 + (2-1)(2^6 - 1) = 1 + 63 = 64 steps."}, {question: "Why does a TCN train so much faster than an LSTM on the same long sequence?", options: [{text: "Its outputs don't depend on each other across time, so the whole sequence convolves in parallel; the dependency chain is depth, not length", correct: true}, {text: "It has strictly fewer parameters in every case"}, {text: "It skips the backward pass entirely"}, {text: "Convolutions use lower-precision arithmetic by mandate"}], explanation: "Parallelism over the time axis is the key: an RNN's step t waits for t-1, a TCN's positions are independent."}, {question: "Select every TRUE statement about TCN design.", options: [{text: "Residual connections let you stack many layers without the accuracy degradation of naive deep stacks", correct: true}, {text: "Doubling dilations grows reach exponentially while parameters grow linearly", correct: true}, {text: "Spatial dropout zeros whole feature channels rather than scattered single activations", correct: true}, {text: "A TCN can capture dependencies beyond its receptive field if trained long enough"}], explanation: "Residuals enable depth, dilation buys cheap reach, spatial dropout respects time structure. The receptive field is a hard wall — no training crosses it."}, {question: "Spaced recall: the vanishing-gradient problem from the recurrent-models lesson is best described as…", options: [{text: "Gradients shrinking multiplicatively as they backpropagate through many time steps, so early steps barely learn — which TCNs sidestep with shallow residual/dilated paths", correct: true}, {text: "Weights growing without bound during the forward pass"}, {text: "Dropout removing too many neurons at inference time"}, {text: "The receptive field expanding faster than memory allows"}], explanation: "Vanishing gradients = repeated multiplication by small factors through time, the exact pain LSTMs gate against and TCNs avoid by replacing the long recurrent path with short convolutional ones."}]} />

@@ -1,0 +1,605 @@
+---
+title: "Training & Evaluating DL Without Fooling Yourself"
+description: "Aggressive regularization for a tiny effective sample, purged and embargoed evaluation applied to deep nets, the deflated Sharpe for an architecture search, and the sober bottom line: gradient-boosted trees are the baseline to beat — and on low-signal tabular finance, they usually win."
+topic: "en/deep-learning-for-market-data"
+order: 6
+minutes: 18
+updated: 2026-06-19
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, DeflatedSharpe, PurgedCvSplit, TsOverfitCurve, SignalDecay } from '@/components/react';
+
+You can now build the whole zoo. RNNs and LSTMs that carry state across time, TCNs
+with dilated convolutions, attention and transformers that look across an entire
+window at once, embeddings that turn 4,000 ticker symbols into dense vectors. You
+have the *power*. This lesson is about the much harder skill: **not fooling
+yourself with it.**
+
+This is the deep-learning edition of the creed you swore in *Machine Learning for
+Alpha*. Overfitting is the enemy. An honest IC lives around 0.02–0.05. You purge and
+embargo your cross-validation. You deflate your Sharpe for the number of trials. You
+lock a test set, paper-trade, monitor live IC, and keep a kill-switch. None of that
+gets *repealed* because you switched from ridge to a transformer. It gets
+**amplified**, because a deep net is a vastly more eager noise-memorizer than any
+linear model you've trained before.
+
+The single most useful sentence in this entire course: **a neural network is a
+machine for finding structure, and in financial returns most of the "structure" is
+noise.** Everything below is damage control around that fact.
+
+## Regularization for a tiny sample
+
+<MCQ
+  client:visible
+  pretest
+  question="You're training an LSTM on ~6,000 daily return rows with an effective sample far smaller still. Which reflex is most defensible as a starting point?"
+  options={[
+    { text: "Start with a deliberately SMALL model and heavy regularization, then only grow if a purged validation curve says you may", correct: true },
+    { text: "Start with a large model so it 'has the capacity to learn', then prune later" },
+    { text: "Turn off all regularization first to see the model's raw ceiling" },
+    { text: "Add layers until in-sample loss hits zero, since that proves the data is learnable" },
+  ]}
+  explanation="With a tiny effective sample and low SNR, capacity is risk, not opportunity. Small + regularized is the honest default; you grow only when held-out evidence forces you to."
+/>
+
+Think of regularization as a **leash on an over-eager dog**. The dog (your network)
+will happily chase every squirrel (every noisy wiggle in the training returns). The
+leash doesn't make the dog dumber — it stops it from running into traffic.
+Mathematically, every technique below does the same job: it **trades a little bias
+for a large reduction in variance**, and in a low-SNR regime, variance is what kills
+you out of sample.
+
+**Definition.** Regularization is any constraint, penalty, or noise added during
+training that shrinks the model's *effective* capacity, lowering out-of-sample
+variance at the cost of a small bias increase. The bias–variance decomposition of
+expected squared error makes the deal explicit:
+
+$$\mathbb{E}\big[(y-\hat f)^2\big] = \underbrace{\big(\mathbb{E}[\hat f]-y\big)^2}_{\text{bias}^2} + \underbrace{\mathrm{Var}(\hat f)}_{\text{variance}} + \sigma^2_{\text{irreducible}}$$
+
+The toolbox, and *why* each one shrinks variance:
+
+| Technique | What it does | Why it shrinks variance |
+|---|---|---|
+| **Dropout** (`p≈0.2–0.5`) | Randomly zeroes units each step | Forces redundant, distributed features; approximates a large ensemble |
+| **Weight decay (L2)** | Adds $\lambda\lVert w\rVert_2^2$ to the loss | Pulls weights toward 0, flattening the function it can represent |
+| **Early stopping** | Halt when **purged** validation loss stops improving | Caps the *effective* number of fitted parameters |
+| **Data augmentation** | Noise injection, (block-)bootstrap, mixup | Synthesizes plausible samples so the net can't memorize exact rows |
+| **Ensembling** | Average many seeds/models | Variance of a mean of $k$ decorrelated models falls by up to $1/k$ |
+| **Small models** | Fewer params from the start | Lower capacity = lower variance, full stop |
+
+Note the **block-bootstrap** detail: financial rows are autocorrelated, so you
+resample contiguous *blocks*, not individual days — otherwise you destroy the very
+serial structure your RNN exists to capture.
+
+### Worked example — regularization on a return predictor
+
+You train a GRU to predict next-day cross-sectional returns and report the
+*annualized Sharpe* of the long–short portfolio it implies.
+
+| Setup | In-sample Sharpe | Out-of-sample Sharpe |
+|---|---|---|
+| Unregularized GRU (big, no dropout) | 3.10 | 0.15 |
+| + dropout 0.3, weight decay $\lambda=10^{-3}$ | 1.65 | 0.62 |
+| + early stop on purged val, smaller hidden size, 5-seed ensemble | 1.05 | 0.78 |
+
+Read the columns honestly. Regularization **destroyed** in-sample Sharpe — from 3.10
+to 1.05, a 66% haircut — and that is exactly what you want. The gap between columns
+is the overfitting tax. The unregularized model paid $3.10 - 0.15 = 2.95$ of pure
+fantasy; the final model paid only $1.05 - 0.78 = 0.27$. The out-of-sample number,
+the only one that pays rent, **quadrupled** from 0.15 to 0.78.
+
+<TsOverfitCurve
+  client:visible
+  title="In-sample keeps falling; out-of-sample turns up and back down"
+  caption="The classic U: model error out-of-sample bottoms at modest complexity, then climbs as capacity memorizes noise. Regularization shifts the sweet spot left."
+/>
+
+<Callout variant="warning" title="In-sample Sharpe of 3 is a symptom, not a trophy">
+If a deep net hands you an in-sample (or even un-purged validation) Sharpe of 3+,
+your first assumption should be **leakage or memorization**, not genius. Honest
+finance signals live near IC 0.02–0.05; a glittering training metric on a tiny,
+low-SNR sample is the model proudly reciting the noise it memorized. Celebrate a
+*small* in-sample/out-of-sample gap, never a *large* in-sample number.
+</Callout>
+
+### When to use it
+
+You always regularize in this domain — the question is only *how hard*. Scale the
+leash to the effective sample size, not the row count: overlapping multi-day labels
+and autocorrelation can shrink ~6,000 rows to a few hundred independent observations,
+so treat your *effective* $n$ as tiny and regularize accordingly. Trade-off: too much
+and you underfit the (already faint) signal into oblivion; the purged validation
+curve is your referee for where to stop tightening.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Dropout", definition: "Randomly zeroes units during training, mimicking a large ensemble and forcing redundant features" },
+    { term: "Weight decay (L2)", definition: "Penalizes large weights via λ‖w‖², flattening the representable function toward zero" },
+    { term: "Early stopping", definition: "Halts training when purged validation loss stops improving, capping effective parameters" },
+    { term: "Block bootstrap", definition: "Resamples contiguous spans of rows so serial correlation is preserved, not destroyed" },
+    { term: "Seed ensembling", definition: "Averages decorrelated models so the variance of the mean falls toward 1/k" },
+  ]}
+/>
+
+## Purged & embargoed evaluation for deep nets
+
+<MCQ
+  client:visible
+  pretest
+  question="Compared to the ridge regression you purged and embargoed in ML for Alpha, why is leakage typically WORSE for a deep net on the same data?"
+  options={[
+    { text: "DL pipelines leak through extra side channels — scalers fit on the full set, batch-norm running stats, embedding tables, and minibatches shuffled across the train/test boundary", correct: true },
+    { text: "Deep nets cannot be cross-validated at all, so any split leaks by definition" },
+    { text: "Leakage is identical; only the model changed, not the data" },
+    { text: "Neural nets ignore time order, so purging is unnecessary" },
+  ]}
+  explanation="The label-overlap leakage you already knew is still there, and DL adds preprocessing/stats/embedding/shuffle channels on top. More moving parts, more places for the future to leak into the past."
+/>
+
+Quick recap from *Leakage and Purged Cross-Validation*. When labels span multiple
+days (a 5-day forward return touches 5 days of features), a naive split lets training
+rows whose label *window* overlaps the test period peek at the future.
+
+- **Purge.** Drop training observations whose label window overlaps the test span.
+- **Embargo.** Drop an extra band of training rows immediately *after* the test span,
+  because autocorrelation lets information bleed forward across the seam.
+
+The analogy: purging is **refusing to study from a textbook that contains the exam
+answers**; the embargo is **also skipping the chapter printed right next to those
+answers**, because it paraphrases them.
+
+<PurgedCvSplit
+  client:visible
+  title="Purge the overlap, embargo the band after"
+  caption="Training labels overlapping the test window are dropped (purge); an additional buffer after the test window is removed (embargo). The test block is touched once."
+/>
+
+Here's the part that bites *harder* with deep learning. A neural pipeline leaks
+through channels a plain ridge never had:
+
+1. **Scalers / normalization fit on the full dataset.** Compute mean and standard
+   deviation, or a min–max range, over *all* rows and you've smuggled test-set
+   statistics into training. Fit transforms on the train fold **only**, then apply
+   them forward.
+2. **Batch-norm running statistics.** BatchNorm accumulates running mean/variance.
+   Let those stats see future minibatches and the future leaks into the present —
+   prefer LayerNorm, or freeze/refit stats per fold.
+3. **Embedding tables (callback to Lesson 5).** A ticker or sector embedding learned
+   using the *entire* history bakes future co-movement into a "static" lookup. Learn
+   embeddings inside the training window only.
+4. **Shuffled minibatches across the boundary.** The reflex to shuffle for IID SGD is
+   poison here — shuffling mixes rows on both sides of the seam. Build minibatches
+   that respect time order and the purge gap.
+
+The correct protocol is **walk-forward retraining**: train on $[t_0, t_1]$, purge +
+embargo, test on $[t_1, t_2]$; then roll the window forward, refit *everything*
+(scalers, batch stats, embeddings, weights), and test on the next block. Never refit
+on data later than the block you're scoring.
+
+### Worked example — counting purged + embargoed rows
+
+You hold 2,000 training days. Labels are 10-day forward returns, the test block is the
+next 250 days, and you set a 5-day embargo.
+
+- **Purge:** any training row whose 10-day label window reaches into the test block
+  must go. That's roughly the last $10 - 1 = 9$ training rows abutting the seam.
+- **Embargo:** drop 5 rows of training material that would sit immediately after the
+  test block in a rolled split.
+- **Usable training rows ≈** $2000 - 9 - 5 = 1986$.
+
+Losing 14 rows out of 2,000 sounds trivially cheap — and it is, which is exactly why
+skipping it is inexcusable. Those 14 rows are the *only* ones carrying the leak; keep
+them and your reported out-of-sample Sharpe is quietly fictional.
+
+<Callout variant="warning" title="The scaler is the silent leaker">
+The most common DL leak in finance is the most boring: someone calls
+`scaler.fit(X_all)` once at the top of the notebook, then splits. The model now knows
+the test period's mean and variance before training begins. It produces a beautiful
+backtest and a worthless live signal. Fit every transform — scalers, PCA, embeddings,
+batch stats — **inside the training fold only**, then apply forward. No exceptions.
+</Callout>
+
+### When to use it
+
+Always — there is no regime where un-purged evaluation is acceptable for overlapping
+financial labels. Trade-off: purging + embargo + walk-forward shrinks each training
+fold and multiplies compute (you refit per fold). For deep nets that retraining cost
+is real, but it is the price of a number you can trust. The cheaper alternative is a
+backtest that lies to you, and that one's free until it isn't.
+
+<Categorize
+  client:visible
+  question="Sort each item by whether it is an additional DL-specific leakage channel or part of the correct evaluation protocol."
+  buckets={["DL-specific leak channel", "Correct protocol"]}
+  items={[
+    { text: "Scaler fit on the full dataset before splitting", bucket: "DL-specific leak channel" },
+    { text: "BatchNorm running stats spanning future minibatches", bucket: "DL-specific leak channel" },
+    { text: "Embedding table learned over the entire history", bucket: "DL-specific leak channel" },
+    { text: "Shuffling minibatches across the train/test seam", bucket: "DL-specific leak channel" },
+    { text: "Purge training rows whose label window overlaps the test span", bucket: "Correct protocol" },
+    { text: "Embargo a band of rows after the test block", bucket: "Correct protocol" },
+    { text: "Refit scalers and embeddings inside each walk-forward fold", bucket: "Correct protocol" },
+  ]}
+  explanation="The first four are extra side channels a deep pipeline adds on top of the label-overlap leak; the last three are the discipline that closes them."
+/>
+
+## The deflated Sharpe for an architecture search
+
+<MCQ
+  client:visible
+  pretest
+  question="You try 200 architecture/hyperparameter configurations and keep the best by validation Sharpe. Why is the best one's headline Sharpe systematically inflated?"
+  options={[
+    { text: "Selecting the max over many trials inflates the winner even under a true-zero edge; the expected max under the null grows like √(2 ln N)", correct: true },
+    { text: "Validation Sharpe is always biased low, so the max corrects it" },
+    { text: "Only the learning rate matters; the other 199 trials don't count" },
+    { text: "The Sharpe ratio is unaffected by how many models you tried" },
+  ]}
+  explanation="Max-over-trials selection bias: even with zero true skill, the best of N noisy Sharpes drifts upward roughly as √(2 ln N) per-trial standard deviations. You must deflate the winner by that hurdle."
+/>
+
+Recall the brutal lesson from *Backtest Overfitting and the Deflated Sharpe*: **every
+configuration you try is a trial**, and the more lottery tickets you buy, the higher
+the *best* ticket looks even if none of them are winners. The analogy: hand 200
+monkeys a dartboard and the best monkey will look like a champion — not because it
+can throw, but because you took the max over 200 noisy throws.
+
+**Definition.** Under the null of *zero* true skill, with $N$ independent trials each
+producing a Sharpe with standard deviation $\sigma$, the expected maximum sampled
+Sharpe is approximately
+
+$$\mathbb{E}[\max \text{SR}] \approx \sigma\,\sqrt{2\ln N}.$$
+
+This $\sqrt{2\ln N}$ term is the **multiple-testing hurdle**: a Sharpe must clear it
+before you're allowed to believe it's real. The *deflated* Sharpe asks whether your
+observed value beats this null-of-the-best, not merely the null-of-one.
+
+Now the deep-learning twist that should keep you up at night. DL's hyperparameter
+space is enormous — **width, depth, learning rate, dropout rate, weight decay,
+sequence length, optimizer, warm-up schedule, and random seed** — and seeds alone can
+multiply your trial count tenfold. So $N$ doesn't creep; it *explodes*.
+
+### Worked example — the hurdle for 200 configs
+
+Try $N = 200$ configurations. The hurdle multiplier is
+
+$$\sqrt{2\ln 200} = \sqrt{2 \times 5.298} = \sqrt{10.597} \approx 3.25.$$
+
+So the best of 200 must clear **≈ 3.25 per-trial standard deviations** just to match
+random luck. If each config's validation Sharpe has standard deviation $\sigma = 0.4$
+under the null, your winner needs to exceed $3.25 \times 0.4 = 1.30$ Sharpe **before
+you have any evidence of real skill at all** — and even then you've only matched the
+expected fluke, not beaten it.
+
+Compare the cost of curiosity:
+
+| Trials $N$ | $\sqrt{2\ln N}$ hurdle | Min Sharpe to beat luck ($\sigma=0.4$) |
+|---|---|---|
+| 1 | 0.00 | 0.00 |
+| 10 | 2.15 | 0.86 |
+| 50 | 2.80 | 1.12 |
+| 200 | 3.25 | 1.30 |
+| 1,000 | 3.72 | 1.49 |
+
+<DeflatedSharpe
+  client:visible
+  title="Observed Sharpe vs the multiple-testing hurdle vs the deflated value"
+  caption="As trials grow, the luck hurdle (√(2 ln N)) rises. The deflated Sharpe is what's left after subtracting the expected best-under-the-null — often far below the headline."
+/>
+
+The compounding cruelty: DL's flexibility hits you **twice**. More
+hyperparameters multiply $N$ (raising the selection hurdle), *and* each individual
+model overfits harder than a linear one (so each per-trial Sharpe is noisier, i.e.,
+$\sigma$ is larger). Both terms in $\sigma\sqrt{2\ln N}$ go the wrong way at once.
+
+<Callout variant="warning" title="Your seed sweep is a hyperparameter sweep">
+A subtle trap: people insist they "only tried 8 architectures," then admit they ran
+each across 10 random seeds and kept the best seed too. That's $8 \times 10 = 80$
+trials, not 8 — and the hurdle is set by the *total* number of configurations you
+selected a maximum over, including seeds, learning rates, and every "let me just try
+one more thing." Log every run. The honest $N$ is almost always 3–10× what you
+remember.
+</Callout>
+
+### When to use it
+
+Deflate whenever you've *selected* a model by comparing many — which, with DL, is
+always. Trade-off: aggressive deflation can reject a genuinely-good model that simply
+got an unlucky validation draw, so the cure is fewer, pre-registered trials, not
+post-hoc forgiveness. Decide your architecture family and search budget *before* you
+peek at validation results, and count every run honestly.
+
+<FillBlank
+  client:visible
+  question="Complete the multiple-testing reasoning for an architecture search."
+  text="Under the null of zero skill, the expected best of N trials grows like {{√(2 ln N)|√(2N)|ln(2N)}} per-trial standard deviations, so for N = 200 the hurdle is about {{3.25|1.30|0.40}} — and DL inflates this because its huge hyperparameter space makes {{N explode while each model also overfits harder|the data set larger|the Sharpe more stable}}."
+  explanation="The √(2 ln N) hurdle for N=200 is ≈3.25; DL multiplies N (more hyperparameters and seeds) AND raises per-trial noise (more overfitting), so both factors of σ√(2 ln N) worsen together."
+/>
+
+## Does deep learning actually beat gradient boosting?
+
+<MCQ
+  client:visible
+  pretest
+  question="On low-signal, predominantly tabular financial features (factor exposures, ratios, lagged returns), what does the honest empirical evidence say?"
+  options={[
+    { text: "Gradient-boosted trees (XGBoost/LightGBM) usually win — fewer params, native categoricals, robust, fast to tune", correct: true },
+    { text: "Deep nets always dominate once you add enough layers" },
+    { text: "It's a coin flip with no systematic pattern" },
+    { text: "Linear regression beats both in every setting" },
+  ]}
+  explanation="On low-SNR tabular data, GBMs are the consistent empirical winner. DL earns its keep on structured, high-SNR, or representation-learning problems — not on a spreadsheet of factor ratios."
+/>
+
+Time for the uncomfortable family dinner. You spent this whole course learning deep
+architectures, and the honest punchline is: **on low-signal tabular finance,
+gradient-boosted trees usually beat them.** This isn't heresy; it's the repeated
+finding across tabular-ML benchmarks and most quant desks.
+
+The analogy: a transformer is a **Formula 1 car**, and tabular factor data is a
+**gravel farm road**. The F1 car is genuinely superior — on a track. Off the track,
+the pickup truck (a gradient-boosted tree) gets there faster, cheaper, and without
+breaking an axle on the first pothole.
+
+**Definition.** Gradient boosting builds an *additive* ensemble of shallow decision
+trees, each fit to the gradient of the loss left by the previous trees:
+$F_m(x) = F_{m-1}(x) + \eta\, h_m(x)$, where $h_m$ targets the residual gradient and
+$\eta$ is the learning rate. Trees are scale-invariant, handle missing values and
+categoricals natively, need no normalization, and tune in minutes.
+
+| Dimension | Gradient-boosted trees | Deep learning |
+|---|---|---|
+| **Data size needed** | Works on small/medium tabular sets | Hungry — wants large or pooled cross-sections |
+| **Signal-to-noise fit** | Excels at low SNR (shallow, regularized) | Shines at high SNR; overfits low SNR |
+| **Structure exploited** | None assumed — pure tabular | Sequence, spatial, graph, attention structure |
+| **Categoricals / missing** | Native | Needs embeddings / imputation |
+| **Interpretability** | High (SHAP, gain importance) | Low (black box, post-hoc only) |
+| **Tuning cost** | Low — minutes, few knobs | High — huge space, slow, seed-sensitive |
+| **Multiple-testing risk** | Moderate (smaller search space) | Severe (N explodes) |
+| **Where it wins** | Low-signal tabular factor data | LOB microstructure, huge pooled panels, alt-data/text |
+
+So when *does* deep learning earn its salary? Three honest cases:
+
+1. **Structured, high-SNR data — LOB microstructure (callback to Lesson 4).** Order-book
+   snapshots have spatial/sequential structure and far more events than daily bars; a
+   TCN or attention model can read the shape of the book in a way trees can't.
+2. **Very large pooled cross-sections.** When you pool thousands of names across
+   decades, effective sample size climbs and a shared deep model can learn
+   cross-sectional structure a per-name tree ensemble misses.
+3. **Representation learning for alt-data and text (callback to Lesson 5).** Turning
+   filings, news, or transcripts into features, or learning ticker/sector embeddings,
+   is squarely DL's home turf — there *is* no good tabular baseline for raw text.
+
+<Callout variant="warning" title="Make GBM the mandatory baseline — no exceptions">
+Before you report a single deep-net result, you must beat a *tuned* gradient-boosting
+baseline on the *same* purged, embargoed splits. If your transformer can't clear a
+LightGBM that trained in 90 seconds, you don't have a deep-learning result — you have
+an expensive way of underperforming a baseline. "We didn't run the baseline" is the
+quant equivalent of marking your own homework.
+</Callout>
+
+### When to use it
+
+Reach for GBM by default on tabular factor data; reach for DL when the data has
+*structure* (sequence/spatial/graph), when SNR and sample size are genuinely high
+(microstructure, huge panels), or when the task is representation learning over
+unstructured inputs (text, embeddings). Trade-off: DL buys you flexibility and
+representation power at the cost of data hunger, tuning expense, opacity, and a far
+nastier multiple-testing bill — pay it only when the structure of the problem
+actually rewards it.
+
+<MCQ
+  client:visible
+  allowMultiple
+  question="Select every situation where deep learning is genuinely a defensible choice over gradient-boosted trees."
+  options={[
+    { text: "Limit-order-book microstructure with rich sequential/spatial structure and abundant events", correct: true },
+    { text: "Very large pooled cross-sections where effective sample size is high", correct: true },
+    { text: "Representation learning over raw text, filings, or learned ticker embeddings", correct: true },
+    { text: "A few thousand rows of monthly factor ratios with IC near 0.03" },
+    { text: "A small tabular dataset where you mainly want SHAP interpretability" },
+  ]}
+  explanation="DL is justified on structured high-SNR data (LOB), large pooled panels, and representation learning. On small low-signal tabular factor data — and when interpretability matters — gradient boosting wins."
+/>
+
+## A deployment discipline checklist
+
+<MCQ
+  client:visible
+  pretest
+  question="Your deep net cleared a tuned GBM baseline on purged, embargoed splits and survived deflation. What's the correct NEXT step before risking capital?"
+  options={[
+    { text: "Paper-trade it live and monitor realized IC against the backtest, with a pre-set kill-switch armed", correct: true },
+    { text: "Deploy at full size immediately — the backtest was rigorous enough" },
+    { text: "Re-tune on the locked test set to squeeze out a bit more Sharpe" },
+    { text: "Skip paper trading; live data is just more backtest" },
+  ]}
+  explanation="A clean backtest earns a paper-trading trial, not full capital. Monitor live IC vs backtest, keep the kill-switch armed, and size up only after the live signal confirms. Re-tuning on the locked test set destroys it."
+/>
+
+Echoing the deployment lesson from *Machine Learning for Alpha*, now wearing a
+deep-net hat. The discipline is identical because the failure mode is identical: a
+model that dazzled on history and disappoints on tomorrow. Run the checklist in order,
+top to bottom, and don't skip a rung because you're excited.
+
+1. **Baseline first.** A tuned GBM (and a linear model) on the same purged splits. The
+   deep net must *beat* them, not merely *exist*.
+2. **Lock a test set you touch once.** One look, ever. The moment you re-tune on it,
+   it becomes another training fold and stops being evidence — and DL's giant search
+   space makes this temptation overwhelming.
+3. **Paper-trade.** Run live with no capital. This catches the leaks a backtest can't:
+   data-timing bugs, look-ahead in feature computation, and the gap between assumed and
+   realized fills.
+4. **Monitor live IC vs backtest.** Track realized information coefficient and Sharpe
+   against backtest expectations. A live IC running well below backtest is your early
+   warning that the edge was partly (or wholly) overfit.
+5. **Pre-set the kill-switch.** Decide *in advance* the drawdown, live-IC, or
+   slippage threshold that pulls the plug. Setting it after losses start is just hope
+   with extra steps.
+6. **Retrain walk-forward as signal decays.** Edges erode; non-stationarity is the
+   house rule of markets. Refit on a rolling window, but balance retrain frequency
+   against transaction costs — every retrain that flips positions pays the spread.
+
+<SignalDecay
+  client:visible
+  title="IC decays with holding horizon — and trading faster costs more"
+  caption="A signal's information coefficient fades as the holding period stretches, while trading it faster to capture the fresh edge ramps up transaction costs. The optimal horizon balances the two."
+/>
+
+### Worked example — when does decay justify a retrain?
+
+Your live IC was 0.040 at deployment. After eight weeks of paper trading it has
+drifted to 0.018 — a 55% decay — while backtest IC over the same span was 0.038. The
+live-vs-backtest gap ($0.018$ vs $0.038$) is wide and persistent, not a one-week blip.
+The disciplined response: the gap *itself* is a kill-switch trigger; halt scaling,
+investigate for leakage or regime change, and only retrain walk-forward if a fresh,
+purged refit clears the deflated-Sharpe hurdle again. Decaying signal is normal;
+**a live IC that's half the backtest is a red flag that the backtest was optimistic.**
+
+<Callout variant="warning" title="The locked test set is locked — say it again">
+With a tiny effective sample and a huge DL search space, the single most expensive
+mistake is peeking at the locked test set "just to check" and then nudging a
+hyperparameter. You have now trained on it. There is no undo. Every glance at held-out
+data spends a piece of its evidentiary value; spend it once, at the very end, and
+report whatever it says — even if it says "no."
+</Callout>
+
+### When to use it
+
+This checklist is mandatory for *any* model going to capital, deep or not — but the
+discipline tightens for DL because the search space and overfitting capacity are
+larger. Trade-off: paper trading and walk-forward retraining cost calendar time and
+compute, delaying go-live. That delay is a feature: it's the window in which an overfit
+model reveals itself harmlessly, before it can lose real money.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Your deep net beats the GBM baseline in the backtest but its live IC is half the backtest IC after a month of paper trading. What's the most likely diagnosis and the disciplined response?</summary>
+
+**Answer.** The most likely culprit is residual overfitting or a subtle leak the
+backtest didn't catch — a scaler fit on full data, an embedding learned over the whole
+history, batch stats spanning the seam, or selection bias from an undeflated search.
+The disciplined response is *not* to re-tune on live data and *not* to "give it more
+time" past your pre-set threshold. It's to treat the live-vs-backtest gap as a
+kill-switch signal: halt scaling, audit the pipeline for leakage, recount your true
+trial budget $N$ and re-deflate, and resume only if a fresh purged + embargoed refit
+clears the hurdle. Sometimes the honest conclusion is that there was never an edge —
+ship that conclusion too.
+
+</details>
+</Reveal>
+
+## Recap
+
+You now have the deep-learning self-defense kit: regularize as if your effective
+sample is tiny (it is), evaluate with purge + embargo while plugging the extra DL leak
+channels, deflate the winner of a sprawling architecture search by its true trial
+count, make gradient boosting the baseline you must beat, and ship only through a
+locked test set, paper trading, live-IC monitoring, and an armed kill-switch.
+
+<MindMap
+  client:visible
+  title="Training & evaluating DL without fooling yourself"
+  caption="Five disciplines that turn deep architectures from footguns into scalpels."
+  root={{
+    label: "Honest DL in finance",
+    children: [
+      {
+        label: "Regularize for a tiny sample",
+        children: [
+          { label: "Dropout, L2, early stop on purged val" },
+          { label: "Noise/block-bootstrap/mixup, ensembling" },
+          { label: "Just use small models" },
+        ],
+      },
+      {
+        label: "Purged + embargoed evaluation",
+        children: [
+          { label: "Purge label overlap; embargo the band after" },
+          { label: "Extra DL leaks: scalers, batch stats, embeddings, shuffling" },
+          { label: "Walk-forward retraining" },
+        ],
+      },
+      {
+        label: "Deflate the architecture search",
+        children: [
+          { label: "Every config + seed is a trial" },
+          { label: "Hurdle ≈ σ·√(2 ln N)" },
+          { label: "DL inflates N and per-trial overfit at once" },
+        ],
+      },
+      {
+        label: "Beat the GBM baseline",
+        children: [
+          { label: "Trees usually win on low-signal tabular data" },
+          { label: "DL wins on LOB, huge panels, text/embeddings" },
+        ],
+      },
+      {
+        label: "Deployment discipline",
+        children: [
+          { label: "Lock test set, paper-trade, monitor live IC" },
+          { label: "Pre-set kill-switch; retrain as signal decays" },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Don't fool yourself — the capstone check"
+  questions={[
+    {
+      question: "After adding dropout, weight decay, and a seed ensemble, your GRU's in-sample Sharpe drops from 3.1 to 1.05 while out-of-sample rises from 0.15 to 0.78. How should you read this?",
+      options: [
+        { text: "Regularization worked — it cut the overfitting tax, and the only number that pays rent (out-of-sample) quadrupled", correct: true },
+        { text: "Regularization broke the model — the in-sample Sharpe collapsing is bad" },
+        { text: "The original unregularized model was better because its in-sample Sharpe was higher" },
+        { text: "Sharpe ratios are unreliable, so the comparison is meaningless" },
+      ],
+      explanation: "A shrinking in-sample number alongside a rising out-of-sample number is exactly the goal: you traded memorized noise for a smaller, more honest gap.",
+    },
+    {
+      question: "Which is a DL-SPECIFIC leakage channel that a plain ridge regression on the same purged splits wouldn't have?",
+      options: [
+        { text: "An embedding table learned over the entire history before splitting", correct: true },
+        { text: "Dropping training rows whose label window overlaps the test span" },
+        { text: "Reporting an annualized Sharpe ratio" },
+        { text: "Using a 5-day embargo after the test block" },
+      ],
+      explanation: "Embeddings (plus full-data scalers, batch-norm stats, and cross-seam shuffling) are extra leak channels deep pipelines add on top of the label-overlap leak; purge and embargo are the cure, not the leak.",
+    },
+    {
+      question: "You searched 200 configs (counting seeds). With per-trial Sharpe SD of 0.4 under the null, roughly what must the winner exceed just to match luck?",
+      options: [
+        { text: "About 1.30, since √(2 ln 200) ≈ 3.25 and 3.25 × 0.4 ≈ 1.30", correct: true },
+        { text: "About 0.40, the per-trial SD, regardless of N" },
+        { text: "About 3.25, the raw hurdle multiplier, with no scaling by SD" },
+        { text: "Zero — the number of trials doesn't affect the hurdle" },
+      ],
+      explanation: "The hurdle is σ·√(2 ln N) = 0.4 × 3.25 ≈ 1.30. Beating luck means clearing the expected best-of-N under the null, not just a positive Sharpe.",
+    },
+    {
+      question: "On a few thousand rows of monthly factor ratios with IC near 0.03, which model is the defensible default and why?",
+      options: [
+        { text: "Gradient-boosted trees — fewer params, native categoricals, robust on low-signal tabular data, and fast to tune", correct: true },
+        { text: "A deep transformer, because attention always extracts more signal" },
+        { text: "Whichever has the higher in-sample Sharpe" },
+        { text: "An unregularized MLP, to give it maximum capacity" },
+      ],
+      explanation: "On low-signal tabular finance, GBMs usually win and are the mandatory baseline. DL earns its keep on structured high-SNR data, huge pooled panels, and representation learning over text.",
+    },
+    {
+      question: "Your model beat the GBM baseline and survived deflation, but live IC after a month of paper trading is half the backtest IC. What's the disciplined move?",
+      options: [
+        { text: "Treat the gap as a kill-switch signal: halt scaling, audit for leakage, recount N and re-deflate, and resume only if a fresh purged refit clears the hurdle", correct: true },
+        { text: "Re-tune hyperparameters on the locked test set to recover the lost edge" },
+        { text: "Deploy at full size; live data is just more backtest" },
+        { text: "Ignore it — a 50% live-vs-backtest gap is normal noise" },
+      ],
+      explanation: "A persistent live-vs-backtest gap signals overfitting or leakage. The discipline is to stop, investigate, and re-validate honestly — never to re-tune on the locked test set, which destroys it.",
+    },
+  ]}
+/>

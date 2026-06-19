@@ -1,0 +1,545 @@
+---
+title: "Embeddings para datos categóricos y alternativos"
+description: "Convertir tickers, sectores, regímenes, calendarios y noticias en vectores densos aprendidos: por qué los embeddings de entidad aplastan al one-hot, las reglas prácticas de dimensión, compartir una representación en un panel agrupado y las trampas de fuga que los embeddings facilitan especialmente."
+topic: "es/deep-learning-for-market-data"
+order: 5
+minutes: 14
+updated: 2026-06-19
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap } from '@/components/react';
+
+Hasta ahora este curso ha alimentado a vuestras redes con *números*: rentabilidades, volúmenes,
+volatilidades, esa materia continua y bien educada que a una multiplicación de matrices le encanta
+masticar. Pero los datos de mercado reales están plagados de **etiquetas**: el ticker `JPM`, el
+sector "Financiero", el país "EE. UU.", el mercado "NYSE", el día de la semana "lunes", la etiqueta
+de régimen "risk-off". Y luego está el pantano verdaderamente no estructurado: titulares de
+noticias, informes 10-K, transcripciones de conferencias de resultados.
+
+Una red neuronal no sabe qué *significa* "Financiero". Multiplica y suma. No puede multiplicar la
+cadena `"JPM"`. Así que antes de que toda vuestra maquinaria de RNN / TCN / transformer, ganada con
+tanto esfuerzo, pueda tocar una categoría, tenéis que convertir esa etiqueta en un vector. La forma
+perezosa es el **one-hot encoding** (codificación uno-en-caliente). La forma buena —la que permite
+que un banco aprenda de lo que hicieron otros bancos— es un **embedding** (vector denso). Esta
+lección trata de hacerlo bien, y de las trampas de fuga que los embeddings hacen *extraordinariamente*
+fáciles de pisar.
+
+## El one-hot encoding es un derroche
+
+<MCQ
+  client:visible
+  question="Haces one-hot encoding de un universo de 3.000 tickers y metes el resultado directamente en la primera capa densa. ¿Cuál es el mayor problema estructural de esta representación (antes incluso de hablar de parámetros)?"
+  options={[
+    { text: "Cada categoría está a la misma distancia de todas las demás: la codificación no contiene noción alguna de similitud", correct: true },
+    { text: "Los vectores one-hot contienen números negativos que desestabilizan el entrenamiento" },
+    { text: "La red no puede retropropagar a través de una entrada binaria" },
+    { text: "El one-hot encoding cuenta dos veces el término independiente" },
+  ]}
+  explanation="Los vectores one-hot son vectores unitarios ortogonales. La distancia euclídea (y la del coseno) entre dos categorías distintas cualesquiera es idéntica, así que 'JPM' está exactamente igual de lejos de 'BAC' que de 'XOM'. El modelo no recibe ninguna pista gratuita de que los dos bancos se parezcan."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+**Analogía.** El one-hot encoding es como darle a cada empleado de una empresa de 3.000 personas una
+chapa que es una única luz en un panel de 3.000 luces: la tuya es la luz n.º 1.742, encendida; la de
+todos los demás está apagada. La chapa te dice *quién* es alguien y absolutamente nada sobre *cómo
+es*. Dos analistas del mismo escritorio están tan "lejos" como el consejero delegado y el vigilante
+nocturno.
+
+**Definición.** El one-hot encoding aplica una categoría $c$ de un vocabulario de cardinalidad $K$ al
+vector indicador $e_c \in \{0,1\}^K$: un vector de longitud $K$ que vale $1$ en la posición $c$ y
+$0$ en el resto. Todos los vectores one-hot distintos son mutuamente ortogonales: $e_i \cdot e_j = 0$
+para $i \neq j$, y $\lVert e_i - e_j \rVert = \sqrt{2}$ para cada par. Distancia constante,
+estructura de similitud nula.
+
+**Ejemplo resuelto.** Tomad un universo de juguete de cuatro tickers y codificadlos:
+
+| Ticker | Sector       | Vector one-hot       |
+|--------|--------------|----------------------|
+| JPM    | Financiero   | `[1, 0, 0, 0]`       |
+| BAC    | Financiero   | `[0, 1, 0, 0]`       |
+| XOM    | Energía      | `[0, 0, 1, 0]`       |
+| AAPL   | Tecnología   | `[0, 0, 0, 1]`       |
+
+Distancia entre los dos bancos, $\lVert e_{\text{JPM}} - e_{\text{BAC}} \rVert = \sqrt{(1-0)^2 + (0-1)^2} = \sqrt{2} \approx 1{,}41$.
+Distancia entre un banco y la petrolera, $\lVert e_{\text{JPM}} - e_{\text{XOM}} \rVert = \sqrt{2} \approx 1{,}41$.
+*Idénticas.* La codificación insiste en que JPM y BAC no son más parecidos que JPM y XOM.
+
+Ahora ampliad la escala. Con $K = 3{,}000$ tickers, cada entrada es un vector disperso de longitud
+3.000. Una primera capa densa con $h = 64$ unidades ocultas necesita $K \times h = 3{,}000 \times 64 = 192{,}000$
+pesos solo para *leer el ticker*, y la mayoría ven un único ejemplo no nulo cada vez, así que se
+actualizan a paso de tortuga.
+
+<Callout variant="warning" title="La maldición, otra vez">
+Recordad la queja de la lección 1 de que las redes profundas se mueren de hambre con el minúsculo
+tamaño muestral *efectivo* de los mercados. El one-hot encoding echa gasolina a ese fuego. Una
+entrada dispersa de 3.000 columnas multiplica vuestro recuento de parámetros sin añadir información,
+y la columna de cada ticker solo recibe gradiente en las filas donde aparece ese ticker exacto. Alta
+cardinalidad + N efectivo bajo es precisamente el régimen en el que el one-hot encoding sobreajusta
+más rápido.
+</Callout>
+
+### Cuándo usarlo
+
+El one-hot está bien —incluso es preferible por su simplicidad— cuando la cardinalidad es *baja*
+(digamos $K \le 10$: día de la semana, un puñado de regímenes) y tenéis abundantes datos por
+categoría. A esa escala el coste de parámetros es trivial y la falta de similitud aprendida apenas
+importa. Solo a alta cardinalidad se convierte en un lastre.
+
+<FillBlank
+  client:visible
+  question="Completa los hechos estructurales sobre los vectores one-hot."
+  text="Dos vectores one-hot distintos cualesquiera son {{ortogonales|colineales|idénticos}}, lo que significa que el modelo recibe información {{nula|total|parcial}} sobre la similitud de categorías, y el recuento de parámetros de una primera capa densa crece de forma {{lineal|logarítmica|cuadrática}} con la cardinalidad."
+  explanation="Los vectores one-hot distintos son ortogonales (producto escalar 0); esa ortogonalidad es exactamente la razón por la que no se codifica ninguna similitud; y una capa densa que lee una entrada de ancho K tiene K×h pesos, es decir, lineal en K."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+/>
+
+## Embeddings de entidad
+
+<MCQ
+  client:visible
+  question="Una capa de embedding de entidad aplica un id de ticker a un vector denso. ¿De dónde salen los valores de ese vector?"
+  options={[
+    { text: "Son parámetros aprendidos, entrenados de forma conjunta con el resto de la red mediante retropropagación", correct: true },
+    { text: "Son hashes fijos del símbolo del ticker calculados antes del entrenamiento" },
+    { text: "Son las rentabilidades históricas del ticker, estandarizadas" },
+    { text: "Son aleatorios y se congelan en la inicialización para actuar como huella dactilar" },
+  ]}
+  explanation="Un embedding es una tabla de consulta (una matriz de embedding) cuyas filas son parámetros libres. El pase hacia delante selecciona la fila c; el pase hacia atrás envía gradientes a esa fila. Las entidades similares derivan hacia vectores similares porque eso reduce la pérdida de la tarea."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+**Analogía.** Esto es **word2vec para acciones**. Word2vec aprendió que "rey − hombre + mujer ≈
+reina" no porque nadie se lo dijera, sino porque las palabras que aparecen en contextos similares
+acabaron con vectores similares. Un embedding de entidad hace lo mismo con los tickers: dos bancos
+que responden igual a los movimientos de tipos reciben un *empujón* el uno hacia el otro en el
+espacio de embedding, porque compartir una representación reduce la pérdida. Nunca etiquetáis a mano
+"estos dos son bancos": la geometría emerge de la señal de entrenamiento.
+
+**Definición.** Un **embedding** aplica cada id de categoría $c \in \{1, \dots, K\}$ a un vector
+denso $\mathbf{v}_c \in \mathbb{R}^m$ mediante una consulta en una **matriz de embedding**
+$E \in \mathbb{R}^{K \times m}$, donde la fila $c$ es $\mathbf{v}_c$. De forma equivalente, es una
+capa densa sin sesgo y sin activación aplicada al vector one-hot: $\mathbf{v}_c = E^{\top} e_c$.
+La matriz $E$ se entrena de forma conjunta con la tarea. La **dimensión** de embedding $m$ (con $m \ll K$)
+es un hiperparámetro que elegís.
+
+**Regla práctica de dimensión.** Dos heurísticas populares:
+
+$$ m \approx \min\!\left(50, \left\lceil \tfrac{K}{2} \right\rceil\right) \qquad \text{o} \qquad m \approx K^{0.25}. $$
+
+La primera (la regla de fast.ai) limita el tamaño para vocabularios enormes; la segunda crece muy
+despacio. Ambas codifican el mismo instinto: más categorías merecen un espacio más rico, pero con
+rendimientos fuertemente decrecientes.
+
+**Ejemplo resuelto.** Con $K = 3{,}000$ tickers, la regla del mínimo da
+$m \approx \min(50, \lceil 3000/2 \rceil) = \min(50, 1500) = 50$. La regla de la raíz cuarta da
+$m \approx 3000^{0.25} \approx 7{,}4 \to 8$. La gente suele quedarse en algún punto intermedio;
+digamos $m = 32$. Recuento de parámetros del embedding: $K \times m = 3{,}000 \times 32 = 96{,}000$,
+frente a los $192{,}000$ que necesitaba arriba la capa densa one-hot para $h=64$, y, crucialmente,
+ahora cada fila acumula estructura *compartida* en lugar de memorizar un ticker en aislamiento.
+
+| Propiedad                  | One-hot encoding             | Embedding de entidad ($m=32$)    |
+|----------------------------|------------------------------|----------------------------------|
+| Longitud del vector        | $K = 3{,}000$                | $m = 32$                         |
+| Almacenamiento / params (lectura) | $K \times h = 192{,}000$ | $K \times m = 96{,}000$       |
+| ¿Codifica similitud?       | No: todos los pares equidistantes | Sí: geometría aprendida     |
+| ¿Generaliza entre categorías? | No                        | Sí (los bancos comparten estructura) |
+| Disperso vs. denso         | Disperso, casi todo ceros    | Denso, todas las dimensiones usadas |
+| ¿Ejes interpretables?      | Trivialmente (uno por categoría) | No directamente (factores latentes) |
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Matriz de embedding E", definition: "Una tabla K×m de parámetros aprendidos; la fila c es el vector de la categoría c" },
+    { term: "Dimensión de embedding m", definition: "El ancho de cada vector denso: un hiperparámetro, elegido ≪ K" },
+    { term: "Heurística min(50, ⌈K/2⌉)", definition: "Una regla práctica que limita el tamaño del embedding para vocabularios de alta cardinalidad" },
+    { term: "Entrenamiento conjunto", definition: "Filas del embedding actualizadas por los mismos gradientes de retropropagación que el resto de la tarea" },
+    { term: "Clúster latente", definition: "Región del espacio donde entidades similares (p. ej. dos bancos) acaban cerca unas de otras" },
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Une cada concepto con su definición."
+/>
+
+### Cuándo usarlo
+
+Recurrid a un embedding de entidad cuando una categórica sea de **alta cardinalidad** *y* tengáis un
+**panel agrupado grande** para que muchas categorías puedan compartir fuerza estadística (más sobre
+esto abajo). Brilla justo donde el one-hot se ahoga. Pero no es gratis: habéis añadido $K \times m$
+parámetros que pueden memorizar, y un espacio aprendido que —como todo lo aprendido aquí— puede
+filtrar el futuro si os descuidáis.
+
+## Embeddings de datos alternativos y de texto
+
+<MCQ
+  client:visible
+  question="Quieres meter el flujo de noticias de ayer en un modelo de rentabilidad. ¿Qué enfoque convierte un titular en algo que la red pueda consumir de verdad, sin que tú programes las características a mano?"
+  options={[
+    { text: "Pasar el texto por un codificador de frases/texto preentrenado para obtener un vector de embedding denso de longitud fija", correct: true },
+    { text: "Concatenar los códigos ASCII de cada carácter en un vector largo" },
+    { text: "Hacer one-hot encoding de todo el vocabulario español y sumar los indicadores de palabra" },
+    { text: "Meter la cadena en bruto en la capa densa y dejar que analice la gramática" },
+  ]}
+  explanation="Un codificador de texto preentrenado aplica texto de longitud variable a un vector denso de longitud fija que ya captura el contenido semántico. Sumar indicadores one-hot de palabra (bolsa de palabras) es el clásico baseline disperso, pero tira por la borda el orden y la similitud; las cadenas en bruto y los códigos ASCII no son representaciones utilizables."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+**Analogía.** Un embedding de texto preentrenado es un traductor que habéis contratado y que ya
+habla el idioma con fluidez. No le enseñáis español desde cero con vuestros 4.000 días de trading de
+titulares: le pasáis la frase y os devuelve un compacto "vector de significado". Vuestro modelo de
+abajo solo tiene que aprender *qué implica ese significado para las rentabilidades*, no qué es el
+español.
+
+**Definición y taxonomía.** "Embeddings de datos alternativos" significa en realidad producir una
+representación vectorial densa de entradas no estructuradas o semiestructuradas:
+
+| Entrada de datos alt.       | Representación                                  | Dimensión típica  |
+|-----------------------------|-------------------------------------------------|-------------------|
+| Titular / informe de noticias | Embedding preentrenado de frase/documento     | 384–1536          |
+| Sentimiento del texto       | Puntuación de sentimiento escalar (o vector pequeño) | 1–3          |
+| Mezcla de temas del documento | Vector de modelo de temas (p. ej. proporciones LDA) | 20–100      |
+| Señal alt. continua         | Escalar estandarizado, opcionalmente discretizado + embebido | 1–8     |
+| Etiqueta alt. categórica    | Embedding de entidad (misma maquinaria que los tickers) | $K^{0.25}$ aprox. |
+
+La idea es uniforme: para cuando llega a la red, *todo* —ticker, sector, noticias, sentimiento— es un
+vector denso, y a las capas de abajo les da igual qué columna salió de una tabla de consulta y cuál
+de un modelo de lenguaje.
+
+**Ejemplo resuelto (fuera de vocabulario).** Vuestro universo de entrenamiento tiene $K = 3{,}000$
+tickers. En trading en vivo aparece un nombre recién salido a bolsa que la tabla de embedding nunca
+ha visto. Con una consulta en bruto, **no hay fila** para él: el modelo se cae o lo aplica
+silenciosamente a basura. El arreglo es reservar una fila extra en el índice $0$ para un token
+`<UNK>` ("desconocido"): construir $E \in \mathbb{R}^{(K+1) \times m}$, dirigir todo id no visto a la
+fila $0$, y *entrenar* esa fila aplicando aleatoriamente algunos tickers raros a `<UNK>` durante el
+entrenamiento para que aprenda un vector sensato de "nombre nuevo genérico". El mismo truco maneja
+las palabras fuera de vocabulario en los codificadores de texto.
+
+<Callout variant="info" title="Disciplina de cardinalidad">
+Antes de hacer embedding de cualquier categórica, contad los valores distintos *tal como existen en
+el momento de la decisión* y decidid una política de OOV (fuera de vocabulario). Un campo "país" con
+40 valores es barato; un campo "URL de fuente de noticias" con 80.000 valores es una trampa de
+memorización a menos que metáis la cola larga en `<UNK>`. La cardinalidad es una decisión de diseño,
+no un dato dado.
+</Callout>
+
+### Cuándo usarlo
+
+Los embeddings de texto preentrenados se ganan el sueldo cuando la *señal vive en el lenguaje* (el
+tono de un informe, la novedad de un titular) y vuestro propio conjunto de datos es demasiado pequeño
+para aprender español desde cero, lo cual es esencialmente siempre en finanzas. Saltaos el codificador
+pesado cuando una puntuación de sentimiento de una línea ya capture todo aquello sobre lo que vais a
+actuar; un vector de 1.536 dimensiones alimentando a un modelo con 3.000 días de entrenamiento es una
+vía rápida al sobreajuste.
+
+<Categorize
+  client:visible
+  question="Clasifica cada entrada de mercado según la representación que mejor le encaje."
+  buckets={["Embedding de entidad (tabla de consulta)", "Vector de texto/denso preentrenado"]}
+  items={[
+    { text: "Id de ticker de un universo de 3.000 nombres", bucket: "Embedding de entidad (tabla de consulta)" },
+    { text: "Etiqueta de sector GICS", bucket: "Embedding de entidad (tabla de consulta)" },
+    { text: "Código de mercado / centro de negociación", bucket: "Embedding de entidad (tabla de consulta)" },
+    { text: "Texto completo de una transcripción de conferencia de resultados", bucket: "Vector de texto/denso preentrenado" },
+    { text: "Una cadena de titular de noticia", bucket: "Vector de texto/denso preentrenado" },
+    { text: "Sección de factores de riesgo de un 10-K", bucket: "Vector de texto/denso preentrenado" },
+  ]}
+  explanation="Los ids de alta cardinalidad y las etiquetas que controláis encajan limpiamente en tablas de consulta aprendidas. El texto en lenguaje natural no estructurado se entrega mejor a un codificador preentrenado que ya entiende el lenguaje."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Coloca cada elemento en su grupo."
+/>
+
+## Trampas de fuga que los embeddings facilitan
+
+<MCQ
+  client:visible
+  question="Aprendes un embedding de ticker sobre TODO tu conjunto de datos (2010–2025), luego ejecutas un backtest walk-forward purgado sobre esos vectores congelados y reportas un Sharpe precioso. ¿Por qué sigue estando contaminado el resultado?"
+  options={[
+    { text: "El embedding ya absorbió la estructura de coocurrencia del periodo de test, así que la información del periodo de test se filtró en las características antes incluso de empezar el backtest", correct: true },
+    { text: "Los embeddings congelados no se pueden hacer backtest en absoluto" },
+    { text: "Los backtests walk-forward son inválidos siempre que hay embeddings presentes" },
+    { text: "El ratio de Sharpe es la métrica equivocada para los modelos de embedding" },
+  ]}
+  explanation="Ajustar el embedding sobre la muestra completa es preprocesamiento-sobre-datos-completos: el pecado exacto de fuga de Machine Learning para Alfa, solo que disfrazado de aprendizaje de representaciones. Los vectores codifican relaciones que solo se hicieron visibles porque el modelo vio 2025 mientras 'predecía' 2025. Una CV purgada sobre características ya filtradas no purga nada."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+Esta es la sección que importa. Los embeddings son una representación *aprendida*, y **cualquier cosa
+aprendida puede memorizar el futuro**. Cada lección de fuga de *Machine Learning para Alfa*
+—preprocesamiento-sobre-datos-completos, supervivencia, anticipación— tiene una versión con forma de
+embedding que es más fácil de cometer y más difícil de detectar.
+
+**Las cinco trampas.**
+
+| # | Trampa | Qué se filtra |
+|---|--------|---------------|
+| a | Embedding ajustado sobre la **muestra completa** | Las coocurrencias del periodo de test se cuelan en los vectores (preprocesamiento-sobre-datos-completos) |
+| b | **Supervivencia** en el conjunto de entidades | El vocabulario construido a partir de nombres que *sobrevivieron* hasta hoy descarta silenciosamente a los muertos |
+| c | **Etiquetas con anticipación** (régimen / reclasificación) | Una etiqueta asignada con retrospectiva codifica el resultado que debería predecir |
+| d | Una categoría que **codifica el futuro** | p. ej. un indicador `fue_adquirida` es una etiqueta haciéndose pasar por característica |
+| e | **Fuga del objetivo vía memorización** | Con datos minúsculos el embedding aprende un mapa id→resultado en lugar de estructura |
+
+**Ejemplo resuelto (anticipación de régimen).** Supongamos que etiquetáis cada día con una etiqueta
+de régimen y la embebéis. Definís "risk-off" comprobando si los siguientes 20 días tuvieron una caída
+superior al 10%:
+
+$$ \text{régimen}_t = \begin{cases} \text{risk-off} & \text{si } \min_{1 \le k \le 20}\, r_{t+k}^{\text{cum}} < -0{,}10 \\ \text{risk-on} & \text{en otro caso.} \end{cases} $$
+
+Esa etiqueta en el instante $t$ es una función de las rentabilidades desde $t{+}1$ hasta $t{+}20$.
+Embebedla, dádsela a un modelo que predice $r_{t+1}$, y vuestra "característica" ya *contiene la
+respuesta*: el embedding de "risk-off" parecerá espectacularmente predictivo, y con datos en vivo,
+donde no podéis ver los siguientes 20 días, se evapora. El arreglo: definid el régimen usando solo
+información disponible *en o antes* de $t$ (un umbral de volatilidad rezagada, un cruce de medias
+móviles), y asignadlo de forma causal.
+
+<Callout variant="warning" title="Los embeddings blanquean la fuga: auditad cada categoría como a un testigo hostil">
+El peligro es que un embedding es opaco, así que la fuga se esconde dentro de un vector denso en
+lugar de en una columna con nombre que marcaríais en la revisión. Tres hábitos: (1) **Ajustad el
+embedding solo dentro del fold de entrenamiento**: reajustadlo por ventana walk-forward, nunca sobre
+la muestra completa agrupada; tratadlo exactamente como un escalador ajustado. (2) **Construid el
+vocabulario point-in-time** (en el momento exacto): el conjunto de tickers/sectores debe ser el
+universo *tal como se conocía en la fecha de decisión*, incluyendo nombres que luego salieron de
+cotización, o habréis reimportado la supervivencia por la puerta de atrás. (3) **Interrogad cada
+categórica**: "¿podría un humano asignar esta etiqueta sin conocer el futuro?". Si una etiqueta de
+régimen, una reclasificación de sector o un indicador `fue_adquirida` necesitan retrospectiva, es un
+*objetivo*, no una característica, por muy denso que sea el vector que la esconda.
+</Callout>
+
+<MCQ
+  client:visible
+  allowMultiple
+  question="¿Cuáles de estas configuraciones de embedding filtran información del futuro? Selecciona todas las que lo hagan."
+  options={[
+    { text: "El vocabulario de tickers se construye con los constituyentes del índice de hoy, excluyendo las firmas que salieron de cotización en 2014", correct: true },
+    { text: "El embedding de régimen se basa en una etiqueta definida usando la caída de los 20 días siguientes", correct: true },
+    { text: "Una categórica 'estado_adquisicion' incluye el valor 'adquirida' para firmas compradas años después de la fecha de predicción", correct: true },
+    { text: "La matriz de embedding se reajusta desde cero dentro de cada fold de entrenamiento de una división walk-forward purgada" },
+    { text: "Una etiqueta de sector asignada a partir de la clasificación GICS vigente en la fecha de decisión" },
+  ]}
+  explanation="El vocabulario con supervivencia (a), las etiquetas de régimen con anticipación (b) y las categorías que codifican el futuro (c) filtran todas. Reajustar por fold y usar una clasificación de sector point-in-time son las prácticas correctas que no filtran."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+### Cuando la fuga es sutil
+
+El caso más desagradable es **(e), memorización con datos minúsculos**. Con $K = 3{,}000$ tickers,
+$m = 32$ y solo unos ~1.000 *días* de historia agrupada, el embedding puede aprender calladamente un
+mapa de consulta id→rentabilidad-media: un elegante target-encoding ajustado sobre las etiquetas de
+entrenamiento. Valida mal fuera de muestra y le echaréis la culpa al "cambio de régimen". La señal
+delatora: el ajuste en muestra mejora bruscamente con $m$ mientras que fuera de muestra se estanca o
+se degrada. Reducid $m$, añadid regularización/dropout sobre el embedding, o cuestionaos si tenéis
+los datos para hacer embedding de esta categoría siquiera.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Un compañero reajusta los embeddings de ticker sobre los 15 años completos de historia "por estabilidad", y luego ejecuta una CV walk-forward purgada encima. ¿Por qué es inútil aquí la purga, en el vocabulario de Machine Learning para Alfa?</summary>
+
+**Respuesta.** La CV purgada protege contra la fuga *temporal* *entre las etiquetas de train y test*
+durante el ajuste del modelo: elimina las ventanas solapadas y pone un embargo cerca de la división.
+Pero el embedding se ajustó *antes* de que la CV siquiera empezara, sobre datos que incluyen el
+periodo de test. Eso es **fuga por preprocesamiento-sobre-datos-completos**: las características
+entregadas a la CV ya codifican la estructura del periodo de test, así que purgar el ajuste del
+*modelo* no cambia nada. La cura es idéntica a la de los escaladores y el PCA en aquel curso: ajustad
+la transformación *solo dentro del fold de entrenamiento*, y luego aplicad la transformación
+congelada-desde-train a los datos retenidos. Un embedding no es más que una transformación ajustada
+con parámetros; tratadlo como tal.
+
+</details>
+</Reveal>
+
+## Cuándo los embeddings se ganan el sueldo
+
+<MCQ
+  client:visible
+  question="Tienes una categórica con 12 valores distintos, 800 filas de entrenamiento, y eliges entre un embedding de entidad y un árbol de gradient boosting con manejo nativo de categóricas. ¿Cuál es la decisión sensata?"
+  options={[
+    { text: "Sáltate el embedding: baja cardinalidad más datos escasos es justo donde un árbol (o un simple target/ordinal encoding) es más sencillo y suele ganar", correct: true },
+    { text: "Usa un embedding grande (m=64) para ir sobre seguro; más capacidad siempre es mejor" },
+    { text: "Los embeddings dominan estrictamente a los árboles en datos tabulares financieros, así que embebe siempre" },
+    { text: "Haz one-hot de los 12 valores y entrena un MLP de 5 capas: la profundidad arregla los datos escasos" },
+  ]}
+  explanation="Los embeddings rinden con alta cardinalidad Y suficientes datos agrupados para aprender estructura compartida. Con 12 categorías y 800 filas no hay nada que compartir y todo que sobreajustar; un árbol de gradient boosting maneja la categórica de forma nativa y generaliza mejor: un anticipo del tema 'los árboles suelen ganar en tabular' de la próxima lección."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+**Analogía.** Los embeddings son un *deporte de equipo*. Toda su ventaja está en dejar que las
+categorías compartan fuerza: un banco aprendiendo de mil días-banco. Si tenéis dos bancos y un fin de
+semana largo de datos, no hay equipo con el que compartir; solo estáis memorizando. Los embeddings
+premian un estadio abarrotado, no uno vacío.
+
+**La decisión, hecha precisa.** Inclinaos por un embedding cuando se cumplan **ambas** cosas: (1) la
+cardinalidad es alta ($K$ en los cientos-a-miles), así que el one-hot es un derroche y la estructura
+de similitud merece la pena aprenderse; y (2) tenéis un **panel agrupado grande** —muchas entidades
+$\times$ muchos periodos— para que el embedding tenga suficientes ejemplos por factor latente para
+aprender estructura en vez de ids. Evitadlo cuando los datos sean minúsculos (memoriza), cuando la
+cardinalidad sea baja (un encoding ordinal o de objetivo, o simplemente un one-hot, es más sencillo),
+o cuando un árbol sirva.
+
+| Situación | Cardinalidad | Datos efectivos | Mejor herramienta |
+|-----------|--------------|-----------------|-------------------|
+| 3.000 tickers, 15 años diarios, panel agrupado | Alta | Grande | **Embedding de entidad** |
+| Característica de día de la semana | Baja (7) | Cualquiera | One-hot / codificación cíclica |
+| 12 sectores, 800 filas | Baja-media | Pequeños | Target/ordinal encoding o un árbol |
+| Características tabulares mixtas, datos modestos | Mixta | Modestos | **Árboles de gradient boosting** |
+| Texto de noticias, señal en el lenguaje | n/a | Datos propios escasos | Embedding de texto preentrenado |
+
+<Callout variant="info" title="Anticipo de la lección 6">
+Fijaos en cuántas veces la respuesta honesta de arriba es "usa un árbol". Los árboles de gradient
+boosting manejan las categóricas de forma nativa (sin one-hot, sin matriz de embedding), no necesitan
+GPU y resisten el sobreajuste en los paneles pequeños, ruidosos y de baja señal que definen las
+finanzas. La próxima lección plantea directamente la tesis incómoda: en la mayoría de problemas
+tabulares de mercado, **los árboles suelen ganar**, y los embeddings son la excepción a la que
+recurrís, no el valor por defecto.
+</Callout>
+
+### Cuándo usarlo: el compromiso
+
+El intercambio del embedding es **poder expresivo y estructura compartida** *comprado con*
+**parámetros, opacidad y una nueva superficie para la fuga**. Aceptáis el trato cuando la alta
+cardinalidad y un panel agrupado profundo hacen que la estructura compartida sea real y aprendible. Lo
+rechazáis cuando los datos no pueden financiar los parámetros, o cuando un árbol os da el 95% del
+beneficio con el 5% de los tiros al pie.
+
+<FillBlank
+  client:visible
+  question="Resume la regla de decisión del embedding."
+  text="Los embeddings de entidad rinden cuando la cardinalidad es {{alta|baja|fija}} y el panel agrupado es {{grande|minúsculo|disperso}}; con pocos datos el embedding tiende a {{memorizar|generalizar|regularizar}}, y para paneles tabulares simples un {{árbol|kernel|spline}} de gradient boosting suele ser el ganador más sencillo."
+  explanation="Alta cardinalidad + panel agrupado grande es el punto dulce del embedding. Los datos escasos llevan a la memorización, y para finanzas tabulares los árboles son el fuerte valor por defecto: el tema de la próxima lección."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+/>
+
+## Repaso
+
+<MindMap
+  client:visible
+  title="Embeddings para datos categóricos y alt."
+  caption="De etiquetas a vectores densos aprendidos, y las trampas de fuga por el camino."
+  root={{
+    label: "Embeddings",
+    children: [
+      {
+        label: "One-hot",
+        children: [
+          { label: "Ortogonal → sin similitud" },
+          { label: "Ancho K, los params explotan" },
+          { label: "OK solo cuando K es pequeño" },
+        ],
+      },
+      {
+        label: "Embedding de entidad",
+        children: [
+          { label: "Tabla de consulta E (K×m), aprendida" },
+          { label: "m ≈ min(50, ⌈K/2⌉) o K^0.25" },
+          { label: "word2vec para acciones: los bancos se agrupan" },
+        ],
+      },
+      {
+        label: "Datos alt. y de texto",
+        children: [
+          { label: "Vectores preentrenados de frase/documento" },
+          { label: "Vectores de sentimiento / temas" },
+          { label: "OOV → fila <UNK>" },
+        ],
+      },
+      {
+        label: "Trampas de fuga",
+        children: [
+          { label: "Ajuste sobre la muestra completa" },
+          { label: "Vocabulario con supervivencia" },
+          { label: "Etiquetas de régimen con anticipación" },
+          { label: "Categoría que codifica el futuro" },
+          { label: "Memorización con datos minúsculos" },
+        ],
+      },
+      {
+        label: "Cuándo embeber",
+        children: [
+          { label: "Alta cardinalidad + panel grande" },
+          { label: "Ni datos minúsculos ni K bajo" },
+          { label: "Si no: los árboles suelen ganar" },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Comprobación de embeddings"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  nextLabel="Siguiente pregunta"
+  backLabel="Atrás"
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  seeResultsLabel="Ver resultados"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  gateLabel="Comprueba tu respuesta para continuar."
+  questions={[
+    {
+      question: "¿Por qué el one-hot encoding no consigue expresar que dos bancos son similares?",
+      options: [
+        { text: "Los vectores one-hot distintos son mutuamente ortogonales, así que cada par de categorías es equidistante", correct: true },
+        { text: "Los vectores one-hot están normalizados, lo que borra la información de magnitud" },
+        { text: "La codificación almacena las categorías alfabéticamente, revolviendo los sectores" },
+        { text: "Los bancos resultan recibir índices adyacentes, que el modelo ignora" },
+      ],
+      explanation: "La ortogonalidad significa igual distancia entre todas las categorías distintas: no se puede representar ninguna estructura de similitud, da igual qué dos categorías elijas.",
+    },
+    {
+      question: "Usando la regla del mínimo m ≈ min(50, ⌈K/2⌉), ¿con qué dimensión de embedding empezarías para un universo de 3.000 tickers?",
+      options: [
+        { text: "Unos 50", correct: true },
+        { text: "Unos 1.500" },
+        { text: "Unos 3.000" },
+        { text: "Unos 8" },
+      ],
+      explanation: "min(50, ⌈3000/2⌉) = min(50, 1500) = 50. El tope entra en juego para vocabularios de alta cardinalidad; la regla K^0.25 sugeriría ~8, y los profesionales suelen elegir algo intermedio.",
+    },
+    {
+      question: "¿Qué prácticas mantienen un embedding de entidad libre de fuga por anticipación y supervivencia? Selecciona todas las que apliquen.",
+      options: [
+        { text: "Reajustar el embedding solo dentro de cada fold de entrenamiento, y luego aplicarlo congelado a los datos retenidos", correct: true },
+        { text: "Construir el vocabulario de entidades point-in-time, incluyendo nombres que luego salieron de cotización", correct: true },
+        { text: "Definir cualquier etiqueta de régimen/categoría usando solo información disponible en o antes de la fecha de decisión", correct: true },
+        { text: "Ajustar el embedding una vez sobre la historia agrupada de 2010–2025 por estabilidad" },
+      ],
+      explanation: "El ajuste por fold, los vocabularios point-in-time y las etiquetas definidas causalmente son las salvaguardas. Ajustar sobre la historia completa agrupada es fuga por preprocesamiento-sobre-datos-completos.",
+      allowMultiple: true,
+    },
+    {
+      question: "Una etiqueta de régimen se define como 'risk-off si los SIGUIENTES 20 días caen más de un 10%', y luego se embebe como característica. ¿Qué ocurre?",
+      options: [
+        { text: "Parece brillantemente predictiva en muestra y se desploma en vivo, porque la etiqueta codifica rentabilidades futuras", correct: true },
+        { text: "Está bien, ya que 20 días es una ventana lo bastante corta como para ignorarla" },
+        { text: "Solo filtra si la dimensión de embedding supera el número de regímenes" },
+        { text: "Mejora el rendimiento en vivo al suavizar la volatilidad" },
+      ],
+      explanation: "La etiqueta en el instante t es una función de las rentabilidades de t+1 a t+20: contiene la respuesta. En vivo no puedes ver los siguientes 20 días, así que la ventaja aparente se desvanece. Define los regímenes de forma causal.",
+    },
+    {
+      question: "Tienes una categórica de 12 valores y 800 filas de entrenamiento. ¿Por qué un embedding de entidad es el reflejo equivocado?",
+      options: [
+        { text: "Baja cardinalidad más datos escasos significa que no hay estructura compartida que aprender: el embedding solo memoriza, y un árbol o una codificación simple generaliza mejor", correct: true },
+        { text: "Los embeddings no pueden representar menos de 50 categorías" },
+        { text: "12 categorías producen matrices de embedding singulares que no consiguen entrenar" },
+        { text: "Los árboles no pueden leer características categóricas en absoluto, así que quedan descartados" },
+      ],
+      explanation: "Los embeddings premian la alta cardinalidad y un panel agrupado grande. Con pocas categorías y pocos datos no hay nada que compartir; los árboles de gradient boosting (que manejan las categóricas de forma nativa) son la opción más sencilla y fuerte: el tema de la próxima lección.",
+    },
+  ]}
+/>

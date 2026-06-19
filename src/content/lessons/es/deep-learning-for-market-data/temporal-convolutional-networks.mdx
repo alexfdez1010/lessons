@@ -1,0 +1,384 @@
+---
+title: "Redes Convolucionales Temporales"
+description: "Trata una serie de rendimientos como una señal 1-D: convoluciones causales que nunca espían el futuro, dilataciones que hacen crecer el campo receptivo de forma exponencial con pocos parámetros, bloques residuales y por qué las TCN suelen ganar a las RNN en secuencias financieras tabulares."
+topic: "es/deep-learning-for-market-data"
+order: 3
+minutes: 15
+updated: 2026-06-19
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, SequenceModelUnroll, TsOverfitCurve } from '@/components/react';
+
+En la última lección viste a una LSTM enhebrar heroicamente una celda de memoria
+a través de una larga cadena recurrente, peleando contra el gradiente que se
+desvanece en cada paso como un corredor de relevos que no para de soltar el
+testigo. Las puertas ayudaban. Siempre ayudan. Pero hay una alternativa más
+silenciosa y ligeramente engreída que esquiva todo el drama: **deja de enhebrar
+memoria por una cadena frágil y, sin más, desliza un filtro sobre toda la ventana
+de golpe.**
+
+Esa es la Red Convolucional Temporal (TCN). Toma prestada la convolución de los
+modelos de imágenes, la apunta al tiempo en lugar de a los píxeles y lee tus
+rendimientos retardados directamente, en vez de resumirlos en un estado oculto
+que puede sobrevivir o no al viaje. Sin recurrencia, sin testigo, sin disculpas.
+
+Aquí tienes el contraste del que nos alejamos: la recurrencia llevando memoria
+paso a paso por una cadena que las *puertas* pueden parchear, pero no abolir:
+
+<SequenceModelUnroll client:visible caption="La recurrencia (arriba) pasa la información de mano en mano por una cadena; las puertas (abajo) protegen la señal, pero la cadena sigue siendo el cuello de botella. Una TCN elimina la cadena y lee la ventana directamente con filtros apilados." />
+
+El intercambio que estamos a punto de hacer: renunciar a la memoria ilimitada
+pero frágil de la RNN a cambio de un horizonte de memoria **fijo, conocido y
+estable en gradiente**. Para las finanzas, donde lo que más te importa son las
+últimas cientos de barras y *desesperadamente* quieres un comportamiento
+reproducible, ese intercambio suele ser una ganga.
+
+## Convoluciones causales
+
+Empezamos con una comprobación de instinto antes de la maquinaria.
+
+<MCQ client:visible pretest question="Una convolución 1-D en el instante t mezcla unas pocas entradas vecinas con pesos de filtro compartidos. ¿Qué debe cambiar para que la salida en t NUNCA pueda depender de entradas posteriores a t?" options={[{text: "Rellenar de modo que el filtro solo alcance hacia atrás en el tiempo: la salida en t usa entradas en t, t-1, t-2, … (relleno causal)", correct: true}, {text: "Aumentar el ancho del filtro para que cubra toda la serie"}, {text: "Normalizar las entradas a media cero antes de convolucionar"}, {text: "Usar una tasa de aprendizaje mayor para que los pesos futuros decaigan"}]} explanation="La causalidad es una propiedad de relleno/alineación, no de ancho ni de tasa de entrenamiento. Desplazas el filtro para que solo mire al presente y al pasado." checkLabel="Comprobar" retryLabel="Reintentar" />
+
+**Analogía.** Una convolución estándar es una pequeña plantilla deslizante —un
+filtro de ancho $k$— que se posa sobre unos pocos pasos de tiempo consecutivos,
+multiplica cada entrada por un peso aprendido y suma. Una convolución *causal* es
+esa misma plantilla con una norma de la casa estricta: solo puede apoyarse sobre
+la barra presente y las barras a su **izquierda** (el pasado). Tiene físicamente
+prohibido inclinarse hacia el futuro. Piensa en un trader que solo puede leer la
+cinta hasta *ahora*: exactamente la disciplina que interiorizaste como **nada de
+fuga por mirar al futuro** allá en Aprendizaje Automático para Alfa.
+
+**Definición.** Para una serie de entrada $x_1, x_2, \dots, x_T$ y un filtro con
+pesos $w_0, w_1, \dots, w_{k-1}$, una convolución causal 1-D produce
+
+$$
+y_t = \sum_{i=0}^{k-1} w_i \, x_{t-i}.
+$$
+
+Cada término tiene índice $t - i \le t$. Nada del futuro entra. En la práctica
+esto se implementa rellenando la secuencia por la izquierda con $k-1$ ceros, para
+que la longitud de salida coincida con la de entrada y la alineación siga siendo
+causal.
+
+**Ejemplo resuelto.** Toma un filtro causal de ancho $k=3$ con pesos
+$w_0 = 0.5,\; w_1 = 0.3,\; w_2 = 0.2$ (un detector de momentum un poco suavizado).
+Aliméntalo con los tres últimos rendimientos diarios que terminan en $t$:
+
+| índice | rendimiento de entrada $x$ | peso $w$ | producto |
+|---|---|---|---|
+| $t$ | $+0.012$ | $w_0 = 0.5$ | $+0.0060$ |
+| $t-1$ | $-0.004$ | $w_1 = 0.3$ | $-0.0012$ |
+| $t-2$ | $+0.020$ | $w_2 = 0.2$ | $+0.0040$ |
+
+$$
+y_t = 0.0060 - 0.0012 + 0.0040 = 0.0088.
+$$
+
+Una salida, tres multiplicaciones-sumas, cero espionaje. Esos mismos tres pesos se
+deslizan luego para calcular $y_{t+1}$ a partir de $x_{t+1}, x_t, x_{t-1}$: el
+**compartir** pesos a lo largo del tiempo es lo que hace la capa barata e
+invariante a la traslación.
+
+<Callout variant="warning" title="El error de un paso que se convierte en cuento de hadas del backtest">
+El error de TCN más común en finanzas es construir sin querer una convolución
+*no causal* (centrada) —la que usan por defecto las librerías de imágenes— que
+deja que $y_t$ espíe $x_{t+1}$. Tu modelo "predice" rendimientos con una
+precisión inquietante en el backtest, te apuntas el Sharpe mentalmente y luego el
+trading en vivo se queda plano. Confirma siempre que el relleno es solo por la
+izquierda y que la salida $t$ es una función pura de entradas $\le t$. Una fuga
+de un solo paso es indistinguible de la genialidad hasta que el dinero real
+discrepa.
+</Callout>
+
+<FillBlank client:visible question="Completa la regla de alineación." text="Una convolución es causal cuando la salida en el instante t depende solo de entradas en instantes {{menores o iguales a t|estrictamente mayores que t|exactamente iguales a t|simétricos en torno a t}}, lo cual imponemos {{rellenando la secuencia por la izquierda|rellenando la secuencia por la derecha|rellenando de forma centrada|eliminando todo el relleno}}." explanation="Causal = usa solo presente y pasado (≤ t), implementado con relleno por la izquierda para que ningún valor futuro se filtre a la salida actual." checkLabel="Comprobar" retryLabel="Reintentar" instructions="Elige la opción correcta para cada hueco y comprueba." />
+
+### Cuándo usarla
+
+Echa mano de las convoluciones causales siempre que el objetivo sea una
+predicción hecha *en* el instante $t$ usando información disponible *hasta* $t$:
+básicamente toda tarea de predicción financiera honesta. La versión de una sola
+capa solo ve $k$ pasos hacia atrás, así que por sí sola es un extractor de
+características de memoria corta (una media móvil aprendible, más o menos). La
+usarías de forma autónoma para patrones muy locales; para memoria de verdad las
+apilas con dilatación, que viene a continuación.
+
+## Dilatación: un telescopio hacia el pasado
+
+<MCQ client:visible pretest question="Apilas capas conv causales para ver más atrás. Con filtros ordinarios (dilatación 1) de ancho k, ¿cómo crece el campo receptivo al añadir capas?" options={[{text: "Linealmente: cada capa añade solo unos (k-1) pasos más de alcance", correct: true}, {text: "Exponencialmente: cada capa duplica el alcance gratis"}, {text: "Cuadráticamente en el número de capas"}, {text: "No crece; la profundidad nunca aumenta el alcance"}]} explanation="El apilamiento simple es lineal: L capas alcanzan ~1+L(k-1). Para cubrir cientos de pasos necesitarías cientos de capas. La dilatación es el arreglo." checkLabel="Comprobar" retryLabel="Reintentar" />
+
+**Analogía.** El apilamiento ordinario es subir una escalera de mano un peldaño
+por capa: lento. La convolución **dilatada** es un telescopio: cada capa salta
+más huecos entre las barras que muestrea, así que cada peldaño hacia arriba
+multiplica lo lejos que puedes ver en vez de simplemente sumarle. Sigues tocando
+solo $k$ entradas por filtro, pero están más separadas.
+
+**Definición.** Una convolución causal dilatada con dilatación $d$ salta $d-1$
+entradas entre tomas consecutivas:
+
+$$
+y_t = \sum_{i=0}^{k-1} w_i \, x_{t - d\cdot i}.
+$$
+
+En $d=1$ es la convolución causal ordinaria. Apila $L$ capas con dilataciones
+$1, 2, 4, \dots, 2^{L-1}$ (duplicando en cada capa) y el **campo receptivo** —cuántos
+pasos pasados pueden influir en la salida— es
+
+$$
+R = 1 + (k-1)\bigl(2^{L} - 1\bigr).
+$$
+
+El alcance $2^L$ crece **exponencialmente** con el número de capas, mientras que
+el número de parámetros crece solo **linealmente** (cada capa añade los mismos
+$\sim k$ pesos por canal). Esa asimetría es todo el argumento de venta.
+
+**Ejemplo resuelto.** Fija $k = 2$ y $L = 8$ capas con dilataciones
+$1, 2, 4, \dots, 128$. Entonces
+
+$$
+R = 1 + (2-1)\,(2^{8} - 1) = 1 + 1 \cdot 255 = 256.
+$$
+
+Ocho capas alcanzan **256 pasos de tiempo** hacia atrás —aproximadamente un año
+de barras diarias— usando una cantidad trivial de pesos. Aquí está el crecimiento
+desglosado capa a capa (ancho $k=2$, así que cada capa añade $2^{\ell}$ al
+alcance):
+
+| capa $\ell$ | dilatación $d=2^{\ell}$ | alcance añadido $(k-1)d = d$ | campo receptivo acumulado $R$ | parámetros (pesos/canal) |
+|---|---|---|---|---|
+| 0 | 1 | 1 | 2 | 2 |
+| 1 | 2 | 2 | 4 | 2 |
+| 2 | 4 | 4 | 8 | 2 |
+| 3 | 8 | 8 | 16 | 2 |
+| 4 | 16 | 16 | 32 | 2 |
+| 5 | 32 | 32 | 64 | 2 |
+| 6 | 64 | 64 | 128 | 2 |
+| 7 | 128 | 128 | 256 | 2 |
+
+Fíjate en que la columna del campo receptivo se **duplica** en cada fila mientras
+que la columna de parámetros se queda plana en 2. El alcance es exponencial; el
+coste, lineal. (Para volver a duplicar el alcance hasta 512, añades *una* capa
+más, no 256 más.)
+
+<Callout variant="warning" title="Agujeros en el telescopio: artefactos de cuadriculado">
+Duplicar dilataciones es eficiente, pero si eliges anchos y dilataciones con
+descuido, algunas posiciones de entrada dentro del campo receptivo nunca son
+muestreadas por ninguna toma: los filtros "ven a través" de los huecos y dejan
+agujeros en damero (el artefacto de *gridding* de la literatura de segmentación).
+Con $k=2$ y dilataciones que se duplican vas bien —la cobertura es densa—, pero
+si ensanchas los pasos de dilatación más rápido de lo que el filtro puede
+salvarlos, tendrás un "alcance" de 256 pasos que en secreto ignora la mitad de
+las barras que contiene. Verifica la cobertura, no la des por supuesta.
+</Callout>
+
+<MatchConcepts client:visible pairs={[{term: "Dilatación d", definition: "Número de pasos de entrada entre tomas consecutivas del filtro; se saltan d−1 entradas"}, {term: "Campo receptivo R", definition: "Cuántos pasos de tiempo pasados pueden influir en una sola salida, 1+(k−1)(2^L−1) para dilataciones que se duplican"}, {term: "Ancho del filtro k", definition: "Cuántas entradas toca un filtro por aplicación, independientemente de lo separadas que estén"}, {term: "Crecimiento lineal de parámetros", definition: "Añadir una capa suma unos ~k pesos fijos por canal aunque el alcance se duplique"}]} checkLabel="Comprobar" retryLabel="Reintentar" instructions="Une cada concepto con su definición." />
+
+### Cuándo usarla
+
+La dilatación es la respuesta siempre que necesites memoria larga sin pagarla en
+parámetros ni en inestabilidad inducida por la profundidad. Elige el calendario
+de dilataciones de modo que el campo receptivo de la capa superior **supere
+cómodamente** la dependencia más larga que crees que existe en los datos (p. ej.,
+si crees que los efectos persisten ~120 barras, construye $R \ge 200$ para tener
+margen). No te pases construyendo: un campo receptivo de 4096 sobre una serie con
+90 barras de memoria solo añade capacidad para sobreajustar. Más sobre esto a
+continuación.
+
+## Bloques residuales y la TCN completa
+
+<MCQ client:visible pretest question="Apilar muchas capas conv dilatadas puede degradar el entrenamiento: la precisión EMPEORA al añadir profundidad, incluso en datos de entrenamiento. ¿Qué truco arquitectónico arregla esto de forma más directa?" options={[{text: "Conexiones residuales (de salto) que suman la entrada del bloque a su salida, de modo que un bloque solo necesite aprender una corrección", correct: true}, {text: "Cambiar el optimizador de Adam a SGD simple"}, {text: "Eliminar todo el dropout para que los gradientes fluyan libremente"}, {text: "Usar un único filtro gigante en vez de apilar"}]} explanation="Las conexiones residuales dan a los gradientes una autopista directa y permiten que cada bloque tome por defecto la identidad, que es exactamente lo que curó la degradación en las ResNet profundas, y las TCN lo heredan." checkLabel="Comprobar" retryLabel="Reintentar" />
+
+**Analogía.** Un bloque residual es una *edición*, no una *reescritura*. En vez de
+pedir a cada capa que reconstruya toda la señal desde cero, le pides que produzca
+una pequeña corrección y luego la sume a lo que entró: "aquí tienes la entrada,
+más mi granito de arena". Si un bloque no tiene nada útil que aportar, puede
+aprender a sacar ~cero y dejar pasar la entrada tal cual, así que añadir
+profundidad no puede *perjudicarte* fácilmente.
+
+**Definición.** Un bloque residual de TCN envuelve dos convoluciones causales
+dilatadas y produce
+
+$$
+\text{out} = \text{Activación}\bigl(x + \mathcal{F}(x)\bigr),
+$$
+
+donde $\mathcal{F}$ es la pila de (conv causal dilatada → normalización de pesos →
+no linealidad → dropout), aplicada dos veces. El término $x +$ es la conexión de
+salto. Cuando los recuentos de canales de entrada y salida difieren, una
+convolución $1\times1$ remodela $x$ antes de sumar. Los ingredientes del bloque
+TCN estándar:
+
+| componente | qué hace | por qué está ahí |
+|---|---|---|
+| Conv causal dilatada | la mezcla temporal de verdad | memoria larga, sin fugas |
+| Normalización de pesos | reescala los pesos del filtro | estabiliza/acelera el entrenamiento |
+| ReLU (o similar) | no linealidad | deja que la red modele patrones no lineales |
+| Dropout **espacial** | descarta canales de características enteros | regularización que respeta la estructura temporal |
+| Suma residual / de salto | vuelve a sumar la entrada a la salida | profundidad entrenable, autopista de gradiente |
+
+**Ejemplo resuelto.** Supón que la pila de dos convoluciones de un bloque produce
+una corrección $\mathcal{F}(x) = -0.03$ en algún paso donde la característica de
+entrada es $x = 0.50$. La salida residual antes de la activación es
+$0.50 + (-0.03) = 0.47$: un suave empujón del 6%, no una reconstrucción desde
+cero. Ahora imagina que apilas 8 bloques así. Con apilamiento simple, una capa
+temprana desafortunada que aprende basura corrompe todo lo que va después; con
+residuales, ese bloque puede colapsar hacia $\mathcal{F}(x)\approx 0$, sacar
+$\approx x$, y el resto de la red queda intacto. Por eso puedes apilar TCN
+profundas (las 8 capas de nuestro ejemplo de dilatación, envueltas en bloques
+residuales) sin la *degradación* de precisión que aqueja a las pilas profundas
+ingenuas.
+
+¿Por qué dropout **espacial** en concreto? El dropout ordinario pone a cero
+activaciones individuales aleatorias, lo cual en una serie temporal suave es como
+borrar ticks sueltos dispersos: la red simplemente interpola en torno a ellos y la
+regularización apenas muerde. El dropout espacial pone a cero **canales** enteros
+a lo largo de todos los pasos de tiempo, forzando a la red a no apoyarse en
+ninguna característica aprendida concreta. Es regularización que se toma en serio
+la correlación temporal.
+
+<Callout variant="warning" title="Campo receptivo ≠ memoria gratis; aún puedes sobreajustar ferozmente">
+Los bloques residuales te dejan apilar profundo, y la dilatación deja que el
+alcance explote, que es exactamente cómo te convences de montar un monstruo de 12
+capas con un campo receptivo de 4096 pasos sobre una serie con quizá 2.000
+observaciones efectivamente independientes. La capacidad se dispara; tu tamaño de
+muestra *efectivo* no (autocorrelación, lección 1). La curva dentro de muestra
+luce preciosa y la curva fuera de muestra diverge en silencio:
+</Callout>
+
+<TsOverfitCurve client:visible title="TCN más grande, menor ventaja fuera de muestra" caption="Al añadir profundidad/ancho/campo receptivo, la pérdida dentro de muestra sigue cayendo pero la pérdida fuera de muestra se gira hacia arriba. El mínimo de la curva fuera de muestra —no el de la de dentro de muestra— fija el tamaño de modelo correcto. Regulariza con dureza (dropout, normalización de pesos, profundidad modesta)." />
+
+<Categorize client:visible question="Clasifica cada ingrediente de la TCN según su función principal." buckets={["Extiende memoria / alcance", "Estabiliza o regulariza el entrenamiento"]} items={[{text: "Duplicar la dilatación en cada capa", bucket: "Extiende memoria / alcance"}, {text: "Añadir más bloques residuales (más capas)", bucket: "Extiende memoria / alcance"}, {text: "Dropout espacial sobre canales enteros", bucket: "Estabiliza o regulariza el entrenamiento"}, {text: "Normalización de pesos", bucket: "Estabiliza o regulariza el entrenamiento"}, {text: "Conexiones residuales de salto", bucket: "Estabiliza o regulariza el entrenamiento"}]} explanation="La dilatación y la profundidad compran alcance; el dropout espacial, la normalización de pesos y las sumas residuales mantienen entrenable la pila profunda y evitan el sobreajuste. (Las sumas residuales también extienden ligeramente el alcance, pero su función principal es el flujo de gradiente / la entrenabilidad.)" checkLabel="Comprobar" retryLabel="Reintentar" instructions="Coloca cada elemento en su grupo." />
+
+### Cuándo usarlos
+
+Usa la TCN completa con bloques residuales —no convoluciones apiladas a secas—
+siempre que apiles más de un par de capas. Por debajo de ~3 capas podrías
+saltarte las conexiones de salto; por encima, los residuales son esencialmente
+obligatorios para evitar la degradación. Ajusta la *intensidad de
+regularización* (tasa de dropout, profundidad) contra la curva fuera de muestra,
+nunca contra la de dentro de muestra.
+
+## TCN frente a RNN
+
+<MCQ client:visible pretest question="¿Qué propiedad es EXCLUSIVA de los modelos de secuencia convolucionales (TCN) y NO la comparte una RNN/LSTM clásica procesada paso a paso?" options={[{text: "Toda la secuencia puede procesarse en paralelo durante el entrenamiento, ya que la salida t no espera a la salida t-1", correct: true}, {text: "Puede modelar relaciones no lineales entre las entradas y el objetivo"}, {text: "Puede regularizarse con dropout"}, {text: "Produce una salida por paso de tiempo"}]} explanation="Las RNN son intrínsecamente secuenciales: el paso t necesita el estado oculto de t-1. Las salidas de una TCN son convoluciones independientes, así que toda la secuencia se calcula de golpe, algo que a las GPU les encanta." checkLabel="Comprobar" retryLabel="Reintentar" />
+
+**Analogía.** Una RNN lee la cinta como una persona que lee una novela: una
+palabra cada vez, sosteniendo la trama en su (falible) memoria de trabajo. Una TCN
+la lee como un lector rápido con toda la página abierta a la vez, con los ojos
+saltando a posiciones fijas: no hay memoria de trabajo que perder, pero también un
+borde duro en la página: literalmente no puede ver más allá del margen (el campo
+receptivo).
+
+**Los compromisos clave.**
+
+| dimensión | TCN (convolucional) | RNN / LSTM / GRU (recurrente) |
+|---|---|---|
+| Cómputo de entrenamiento | **Paralelo**: toda la secuencia de golpe, amigable con la GPU, rápido | **Secuencial**: el paso $t$ espera a $t-1$; lento |
+| Comportamiento del gradiente | **Estable**: caminos cortos vía residuales/dilatación; sin decaimiento a través del tiempo | Propenso a **desvanecerse/explotar** a través del tiempo (las puertas mitigan, no curan) |
+| Horizonte de memoria | **Fijo y conocido**: exactamente $R$ pasos; corte duro | **Ilimitado en principio** pero frágil e incierto en la práctica |
+| Memoria más allá del horizonte | No puede ver más allá de $R$, punto | Puede *en teoría* retener un contexto arbitrariamente largo |
+| Latencia de inferencia | Algo más pesada por paso (vuelve a convolucionar la ventana) | Ligera: arrastra un pequeño vector de estado hacia delante |
+| Eficiencia de parámetros para memoria larga | Excelente (dilatación: profundidad logarítmica) | El estado debe codificarlo todo en un solo vector |
+
+**Ejemplo resuelto — la aceleración es concreta.** Supón que una secuencia tiene
+$T = 500$ pasos y que la aritmética de cada capa cuesta una unidad de "trabajo"
+por paso. Una RNN debe ejecutar sus 500 pasos **en orden**: tiempo de reloj
+$\approx 500$ unidades secuenciales, porque el paso 437 no puede arrancar antes de
+que termine el 436. Una capa de TCN aplica el mismo filtro a las 500 posiciones
+**simultáneamente**: con suficientes carriles en paralelo, tiempo de reloj
+$\approx 1$ unidad para esa capa, y una TCN de 8 capas termina en $\approx 8$
+unidades secuenciales en total en vez de $500$. Los mismos FLOP en agregado, pero
+la *cadena de dependencias* es la profundidad (8), no la longitud de la secuencia
+(500). En una GPU esa es la diferencia entre minutos y horas.
+
+El remate empírico: en muchas tareas de secuencia de referencia —y notablemente en
+las series financieras **tabulares y de horizonte medio** que le importan a este
+curso— las TCN con frecuencia **igualan o superan** a las LSTM, entrenando más
+rápido y de forma más estable. El sesgo inductivo recurrente no es magia; para
+buena parte de los datos de mercado, "lee las últimas $R$ barras con gradientes
+estables" gana.
+
+<Callout variant="warning" title="El horizonte fijo es una ventaja Y una trampa">
+El campo receptivo de una TCN es un muro duro: una dependencia en el retardo $R+1$
+es invisible, y punto: ningún entrenamiento la revela. Con una LSTM al menos
+tendrías una *posibilidad* (por escasa que sea) de capturarla a través del estado
+recurrente. Así que si tu señal vive de verdad en una estructura de muy largo
+alcance (memoria de régimen que abarca años de barras intradía), o dimensionas $R$
+para cubrirla explícitamente o no des por hecho que una TCN modesta pueda verla.
+El horizonte conocido te protege del autoengaño solo si lo fijas con honestidad.
+</Callout>
+
+<MCQ client:visible allowMultiple question="Selecciona TODAS las afirmaciones verdaderas sobre las TCN en relación con los modelos recurrentes." options={[{text: "El entrenamiento de la TCN se paraleliza a lo largo del tiempo; el de la RNN es secuencial", correct: true}, {text: "Los gradientes de la TCN evitan el problema de desvanecimiento a través del tiempo que motivó las puertas de la LSTM", correct: true}, {text: "El horizonte de memoria de una TCN está fijado por su campo receptivo, no es ilimitado", correct: true}, {text: "Las TCN pueden capturar dependencias arbitrariamente lejanas independientemente del campo receptivo"}, {text: "Las RNN son siempre más precisas que las TCN en secuencias financieras"}]} explanation="Verdadero: entrenamiento paralelo, gradientes estables, horizonte fijo. Falso: las TCN tienen un tope duro en R, y las RNN NO son fiablemente más precisas: las TCN a menudo las igualan o superan en datos financieros tabulares." checkLabel="Comprobar" retryLabel="Reintentar" />
+
+### Cuándo usarla
+
+Toma una TCN por defecto cuando quieras velocidad, reproducibilidad y un horizonte
+de memoria que puedas enunciar en una frase: la mayoría de la predicción intradía
+y diaria encaja aquí. Inclínate por una RNN solo cuando tengas razones de peso
+para creer que la memoria útil es a la vez muy larga *y* lo bastante irregular
+como para que un campo receptivo dimensionado con honestidad fuera
+impracticablemente profundo.
+
+## Cuándo usar una TCN
+
+<FillBlank client:visible question="Completa la pauta de despliegue." text="Una TCN es una buena opción por defecto para {{secuencias de longitud media y sensibles a fugas|conjuntos tabulares diminutos|instantáneas puramente transversales|vectores de características de una sola fila}}, pero aun así deberías {{regularizar con dureza dado el pequeño N efectivo|saltarte el dropout para ahorrar cómputo|maximizar la profundidad sin condiciones|ignorar el campo receptivo}} porque las muestras financieras están muy autocorrelacionadas." explanation="Las TCN brillan en predicción de secuencias de horizonte medio con causalidad estricta, pero la autocorrelación encoge tu N efectivo (lección 1), así que la regularización dura no es negociable." checkLabel="Comprobar" retryLabel="Reintentar" instructions="Elige la opción correcta para cada hueco y comprueba." />
+
+**Analogía.** Elegir una TCN es como elegir un objetivo de focal fija: nítido como
+un cuchillo y rápido dentro de su campo de visión, inútil para lo que queda fuera
+del encuadre. Lo compras cuando sabes aproximadamente cómo de amplio necesitas el
+plano.
+
+**Echa mano de una TCN cuando:**
+
+- La secuencia es de **longitud media** y el horizonte de dependencia es *finito y
+  estimable*: fija $R$ para que supere cómodamente (recuerda $R = 1 + (k-1)(2^L - 1)$).
+- Trabajas con datos **intradía / de microestructura** donde la velocidad de
+  entrenamiento en paralelo y un **horizonte de memoria conocido** importan de
+  verdad para iterar y controlar el riesgo.
+- Quieres un entrenamiento **reproducible y estable en gradiente** y estás harto de
+  LSTM que entrenan distinto cada martes.
+- **Pero regulariza con dureza.** El $N$ efectivo es pequeño porque los
+  rendimientos están autocorrelacionados (lección 1, "Por qué el Deep Learning
+  Sufre en Finanzas"); apóyate en dropout espacial, normalización de pesos,
+  profundidad modesta y validación walk-forward.
+
+**No eches mano de una TCN cuando:**
+
+- La memoria genuinamente necesaria **supera cualquier campo receptivo
+  razonable**: el horizonte duro amputará la señal en silencio.
+- El conjunto de datos es **diminuto** (unos cientos de filas, un puñado de
+  características). Un árbol con potenciación de gradiente o un modelo lineal
+  regularizado normalmente ganarán a cualquier red profunda aquí: menos supuestos,
+  menos varianza, sin GPU.
+- Las relaciones son esencialmente **transversales / no temporales**, en cuyo caso
+  la maquinaria de convolución-sobre-el-tiempo no te aporta nada.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Tienes ~3 años de barras de 1 minuto y sospechas que el momentum intradía decae en unos 90 minutos. Esboza una TCN que lo cubra, y di qué protege contra el sobreajuste.</summary>
+
+**Respuesta.** Un horizonte de 90 minutos son 90 barras de un minuto. Con $k = 2$
+y dilataciones que se duplican, $L = 7$ capas dan $R = 1 + (2-1)(2^7 - 1) = 128$
+pasos: cómodamente por encima de 90 con margen. Envuelve las convoluciones
+dilatadas en bloques residuales (para que 7 capas entrenen sin degradación), añade
+dropout espacial y normalización de pesos, y valida walk-forward. El alcance se
+fija deliberadamente justo por encima de la dependencia que se cree (no 4096), y la
+regularización más una validación fuera de muestra honesta protegen frente al $N$
+efectivo encogido por la autocorrelación. Eso es una TCN dimensionada con
+intención en lugar de con ego.
+
+</details>
+</Reveal>
+
+### Resumen de compromisos
+
+Todo el argumento en un suspiro: una TCN cambia la memoria *ilimitada pero frágil*
+de la RNN por una *fija pero estable y rápida*. Cuando tu problema cabe dentro de
+un campo receptivo que puedas nombrar, ese es un gran intercambio. Cuando no, el
+muro es real y silencioso: así que nombra el horizonte con honestidad, regulariza
+como si la muestra efectiva fuera pequeña (lo es) y valida fuera de muestra.
+
+## Repaso
+
+<MindMap client:visible title="Redes Convolucionales Temporales" caption="Las convoluciones causales leen solo el pasado; la dilatación compra alcance exponencial por un coste lineal; los bloques residuales hacen entrenable la profundidad; el resultado es una alternativa rápida, estable y de horizonte fijo a las RNN." root={{label: "TCN", children: [{label: "Convolución causal", children: [{label: "La salida t usa entradas ≤ t (sin fugas)"}, {label: "El relleno por la izquierda lo impone"}, {label: "Compartir pesos a lo largo del tiempo"}]}, {label: "Dilatación", children: [{label: "Salta d-1 entradas entre tomas"}, {label: "Alcance R = 1+(k-1)(2^L-1)"}, {label: "Alcance exponencial, parámetros lineales"}]}, {label: "Bloques residuales", children: [{label: "out = x + F(x)"}, {label: "Normalización de pesos + dropout espacial"}, {label: "Pilas profundas sin degradación"}]}, {label: "frente a RNN", children: [{label: "Entrenamiento paralelo, gradientes estables"}, {label: "Horizonte fijo frente a memoria ilimitada frágil"}, {label: "A menudo iguala/supera a la LSTM en finanzas tabulares"}]}, {label: "Cuándo usarla", children: [{label: "Longitud media, horizonte finito, intradía"}, {label: "Regulariza con dureza (N efectivo pequeño)"}, {label: "Evítala si memoria > R o datos diminutos"}]}]}} />
+
+<Quiz client:visible title="Comprobación de TCN" questions={[{question: "Un filtro causal de ancho 2 con pesos w0=0.6, w1=0.4 ve los rendimientos x_t=+0.010 y x_{t-1}=-0.005. ¿Cuál es la salida y_t?", options: [{text: "0.004", correct: true}, {text: "0.006"}, {text: "0.010"}, {text: "0.001"}], explanation: "y_t = 0.6(0.010) + 0.4(-0.005) = 0.0060 - 0.0020 = 0.0040."}, {question: "Una TCN usa k=2 y dilataciones que se duplican a lo largo de L=6 capas. ¿Cuál es su campo receptivo R?", options: [{text: "64", correct: true}, {text: "32"}, {text: "128"}, {text: "12"}], explanation: "R = 1 + (2-1)(2^6 - 1) = 1 + 63 = 64 pasos."}, {question: "¿Por qué una TCN entrena tanto más rápido que una LSTM sobre la misma secuencia larga?", options: [{text: "Sus salidas no dependen unas de otras a lo largo del tiempo, así que toda la secuencia se convoluciona en paralelo; la cadena de dependencias es la profundidad, no la longitud", correct: true}, {text: "Tiene estrictamente menos parámetros en todos los casos"}, {text: "Se salta el paso hacia atrás por completo"}, {text: "Las convoluciones usan aritmética de menor precisión por mandato"}], explanation: "El paralelismo sobre el eje temporal es la clave: el paso t de una RNN espera a t-1, las posiciones de una TCN son independientes."}, {question: "Selecciona todas las afirmaciones VERDADERAS sobre el diseño de TCN.", options: [{text: "Las conexiones residuales te dejan apilar muchas capas sin la degradación de precisión de las pilas profundas ingenuas", correct: true}, {text: "Duplicar las dilataciones hace crecer el alcance exponencialmente mientras los parámetros crecen linealmente", correct: true}, {text: "El dropout espacial pone a cero canales de características enteros en vez de activaciones sueltas dispersas", correct: true}, {text: "Una TCN puede capturar dependencias más allá de su campo receptivo si se entrena lo suficiente"}], explanation: "Los residuales habilitan la profundidad, la dilatación compra alcance barato, el dropout espacial respeta la estructura temporal. El campo receptivo es un muro duro: ningún entrenamiento lo cruza."}, {question: "Recuerdo espaciado: el problema del gradiente que se desvanece de la lección de modelos recurrentes se describe mejor como…", options: [{text: "Gradientes que se encogen multiplicativamente al retropropagarse a través de muchos pasos de tiempo, de modo que los pasos tempranos apenas aprenden, algo que las TCN esquivan con caminos residuales/dilatados poco profundos", correct: true}, {text: "Pesos que crecen sin límite durante el paso hacia delante"}, {text: "El dropout eliminando demasiadas neuronas en el momento de la inferencia"}, {text: "El campo receptivo expandiéndose más rápido de lo que permite la memoria"}], explanation: "Gradientes que se desvanecen = multiplicación repetida por factores pequeños a través del tiempo, el dolor exacto contra el que las LSTM ponen puertas y que las TCN evitan reemplazando el largo camino recurrente por unos cortos convolucionales."}]} questionLabel="Pregunta" ofLabel="de" scoreLabel="Tu puntuación" restartLabel="Reiniciar" nextLabel="Siguiente pregunta" backLabel="Atrás" checkLabel="Comprobar" retryLabel="Reintentar" seeResultsLabel="Ver resultados" correctLabel="Correcto" incorrectLabel="Incorrecto" correctAnswerLabel="Respuesta correcta" explanationLabel="Explicación" gateLabel="Comprueba tu respuesta para continuar." />

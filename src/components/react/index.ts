@@ -782,3 +782,10 @@ export type { RlAgentEnvLoopProps } from '@/components/react/RlAgentEnvLoop';
 
 export { ExecutionPolicyHeatmap, default as ExecutionPolicyHeatmapDefault } from '@/components/react/ExecutionPolicyHeatmap';
 export type { ExecutionPolicyHeatmapProps } from '@/components/react/ExecutionPolicyHeatmap';
+
+// Deep-learning-for-market-data islands
+export { SequenceModelUnroll, default as SequenceModelUnrollDefault } from '@/components/react/SequenceModelUnroll';
+export type { SequenceModelUnrollProps } from '@/components/react/SequenceModelUnroll';
+
+export { AttentionWeightsHeatmap, default as AttentionWeightsHeatmapDefault } from '@/components/react/AttentionWeightsHeatmap';
+export type { AttentionWeightsHeatmapProps } from '@/components/react/AttentionWeightsHeatmap';

@@ -1,0 +1,663 @@
+---
+title: "Entrenar y evaluar DL sin engañarte a ti mismo"
+description: "Regularización agresiva para una muestra efectiva diminuta, evaluación con purga y embargo aplicada a redes profundas, el Sharpe desinflado para una búsqueda de arquitecturas, y la conclusión sobria: los árboles con gradient boosting son la línea base a batir — y en finanzas tabulares de baja señal, suelen ganar."
+topic: "es/deep-learning-for-market-data"
+order: 6
+minutes: 18
+updated: 2026-06-19
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, DeflatedSharpe, PurgedCvSplit, TsOverfitCurve, SignalDecay } from '@/components/react';
+
+Ya podéis construir todo el zoológico. RNN y LSTM que arrastran estado a lo largo del
+tiempo, TCN con convoluciones dilatadas, atención y transformers que miran una ventana
+entera de una vez, embeddings que convierten 4.000 símbolos de cotización en vectores
+densos. Tenéis el *poder*. Esta lección va de la habilidad mucho más difícil: **no
+engañaros a vosotros mismos con él.**
+
+Esta es la edición de deep learning del credo que jurasteis en *Machine Learning para
+Alfa*. El sobreajuste es el enemigo. Un IC honesto vive en torno a 0,02–0,05. Purgas y
+embargas tu validación cruzada. Desinflas tu Sharpe por el número de pruebas. Bloqueas
+un conjunto de test, operas en simulado, monitorizas el IC en vivo y mantienes un
+interruptor de emergencia. Nada de eso se *deroga* porque hayas cambiado de ridge a un
+transformer. Se **amplifica**, porque una red profunda es una memorizadora de ruido
+infinitamente más ansiosa que cualquier modelo lineal que hayas entrenado antes.
+
+La frase más útil de todo este curso: **una red neuronal es una máquina para encontrar
+estructura, y en los rendimientos financieros la mayor parte de la "estructura" es
+ruido.** Todo lo de abajo es control de daños alrededor de ese hecho.
+
+## Regularización para una muestra diminuta
+
+<MCQ
+  client:visible
+  pretest
+  question="Estás entrenando una LSTM sobre ~6.000 filas de rendimientos diarios, con una muestra efectiva mucho menor todavía. ¿Qué reflejo es el más defendible como punto de partida?"
+  options={[
+    { text: "Empieza con un modelo deliberadamente PEQUEÑO y regularización fuerte, y crece solo si una curva de validación purgada te lo permite", correct: true },
+    { text: "Empieza con un modelo grande para que 'tenga capacidad de aprender', y poda después" },
+    { text: "Apaga primero toda la regularización para ver el techo bruto del modelo" },
+    { text: "Añade capas hasta que la pérdida en muestra llegue a cero, ya que eso prueba que los datos son aprendibles" },
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  explanation="Con una muestra efectiva diminuta y SNR baja, la capacidad es riesgo, no oportunidad. Pequeño + regularizado es el valor por defecto honesto; solo creces cuando la evidencia fuera de muestra te obliga."
+/>
+
+Piensa en la regularización como **una correa para un perro demasiado entusiasta**. El
+perro (tu red) perseguirá feliz cada ardilla (cada meneo ruidoso de los rendimientos de
+entrenamiento). La correa no vuelve al perro más tonto — le impide salir corriendo hacia
+el tráfico. Matemáticamente, cada técnica de abajo hace el mismo trabajo: **cambia un
+poco de sesgo por una gran reducción de varianza**, y en un régimen de SNR baja, la
+varianza es lo que te mata fuera de muestra.
+
+**Definición.** La regularización es cualquier restricción, penalización o ruido añadido
+durante el entrenamiento que reduce la capacidad *efectiva* del modelo, bajando la
+varianza fuera de muestra a costa de un pequeño aumento de sesgo. La descomposición
+sesgo–varianza del error cuadrático esperado deja explícito el trato:
+
+$$\mathbb{E}\big[(y-\hat f)^2\big] = \underbrace{\big(\mathbb{E}[\hat f]-y\big)^2}_{\text{sesgo}^2} + \underbrace{\mathrm{Var}(\hat f)}_{\text{varianza}} + \sigma^2_{\text{irreducible}}$$
+
+La caja de herramientas, y *por qué* cada una reduce la varianza:
+
+| Técnica | Qué hace | Por qué reduce la varianza |
+|---|---|---|
+| **Dropout** (`p≈0,2–0,5`) | Pone a cero unidades al azar en cada paso | Fuerza características redundantes y distribuidas; aproxima un gran ensemble |
+| **Decaimiento de pesos (L2)** | Añade $\lambda\lVert w\rVert_2^2$ a la pérdida | Empuja los pesos hacia 0, aplanando la función que puede representar |
+| **Parada temprana** | Detener cuando la pérdida de validación **purgada** deja de mejorar | Limita el número *efectivo* de parámetros ajustados |
+| **Aumento de datos** | Inyección de ruido, (block-)bootstrap, mixup | Sintetiza muestras plausibles para que la red no memorice filas exactas |
+| **Ensembles** | Promediar muchas semillas/modelos | La varianza de una media de $k$ modelos decorrelacionados cae hasta $1/k$ |
+| **Modelos pequeños** | Menos parámetros desde el principio | Menor capacidad = menor varianza, sin más |
+
+Fíjate en el detalle del **block-bootstrap**: las filas financieras están
+autocorrelacionadas, así que remuestreas *bloques* contiguos, no días individuales — de
+lo contrario destruyes la propia estructura serial que tu RNN existe para capturar.
+
+### Ejemplo resuelto — regularización en un predictor de rendimientos
+
+Entrenas una GRU para predecir rendimientos transversales del día siguiente e informas
+del *Sharpe anualizado* de la cartera long–short que implica.
+
+| Configuración | Sharpe en muestra | Sharpe fuera de muestra |
+|---|---|---|
+| GRU sin regularizar (grande, sin dropout) | 3,10 | 0,15 |
+| + dropout 0,3, decaimiento de pesos $\lambda=10^{-3}$ | 1,65 | 0,62 |
+| + parada temprana en val purgada, tamaño oculto menor, ensemble de 5 semillas | 1,05 | 0,78 |
+
+Lee las columnas con honestidad. La regularización **destruyó** el Sharpe en muestra —de
+3,10 a 1,05, un recorte del 66%— y eso es exactamente lo que quieres. El hueco entre
+columnas es el impuesto del sobreajuste. El modelo sin regularizar pagó
+$3{,}10 - 0{,}15 = 2{,}95$ de pura fantasía; el modelo final pagó solo
+$1{,}05 - 0{,}78 = 0{,}27$. El número fuera de muestra, el único que paga el alquiler,
+**se cuadruplicó** de 0,15 a 0,78.
+
+<TsOverfitCurve
+  client:visible
+  title="El error en muestra sigue cayendo; el de fuera de muestra sube y vuelve a bajar"
+  caption="La U clásica: el error fuera de muestra toca fondo con una complejidad modesta, luego trepa cuando la capacidad memoriza ruido. La regularización desplaza el punto óptimo hacia la izquierda."
+/>
+
+<Callout variant="warning" title="Un Sharpe en muestra de 3 es un síntoma, no un trofeo">
+Si una red profunda te entrega un Sharpe en muestra (o incluso de validación sin purgar)
+de 3 o más, tu primera suposición debería ser **fuga o memorización**, no genialidad. Las
+señales financieras honestas viven cerca de un IC de 0,02–0,05; una métrica de
+entrenamiento reluciente sobre una muestra diminuta y de SNR baja es el modelo recitando
+con orgullo el ruido que memorizó. Celebra un hueco *pequeño* entre dentro y fuera de
+muestra, nunca un número *grande* en muestra.
+</Callout>
+
+### Cuándo usarlo
+
+Siempre regularizas en este dominio — la pregunta es solo *cuánto*. Escala la correa al
+tamaño efectivo de muestra, no al recuento de filas: las etiquetas multidía solapadas y
+la autocorrelación pueden encoger ~6.000 filas a unos pocos cientos de observaciones
+independientes, así que trata tu $n$ *efectivo* como diminuto y regulariza en
+consecuencia. Compromiso: demasiada y subajustas la (ya tenue) señal hasta el olvido; la
+curva de validación purgada es tu árbitro para saber dónde dejar de apretar.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Dropout", definition: "Pone a cero unidades al azar durante el entrenamiento, imitando un gran ensemble y forzando características redundantes" },
+    { term: "Decaimiento de pesos (L2)", definition: "Penaliza los pesos grandes vía λ‖w‖², aplanando la función representable hacia cero" },
+    { term: "Parada temprana", definition: "Detiene el entrenamiento cuando la pérdida de validación purgada deja de mejorar, limitando los parámetros efectivos" },
+    { term: "Block bootstrap", definition: "Remuestrea tramos contiguos de filas para preservar la correlación serial, no destruirla" },
+    { term: "Ensemble de semillas", definition: "Promedia modelos decorrelacionados para que la varianza de la media caiga hacia 1/k" },
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Une cada concepto con su definición."
+/>
+
+## Evaluación con purga y embargo para redes profundas
+
+<MCQ
+  client:visible
+  pretest
+  question="Comparado con la regresión ridge que purgaste y embargaste en ML para Alfa, ¿por qué la fuga suele ser PEOR para una red profunda con los mismos datos?"
+  options={[
+    { text: "Los pipelines de DL fugan por canales laterales extra — escaladores ajustados sobre el conjunto completo, estadísticas móviles de batch-norm, tablas de embeddings y minibatches barajados a través de la frontera train/test", correct: true },
+    { text: "Las redes profundas no se pueden validar de forma cruzada en absoluto, así que cualquier partición fuga por definición" },
+    { text: "La fuga es idéntica; solo cambió el modelo, no los datos" },
+    { text: "Las redes neuronales ignoran el orden temporal, así que la purga es innecesaria" },
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  explanation="La fuga por solapamiento de etiquetas que ya conocías sigue ahí, y DL añade encima canales de preprocesado/estadísticas/embedding/barajado. Más piezas móviles, más sitios por los que el futuro se cuela en el pasado."
+/>
+
+Repaso rápido de *Fugas y validación cruzada purgada*. Cuando las etiquetas abarcan
+varios días (un rendimiento a 5 días vista toca 5 días de características), una partición
+ingenua deja que las filas de entrenamiento cuya *ventana* de etiqueta solapa el periodo
+de test espíen el futuro.
+
+- **Purga.** Descarta las observaciones de entrenamiento cuya ventana de etiqueta solapa
+  el tramo de test.
+- **Embargo.** Descarta una banda adicional de filas de entrenamiento inmediatamente
+  *después* del tramo de test, porque la autocorrelación deja que la información se filtre
+  hacia delante a través de la costura.
+
+La analogía: purgar es **negarte a estudiar de un libro de texto que contiene las
+respuestas del examen**; el embargo es **además saltarte el capítulo impreso justo al
+lado de esas respuestas**, porque las parafrasea.
+
+<PurgedCvSplit
+  client:visible
+  title="Purga el solapamiento, embarga la banda posterior"
+  caption="Las etiquetas de entrenamiento que solapan la ventana de test se descartan (purga); se elimina un colchón adicional tras la ventana de test (embargo). El bloque de test se toca una sola vez."
+/>
+
+Aquí viene la parte que muerde *más fuerte* con deep learning. Un pipeline neuronal fuga
+por canales que un ridge simple nunca tuvo:
+
+1. **Escaladores / normalización ajustados sobre todo el conjunto de datos.** Calcula la
+   media y la desviación típica, o un rango min–max, sobre *todas* las filas y has
+   contrabandeado estadísticas del conjunto de test al entrenamiento. Ajusta las
+   transformaciones **solo** sobre el pliegue de entrenamiento, y luego aplícalas hacia
+   delante.
+2. **Estadísticas móviles de batch-norm.** BatchNorm acumula media/varianza móviles. Deja
+   que esas estadísticas vean minibatches futuros y el futuro se filtra al presente —
+   prefiere LayerNorm, o congela/reajusta las estadísticas por pliegue.
+3. **Tablas de embeddings (guiño a la Lección 5).** Un embedding de ticker o sector
+   aprendido usando el historial *entero* hornea la co-variación futura dentro de una
+   búsqueda "estática". Aprende los embeddings solo dentro de la ventana de entrenamiento.
+4. **Minibatches barajados a través de la frontera.** El reflejo de barajar para un SGD
+   IID es veneno aquí — barajar mezcla filas a ambos lados de la costura. Construye
+   minibatches que respeten el orden temporal y el hueco de purga.
+
+El protocolo correcto es el **reentrenamiento walk-forward**: entrena sobre $[t_0, t_1]$,
+purga + embargo, testea sobre $[t_1, t_2]$; luego haz rodar la ventana hacia delante,
+reajusta *todo* (escaladores, estadísticas de batch, embeddings, pesos) y testea sobre el
+siguiente bloque. Nunca reajustes con datos posteriores al bloque que estás puntuando.
+
+### Ejemplo resuelto — contar filas purgadas + embargadas
+
+Tienes 2.000 días de entrenamiento. Las etiquetas son rendimientos a 10 días vista, el
+bloque de test son los siguientes 250 días y fijas un embargo de 5 días.
+
+- **Purga:** cualquier fila de entrenamiento cuya ventana de etiqueta a 10 días alcance
+  el bloque de test debe irse. Eso son aproximadamente las últimas $10 - 1 = 9$ filas de
+  entrenamiento que rozan la costura.
+- **Embargo:** descarta 5 filas de material de entrenamiento que quedarían justo después
+  del bloque de test en una partición rodada.
+- **Filas de entrenamiento utilizables ≈** $2000 - 9 - 5 = 1986$.
+
+Perder 14 filas de 2.000 suena trivialmente barato — y lo es, que es exactamente por lo
+que saltárselo es inexcusable. Esas 14 filas son las *únicas* que cargan la fuga; consérvalas
+y tu Sharpe fuera de muestra reportado es silenciosamente ficticio.
+
+<Callout variant="warning" title="El escalador es el fugador silencioso">
+La fuga de DL más común en finanzas es la más aburrida: alguien llama a
+`scaler.fit(X_all)` una vez al principio del cuaderno, y luego parte. El modelo ahora
+conoce la media y la varianza del periodo de test antes de empezar a entrenar. Produce un
+backtest precioso y una señal en vivo inútil. Ajusta cada transformación —escaladores,
+PCA, embeddings, estadísticas de batch— **solo dentro del pliegue de entrenamiento**, y
+luego aplica hacia delante. Sin excepciones.
+</Callout>
+
+### Cuándo usarlo
+
+Siempre — no hay régimen en el que una evaluación sin purgar sea aceptable para etiquetas
+financieras solapadas. Compromiso: purga + embargo + walk-forward encoge cada pliegue de
+entrenamiento y multiplica el cómputo (reajustas por pliegue). Para redes profundas ese
+coste de reentrenamiento es real, pero es el precio de un número en el que puedes confiar.
+La alternativa barata es un backtest que te miente, y esa sale gratis hasta que deja de
+serlo.
+
+<Categorize
+  client:visible
+  question="Clasifica cada elemento según sea un canal de fuga específico de DL o parte del protocolo de evaluación correcto."
+  buckets={["Canal de fuga específico de DL", "Protocolo correcto"]}
+  items={[
+    { text: "Escalador ajustado sobre todo el conjunto de datos antes de partir", bucket: "Canal de fuga específico de DL" },
+    { text: "Estadísticas móviles de BatchNorm que abarcan minibatches futuros", bucket: "Canal de fuga específico de DL" },
+    { text: "Tabla de embeddings aprendida sobre todo el historial", bucket: "Canal de fuga específico de DL" },
+    { text: "Barajar minibatches a través de la costura train/test", bucket: "Canal de fuga específico de DL" },
+    { text: "Purgar filas de entrenamiento cuya ventana de etiqueta solapa el tramo de test", bucket: "Protocolo correcto" },
+    { text: "Embargar una banda de filas tras el bloque de test", bucket: "Protocolo correcto" },
+    { text: "Reajustar escaladores y embeddings dentro de cada pliegue walk-forward", bucket: "Protocolo correcto" },
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Coloca cada elemento en su grupo."
+  explanation="Los cuatro primeros son canales laterales extra que un pipeline profundo añade encima de la fuga por solapamiento de etiquetas; los tres últimos son la disciplina que los cierra."
+/>
+
+## El Sharpe desinflado para una búsqueda de arquitecturas
+
+<MCQ
+  client:visible
+  pretest
+  question="Pruebas 200 configuraciones de arquitectura/hiperparámetros y te quedas con la mejor por Sharpe de validación. ¿Por qué el Sharpe destacado de la mejor está sistemáticamente inflado?"
+  options={[
+    { text: "Seleccionar el máximo sobre muchas pruebas infla al ganador incluso con una ventaja verdadera de cero; el máximo esperado bajo la hipótesis nula crece como √(2 ln N)", correct: true },
+    { text: "El Sharpe de validación siempre está sesgado a la baja, así que el máximo lo corrige" },
+    { text: "Solo importa la tasa de aprendizaje; las otras 199 pruebas no cuentan" },
+    { text: "El ratio de Sharpe no se ve afectado por cuántos modelos probaste" },
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  explanation="Sesgo de selección por máximo sobre pruebas: incluso con habilidad verdadera cero, el mejor de N Sharpes ruidosos deriva al alza aproximadamente como √(2 ln N) desviaciones típicas por prueba. Debes desinflar al ganador por ese listón."
+/>
+
+Recuerda la lección brutal de *Sobreajuste de backtest y el Sharpe desinflado*: **cada
+configuración que pruebas es una prueba**, y cuantos más boletos de lotería compras, más
+alto parece el *mejor* boleto aunque ninguno sea premiado. La analogía: dale a 200 monos
+una diana y el mejor mono parecerá un campeón — no porque sepa lanzar, sino porque tomaste
+el máximo sobre 200 lanzamientos ruidosos.
+
+**Definición.** Bajo la hipótesis nula de habilidad verdadera *cero*, con $N$ pruebas
+independientes cada una produciendo un Sharpe con desviación típica $\sigma$, el máximo
+muestral esperado del Sharpe es aproximadamente
+
+$$\mathbb{E}[\max \text{SR}] \approx \sigma\,\sqrt{2\ln N}.$$
+
+Este término $\sqrt{2\ln N}$ es el **listón de las pruebas múltiples**: un Sharpe debe
+superarlo antes de que se te permita creer que es real. El Sharpe *desinflado* pregunta si
+tu valor observado supera esta hipótesis-nula-del-mejor, no meramente la
+hipótesis-nula-de-uno.
+
+Ahora el giro de deep learning que debería quitarte el sueño. El espacio de
+hiperparámetros de DL es enorme — **anchura, profundidad, tasa de aprendizaje, tasa de
+dropout, decaimiento de pesos, longitud de secuencia, optimizador, calendario de
+calentamiento y semilla aleatoria**— y las semillas por sí solas pueden multiplicar por
+diez tu recuento de pruebas. Así que $N$ no crece poco a poco; *explota*.
+
+### Ejemplo resuelto — el listón para 200 configuraciones
+
+Prueba $N = 200$ configuraciones. El multiplicador del listón es
+
+$$\sqrt{2\ln 200} = \sqrt{2 \times 5{,}298} = \sqrt{10{,}597} \approx 3{,}25.$$
+
+Así que el mejor de 200 debe superar **≈ 3,25 desviaciones típicas por prueba** solo para
+igualar a la suerte aleatoria. Si el Sharpe de validación de cada configuración tiene
+desviación típica $\sigma = 0{,}4$ bajo la hipótesis nula, tu ganador necesita exceder
+$3{,}25 \times 0{,}4 = 1{,}30$ de Sharpe **antes de que tengas evidencia alguna de
+habilidad real** — y aun así solo has igualado la casualidad esperada, no la has batido.
+
+Compara el coste de la curiosidad:
+
+| Pruebas $N$ | Listón $\sqrt{2\ln N}$ | Sharpe mínimo para batir la suerte ($\sigma=0{,}4$) |
+|---|---|---|
+| 1 | 0,00 | 0,00 |
+| 10 | 2,15 | 0,86 |
+| 50 | 2,80 | 1,12 |
+| 200 | 3,25 | 1,30 |
+| 1.000 | 3,72 | 1,49 |
+
+<DeflatedSharpe
+  client:visible
+  title="Sharpe observado frente al listón de pruebas múltiples frente al valor desinflado"
+  caption="A medida que crecen las pruebas, el listón de la suerte (√(2 ln N)) sube. El Sharpe desinflado es lo que queda tras restar el mejor esperado bajo la hipótesis nula — a menudo muy por debajo del titular."
+/>
+
+La crueldad acumulativa: la flexibilidad de DL te golpea **dos veces**. Más
+hiperparámetros multiplican $N$ (subiendo el listón de selección), *y* cada modelo
+individual sobreajusta más fuerte que uno lineal (así que cada Sharpe por prueba es más
+ruidoso, es decir, $\sigma$ es mayor). Ambos términos de $\sigma\sqrt{2\ln N}$ van en la
+dirección equivocada a la vez.
+
+<Callout variant="warning" title="Tu barrido de semillas es un barrido de hiperparámetros">
+Una trampa sutil: la gente insiste en que "solo probó 8 arquitecturas", y luego admite
+que corrió cada una con 10 semillas aleatorias y se quedó con la mejor semilla también.
+Eso son $8 \times 10 = 80$ pruebas, no 8 — y el listón lo fija el número *total* de
+configuraciones sobre las que seleccionaste un máximo, incluidas semillas, tasas de
+aprendizaje y cada "déjame probar una cosa más". Registra cada ejecución. El $N$ honesto
+es casi siempre de 3 a 10 veces lo que recuerdas.
+</Callout>
+
+### Cuándo usarlo
+
+Desinfla siempre que hayas *seleccionado* un modelo comparando muchos — lo cual, con DL,
+es siempre. Compromiso: una desinflación agresiva puede rechazar un modelo genuinamente
+bueno que simplemente tuvo un sorteo de validación desafortunado, así que la cura son
+menos pruebas pre-registradas, no el perdón a posteriori. Decide tu familia de
+arquitecturas y tu presupuesto de búsqueda *antes* de espiar los resultados de validación,
+y cuenta cada ejecución con honestidad.
+
+<FillBlank
+  client:visible
+  question="Completa el razonamiento de pruebas múltiples para una búsqueda de arquitecturas."
+  text="Bajo la hipótesis nula de habilidad cero, el mejor esperado de N pruebas crece como {{√(2 ln N)|√(2N)|ln(2N)}} desviaciones típicas por prueba, así que para N = 200 el listón es de unos {{3,25|1,30|0,40}} — y DL infla esto porque su enorme espacio de hiperparámetros hace que {{N explote mientras cada modelo también sobreajusta más|el conjunto de datos sea mayor|el Sharpe sea más estable}}."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+  explanation="El listón √(2 ln N) para N=200 es ≈3,25; DL multiplica N (más hiperparámetros y semillas) Y eleva el ruido por prueba (más sobreajuste), así que ambos factores de σ√(2 ln N) empeoran juntos."
+/>
+
+## ¿De verdad el deep learning bate al gradient boosting?
+
+<MCQ
+  client:visible
+  pretest
+  question="Sobre características financieras de baja señal y predominantemente tabulares (exposiciones a factores, ratios, rendimientos rezagados), ¿qué dice la evidencia empírica honesta?"
+  options={[
+    { text: "Los árboles con gradient boosting (XGBoost/LightGBM) suelen ganar — menos parámetros, categóricas nativas, robustos, rápidos de ajustar", correct: true },
+    { text: "Las redes profundas siempre dominan una vez añades suficientes capas" },
+    { text: "Es echarlo a cara o cruz, sin patrón sistemático" },
+    { text: "La regresión lineal bate a ambos en todos los escenarios" },
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  explanation="Sobre datos tabulares de SNR baja, los GBM son el ganador empírico consistente. DL se gana el sueldo en problemas estructurados, de SNR alta o de aprendizaje de representaciones — no en una hoja de cálculo de ratios de factores."
+/>
+
+Es hora de la incómoda cena familiar. Te pasaste todo este curso aprendiendo
+arquitecturas profundas, y el remate honesto es: **en finanzas tabulares de baja señal,
+los árboles con gradient boosting suelen batirlas.** Esto no es herejía; es el hallazgo
+repetido a lo largo de los benchmarks de ML tabular y de la mayoría de las mesas cuant.
+
+La analogía: un transformer es un **coche de Fórmula 1**, y los datos tabulares de
+factores son un **camino de grava de granja**. El F1 es genuinamente superior — en un
+circuito. Fuera del circuito, la camioneta (un árbol con gradient boosting) llega antes,
+más barato y sin romper un eje en el primer bache.
+
+**Definición.** El gradient boosting construye un ensemble *aditivo* de árboles de
+decisión poco profundos, cada uno ajustado al gradiente de la pérdida dejada por los
+árboles anteriores: $F_m(x) = F_{m-1}(x) + \eta\, h_m(x)$, donde $h_m$ apunta al gradiente
+residual y $\eta$ es la tasa de aprendizaje. Los árboles son invariantes a escala, manejan
+valores ausentes y categóricas de forma nativa, no necesitan normalización y se ajustan en
+minutos.
+
+| Dimensión | Árboles con gradient boosting | Deep learning |
+|---|---|---|
+| **Tamaño de datos necesario** | Funciona en conjuntos tabulares pequeños/medianos | Hambriento — quiere secciones transversales grandes o agrupadas |
+| **Ajuste a la relación señal-ruido** | Sobresale con SNR baja (poco profundo, regularizado) | Brilla con SNR alta; sobreajusta con SNR baja |
+| **Estructura explotada** | Ninguna asumida — tabular puro | Estructura de secuencia, espacial, de grafo, de atención |
+| **Categóricas / ausentes** | Nativo | Necesita embeddings / imputación |
+| **Interpretabilidad** | Alta (SHAP, importancia por ganancia) | Baja (caja negra, solo a posteriori) |
+| **Coste de ajuste** | Bajo — minutos, pocos mandos | Alto — espacio enorme, lento, sensible a la semilla |
+| **Riesgo de pruebas múltiples** | Moderado (espacio de búsqueda menor) | Severo (N explota) |
+| **Dónde gana** | Datos tabulares de factores de baja señal | Microestructura del LOB, paneles agrupados enormes, alt-data/texto |
+
+Entonces, ¿cuándo *sí* se gana el deep learning su salario? Tres casos honestos:
+
+1. **Datos estructurados de SNR alta — microestructura del LOB (guiño a la Lección 4).**
+   Las instantáneas del libro de órdenes tienen estructura espacial/secuencial y muchos
+   más eventos que las barras diarias; un TCN o un modelo de atención pueden leer la forma
+   del libro de una manera que los árboles no pueden.
+2. **Secciones transversales agrupadas muy grandes.** Cuando agrupas miles de nombres a lo
+   largo de décadas, el tamaño efectivo de muestra sube y un modelo profundo compartido
+   puede aprender estructura transversal que un ensemble de árboles por nombre se pierde.
+3. **Aprendizaje de representaciones para alt-data y texto (guiño a la Lección 5).**
+   Convertir informes, noticias o transcripciones en características, o aprender embeddings
+   de ticker/sector, es directamente el terreno de DL — *no hay* buena línea base tabular
+   para el texto en bruto.
+
+<Callout variant="warning" title="Haz del GBM la línea base obligatoria — sin excepciones">
+Antes de reportar un solo resultado de red profunda, debes batir una línea base de
+gradient boosting *ajustada* sobre las *mismas* particiones purgadas y embargadas. Si tu
+transformer no puede superar a un LightGBM que se entrenó en 90 segundos, no tienes un
+resultado de deep learning — tienes una forma cara de rendir por debajo de una línea base.
+"No corrimos la línea base" es el equivalente cuant a corregirte tú mismo los deberes.
+</Callout>
+
+### Cuándo usarlo
+
+Recurre a GBM por defecto en datos tabulares de factores; recurre a DL cuando los datos
+tengan *estructura* (secuencia/espacial/grafo), cuando la SNR y el tamaño de muestra sean
+genuinamente altos (microestructura, paneles enormes) o cuando la tarea sea aprendizaje de
+representaciones sobre entradas no estructuradas (texto, embeddings). Compromiso: DL te
+compra flexibilidad y poder de representación a costa de hambre de datos, gasto de ajuste,
+opacidad y una factura de pruebas múltiples mucho más desagradable — págala solo cuando la
+estructura del problema realmente lo recompense.
+
+<MCQ
+  client:visible
+  allowMultiple
+  question="Selecciona cada situación donde el deep learning es genuinamente una elección defendible frente a los árboles con gradient boosting."
+  options={[
+    { text: "Microestructura del libro de órdenes con rica estructura secuencial/espacial y eventos abundantes", correct: true },
+    { text: "Secciones transversales agrupadas muy grandes donde el tamaño efectivo de muestra es alto", correct: true },
+    { text: "Aprendizaje de representaciones sobre texto en bruto, informes o embeddings de ticker aprendidos", correct: true },
+    { text: "Unos pocos miles de filas de ratios de factores mensuales con IC cercano a 0,03" },
+    { text: "Un conjunto tabular pequeño donde lo que principalmente quieres es interpretabilidad SHAP" },
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  explanation="DL se justifica en datos estructurados de SNR alta (LOB), paneles agrupados grandes y aprendizaje de representaciones. Sobre datos tabulares de factores pequeños y de baja señal —y cuando importa la interpretabilidad— gana el gradient boosting."
+/>
+
+## Una lista de comprobación de disciplina de despliegue
+
+<MCQ
+  client:visible
+  pretest
+  question="Tu red profunda superó una línea base GBM ajustada sobre particiones purgadas y embargadas y sobrevivió a la desinflación. ¿Cuál es el SIGUIENTE paso correcto antes de arriesgar capital?"
+  options={[
+    { text: "Opérala en simulado en vivo y monitoriza el IC realizado frente al backtest, con un interruptor de emergencia prefijado armado", correct: true },
+    { text: "Despliégala a tamaño completo de inmediato — el backtest fue suficientemente riguroso" },
+    { text: "Reajústala sobre el conjunto de test bloqueado para exprimir un poco más de Sharpe" },
+    { text: "Sáltate el operar en simulado; los datos en vivo son solo más backtest" },
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  explanation="Un backtest limpio se gana una prueba en simulado, no capital completo. Monitoriza el IC en vivo frente al backtest, mantén el interruptor armado y escala solo después de que la señal en vivo lo confirme. Reajustar sobre el test bloqueado lo destruye."
+/>
+
+Haciendo eco de la lección de despliegue de *Machine Learning para Alfa*, ahora con
+sombrero de red profunda. La disciplina es idéntica porque el modo de fallo es idéntico:
+un modelo que deslumbró sobre el historial y decepciona sobre el mañana. Recorre la lista
+en orden, de arriba abajo, y no te saltes un peldaño porque estés emocionado.
+
+1. **Línea base primero.** Un GBM ajustado (y un modelo lineal) sobre las mismas
+   particiones purgadas. La red profunda debe *batirlos*, no meramente *existir*.
+2. **Bloquea un conjunto de test que tocas una vez.** Un solo vistazo, para siempre. En el
+   momento en que lo reajustas, se convierte en otro pliegue de entrenamiento y deja de
+   ser evidencia — y el gigantesco espacio de búsqueda de DL hace esta tentación
+   abrumadora.
+3. **Opera en simulado.** Corre en vivo sin capital. Esto atrapa las fugas que un backtest
+   no puede: errores de temporización de datos, look-ahead en el cálculo de
+   características y la brecha entre las ejecuciones asumidas y las realizadas.
+4. **Monitoriza el IC en vivo frente al backtest.** Sigue el coeficiente de información y
+   el Sharpe realizados frente a las expectativas del backtest. Un IC en vivo muy por
+   debajo del backtest es tu aviso temprano de que la ventaja estaba parcial (o totalmente)
+   sobreajustada.
+5. **Prefija el interruptor de emergencia.** Decide *de antemano* el umbral de drawdown,
+   IC en vivo o slippage que tira del enchufe. Fijarlo después de que empiecen las pérdidas
+   es solo esperanza con pasos extra.
+6. **Reentrena walk-forward a medida que la señal decae.** Las ventajas se erosionan; la
+   no estacionariedad es la regla de la casa en los mercados. Reajusta sobre una ventana
+   rodante, pero equilibra la frecuencia de reentrenamiento con los costes de transacción
+   — cada reentrenamiento que voltea posiciones paga el diferencial.
+
+<SignalDecay
+  client:visible
+  title="El IC decae con el horizonte de mantenimiento — y operar más rápido cuesta más"
+  caption="El coeficiente de información de una señal se desvanece a medida que se estira el periodo de mantenimiento, mientras que operarla más rápido para capturar la ventaja fresca dispara los costes de transacción. El horizonte óptimo equilibra ambos."
+/>
+
+### Ejemplo resuelto — ¿cuándo justifica el decaimiento un reentrenamiento?
+
+Tu IC en vivo era 0,040 en el despliegue. Tras ocho semanas de operar en simulado ha
+derivado a 0,018 —un decaimiento del 55%— mientras que el IC del backtest en el mismo
+tramo era 0,038. La brecha entre vivo y backtest ($0{,}018$ frente a $0{,}038$) es amplia
+y persistente, no un parpadeo de una semana. La respuesta disciplinada: la brecha *en sí*
+es un disparador del interruptor de emergencia; detén el escalado, investiga si hay fuga o
+cambio de régimen, y reentrena walk-forward solo si un reajuste fresco y purgado vuelve a
+superar el listón del Sharpe desinflado. Una señal que decae es normal; **un IC en vivo
+que es la mitad del backtest es una bandera roja de que el backtest era optimista.**
+
+<Callout variant="warning" title="El conjunto de test bloqueado está bloqueado — dilo otra vez">
+Con una muestra efectiva diminuta y un espacio de búsqueda de DL enorme, el error más caro
+es espiar el conjunto de test bloqueado "solo para comprobar" y luego empujar un
+hiperparámetro. Acabas de entrenar sobre él. No hay deshacer. Cada vistazo a los datos
+retenidos gasta una parte de su valor probatorio; gástalo una vez, al final del todo, y
+reporta lo que diga — aunque diga "no".
+</Callout>
+
+### Cuándo usarlo
+
+Esta lista de comprobación es obligatoria para *cualquier* modelo que vaya a capital,
+profundo o no — pero la disciplina se aprieta para DL porque el espacio de búsqueda y la
+capacidad de sobreajuste son mayores. Compromiso: operar en simulado y reentrenar
+walk-forward cuesta tiempo de calendario y cómputo, retrasando la puesta en vivo. Ese
+retraso es una característica: es la ventana en la que un modelo sobreajustado se revela
+inofensivamente, antes de poder perder dinero real.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Tu red profunda bate la línea base GBM en el backtest pero su IC en vivo es la mitad del IC del backtest tras un mes de operar en simulado. ¿Cuál es el diagnóstico más probable y la respuesta disciplinada?</summary>
+
+**Respuesta.** El culpable más probable es sobreajuste residual o una fuga sutil que el
+backtest no atrapó — un escalador ajustado sobre datos completos, un embedding aprendido
+sobre todo el historial, estadísticas de batch que abarcan la costura, o sesgo de
+selección de una búsqueda sin desinflar. La respuesta disciplinada *no* es reajustar sobre
+los datos en vivo y *no* es "darle más tiempo" más allá de tu umbral prefijado. Es tratar
+la brecha entre vivo y backtest como una señal del interruptor de emergencia: detén el
+escalado, audita el pipeline en busca de fugas, recuenta tu verdadero presupuesto de
+pruebas $N$ y vuelve a desinflar, y reanuda solo si un reajuste fresco con purga + embargo
+supera el listón. A veces la conclusión honesta es que nunca hubo ventaja — entrega esa
+conclusión también.
+
+</details>
+</Reveal>
+
+## Recapitulación
+
+Ya tienes el kit de autodefensa de deep learning: regulariza como si tu muestra efectiva
+fuera diminuta (lo es), evalúa con purga + embargo mientras tapas los canales de fuga
+extra de DL, desinfla al ganador de una búsqueda de arquitecturas desmesurada por su
+verdadero recuento de pruebas, haz del gradient boosting la línea base que debes batir, y
+despliega solo a través de un conjunto de test bloqueado, operar en simulado, monitorizar
+el IC en vivo y un interruptor de emergencia armado.
+
+<MindMap
+  client:visible
+  title="Entrenar y evaluar DL sin engañarte a ti mismo"
+  caption="Cinco disciplinas que convierten las arquitecturas profundas de tiros al pie en bisturíes."
+  root={{
+    label: "DL honesto en finanzas",
+    children: [
+      {
+        label: "Regulariza para una muestra diminuta",
+        children: [
+          { label: "Dropout, L2, parada temprana en val purgada" },
+          { label: "Ruido/block-bootstrap/mixup, ensembles" },
+          { label: "Simplemente usa modelos pequeños" },
+        ],
+      },
+      {
+        label: "Evaluación con purga + embargo",
+        children: [
+          { label: "Purga el solapamiento de etiquetas; embarga la banda posterior" },
+          { label: "Fugas extra de DL: escaladores, estadísticas de batch, embeddings, barajado" },
+          { label: "Reentrenamiento walk-forward" },
+        ],
+      },
+      {
+        label: "Desinfla la búsqueda de arquitecturas",
+        children: [
+          { label: "Cada configuración + semilla es una prueba" },
+          { label: "Listón ≈ σ·√(2 ln N)" },
+          { label: "DL infla N y el sobreajuste por prueba a la vez" },
+        ],
+      },
+      {
+        label: "Bate la línea base GBM",
+        children: [
+          { label: "Los árboles suelen ganar en datos tabulares de baja señal" },
+          { label: "DL gana en LOB, paneles enormes, texto/embeddings" },
+        ],
+      },
+      {
+        label: "Disciplina de despliegue",
+        children: [
+          { label: "Bloquea el test, opera en simulado, monitoriza el IC en vivo" },
+          { label: "Prefija el interruptor; reentrena a medida que la señal decae" },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="No te engañes — la comprobación final"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  nextLabel="Siguiente pregunta"
+  backLabel="Atrás"
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  seeResultsLabel="Ver resultados"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  gateLabel="Comprueba tu respuesta para continuar."
+  questions={[
+    {
+      question: "Tras añadir dropout, decaimiento de pesos y un ensemble de semillas, el Sharpe en muestra de tu GRU cae de 3,1 a 1,05 mientras el de fuera de muestra sube de 0,15 a 0,78. ¿Cómo deberías leerlo?",
+      options: [
+        { text: "La regularización funcionó — recortó el impuesto del sobreajuste, y el único número que paga el alquiler (fuera de muestra) se cuadruplicó", correct: true },
+        { text: "La regularización rompió el modelo — el colapso del Sharpe en muestra es malo" },
+        { text: "El modelo original sin regularizar era mejor porque su Sharpe en muestra era más alto" },
+        { text: "Los ratios de Sharpe no son fiables, así que la comparación carece de sentido" },
+      ],
+      explanation: "Un número en muestra que encoge junto a un número fuera de muestra que sube es exactamente el objetivo: cambiaste ruido memorizado por un hueco menor y más honesto.",
+    },
+    {
+      question: "¿Cuál es un canal de fuga ESPECÍFICO de DL que una regresión ridge simple sobre las mismas particiones purgadas no tendría?",
+      options: [
+        { text: "Una tabla de embeddings aprendida sobre todo el historial antes de partir", correct: true },
+        { text: "Descartar filas de entrenamiento cuya ventana de etiqueta solapa el tramo de test" },
+        { text: "Reportar un ratio de Sharpe anualizado" },
+        { text: "Usar un embargo de 5 días tras el bloque de test" },
+      ],
+      explanation: "Los embeddings (más los escaladores sobre datos completos, las estadísticas de batch-norm y el barajado a través de la costura) son canales de fuga extra que los pipelines profundos añaden encima de la fuga por solapamiento de etiquetas; la purga y el embargo son la cura, no la fuga.",
+    },
+    {
+      question: "Buscaste 200 configuraciones (contando semillas). Con una desviación típica del Sharpe por prueba de 0,4 bajo la hipótesis nula, ¿aproximadamente qué debe exceder el ganador solo para igualar a la suerte?",
+      options: [
+        { text: "Alrededor de 1,30, ya que √(2 ln 200) ≈ 3,25 y 3,25 × 0,4 ≈ 1,30", correct: true },
+        { text: "Alrededor de 0,40, la desviación típica por prueba, independientemente de N" },
+        { text: "Alrededor de 3,25, el multiplicador bruto del listón, sin escalar por la desviación típica" },
+        { text: "Cero — el número de pruebas no afecta al listón" },
+      ],
+      explanation: "El listón es σ·√(2 ln N) = 0,4 × 3,25 ≈ 1,30. Batir a la suerte significa superar el mejor esperado de N bajo la hipótesis nula, no solo un Sharpe positivo.",
+    },
+    {
+      question: "Sobre unos pocos miles de filas de ratios de factores mensuales con IC cercano a 0,03, ¿qué modelo es el valor por defecto defendible y por qué?",
+      options: [
+        { text: "Árboles con gradient boosting — menos parámetros, categóricas nativas, robustos en datos tabulares de baja señal, y rápidos de ajustar", correct: true },
+        { text: "Un transformer profundo, porque la atención siempre extrae más señal" },
+        { text: "El que tenga el Sharpe en muestra más alto" },
+        { text: "Un MLP sin regularizar, para darle máxima capacidad" },
+      ],
+      explanation: "En finanzas tabulares de baja señal, los GBM suelen ganar y son la línea base obligatoria. DL se gana el sueldo en datos estructurados de SNR alta, paneles agrupados enormes y aprendizaje de representaciones sobre texto.",
+    },
+    {
+      question: "Tu modelo batió la línea base GBM y sobrevivió a la desinflación, pero el IC en vivo tras un mes de operar en simulado es la mitad del IC del backtest. ¿Cuál es el movimiento disciplinado?",
+      options: [
+        { text: "Tratar la brecha como una señal del interruptor de emergencia: detener el escalado, auditar en busca de fugas, recontar N y volver a desinflar, y reanudar solo si un reajuste fresco purgado supera el listón", correct: true },
+        { text: "Reajustar los hiperparámetros sobre el conjunto de test bloqueado para recuperar la ventaja perdida" },
+        { text: "Desplegar a tamaño completo; los datos en vivo son solo más backtest" },
+        { text: "Ignorarlo — una brecha del 50% entre vivo y backtest es ruido normal" },
+      ],
+      explanation: "Una brecha persistente entre vivo y backtest señala sobreajuste o fuga. La disciplina es parar, investigar y revalidar con honestidad — nunca reajustar sobre el conjunto de test bloqueado, lo que lo destruye.",
+    },
+  ]}
+/>

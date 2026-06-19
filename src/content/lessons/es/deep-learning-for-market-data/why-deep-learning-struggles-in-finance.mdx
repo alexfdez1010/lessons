@@ -1,0 +1,567 @@
+---
+title: "Por qué el deep learning sufre en finanzas"
+description: "El deep learning conquistó las imágenes y el lenguaje, y entonces los mercados lo bajaron a la tierra — la catástrofe del tamaño muestral efectivo, por qué un MLP corriente sobreajusta Y subajusta a la vez los retornos de poca señal, y por qué 'un modelo más grande' es el reflejo equivocado en un mundo de bajo SNR y no estacionario."
+topic: "es/deep-learning-for-market-data"
+order: 1
+minutes: 15
+updated: 2026-06-19
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, TsOverfitCurve, ReturnDistribution, TsStationarityChart } from '@/components/react';
+
+El deep learning tiene un álbum de éxitos que sonrojaría a cualquier tecnología. Arrasó
+en ImageNet, aprendió a transcribir voz mejor que un humano cansado y ahora escribe
+poesía, código y cartas de presentación más que decentes. Así que una persona razonable
+piensa: apunta esta manguera de potencia expresiva contra la bolsa y jubílate el jueves.
+
+Luego la manguera se topa con el mercado, y el mercado — con educación y a precio de oro —
+le devuelve hasta el dinero de la merienda.
+
+Aquí va el remate por adelantado: **los problemas del deep learning en finanzas no son
+problemas nuevos. Son exactamente las lecciones de *Machine Learning para Alfa* subidas
+al once, puestas en manos de una clase de modelos con millones de parámetros y un talento
+de primer nivel para memorizar ruido.** Todo lo que aprendisteis — el sobreajuste es el
+enemigo, un coeficiente de información (IC) honesto vive en torno a 0,02–0,05, una R²
+fuera de muestra de 0,01–0,05 es un *buen día*, hay que purgar y poner en cuarentena la
+validación cruzada, hay que desinflar el Sharpe por el número de pruebas — todo eso sigue
+siendo válido. Solo que muerde más fuerte, porque una red neuronal es un memorizador de
+ruido mucho más entusiasta que una regresión ridge.
+
+Esta lección es el cimiento del "por qué cuesta tanto" para todo el curso. Una vez que
+respetáis la dificultad, las herramientas posteriores (RNN, TCN, atención, embeddings)
+se convierten en *bisturíes* en lugar de *tiros en el pie*.
+
+## La catástrofe del tamaño muestral efectivo
+
+<MCQ
+  client:visible
+  pretest
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="ImageNet tiene ~14 millones de imágenes etiquetadas. Veinte años de retornos diarios de renta variable son ~5.000 filas. ¿Qué afirmación capta mejor la brecha real al entrenar un modelo?"
+  options={[
+    { text: "La brecha es mucho peor que 14M frente a 5.000, porque las filas financieras están autocorrelacionadas, solapadas y son no estacionarias — el recuento de observaciones efectivamente independientes es mucho menor", correct: true },
+    { text: "La brecha es exactamente 14M frente a 5.000 — una fila es una fila" },
+    { text: "No hay brecha real; 5.000 filas bastan para cualquier modelo" },
+    { text: "En finanzas hay en realidad más datos útiles porque los mercados cotizan cada segundo" },
+  ]}
+  explanation="El recuento bruto de filas adula a los datos financieros. La autocorrelación, las etiquetas solapadas y los cambios de régimen hacen que el tamaño muestral efectivamente independiente sea muchísimo menor que la N bruta."
+/>
+
+**Analogía.** Contar filas brutas de datos en finanzas es como contar fotogramas de un
+vídeo a cámara lenta y llamar a cada uno una foto independiente. Claro, hay 5.000
+fotogramas — pero los fotogramas consecutivos son casi idénticos. La *información* está en
+los cambios, y hay muchos menos cambios reales que fotogramas.
+
+**Definición.** El **tamaño muestral efectivo** es el número de observaciones
+*efectivamente independientes* que contienen tus datos, una vez tenida en cuenta la
+correlación entre filas. Para una serie con autocorrelación de retardo 1 $\rho$, un ajuste
+aproximado habitual es
+
+$$ N_{\text{eff}} \approx N \cdot \frac{1 - \rho}{1 + \rho}. $$
+
+Esa fórmula supone una caída sencilla tipo AR(1); la idea de fondo es universal:
+**cada fila correlacionada aporta menos de una fila de información nueva.**
+
+Tres multiplicadores encogen a la vez la $N_{\text{eff}}$ financiera:
+
+1. **Autocorrelación.** Los retornos tienen estructura (recordad el agrupamiento de
+   volatilidad y la autocorrelación de *Finanzas de Series Temporales*). El régimen de hoy
+   se parece mucho al de ayer.
+2. **Etiquetas solapadas.** Predice el retorno de los *próximos 20 días* y las muestras
+   consecutivas comparten 19 de 20 días. Toda la maquinaria de CV purgada y en cuarentena
+   de López de Prado existe precisamente porque estas etiquetas se solapan — no son
+   extracciones independientes.
+3. **No estacionariedad.** El mercado de 2010 y el de 2022 no son muestras de la misma
+   distribución. Las filas antiguas describen un *juego distinto* (este es el problema de
+   estacionariedad de *Finanzas de Series Temporales*, ahora convertido en un problema de
+   tamaño muestral).
+
+**Ejemplo resuelto.** Toma 20 años ≈ 5.000 filas diarias. Supón que la señal relevante
+tiene autocorrelación de retardo 1 $\rho = 0,97$ (alta, pero realista para variables de
+régimen lentas). Entonces
+
+$$ N_{\text{eff}} \approx 5000 \cdot \frac{1 - 0.97}{1 + 0.97} = 5000 \cdot \frac{0.03}{1.97} \approx 5000 \cdot 0.0152 \approx 76. $$
+
+Setenta y seis. Ahora añade encima etiquetas solapadas de 20 días — divide de nuevo por
+aproximadamente el factor de solapamiento — y estás coqueteando con *decenas* de
+observaciones independientes. Compáralo incluso con un MLP *pequeño*: una capa oculta de
+64 unidades sobre 30 entradas ya tiene $30 \times 64 + 64 = 1984$ pesos, más
+$64 \times 1 + 1 = 65$ en la capa de salida — unos 2.049 parámetros.
+
+| Magnitud | Valor |
+|---|---|
+| Filas brutas (20 años diario) | ~5.000 |
+| $N_{\text{eff}}$ tras $\rho = 0.97$ | ~76 |
+| $N_{\text{eff}}$ tras solapamiento de etiquetas de 20 días | decenas |
+| Parámetros en un MLP *minúsculo* de 64 unidades | ~2.049 |
+| Parámetros : observaciones efectivas | ~30 : 1 (o peor) |
+
+ImageNet juega la proporción al *revés*: ~14M de ejemplos casi i.i.d. frente a los
+parámetros del modelo, de modo que cada peso está disciplinado por muchos ejemplos
+independientes. En finanzas le entregas a un modelo de 2.000 parámetros unas pocas
+decenas de observaciones reales y le pides que sea humilde. No será humilde.
+
+<TsStationarityChart client:visible caption="Nivel de precio (con deriva, no estacionario) frente a retornos (ruidosos, casi estacionarios). Lo que puedes modelar tiene una estructura mucho menos estable de lo que sugiere el recuento de filas — y las filas antiguas describen un régimen distinto." />
+
+<Callout variant="warning" title="La trampa de la N de titular">
+El error más caro de todos aquí es citar el recuento bruto de filas para justificar un
+modelo grande: "tengo 30 años de barras de un minuto — ¡son millones de filas!". Las
+barras de un minuto están *ferozmente* autocorrelacionadas y solapadas. Tu tamaño muestral
+efectivo para una señal diaria o más lenta puede estar en las decenas. Dimensionar una red
+a tu N bruta en lugar de a tu N efectiva es la forma de construir un modelo seguro de sí
+mismo, bien entrenado y completamente inútil.
+</Callout>
+
+### Cuándo usarlo
+
+Calcula (o al menos estima) el tamaño muestral efectivo *antes* de elegir la capacidad del
+modelo — es el presupuesto que tu recuento de parámetros debe respetar. Si $N_{\text{eff}}$
+está en las decenas, tu "modelo" debería ser probablemente una regla lineal con un puñado
+de coeficientes, no una red. El deep learning se gana el sueldo cuando puedes *elevar*
+$N_{\text{eff}}$ — agrupando miles de valores, o trabajando en un subproblema de alta
+frecuencia con muchos eventos genuinamente independientes (más sobre ambos después).
+
+<FillBlank
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+  question="Completa la idea central del tamaño muestral efectivo."
+  text="Como las filas financieras están autocorrelacionadas y solapadas, el número de observaciones {{efectivamente independientes|brutas etiquetadas|totales disponibles}} es mucho menor que el recuento bruto de filas."
+  explanation="El tamaño muestral efectivo descuenta las filas correlacionadas. Los recuentos brutos y totales ignoran por completo la correlación, que es toda la trampa."
+/>
+
+## Por qué un MLP corriente sobreajusta Y subajusta a la vez
+
+<MCQ
+  client:visible
+  pretest
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="En un entorno de relación señal-ruido muy baja, ¿en qué trampa cae un MLP corriente?"
+  options={[
+    { text: "Sobreajusta cuando es flexible, pero regularizar lo suficiente para evitarlo también aplasta la diminuta señal real — no hay ningún punto de funcionamiento cómodo", correct: true },
+    { text: "Siempre subajusta porque los retornos son simplemente impredecibles" },
+    { text: "Siempre sobreajusta y más datos lo arreglan limpiamente" },
+    { text: "Da con un punto óptimo perfecto de sesgo–varianza como en los ejemplos de manual" },
+  ]}
+  explanation="El bajo SNR aprieta el compromiso sesgo–varianza por ambos lados: la flexibilidad compra varianza (ajusta ruido), la regularización compra sesgo (mata la señal tenue)."
+/>
+
+**Analogía.** Afinar un MLP sobre retornos es como ajustar una radio cuya emisora emite en
+un susurro dentro de una tormenta. Sube la ganancia y amplificas la estática (sobreajuste).
+Activa una cancelación de ruido agresiva y cancelas también el susurro (subajuste). No hay
+ninguna posición del dial en la que oigas la canción con claridad.
+
+**Definición.** El error de predicción esperado se descompone como
+
+$$ \mathbb{E}[\text{error}] = \underbrace{\text{Sesgo}^2}_{\text{demasiado rígido}} + \underbrace{\text{Varianza}}_{\text{demasiado flexible}} + \underbrace{\sigma^2}_{\text{ruido irreducible}}. $$
+
+En imágenes $\sigma^2$ es diminuto en relación con la señal: *hay* un gato, y los píxeles
+lo gritan. En retornos, $\sigma^2$ domina por órdenes de magnitud — la señal puede explicar
+un 1–5% de la varianza (el rango de R² fuera de muestra que ya conoces), y el ruido el otro
+95–99%. Cuando $\sigma^2$ lo inunda todo, los términos de sesgo y varianza que *sí* puedes
+controlar se pelean por las migajas, y reducir uno infla el otro casi sin ganancia neta.
+
+**Ejemplo resuelto.** Supón que la *verdadera* ventaja produce un IC mensual dentro de
+muestra de 0,04. Observa lo que hacen tres niveles de capacidad a un Sharpe reservado
+(fuera de muestra):
+
+| Capacidad del MLP | Sharpe dentro de muestra | Sharpe fuera de muestra | Qué pasó |
+|---|---|---|---|
+| Minúscula + L2 fuerte | 0,35 | 0,30 | Subajuste — el sesgo aplastó también la señal tenue |
+| "Justo" (en teoría) | 1,40 | 0,45 | Mejor fuera de muestra, aún mediocre, filo de cuchillo de encontrar |
+| Ancha + ligeramente regularizada | 3,10 | -0,20 | Sobreajuste — memorizó ruido, negativo en real |
+
+Fíjate en la crueldad: el Sharpe dentro de muestra sube de forma suave y seductora de 0,35
+a 3,10, mientras que el número *real* (fuera de muestra) hace un pico débil y luego se
+vuelve **negativo**. La columna de "justo" existe técnicamente, pero en un régimen que se
+desplaza bajo tus pies, el punto dulce del trimestre pasado es el sobreajuste de este
+trimestre. Estás apuntando a un blanco que se mueve mientras aprietas el gatillo.
+
+<TsOverfitCurve client:visible caption="El error dentro de muestra sigue cayendo con la complejidad; el error fuera de muestra toca fondo pronto y luego sube. En las finanzas de bajo SNR ese valle fuera de muestra es poco profundo y fácil de sobrepasar." />
+
+<Callout variant="warning" title="Más capacidad no es más ventaja">
+El reflejo "mi Sharpe es bajo, voy a añadir capas/anchura" es exactamente al revés. En un
+mundo de bajo SNR, la capacidad añadida casi siempre te mueve hacia la *derecha* de la
+curva de sobreajuste — mejor dentro de muestra, peor fuera de muestra. El movimiento
+disciplinado suele ser *menos* modelo: menos características, regularización más fuerte,
+forma funcional más simple. Más grande es el reflejo por defecto equivocado.
+</Callout>
+
+### Cuándo usarlo
+
+Un MLP corriente para predicción cruda de retornos rara vez es la primera herramienta
+acertada — empieza lineal, demuestra que existe una ventaja, y solo añade no linealidad si
+una prueba de *CV purgada, fuera de muestra* dice que el modelo lineal deja dinero real
+sobre la mesa. Si tu Sharpe dentro de muestra se dispara mientras el de fuera se hunde, has
+encontrado el acantilado del sobreajuste, no alfa.
+
+<Categorize
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Coloca cada elemento en su grupo."
+  question="Clasifica cada síntoma bajo el modo de fallo que señala."
+  buckets={["Sobreajuste", "Subajuste"]}
+  items={[
+    { text: "Sharpe dentro de muestra 3+, fuera de muestra negativo", bucket: "Sobreajuste" },
+    { text: "Red ancha, casi sin regularización", bucket: "Sobreajuste" },
+    { text: "El modelo memoriza eventos de ruido idiosincrásicos", bucket: "Sobreajuste" },
+    { text: "L2 fuerte más una red minúscula", bucket: "Subajuste" },
+    { text: "Sharpe dentro y fuera de muestra ambos cerca de cero", bucket: "Subajuste" },
+    { text: "Regularización tan fuerte que la señal real tenue queda borrada", bucket: "Subajuste" },
+  ]}
+  explanation="Sobreajuste = alto dentro de muestra, hundiéndose fuera de muestra (domina la varianza). Subajuste = ambos planos cerca de cero porque el sesgo aplastó incluso la señal real. El bajo SNR facilita caer en ambos."
+/>
+
+## La aproximación universal es aquí una maldición
+
+<MCQ
+  client:visible
+  pretest
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="El teorema de aproximación universal dice que un MLP suficientemente grande puede aproximar cualquier función continua. En datos de retornos de bajo SNR, ¿por qué es eso un lastre?"
+  options={[
+    { text: "Porque la mayor parte de la 'función' que puede ajustar es ruido, así que la expresividad ilimitada compra sobre todo un ajuste exquisito a la aleatoriedad", correct: true },
+    { text: "Porque el teorema es falso para datos financieros" },
+    { text: "Porque hace que el modelo entrene demasiado lento para ser útil" },
+    { text: "Porque aproximar cualquier función garantiza una estrategia rentable" },
+  ]}
+  explanation="La aproximación universal es la capacidad de ajustar lo que tengas delante. Cuando el 95–99% de lo que tienes delante es ruido, esa capacidad apunta sobre todo al ruido."
+/>
+
+**Analogía.** La aproximación universal es un escultor que puede tallar *cualquier cosa* de
+un bloque de mármol. Maravilloso — si el bloque contiene una estatua. En finanzas le
+entregas al escultor un bloque que es 97% arena y 3% polvo de mármol, y le dices "talla la
+figura escondida". Un escultor menos talentoso se encogería de hombros y te daría un bulto
+tosco (y por accidente acertaría sobre lo poco que hay ahí). El genio talla con confianza
+una figura intrincada y hermosa a partir de la *arena*. Esa figura es tu sobreajuste.
+
+**Definición.** El **teorema de aproximación universal** afirma que una red feedforward con
+una sola capa oculta de anchura suficiente puede aproximar cualquier función continua sobre
+un conjunto compacto con precisión arbitraria. La pega que el teorema nunca menciona: no
+hace *ninguna promesa sobre la generalización*. Garantiza que el modelo *puede* ajustar tus
+datos de entrenamiento — incluido cada bandazo ruidoso — no que la función ajustada sea la
+*verdadera*.
+
+**Ejemplo resuelto.** Imagina 60 puntos de entrenamiento donde la relación verdadera es
+$y = 0.05\,x + \varepsilon$ con ruido $\varepsilon$ diez veces mayor que el término
+$0.05\,x$. Un ajuste lineal recupera una pendiente cercana a 0,05 — modesta, honesta, más o
+menos correcta. Un MLP ancho puede llevar el error de entrenamiento casi a cero enhebrando
+una curva sinuosa por los 60 puntos. Descompón lo que cada uno "aprendió":
+
+| Modelo | R² de entrenamiento | Fracción del ajuste que es señal real | Comportamiento fuera de muestra |
+|---|---|---|---|
+| Lineal (1 pendiente) | ~0,03 | casi todo su (diminuto) ajuste | reproduce la modesta ventaja |
+| MLP ancho | ~0,98 | ~3% (el resto es ruido ajustado) | se desmorona; los bandazos no se repiten |
+
+La R² de entrenamiento de 0,98 del MLP es *sobre todo un retrato de esta muestra de ruido
+en concreto*. El ruido del mes que viene es una muestra distinta, los bandazos no encajan,
+y el ajuste precioso se evapora. La potencia expresiva convirtió el ruido en falsa
+confianza.
+
+<ReturnDistribution client:visible caption="Los retornos tienen colas anchas y están dominados por el ruido. Un aproximador universal ajustará encantado los eventos de cola puntuales como si fueran reglas — eso es ruido memorizado, no señal." />
+
+<Callout variant="warning" title="Expresividad ≠ utilidad">
+En dominios de alto SNR (visión, voz) más potencia expresiva suele ayudar porque hay una
+función verdadera rica que capturar. En las finanzas de bajo SNR, la expresividad sobre
+todo aumenta la cantidad de ruido que puedes ajustar. La capacidad es un lastre del que
+debes *defenderte* con regularización, simplicidad y pruebas fuera de muestra brutales — no
+un activo que maximizar.
+</Callout>
+
+### Cuándo usarlo
+
+Trata la potencia expresiva como algo que *gastar deliberadamente*, solo allí donde hay
+estructura demostrable que capturar (interacciones no lineales que un modelo lineal se
+pierde de forma demostrable, en una prueba purgada y reservada). Por defecto, el modelo
+menos expresivo que supere el listón. "¿Podría hacer esto un modelo más simple?" debería
+preceder a cada decisión de arquitectura.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Si un MLP puede aproximar cualquier función, ¿por qué no encuentra la función verdadera de los retornos?</summary>
+
+**Respuesta.** Porque el teorema promete *capacidad de representación*, no
+*recuperabilidad a partir de una muestra finita y ruidosa*. Con un tamaño muestral efectivo
+en las decenas y un ruido que ahoga la señal 20 a 1, hay incontables funciones sinuosas que
+ajustan los datos de entrenamiento mejor que la verdadera (casi plana) — y el optimizador
+elige encantado una de ellas. La función verdadera es *representable*; simplemente no es
+*identificable* a partir de estos datos. Más capacidad amplía el conjunto de impostores
+ajusta-ruido entre los que puede elegir.
+
+</details>
+</Reveal>
+
+## El impuesto de parámetros y pruebas
+
+<MCQ
+  client:visible
+  pretest
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="Pruebas 200 arquitecturas (variando anchura, profundidad, tasa de aprendizaje) y reportas el mejor Sharpe del backtest. Desde la óptica de las pruebas múltiples, ¿qué has hecho?"
+  options={[
+    { text: "Ejecutar 200 pruebas — así que el mejor Sharpe está inflado por la selección y debe desinflarse por el número probado", correct: true },
+    { text: "Encontrar la única arquitectura verdadera, sin ajuste necesario" },
+    { text: "Reducir el sobreajuste explorando más opciones" },
+    { text: "Nada relevante para las pruebas múltiples; eso solo aplica a la selección de características" },
+  ]}
+  explanation="Cada arquitectura que evalúas y entre las que seleccionas es una prueba. El máximo de muchos Sharpes ruidosos está sesgado al alza — exactamente el problema del Sharpe desinflado de ML para Alfa."
+/>
+
+**Analogía.** Comprar 200 boletos de lotería y luego presumir del premiado como si
+demostrara tu *sistema*. El premio fue selección entre muchas extracciones, no destreza. La
+búsqueda de arquitecturas es comprar boletos de lotería con tu backtest como sorteo.
+
+**Definición.** Recuerda el **Sharpe desinflado** de *Machine Learning para Alfa*: cuando
+seleccionas el mejor de $N$ pruebas independientes, el máximo esperado del Sharpe bajo la
+hipótesis nula (sin destreza real) crece con
+
+$$ \mathbb{E}[\max \text{SR}] \approx \sigma_{\text{SR}} \cdot \sqrt{2 \ln N}, $$
+
+donde $\sigma_{\text{SR}}$ es la desviación típica de la estimación del Sharpe de una sola
+prueba. **Cada arquitectura, anchura, profundidad, tasa de aprendizaje y semilla que
+evalúas es otra $N$.** El enorme espacio de configuración del deep learning hace que $N$
+explote — y debes restar este sesgo de selección antes de creerte cualquier número.
+
+**Ejemplo resuelto.** Supón que el Sharpe de un solo backtest tiene ruido de estimación
+$\sigma_{\text{SR}} = 0.5$. Observa cómo el "mejor" Sharpe esperado bajo la nula sube solo
+de probar más redes:
+
+| Arquitecturas probadas, $N$ | $\sqrt{2 \ln N}$ | Mejor Sharpe esperado bajo la nula |
+|---|---|---|
+| 1 | 0,00 | 0,00 |
+| 10 | 2,15 | $0.5 \times 2.15 \approx 1.07$ |
+| 100 | 3,03 | $0.5 \times 3.03 \approx 1.52$ |
+| 1.000 | 3,72 | $0.5 \times 3.72 \approx 1.86$ |
+
+Haz la cuenta para $N = 100$: $2 \ln 100 = 2 \times 4.605 = 9.21$, y
+$\sqrt{9.21} \approx 3.03$, así que el mejor Sharpe esperado por *pura suerte* es de unos
+$0.5 \times 3.03 \approx 1.52$. Si tu búsqueda en rejilla sobre 100 redes devuelve un
+Sharpe de 1,5, has encontrado exactamente lo que predice la aleatoriedad — *cero evidencia
+de destreza*. Tu Sharpe desinflado es prácticamente nulo.
+
+<Callout variant="warning" title="La búsqueda de arquitecturas blanquea el sobreajuste">
+Cada red que descartas es invisible en el informe final pero muy real en la estadística.
+Una CV purgada y en cuarentena impecable sobre la arquitectura *ganadora* no hace nada por
+deshacer el sesgo de selección de las 199 que tiraste. Registra cada configuración que
+pruebas, cuéntalas como pruebas y desinfla. El Sharpe honesto casi siempre está muy por
+debajo del de la diapositiva de la vuelta de honor.
+</Callout>
+
+### Cuándo usarlo
+
+Presupuesta tus pruebas *antes* de empezar, registra cada configuración y reporta un Sharpe
+desinflado por el recuento completo — no el recuento por pliegue del superviviente. Prefiere
+un conjunto pequeño y preregistrado de arquitecturas a una búsqueda desbordada. Si tienes
+que buscar, reserva un periodo de prueba final, nunca tocado, que ninguna configuración haya
+visto, y juzga ahí.
+
+<FillBlank
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+  question="Conecta la búsqueda de arquitecturas con las pruebas múltiples."
+  text="El mejor Sharpe esperado bajo la nula crece con {{la raíz cuadrada de 2 ln N|el logaritmo del tamaño de los datos|el número de características solo}}, donde N cuenta cada arquitectura probada."
+  explanation="El Sharpe desinflado escala el ruido del Sharpe por prueba con √(2 ln N). N cuenta cada configuración evaluada, no solo las características."
+/>
+
+## Cuándo el deep learning SÍ puede ayudar
+
+<MCQ
+  client:visible
+  pretest
+  allowMultiple
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="¿Dónde tiene el deep learning una oportunidad real de pelea en los mercados? (Selecciona todas las que correspondan.)"
+  options={[
+    { text: "Tareas de microestructura de alto SNR, como la dinámica del libro de órdenes", correct: true },
+    { text: "Una enorme sección transversal agrupada: miles de valores compartiendo un modelo para más amplitud", correct: true },
+    { text: "Aprendizaje de representaciones sobre datos alternativos: texto, imágenes, audio", correct: true },
+    { text: "Predecir el retorno de mañana de un solo valor a partir de 50 filas diarias de precio con una red gigante" },
+  ]}
+  explanation="El DL brilla donde puedes elevar el tamaño muestral efectivo o el SNR: microestructura rápida (muchos eventos independientes), secciones transversales agrupadas (amplitud) y datos alternativos ricos no estructurados. Una red gigante sobre unas pocas filas diarias de un valor es la trampa clásica."
+/>
+
+Tras cuatro secciones de malas noticias, aquí está el giro: el deep learning no es inútil
+en finanzas — está *mal aplicado* cuando se apunta a la predicción de retornos de una sola
+serie con bajo SNR y baja $N_{\text{eff}}$. Apúntalo donde las matemáticas estén de tu lado
+y se ganará el sueldo.
+
+**Analogía.** Un Fórmula 1 es un desastre en el tráfico urbano e imbatible en un circuito.
+El problema nunca fue el coche; fue conducirlo entre semáforos. Encuentra el circuito.
+
+**Los tres circuitos legítimos:**
+
+| Dónde ayuda el DL | Por qué las matemáticas se vuelven a tu favor | Herramientas del curso |
+|---|---|---|
+| **Microestructura de alto SNR** (dinámica del libro de órdenes, volatilidad de corto horizonte) | Muchos eventos genuinamente independientes por día → $N_{\text{eff}}$ grande; la señal es más fuerte en horizontes cortos | TCN, atención sobre estados del libro de órdenes |
+| **Sección transversal agrupada** (un modelo para miles de valores) | Amplitud: miles de valores compartiendo parámetros multiplican las observaciones *efectivas* y estabilizan las estimaciones | Embeddings compartidos, modelos de panel |
+| **Aprendizaje de representaciones sobre datos alternativos** (texto de noticias, imágenes de satélite, audio de earnings calls) | La parte difícil es *codificar* datos no estructurados — exactamente lo que mejor hace el DL; el SNR puede ser mayor que solo con el precio | Embeddings, transformers, CNN |
+
+**Ejemplo resuelto — amplitud vía agrupación.** La ley fundamental de la gestión activa
+dice que el ratio de información escala como $\text{IR} \approx \text{IC} \cdot \sqrt{\text{amplitud}}$.
+Un modelo sobre un solo valor con IC diario 0,03 y ~50 apuestas efectivamente
+independientes: $0.03 \times \sqrt{50} \approx 0.21$ — endeble. Agrupa el *mismo* modelo
+sobre 3.000 valores, cada uno aportando apuestas aproximadamente independientes, y la
+amplitud se dispara. Incluso manteniendo el IC en un modesto 0,03,
+$0.03 \times \sqrt{3000} \approx 1.64$. La misma destreza por apuesta, muchísima más
+amplitud — *esa* es la palanca que el deep learning sí puede mover, porque un modelo
+compartido aprende ahora de 3.000 ejemplos transversales al día en lugar de un paso
+temporal.
+
+<Callout variant="tip" title="El replanteamiento">
+Los arreglos del deep learning en finanzas tratan casi todos de *elevar el tamaño muestral
+efectivo o el SNR* — agrupa valores para ganar amplitud, baja a horizontes de
+microestructura para tener eventos independientes, o pásate a datos alternativos donde la
+codificación es el cuello de botella. La astucia en la arquitectura importa mucho menos que
+poner el modelo en un sitio donde la estadística no sea desesperada. El resto de este curso
+es un recorrido por esos sitios.
+</Callout>
+
+### Cuándo usarlo
+
+Recurre al deep learning cuando al menos una de tres casillas esté marcada: (1) el
+subproblema es de alto SNR con muchos eventos independientes, (2) puedes agrupar una amplia
+sección transversal para comprar amplitud, o (3) el reto real es *representar* datos
+alternativos no estructurados. Si no hay ninguna marcada — estás prediciendo una serie
+lenta a partir de unos cientos de filas autocorrelacionadas — cierra el portátil y anota
+una regla lineal.
+
+<MatchConcepts
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Une cada concepto con su definición."
+  pairs={[
+    { term: "Tamaño muestral efectivo", definition: "Número de observaciones efectivamente independientes tras descontar las filas correlacionadas y solapadas" },
+    { term: "Aproximación universal", definition: "Una red puede ajustar cualquier función — incluido todo tu ruido, sin promesa de generalización" },
+    { term: "Impuesto de parámetros y pruebas", definition: "Cada arquitectura probada es una prueba; el mejor Sharpe se infla en √(2 ln N) bajo la nula" },
+    { term: "Sección transversal agrupada", definition: "Compartir un modelo entre miles de valores para multiplicar la amplitud y las observaciones efectivas" },
+    { term: "El apretón del bajo SNR", definition: "La flexibilidad sobreajusta el ruido; la regularización fuerte subajusta la señal tenue — sin punto de funcionamiento cómodo" },
+  ]}
+/>
+
+## Recapitulación
+
+Llegaste esperando que los mercados cayeran ante la misma manguera que aplanó ImageNet. En
+su lugar aprendiste *por qué* la manguera rocía sobre todo el suelo: tamaños muestrales
+efectivos diminutos, una relación señal-ruido que castiga tanto la flexibilidad como la
+rigidez, un teorema de aproximación que sobre todo da poder al ajuste de ruido, y un espacio
+de configuración tan grande que la búsqueda de arquitecturas blanquea calladamente el
+sobreajuste en un Sharpe de vuelta de honor. Y aprendiste dónde encuentra su circuito el
+Fórmula 1 — microestructura de alto SNR, secciones transversales agrupadas y representación
+de datos alternativos.
+
+<MindMap
+  client:visible
+  title="Por qué el deep learning sufre en finanzas"
+  caption="Construye el mapa: los cuatro vientos en contra, y luego los tres sitios donde el DL aún gana."
+  root={{
+    label: 'DL en finanzas',
+    children: [
+      { label: 'Catástrofe del tamaño muestral efectivo', children: [
+        { label: 'Autocorrelación' },
+        { label: 'Etiquetas solapadas' },
+        { label: 'No estacionariedad (regímenes)' },
+        { label: 'N_eff en decenas, no en miles' },
+      ]},
+      { label: 'Apretón de sobreajuste Y subajuste', children: [
+        { label: 'Alta capacidad → ajusta ruido' },
+        { label: 'Regularización fuerte → mata la señal' },
+        { label: 'Sin punto de funcionamiento cómodo' },
+      ]},
+      { label: 'Maldición de la aproximación universal', children: [
+        { label: 'Puede ajustar cualquier función' },
+        { label: 'Ajusta sobre todo el 95–99% de ruido' },
+        { label: 'Representable ≠ identificable' },
+      ]},
+      { label: 'Impuesto de parámetros y pruebas', children: [
+        { label: 'Cada red = una prueba' },
+        { label: 'Desinfla en √(2 ln N)' },
+      ]},
+      { label: 'Dónde gana el DL', children: [
+        { label: 'Microestructura de alto SNR' },
+        { label: 'Sección transversal agrupada (amplitud)' },
+        { label: 'Representación de datos alternativos' },
+      ]},
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Repaso mixto: ¿te ha bajado a la tierra el mercado?"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  nextLabel="Siguiente pregunta"
+  backLabel="Atrás"
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  seeResultsLabel="Ver resultados"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  gateLabel="Comprueba tu respuesta para continuar."
+  questions={[
+    {
+      question: "Un quant presume de 30 años de barras de un minuto como justificación para una red grande. ¿Cuál es el fallo de fondo?",
+      options: [
+        { text: "El recuento bruto de filas ignora la autocorrelación y el solapamiento; el tamaño muestral efectivo puede estar en las decenas", correct: true },
+        { text: "Las barras de un minuto son demasiado recientes para ser útiles" },
+        { text: "Treinta años simplemente no es suficiente tiempo de calendario" },
+        { text: "Las redes grandes siempre entrenan más rápido, así que no pasa nada" },
+      ],
+      explanation: "Las barras de un minuto están muy autocorrelacionadas y solapadas. Dimensionar la capacidad a la N bruta en lugar de a N_eff construye un modelo seguro de sí mismo e inútil.",
+    },
+    {
+      question: "A lo largo de los niveles de capacidad, el Sharpe dentro de muestra sube de 0,35 a 3,10 mientras que el de fuera hace un pico en 0,45 y luego se vuelve negativo. ¿Qué muestra esto?",
+      options: [
+        { text: "El apretón sobre/subajuste del bajo SNR — la capacidad añadida compra ajuste dentro de muestra y colapso fuera de muestra", correct: true },
+        { text: "Un punto dulce limpio de sesgo–varianza, fácil de mantener" },
+        { text: "Prueba de que la estrategia tiene una ventaja fuerte y estable" },
+        { text: "El modelo está subajustando en cada nivel" },
+      ],
+      explanation: "La subida seductora dentro de muestra junto a un pico y posterior caída fuera de muestra es la firma del sobreajuste de ruido en un régimen de bajo SNR que además se desplaza bajo tus pies.",
+    },
+    {
+      question: "Buscaste entre 100 arquitecturas (ruido del Sharpe de una sola prueba ≈ 0,5) y la mejor sacó 1,5. ¿Cuál es la lectura honesta?",
+      options: [
+        { text: "Más o menos lo que predice la pura suerte: √(2 ln 100) ≈ 3,03, así que el mejor esperado ≈ 1,52 bajo la nula — esencialmente ninguna evidencia de destreza", correct: true },
+        { text: "Una estrategia robusta de Sharpe 1,5 lista para operar" },
+        { text: "El sesgo de selección solo importa para la búsqueda de características, no de arquitecturas" },
+        { text: "La CV purgada sobre la ganadora ya eliminó todo el sesgo de selección" },
+      ],
+      explanation: "El Sharpe desinflado escala en √(2 ln N) sobre todas las pruebas. 0,5 × 3,03 ≈ 1,52, así que 1,5 es la expectativa bajo la nula — Sharpe desinflado ≈ 0.",
+    },
+    {
+      question: "¿Qué despliegue eleva mejor las observaciones efectivas de un modelo profundo?",
+      options: [
+        { text: "Agrupar un modelo sobre miles de valores para multiplicar la amplitud transversal", correct: true },
+        { text: "Añadir más capas ocultas a un predictor diario de un solo valor" },
+        { text: "Extender la historia de una acción de 20 a 40 años" },
+        { text: "Bajar la tasa de aprendizaje en un modelo de una sola serie" },
+      ],
+      explanation: "IR ≈ IC·√amplitud. Agrupar sobre 3.000 valores compra amplitud y observaciones efectivas; redes más profundas sobre una serie lenta solo compran sobreajuste.",
+    },
+    {
+      question: "¿Por qué es la aproximación universal un lastre en lugar de un activo en datos de retornos de bajo SNR?",
+      options: [
+        { text: "La expresividad ilimitada ajusta sobre todo ruido; la función verdadera es representable pero no identificable a partir de una muestra diminuta y ruidosa", correct: true },
+        { text: "El teorema es matemáticamente falso para series temporales" },
+        { text: "Garantiza un ajuste rentable si la red es lo bastante ancha" },
+        { text: "Solo aplica a imágenes, nunca a datos financieros tabulares" },
+      ],
+      explanation: "La capacidad de ajustar cualquier función, apuntada al 95–99% de ruido, produce sobre todo un ajuste exquisito a la aleatoriedad. Representable ≠ recuperable a partir de datos finitos y ruidosos.",
+    },
+  ]}
+/>

@@ -1,0 +1,492 @@
+---
+title: "Embeddings for Categorical & Alternative Data"
+description: "Turning tickers, sectors, regimes, calendars and news into dense learned vectors — why entity embeddings crush one-hot encodings, the dimension rules of thumb, sharing a representation across a pooled cross-section, and the leakage traps embeddings make especially easy to fall into."
+topic: "en/deep-learning-for-market-data"
+order: 5
+minutes: 14
+updated: 2026-06-19
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap } from '@/components/react';
+
+So far this course has fed your networks *numbers* — returns, volumes, volatilities, the
+nicely-behaved continuous stuff a matrix multiply is happy to chew on. But real market data
+is riddled with **labels**: the ticker `JPM`, the sector "Financials", the country "US", the
+exchange "NYSE", the day-of-week "Monday", the regime tag "risk-off". And then there's the
+truly unstructured swamp — news headlines, 10-K filings, earnings-call transcripts.
+
+A neural net does not know what "Financials" *means*. It multiplies and adds. It cannot
+multiply the string `"JPM"`. So before any of your hard-won RNN / TCN / transformer machinery
+can touch a category, you have to turn that label into a vector. The lazy way is **one-hot
+encoding**. The good way — the way that lets a bank learn from what other banks did — is an
+**embedding**. This lesson is about doing it well, and about the leakage traps that embeddings
+make *extraordinarily* easy to fall into.
+
+## One-hot encoding is a waste
+
+<MCQ
+  client:visible
+  question="You one-hot encode a universe of 3,000 tickers and feed the result straight into the first dense layer. What is the single biggest structural problem with this representation (before we even talk about parameters)?"
+  options={[
+    { text: "Every category sits at the same distance from every other — the encoding carries no notion of similarity", correct: true },
+    { text: "One-hot vectors contain negative numbers that destabilise training" },
+    { text: "The network cannot backpropagate through a binary input" },
+    { text: "One-hot encoding double-counts the intercept term" },
+  ]}
+  explanation="One-hot vectors are orthogonal unit vectors. The Euclidean (and cosine) distance between any two distinct categories is identical, so 'JPM' is exactly as far from 'BAC' as it is from 'XOM'. The model gets zero free hint that the two banks are alike."
+/>
+
+**Analogy.** One-hot encoding is like giving every employee in a 3,000-person company a badge
+that is a single light in a 3,000-light panel — yours is light #1,742, lit; everyone else's
+is dark. The badge tells you *who* someone is and absolutely nothing about *what they're like*.
+Two analysts on the same desk are as "far apart" as the CEO and the night janitor.
+
+**Definition.** One-hot encoding maps a category $c$ from a vocabulary of cardinality $K$ to
+the indicator vector $e_c \in \{0,1\}^K$ — a $K$-long vector that is $1$ in position $c$ and
+$0$ everywhere else. All distinct one-hot vectors are mutually orthogonal: $e_i \cdot e_j = 0$
+for $i \neq j$, and $\lVert e_i - e_j \rVert = \sqrt{2}$ for every pair. Constant distance,
+zero similarity structure.
+
+**Worked example.** Take a toy universe of four tickers and encode them:
+
+| Ticker | Sector      | One-hot vector       |
+|--------|-------------|----------------------|
+| JPM    | Financials  | `[1, 0, 0, 0]`       |
+| BAC    | Financials  | `[0, 1, 0, 0]`       |
+| XOM    | Energy      | `[0, 0, 1, 0]`       |
+| AAPL   | Technology  | `[0, 0, 0, 1]`       |
+
+Distance between the two banks, $\lVert e_{\text{JPM}} - e_{\text{BAC}} \rVert = \sqrt{(1-0)^2 + (0-1)^2} = \sqrt{2} \approx 1.41$.
+Distance between a bank and the oil major, $\lVert e_{\text{JPM}} - e_{\text{XOM}} \rVert = \sqrt{2} \approx 1.41$.
+*Identical.* The encoding insists JPM and BAC are no more similar than JPM and XOM.
+
+Now scale up. With $K = 3{,}000$ tickers, each input is a 3,000-long sparse vector. A first
+dense layer with $h = 64$ hidden units needs $K \times h = 3{,}000 \times 64 = 192{,}000$
+weights just to *read the ticker* — and most of them see a single non-zero example at a time,
+so they update glacially.
+
+<Callout variant="warning" title="The curse, again">
+Remember lesson 1's complaint that deep nets starve on markets' tiny *effective* sample size?
+One-hot encoding pours gasoline on that fire. A 3,000-wide sparse input multiplies your
+parameter count without adding information, and each ticker's column only gets a gradient on
+the rows where that exact ticker appears. High cardinality + low effective-N is precisely the
+regime where one-hot encoding overfits fastest.
+</Callout>
+
+### When to use it
+
+One-hot is fine — even preferable for its simplicity — when cardinality is *low* (say $K \le
+10$: day-of-week, a handful of regimes) and you have plenty of data per category. At that scale
+the parameter cost is trivial and the lack of learned similarity barely matters. It's only at
+high cardinality that it becomes a liability.
+
+<FillBlank
+  client:visible
+  question="Fill in the structural facts about one-hot vectors."
+  text="Any two distinct one-hot vectors are {{orthogonal|collinear|identical}}, which means the model receives {{no|full|partial}} information about category similarity, and a first dense layer's parameter count grows {{linearly|logarithmically|quadratically}} in the cardinality."
+  explanation="Distinct one-hot vectors are orthogonal (dot product 0); that orthogonality is exactly why no similarity is encoded; and a dense layer reading a K-wide input has K×h weights, i.e. linear in K."
+/>
+
+## Entity embeddings
+
+<MCQ
+  client:visible
+  question="An entity embedding layer maps a ticker id to a dense vector. Where do the values in that vector come from?"
+  options={[
+    { text: "They are learned parameters, trained jointly with the rest of the network by backprop", correct: true },
+    { text: "They are fixed hashes of the ticker symbol computed before training" },
+    { text: "They are the ticker's historical returns, standardised" },
+    { text: "They are random and frozen at initialisation to act as a fingerprint" },
+  ]}
+  explanation="An embedding is a lookup table (an embedding matrix) whose rows are free parameters. The forward pass selects row c; the backward pass sends gradients into that row. Similar entities drift toward similar vectors because that lowers the task loss."
+/>
+
+**Analogy.** This is **word2vec for stocks**. Word2vec learned that "king − man + woman ≈
+queen" not because anyone told it, but because words that appear in similar contexts ended up
+with similar vectors. An entity embedding does the same with tickers: two banks that respond
+alike to rate moves get *nudged* toward each other in the embedding space, because sharing a
+representation lowers the loss. You never hand-label "these are both banks" — the geometry
+falls out of the training signal.
+
+**Definition.** An **embedding** maps each category id $c \in \{1, \dots, K\}$ to a dense
+vector $\mathbf{v}_c \in \mathbb{R}^m$ via a lookup into an **embedding matrix**
+$E \in \mathbb{R}^{K \times m}$, where row $c$ is $\mathbf{v}_c$. Equivalently it's a dense
+layer with no bias and no activation applied to the one-hot vector: $\mathbf{v}_c = E^{\top} e_c$.
+The matrix $E$ is trained jointly with the task. The embedding **dimension** $m$ (with $m \ll K$)
+is a hyperparameter you choose.
+
+**Dimension rule of thumb.** Two popular heuristics:
+
+$$ m \approx \min\!\left(50, \left\lceil \tfrac{K}{2} \right\rceil\right) \qquad \text{or} \qquad m \approx K^{0.25}. $$
+
+The first (the fast.ai rule) caps the size for huge vocabularies; the second grows very slowly.
+Both encode the same instinct: more categories deserve a richer space, but with sharply
+diminishing returns.
+
+**Worked example.** With $K = 3{,}000$ tickers, the min-rule gives
+$m \approx \min(50, \lceil 3000/2 \rceil) = \min(50, 1500) = 50$. The fourth-root rule gives
+$m \approx 3000^{0.25} \approx 7.4 \to 8$. People usually land somewhere in between; say $m = 32$.
+Parameter count of the embedding: $K \times m = 3{,}000 \times 32 = 96{,}000$ — versus the
+$192{,}000$ the one-hot dense layer needed above for $h=64$, and crucially every row now
+accumulates *shared* structure rather than memorising one ticker in isolation.
+
+| Property                 | One-hot encoding            | Entity embedding ($m=32$)        |
+|--------------------------|-----------------------------|----------------------------------|
+| Vector length            | $K = 3{,}000$               | $m = 32$                         |
+| Storage / params (read)  | $K \times h = 192{,}000$    | $K \times m = 96{,}000$          |
+| Encodes similarity?      | No — all pairs equidistant  | Yes — learned geometry           |
+| Generalises across cats? | No                          | Yes (banks share structure)      |
+| Sparse vs dense          | Sparse, mostly zeros        | Dense, all dimensions used       |
+| Interpretable axes?      | Trivially (one per cat)     | Not directly (latent factors)    |
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Embedding matrix E", definition: "A K×m table of learned parameters; row c is the vector for category c" },
+    { term: "Embedding dimension m", definition: "The width of each dense vector — a hyperparameter, chosen ≪ K" },
+    { term: "min(50, ⌈K/2⌉) heuristic", definition: "A rule of thumb that caps embedding size for high-cardinality vocabularies" },
+    { term: "Joint training", definition: "Embedding rows updated by the same backprop gradients as the rest of the task" },
+    { term: "Latent cluster", definition: "Region of the space where similar entities (e.g. two banks) end up close together" },
+  ]}
+/>
+
+### When to use it
+
+Reach for an entity embedding when a categorical is **high-cardinality** *and* you have a
+**large pooled cross-section** so many categories can pool statistical strength (more on this
+below). It shines exactly where one-hot drowns. But it is not free: you've added $K \times m$
+parameters that can memorise, and a learned space that — like every learned thing here — can
+leak the future if you're careless.
+
+## Embedding alternative & text data
+
+<MCQ
+  client:visible
+  question="You want to feed yesterday's news flow into a return model. Which approach turns a headline into something the network can actually consume, without you hand-coding features?"
+  options={[
+    { text: "Run the text through a pretrained sentence/text encoder to get a fixed-length dense embedding vector", correct: true },
+    { text: "Concatenate the ASCII codes of each character into a long vector" },
+    { text: "One-hot encode the full English vocabulary and sum the word indicators" },
+    { text: "Feed the raw string into the dense layer and let it parse the grammar" },
+  ]}
+  explanation="A pretrained text encoder maps variable-length text to a fixed-length dense vector that already captures semantic content. Summing one-hot word indicators (bag-of-words) is the classic sparse baseline but throws away order and similarity; raw strings and ASCII codes are not usable representations."
+/>
+
+**Analogy.** A pretrained text embedding is a translator you hired who already speaks the
+language fluently. You don't teach them English from scratch on your 4,000 trading days of
+headlines — you hand them the sentence and they hand you back a compact "meaning vector". Your
+downstream model only has to learn *what that meaning implies for returns*, not what English is.
+
+**Definition & taxonomy.** "Embedding alternative data" really means producing a dense vector
+representation of unstructured or semi-structured inputs:
+
+| Alt-data input         | Representation                                  | Typical dimension |
+|------------------------|-------------------------------------------------|-------------------|
+| News headline / filing | Pretrained sentence/document embedding          | 384–1536          |
+| Sentiment of text      | Scalar (or small vector) sentiment score        | 1–3               |
+| Document topic mix     | Topic-model vector (e.g. LDA proportions)       | 20–100            |
+| Continuous alt-signal  | Standardised scalar, optionally binned + embedded | 1–8             |
+| Categorical alt-tag    | Entity embedding (same machinery as tickers)    | $K^{0.25}$-ish    |
+
+The point is uniform: by the time it reaches the network, *everything* — ticker, sector, news,
+sentiment — is a dense vector, and the downstream layers don't care which column came from a
+lookup table and which came from a language model.
+
+**Worked example (out-of-vocabulary).** Your training universe has $K = 3{,}000$ tickers. In
+live trading a freshly-IPO'd name appears that the embedding table has never seen. With a raw
+lookup, there is **no row** for it — the model crashes or silently maps to garbage. The fix is
+to reserve an extra row at index $0$ for an `<UNK>` ("unknown") token: build $E \in
+\mathbb{R}^{(K+1) \times m}$, route every unseen id to row $0$, and *train* that row by
+randomly mapping some rare tickers to `<UNK>` during training so it learns a sensible "generic
+new name" vector. Same trick handles out-of-vocabulary words in text encoders.
+
+<Callout variant="info" title="Cardinality discipline">
+Before embedding any categorical, count distinct values *as they exist at decision time* and
+decide an OOV policy. A "country" field with 40 values is cheap; a "news source URL" field with
+80,000 values is a memorisation trap unless you bucket the long tail into `<UNK>`. Cardinality
+is a design decision, not a given.
+</Callout>
+
+### When to use it
+
+Pretrained text embeddings earn their keep when the *signal lives in the language* (tone of a
+filing, novelty of a headline) and your own dataset is far too small to learn English from
+scratch — which is essentially always in finance. Skip the heavy encoder when a one-line
+sentiment score already captures everything you'll act on; a 1,536-dim vector feeding a model
+with 3,000 training days is a fast track to overfitting.
+
+<Categorize
+  client:visible
+  question="Sort each market input by the representation that fits it best."
+  buckets={["Entity embedding (lookup table)", "Pretrained text/dense vector"]}
+  items={[
+    { text: "Ticker id from a 3,000-name universe", bucket: "Entity embedding (lookup table)" },
+    { text: "GICS sector label", bucket: "Entity embedding (lookup table)" },
+    { text: "Exchange / venue code", bucket: "Entity embedding (lookup table)" },
+    { text: "Full text of an earnings-call transcript", bucket: "Pretrained text/dense vector" },
+    { text: "A news headline string", bucket: "Pretrained text/dense vector" },
+    { text: "10-K risk-factors section", bucket: "Pretrained text/dense vector" },
+  ]}
+  explanation="High-cardinality ids and labels you control map cleanly to learned lookup tables. Unstructured natural-language text is best handed to a pretrained encoder that already understands language."
+/>
+
+## Leakage traps embeddings make easy
+
+<MCQ
+  client:visible
+  question="You learn a ticker embedding on your ENTIRE dataset (2010–2025), then run a purged, walk-forward backtest on top of those frozen vectors and report a beautiful Sharpe. Why is the result still contaminated?"
+  options={[
+    { text: "The embedding already absorbed co-occurrence structure from the test period, so test-period information leaked into the features before the backtest even started", correct: true },
+    { text: "Frozen embeddings cannot be backtested at all" },
+    { text: "Walk-forward backtests are invalid whenever embeddings are present" },
+    { text: "The Sharpe ratio is the wrong metric for embedding models" },
+  ]}
+  explanation="Fitting the embedding on the full sample is preprocessing-on-full-data — the exact leakage sin from Machine Learning for Alpha, just wearing a representation-learning costume. The vectors encode relationships that only became visible because the model saw 2025 while 'predicting' 2025. A purged CV on top of pre-leaked features is purging nothing."
+/>
+
+This is the section that matters. Embeddings are a *learned* representation, and **anything
+learned can memorise the future**. Every leakage lesson from *Machine Learning for Alpha* —
+preprocessing-on-full-data, survivorship, look-ahead — has an embedding-shaped version that is
+easier to commit and harder to spot.
+
+**The five traps.**
+
+| # | Trap | What leaks |
+|---|------|------------|
+| a | Embedding fit on the **full sample** | Test-period co-occurrences bleed into the vectors (preprocessing-on-full-data) |
+| b | **Survivorship** in the entity set | Vocabulary built from names that *survived* to today silently drops the dead |
+| c | **Look-ahead labels** (regime / reclassification) | A tag assigned with hindsight encodes the outcome it should predict |
+| d | A category that **encodes the future** | e.g. a `was_acquired` flag is a label masquerading as a feature |
+| e | **Target leakage via memorisation** | On tiny data the embedding learns an id→outcome map instead of structure |
+
+**Worked example (regime look-ahead).** Suppose you tag each day with a regime label and embed
+it. You define "risk-off" by checking whether the next 20 days had a drawdown exceeding 10%:
+
+$$ \text{regime}_t = \begin{cases} \text{risk-off} & \text{if } \min_{1 \le k \le 20}\, r_{t+k}^{\text{cum}} < -0.10 \\ \text{risk-on} & \text{otherwise.} \end{cases} $$
+
+That label at time $t$ is a function of returns from $t{+}1$ to $t{+}20$. Embed it, feed it to
+a model predicting $r_{t+1}$, and your "feature" already *contains the answer* — the embedding
+for "risk-off" will look spectacularly predictive, and on live data, where you can't see the
+next 20 days, it evaporates. The fix: define the regime using only information available *at or
+before* $t$ (a trailing volatility threshold, a moving-average crossover), and assign it
+causally.
+
+<Callout variant="warning" title="Embeddings launder leakage — audit every category like a hostile witness">
+The danger is that an embedding is opaque, so leakage hides inside a dense vector instead of a
+named column you'd flag in review. Three habits: (1) **Fit the embedding inside the training
+fold only** — refit per walk-forward window, never on the pooled full sample; treat it exactly
+like a fitted scaler. (2) **Build the vocabulary point-in-time** — the set of tickers/sectors
+must be the universe *as known on the decision date*, including names later delisted, or you've
+re-imported survivorship through the back door. (3) **Interrogate every categorical**: "could a
+human assign this label without knowing the future?" If a regime tag, sector reclassification,
+or `was_acquired` flag needs hindsight, it is a *target*, not a feature, no matter how dense the
+vector that hides it.
+</Callout>
+
+<MCQ
+  client:visible
+  allowMultiple
+  question="Which of these embedding setups leak future information? Select every one that does."
+  options={[
+    { text: "The ticker vocabulary is built from the constituents of today's index, excluding firms that delisted in 2014", correct: true },
+    { text: "The regime embedding is keyed on a label defined using the subsequent 20-day drawdown", correct: true },
+    { text: "A categorical 'acquisition_status' includes the value 'acquired' for firms bought years after the prediction date", correct: true },
+    { text: "The embedding matrix is re-fit from scratch inside each training fold of a purged walk-forward split" },
+    { text: "A sector label assigned from the GICS classification that was in force on the decision date" },
+  ]}
+  explanation="Survivorship vocabulary (a), look-ahead regime labels (b), and future-encoding categories (c) all leak. Re-fitting per fold and using a point-in-time sector classification are the correct, non-leaking practices."
+/>
+
+### When the leak is subtle
+
+The nastiest case is **(e), memorisation on tiny data**. With $K = 3{,}000$ tickers, $m = 32$,
+and only ~1,000 *days* of pooled history, the embedding can quietly learn an id→average-return
+lookup — a fancy target-encoding fit on the training labels. It validates poorly out-of-sample
+and you'll blame "regime change". The tell: in-sample fit improves sharply with $m$ while
+out-of-sample stalls or degrades. Shrink $m$, add regularisation/dropout on the embedding, or
+question whether you have the data to embed this category at all.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">A teammate refits ticker embeddings on the full 15-year history "for stability", then runs purged walk-forward CV on top. Why is the purging useless here, in the vocabulary of Machine Learning for Alpha?</summary>
+
+**Answer.** Purged CV protects against *temporal* leakage *between the train and test labels*
+during model fitting — it removes overlapping windows and embargoes near the split. But the
+embedding was fit *before* the CV even started, on data that includes the test period. That is
+**preprocessing-on-full-data leakage**: the features handed to the CV already encode test-period
+structure, so purging the *model* fit changes nothing. The cure is identical to the one for
+scalers and PCA in that course — fit the transform *inside the training fold only*, then apply
+the frozen-from-train transform to the held-out data. An embedding is just a fitted transform
+with parameters; treat it like one.
+
+</details>
+</Reveal>
+
+## When embeddings earn their keep
+
+<MCQ
+  client:visible
+  question="You have a categorical with 12 distinct values, 800 training rows, and you're choosing between an entity embedding and a gradient-boosted tree with native categorical handling. What's the sober call?"
+  options={[
+    { text: "Skip the embedding — low cardinality plus small data is exactly where a tree (or simple target/ordinal encoding) is simpler and usually wins", correct: true },
+    { text: "Use a large embedding (m=64) to be safe; more capacity is always better" },
+    { text: "Embeddings strictly dominate trees on tabular finance data, so always embed" },
+    { text: "One-hot the 12 values and train a 5-layer MLP — depth fixes small data" },
+  ]}
+  explanation="Embeddings pay off with high cardinality AND enough pooled data to learn shared structure. With 12 categories and 800 rows there's nothing to share and everything to overfit; a gradient-boosted tree handles the categorical natively and generalises better — a preview of the next lesson's 'trees usually win on tabular' theme."
+/>
+
+**Analogy.** Embeddings are a *team sport*. Their whole advantage is letting categories pool
+strength — one bank learning from a thousand bank-days. If you've got two banks and a long
+weekend of data, there's no team to pool; you're just memorising. Embeddings reward a crowded
+stadium, not an empty one.
+
+**The decision, made precise.** Favour an embedding when **both** hold: (1) cardinality is high
+($K$ in the hundreds-to-thousands), so one-hot is wasteful and similarity structure is worth
+learning; and (2) you have a **large pooled cross-section** — many entities $\times$ many
+periods — so the embedding has enough examples per latent factor to learn structure rather than
+ids. Avoid it when data is tiny (it memorises), when cardinality is low (an ordinal or target
+encoding, or just a one-hot, is simpler), or when a tree will do.
+
+| Situation | Cardinality | Effective data | Best tool |
+|-----------|-------------|----------------|-----------|
+| 3,000 tickers, 15y daily, pooled panel | High | Large | **Entity embedding** |
+| Day-of-week feature | Low (7) | Any | One-hot / cyclical encoding |
+| 12 sectors, 800 rows | Low–med | Small | Target/ordinal encoding or a tree |
+| Mixed tabular features, modest data | Mixed | Modest | **Gradient-boosted trees** |
+| News text, signal in language | n/a | Small own-data | Pretrained text embedding |
+
+<Callout variant="info" title="Foreshadowing lesson 6">
+Notice how often the honest answer above is "use a tree". Gradient-boosted trees handle
+categoricals natively (no one-hot, no embedding matrix), need no GPU, and resist overfitting on
+the small, noisy, low-signal panels that define finance. The next lesson makes the
+uncomfortable case directly: on most tabular market problems, **trees usually win** — and
+embeddings are the exception you reach for, not the default.
+</Callout>
+
+### When to use it — the trade-off
+
+The embedding trade is **expressive power and shared structure** *bought with* **parameters,
+opacity, and a fresh surface for leakage**. You take the trade when high cardinality and a deep
+pooled cross-section make the shared structure real and learnable. You decline it when the data
+can't fund the parameters, or when a tree gives you 95% of the benefit with 5% of the foot-guns.
+
+<FillBlank
+  client:visible
+  question="Summarise the embedding decision rule."
+  text="Entity embeddings pay off when cardinality is {{high|low|fixed}} and the pooled cross-section is {{large|tiny|sparse}}; with little data the embedding tends to {{memorise|generalise|regularise}}, and for plain tabular panels a gradient-boosted {{tree|kernel|spline}} is often the simpler winner."
+  explanation="High cardinality + large pooled data is the embedding sweet spot. Small data leads to memorisation, and for tabular finance, trees are the strong default — the theme of the next lesson."
+/>
+
+## Recap
+
+<MindMap
+  client:visible
+  title="Embeddings for categorical & alt-data"
+  caption="From labels to dense learned vectors — and the leakage traps along the way."
+  root={{
+    label: "Embeddings",
+    children: [
+      {
+        label: "One-hot",
+        children: [
+          { label: "Orthogonal → no similarity" },
+          { label: "K-wide, params blow up" },
+          { label: "OK only when K is small" },
+        ],
+      },
+      {
+        label: "Entity embedding",
+        children: [
+          { label: "Lookup table E (K×m), learned" },
+          { label: "m ≈ min(50, ⌈K/2⌉) or K^0.25" },
+          { label: "word2vec for stocks: banks cluster" },
+        ],
+      },
+      {
+        label: "Alt & text data",
+        children: [
+          { label: "Pretrained sentence/doc vectors" },
+          { label: "Sentiment / topic vectors" },
+          { label: "OOV → <UNK> row" },
+        ],
+      },
+      {
+        label: "Leakage traps",
+        children: [
+          { label: "Fit on full sample" },
+          { label: "Survivorship vocabulary" },
+          { label: "Look-ahead regime labels" },
+          { label: "Category encodes the future" },
+          { label: "Memorisation on tiny data" },
+        ],
+      },
+      {
+        label: "When to embed",
+        children: [
+          { label: "High cardinality + big panel" },
+          { label: "Not tiny data, not low K" },
+          { label: "Else: trees usually win" },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Embeddings check"
+  questions={[
+    {
+      question: "Why does one-hot encoding fail to express that two banks are similar?",
+      options: [
+        { text: "Distinct one-hot vectors are mutually orthogonal, so every pair of categories is equidistant", correct: true },
+        { text: "One-hot vectors are normalised, which erases magnitude information" },
+        { text: "The encoding stores categories alphabetically, scrambling sectors" },
+        { text: "Banks happen to receive adjacent indices, which the model ignores" },
+      ],
+      explanation: "Orthogonality means equal distance between all distinct categories — no similarity structure can be represented, regardless of which two categories you pick.",
+    },
+    {
+      question: "Using the min-rule m ≈ min(50, ⌈K/2⌉), what embedding dimension would you start with for a 3,000-ticker universe?",
+      options: [
+        { text: "About 50", correct: true },
+        { text: "About 1,500" },
+        { text: "About 3,000" },
+        { text: "About 8" },
+      ],
+      explanation: "min(50, ⌈3000/2⌉) = min(50, 1500) = 50. The cap kicks in for high-cardinality vocabularies; the K^0.25 rule would suggest ~8, and practitioners often pick something in between.",
+    },
+    {
+      question: "Which practices keep an entity embedding free of look-ahead and survivorship leakage? Select all that apply.",
+      options: [
+        { text: "Re-fit the embedding inside each training fold only, then apply it frozen to the held-out data", correct: true },
+        { text: "Build the entity vocabulary point-in-time, including names later delisted", correct: true },
+        { text: "Define any regime/category label using only information available at or before the decision date", correct: true },
+        { text: "Fit the embedding once on the pooled 2010–2025 history for stability" },
+      ],
+      explanation: "Per-fold fitting, point-in-time vocabularies, and causally-defined labels are the safeguards. Fitting on the pooled full history is preprocessing-on-full-data leakage.",
+      allowMultiple: true,
+    },
+    {
+      question: "A regime label is defined as 'risk-off if the NEXT 20 days draw down more than 10%', then embedded as a feature. What happens?",
+      options: [
+        { text: "It looks brilliantly predictive in-sample and collapses live, because the label encodes future returns", correct: true },
+        { text: "It is fine, since 20 days is a short enough window to ignore" },
+        { text: "It only leaks if the embedding dimension exceeds the number of regimes" },
+        { text: "It improves live performance by smoothing volatility" },
+      ],
+      explanation: "The label at time t is a function of returns from t+1 to t+20 — it contains the answer. Live, you can't see the next 20 days, so the apparent edge vanishes. Define regimes causally instead.",
+    },
+    {
+      question: "You have a 12-value categorical and 800 training rows. Why is an entity embedding the wrong reflex?",
+      options: [
+        { text: "Low cardinality plus small data means there's no shared structure to learn — the embedding just memorises, and a tree or simple encoding generalises better", correct: true },
+        { text: "Embeddings cannot represent fewer than 50 categories" },
+        { text: "12 categories produce singular embedding matrices that fail to train" },
+        { text: "Trees cannot read categorical features at all, so they're out of the question" },
+      ],
+      explanation: "Embeddings reward high cardinality and a large pooled cross-section. With few categories and little data there's nothing to pool; gradient-boosted trees (which handle categoricals natively) are the simpler, stronger choice — the next lesson's theme.",
+    },
+  ]}
+/>
