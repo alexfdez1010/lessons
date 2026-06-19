@@ -775,3 +775,10 @@ export type { InventorySkewProps } from '@/components/react/InventorySkew';
 
 export { DeflatedSharpe, default as DeflatedSharpeDefault } from '@/components/react/DeflatedSharpe';
 export type { DeflatedSharpeProps } from '@/components/react/DeflatedSharpe';
+
+// Reinforcement-learning-for-trading islands
+export { RlAgentEnvLoop, default as RlAgentEnvLoopDefault } from '@/components/react/RlAgentEnvLoop';
+export type { RlAgentEnvLoopProps } from '@/components/react/RlAgentEnvLoop';
+
+export { ExecutionPolicyHeatmap, default as ExecutionPolicyHeatmapDefault } from '@/components/react/ExecutionPolicyHeatmap';
+export type { ExecutionPolicyHeatmapProps } from '@/components/react/ExecutionPolicyHeatmap';

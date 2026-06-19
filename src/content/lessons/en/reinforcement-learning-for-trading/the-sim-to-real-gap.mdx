@@ -1,0 +1,253 @@
+---
+title: "The Sim-to-Real Gap"
+description: "Why an RL agent that prints money in your backtest loses it live — the agent learns the simulator's flaws not the market, why RL overfits even worse than supervised learning, non-stationarity and a market that adapts to you, the unrealistic-fill traps in naive simulators, and the deployment discipline that keeps you honest."
+topic: "en/reinforcement-learning-for-trading"
+order: 6
+minutes: 16
+updated: 2026-06-19
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, TsOverfitCurve, MarkovRegimeChain } from '@/components/react';
+
+Here is the uncomfortable truth that every reinforcement-learning lesson has been quietly building toward. An RL agent is the most brilliant, tireless, ruthless exploiter you will ever hire — but it exploits *whatever world you put it in*, and it has no idea that the world is supposed to be the real market. You hand it a simulator and tell it to maximize reward. It does. It finds every crack, every rounding error, every fill that's a hair too generous, every assumption you didn't realize you made, and it pours its entire optimization budget into those cracks. If the cracks happen to coincide with real edges, congratulations. They almost never do.
+
+So the agent that prints money in backtest hasn't necessarily learned to trade. It has learned to *trade your simulator* — a subtly different and far easier game. The distance between that simulator and the live market is called the **sim-to-real gap**, and it is where RL trading strategies go to die. This is the humbling capstone of the course: not a new algorithm, but the discipline to distrust the beautiful equity curve your own code just produced. Carry forward the one lesson the machine-learning-for-alpha course beat into you — *overfitting is the enemy* — because RL finds new and creative ways to overfit that supervised learning never dreamed of.
+
+<MCQ
+  client:visible
+  pretest
+  question="Your RL backtest reports a Sharpe ratio of 6 with an almost perfectly smooth, monotonically rising equity curve. What is the correct first reaction?"
+  options={[
+    { text: "Deep suspicion — a Sharpe of 6 on a smooth curve almost certainly means the agent overfit the simulator, because real market edges are tiny and noisy", correct: true },
+    { text: "Excitement — size it up to full capital immediately before the edge decays", correct: false },
+    { text: "Mild satisfaction — a Sharpe of 6 is good but not exceptional for RL", correct: false },
+    { text: "Indifference — Sharpe is the wrong metric, so the number is meaningless", correct: false }
+  ]}
+  explanation="Real tradable edges live at the low end of the signal-to-noise spectrum — Sharpe ratios of 1 to 2 are excellent, and even those are hard to keep. A backtested Sharpe of 6 with a glassy-smooth curve is not a discovery; it is a symptom. The agent has found something in the simulator that does not exist in the market. The right move is forensic: figure out which simulator assumption it is exploiting before you risk a cent."
+/>
+
+## The sim-to-real gap, defined
+
+The **sim-to-real gap** is the performance loss you suffer when a policy that is optimal *in simulation* meets *reality*, because the simulator is not the real environment. Formally: you trained the agent to maximize reward under your simulator's transition dynamics and reward function. You then deploy it under the *real* market's dynamics. Wherever the two disagree, the agent's behavior was tuned for the wrong world.
+
+The cruel part is that this is not a bug in the agent — it is the agent doing exactly its job. Reinforcement learning is, by construction, a search for the policy that squeezes the most reward out of the environment it is given. Every modeling shortcut you took — a fill that's slightly too good, a cost you forgot to charge, a price that doesn't move when you trade — is not a harmless approximation. It is a *reward source*, and the agent will route its entire strategy through it. A supervised model that you feed bad data merely learns a bad mapping. An RL agent that you give a flawed simulator learns to *attack* the flaw with everything it has.
+
+<Callout variant="warning" title="Your simulator is your adversary's playground">
+Whenever you simplify the market to make the simulator tractable, you are not making the agent's life harder — you are handing it free money. The agent will discover the simplification and exploit it long before you notice. Assume every shortcut is a leak the agent is already draining.
+</Callout>
+
+## Why RL overfits worse than supervised learning
+
+You already know overfitting from the ML-for-alpha course: a model memorizes noise in the training set and fails out of sample. RL inherits all of that and adds three compounding accelerants that make it overfit *harder*.
+
+**(1) The agent chooses its own data.** A supervised model is handed a fixed dataset. An RL agent *generates* its own experience by acting — and a maximizing agent steers itself toward the states where the simulator is most flattering. It actively seeks out the regions where the model is wrong in its favor. You are not training on a sample of the world; you are training on a sample the agent curated to make itself look good.
+
+**(2) Long-horizon credit assignment multiplies noise.** Supervised learning maps one input to one label. RL must attribute a final outcome back across a long chain of actions, each step injecting estimation noise. The longer the horizon, the more spurious "this action caused that reward" correlations the agent can latch onto — and many of them are pure coincidence in the training trajectories.
+
+**(3) You search over the entire environment, not just the model.** In supervised learning you tune a model and maybe a few hyperparameters. In RL you tune the *environment definition*, the *reward function*, the *algorithm*, the *network*, and the *hyperparameters* — and you re-run the backtest after every change. That is an enormous multiple-testing search, and you keep the configuration with the best backtest. This is exactly the **deflated-Sharpe / backtest-overfitting** trap: run enough trials and one of them looks brilliant by luck alone. RL's giant configuration space makes that luck almost guaranteed.
+
+<TsOverfitCurve client:visible title="Train reward soars while test reward rolls over" caption="The widening gap between in-sample and out-of-sample performance is the overfitting signature — in RL it appears earlier and wider." />
+
+<Callout variant="warning" title="Backtest Sharpe is a number you optimized, not a number you measured">
+Every time you tweak the environment and re-check the backtest, you are selecting on the backtest. The final Sharpe is the *maximum* over all your trials, not an unbiased estimate of live performance. Deflate it for the number of configurations you tried, or treat the raw figure as fiction.
+</Callout>
+
+### When to use it — read the train/test gap as a warning light
+
+Track in-sample versus out-of-sample (or train versus held-out walk-forward) reward *during* development, not after. The moment the curves diverge, you are memorizing the simulator. A small, stable gap is the only honest sign your policy learned something transferable. A huge gap with a gorgeous training curve is the agent celebrating in a world that does not exist.
+
+## Non-stationarity and a market that adapts to you
+
+Even a *perfect* simulator of the past would not save you, because the market is **non-stationary**: its statistical behavior changes over time. The data-generating process drifts between **regimes** — calm and trending, volatile and mean-reverting, crisis and melt-up — and a policy trained to exploit one regime can be exactly wrong in the next. The agent optimized a strategy for the world it saw; the world then changes the rules.
+
+<MarkovRegimeChain client:visible title="Regimes shift, and the optimal policy shifts with them" caption="A policy tuned for the calm-trend regime can be precisely the wrong move once the chain transitions to the volatile-reversion regime." />
+
+And it gets worse, because the market is not a passive recording you replay — it is a crowd of other adaptive participants, and it **reacts to you**. Two feedback loops eat your edge:
+
+- **Other participants adapt.** If your agent exploits a pattern, others learn to anticipate or front-run it, and the pattern decays. The edge that was real last quarter is being competed away as you trade it.
+- **Your own impact grows with size.** Backtests on small notional assume your trades don't move prices. Scale up and they do — your buying pushes the price against you, your fills degrade, and the impact model you calibrated at tiny size no longer holds. The strategy that worked at \$100,000 can be unprofitable at \$100,000,000.
+
+A static historical backtest captures *none* of this reflexivity. It replays a market that never noticed you were there.
+
+<Callout variant="warning" title="The market is a player, not a dataset">
+Replaying history assumes the order book would have been identical whether or not your agent existed. The instant you trade real size, that assumption is false: you are now one of the forces moving the price you are trying to predict.
+</Callout>
+
+## The unrealistic simulator: the specific lies that inflate backtests
+
+Non-stationarity is unavoidable. The next category of gap is *self-inflicted* — the convenient lies a naive simulator tells, each of which the agent will happily exploit. Here are the usual suspects.
+
+| Simulator assumption | Why it flatters the agent | Reality |
+|---|---|---|
+| Fills at the mid-price | The agent never pays the bid-ask spread, so every round trip is free money it didn't earn | You buy at the ask, sell at the bid; the spread is a real, recurring cost |
+| Zero latency | The agent acts on prices it could never have reached in time | Signals, network hops, and exchange queues all cost milliseconds the agent didn't have |
+| Guaranteed queue priority | The agent assumes its limit orders fill first when in fact they sit at the back | Your order joins the *back* of the queue; it may never fill, or fills only when the price is moving against you |
+| Static order book (no impact) | The agent trades unlimited size at the quoted price, as if it were invisible | Your own orders consume liquidity and move the book; large trades get progressively worse fills |
+| Future data leaking into the sim | The agent "predicts" using information that wasn't available yet — a perfect oracle | At decision time you only have the past; any lookahead is a fantasy edge |
+
+Every row is a place where the agent earns reward that has no counterpart in the live market. Notice the pattern: each lie makes trading *cheaper, faster, or more certain* than it really is, and a maximizing agent will trade *more* precisely where the lie is largest.
+
+<Categorize
+  client:visible
+  question="Sort each backtesting practice into whether it makes the backtest look better than reality (a leak the agent will exploit) or is honest."
+  buckets={["Flatters", "Honest"]}
+  items={[
+    { text: "Assume every order fills at the mid-price with no spread paid", bucket: "Flatters" },
+    { text: "Assume your limit orders always get front-of-queue priority", bucket: "Flatters" },
+    { text: "Hold the order book static so your trades cause no price impact", bucket: "Flatters" },
+    { text: "Let a feature peek at the same bar's close to decide this bar's trade", bucket: "Flatters" },
+    { text: "Charge the bid-ask spread and a conservative slippage estimate on every fill", bucket: "Honest" },
+    { text: "Model a queue-position-aware fill that may not execute at all", bucket: "Honest" },
+    { text: "Add a market-impact term that worsens fills as order size grows", bucket: "Honest" },
+    { text: "Delay every decision by realistic signal-plus-execution latency", bucket: "Honest" }
+  ]}
+  explanation="The 'Flatters' practices each hand the agent reward it could not earn live — free spread, free priority, free liquidity, free lookahead — and the agent will route its strategy straight through them. The 'Honest' practices deliberately make the simulator pessimistic, which is exactly what you want: it is far better to underestimate your edge in sim and be pleasantly surprised live than the reverse."
+/>
+
+<Reveal client:visible>
+  <details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+    <summary className="cursor-pointer font-medium">Of all these lies, which one most often produces a "Sharpe 6, smooth curve" backtest?</summary>
+
+    **Answer.** Usually some flavor of **lookahead / data leakage**, often combined with **mid-price fills**. Leakage gives the agent near-perfect foresight, which produces unrealistically smooth, monotonic equity; mid-price fills then let it harvest that foresight for free. Whenever a curve looks *too* clean to be a noisy market, suspect that information from the future is sneaking into the present — a feature computed with the bar's own close, a label aligned one step early, or a fill priced off data the agent couldn't have had.
+  </details>
+</Reveal>
+
+## Closing the gap: the deployment discipline
+
+You can never close the gap completely, but you can shrink it and — more importantly — stop fooling yourself about its size. The discipline is a stack of pessimism applied at every stage.
+
+- **Realistic simulation / historical replay with impact and conservative fills.** Charge the spread, add slippage, model queue position, and make your own orders move the book. Bias every assumption *against* the agent.
+- **Domain randomization.** Train across randomized cost levels, latencies, and dynamics so the policy is robust to a *range* of worlds rather than tuned to one exact simulator. A policy that survives many plausible markets is likelier to survive the real one.
+- **Train and stress-test across multiple regimes.** Don't validate on a single calm period. Deliberately test on crises, volatility spikes, and trend reversals — the regimes where a brittle policy detonates.
+- **Walk-forward, purged-and-embargoed evaluation.** Exactly as in the ML-for-alpha course: roll the train/test window forward in time, *purge* overlapping samples around the boundary, and *embargo* a gap so no information leaks across the split. This is your single strongest defense against the leakage that produces fantasy Sharpes.
+- **Paper trading.** Run the policy live against real market data with fake money first. It catches latency, infrastructure, and microstructure surprises a simulator never modeled.
+- **Live monitoring of realized versus expected reward.** Track, in production, whether the reward you actually earn matches what the policy expected. A persistent shortfall is the sim-to-real gap announcing itself in real time.
+- **A pre-set kill switch.** Decide *before* you deploy the loss, drawdown, or reward-deviation threshold that shuts the agent off automatically. Set it when you are calm, not while it is bleeding.
+- **Start at tiny size.** Deploy at a notional where impact is negligible and a total loss is survivable, then scale slowly only as live results confirm the edge. Small size is the cheapest insurance you will ever buy.
+
+<MatchConcepts
+  client:visible
+  question="Match each deployment safeguard to the specific sim-to-real failure it defends against."
+  pairs={[
+    { term: "Purged-and-embargoed walk-forward", definition: "Stops future information from leaking across the train/test boundary and inflating backtest Sharpe" },
+    { term: "Domain randomization", definition: "Makes the policy robust to a range of cost and latency worlds instead of one exact simulator" },
+    { term: "Conservative fills with market impact", definition: "Removes the free spread, free liquidity, and zero-impact lies a naive simulator tells" },
+    { term: "Multi-regime stress testing", definition: "Exposes a policy that only works in the one market regime it happened to train on" },
+    { term: "Live realized-vs-expected monitoring", definition: "Detects the sim-to-real gap in production by comparing earned reward to predicted reward" },
+    { term: "Pre-set kill switch plus tiny size", definition: "Caps the damage when the gap turns out to be larger than hoped" }
+  ]}
+  explanation="Each safeguard targets a distinct leak: walk-forward kills lookahead, randomization fights single-simulator overfit, honest fills remove microstructure freebies, regime testing exposes brittleness, live monitoring measures the gap as it happens, and the kill switch plus small size bound the worst case. Stacked together they don't eliminate the gap — they make it visible and survivable."
+/>
+
+<FillBlank
+  client:visible
+  question="Complete the deployment maxim every honest RL trader lives by."
+  text="When realized reward in production persistently falls short of the reward the policy expected, that shortfall *is* the {{sim-to-real gap|alpha decay|spread cost}} made visible — so you trip the pre-set {{kill switch|leverage cap|rebalance timer}} and investigate before scaling, never the other way around."
+  explanation="A persistent gap between expected and realized reward is the live signature of sim-to-real failure. The disciplined response is mechanical: the kill switch fires at a threshold you chose in advance, you diagnose which assumption broke, and you only scale up after live evidence — you never scale into a widening gap."
+/>
+
+### When to use it — the deployment mindset, not a one-time checklist
+
+These are not steps you run once and forget. Non-stationarity means the gap *reopens* continuously: a policy that matched expectations last month can drift as regimes and competitors change. Treat realized-vs-expected monitoring, regime stress tests, and the kill switch as a permanent operating posture. The goal is not a backtest you can brag about — it is a live system you can trust because you have made it as hard as possible to fool yourself.
+
+## Recap
+
+<MindMap
+  client:visible
+  root={{
+    label: "The Sim-to-Real Gap",
+    children: [
+      {
+        label: "The gap",
+        children: [
+          { label: "Policy optimal in sim, not in reality" },
+          { label: "Agent maximizes simulated reward" },
+          { label: "Every shortcut becomes an exploit" }
+        ]
+      },
+      {
+        label: "Why RL overfits worse",
+        children: [
+          { label: "Agent curates its own flattering data" },
+          { label: "Long-horizon credit multiplies noise" },
+          { label: "Tuning the whole environment is huge multiple testing" }
+        ]
+      },
+      {
+        label: "Non-stationarity",
+        children: [
+          { label: "Regimes shift, policy goes stale" },
+          { label: "Competitors adapt, edge decays" },
+          { label: "Your impact grows with size" }
+        ]
+      },
+      {
+        label: "Simulator lies",
+        children: [
+          { label: "Mid-price fills, no spread" },
+          { label: "Zero latency, free queue priority" },
+          { label: "Static book, no impact" },
+          { label: "Future data leakage" }
+        ]
+      },
+      {
+        label: "Closing the gap",
+        children: [
+          { label: "Conservative fills with impact" },
+          { label: "Domain randomization, multi-regime" },
+          { label: "Purged-embargoed walk-forward" },
+          { label: "Paper trade, monitor, kill switch, tiny size" }
+        ]
+      }
+    ]
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Check yourself: surviving the gap"
+  questions={[
+    {
+      question: "A teammate proposes deploying at full size because the walk-forward backtest, with conservative fills, still shows a Sharpe of 2.5. What is the strongest objection rooted in this lesson?",
+      options: [
+        { text: "Even an honest backtest replays a market that never reacted to you, so impact and competitor adaptation at full size are untested — start tiny and scale on live evidence", correct: true },
+        { text: "A Sharpe of 2.5 is too low to bother trading", correct: false },
+        { text: "Walk-forward validation is invalid for RL agents", correct: false },
+        { text: "Conservative fills make the backtest pessimistic, so the live result must be even better", correct: false }
+      ],
+      explanation: "An honest backtest fixes the simulator lies but still cannot model reflexivity: at scale, your impact and competitors' adaptation degrade the very edge you measured. Tiny size first, then scale only as live results confirm, is the only safe path."
+    },
+    {
+      question: "Which scenario best illustrates the agent 'choosing its own data distribution' to overfit?",
+      options: [
+        { text: "The agent steers into states where the simulator's fill model is most generous, training disproportionately on situations that flatter it", correct: true },
+        { text: "The agent is trained on a fixed, randomly shuffled dataset it cannot influence", correct: false },
+        { text: "The agent's reward is normalized to zero mean and unit variance", correct: false },
+        { text: "The agent uses a larger neural network than the supervised baseline", correct: false }
+      ],
+      explanation: "Unlike a supervised model handed a fixed dataset, an acting agent generates its own experience and, being a maximizer, gravitates toward the states where the simulator is wrong in its favor. It curates a training distribution designed to make itself look good."
+    },
+    {
+      question: "Your live agent's realized reward has tracked 40% below the policy's expected reward for two weeks. What does the disciplined operator do?",
+      options: [
+        { text: "Trip the pre-set kill switch, diagnose which simulator assumption broke, and do not scale until the gap is understood", correct: true },
+        { text: "Increase position size to make up the shortfall in absolute dollars", correct: false },
+        { text: "Ignore it — two weeks is noise and the backtest Sharpe was high", correct: false },
+        { text: "Retrain on the last two weeks and immediately redeploy at higher size", correct: false }
+      ],
+      explanation: "A persistent expected-vs-realized shortfall is the sim-to-real gap made visible. The pre-decided response is to halt at the kill-switch threshold and investigate — never to scale into a widening gap or to chase losses with more size."
+    },
+    {
+      question: "Why does the giant configuration search in RL development make a single reported backtest Sharpe untrustworthy?",
+      options: [
+        { text: "Because you re-ran the backtest after tuning the environment, reward, algorithm, and hyperparameters and kept the best — so the Sharpe is a maximum over many trials, inflated by luck", correct: true },
+        { text: "Because Sharpe ratios are undefined when returns are non-stationary", correct: false },
+        { text: "Because RL agents always report Sharpe on training data only", correct: false },
+        { text: "Because the discount factor biases the Sharpe estimate downward", correct: false }
+      ],
+      explanation: "Selecting the best configuration out of a vast search is multiple testing: the winning backtest's Sharpe is the maximum over many trials and is therefore biased high by chance alone. This is the deflated-Sharpe / backtest-overfitting problem, amplified by RL's enormous tuning surface."
+    }
+  ]}
+/>
+
+That closes the course. You built the MDP, chose between value-based and policy-gradient methods, designed rewards that don't backfire, and tamed exploration — and now you know the final, sobering meta-skill: distrusting your own backtest hard enough to deploy safely. The agent will always be a brilliant exploiter; your job is to make sure the only thing left to exploit is a *real* edge. Now prove it. Head to the graded **Final Exam** and show that you can tell a genuine signal from a simulator's flattery.

@@ -1,0 +1,264 @@
+---
+title: "Value-Based vs Policy-Gradient Methods"
+description: "The two great families of reinforcement learning — learning what each situation is worth (Q-learning, DQN) versus learning the policy directly (policy gradients, PPO, actor–critic) — when each fits a trading problem, why continuous actions push you toward policy methods, and the exploration-versus-exploitation problem when every exploratory trade pays the spread."
+topic: "en/reinforcement-learning-for-trading"
+order: 3
+minutes: 17
+updated: 2026-06-19
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, MindMap, MonteCarloConverge } from '@/components/react';
+
+You have an MDP (lesson 1) and a reward you trust not to be gamed (lesson 2). Now the actual question: *how does an agent turn experience into a good policy?* There are two great philosophies, and almost every algorithm you'll ever meet is a member of one camp, the other, or a marriage of the two.
+
+The first route is indirect: **figure out how good every situation is, then act greedily.** If you knew the true worth of holding, buying, or selling in each market state, you'd never need a "strategy" — you'd just pick the highest-worth action and be done. The second route skips the bookkeeping: **learn to act directly.** Adjust a knob-laden policy so that the actions it likes lead to more reward, full stop. Both arrive at a good policy; they just disagree about whether you need to appraise the whole world first or can learn to dance without measuring the room.
+
+<MCQ
+  client:visible
+  pretest
+  question="Your agent's action is a continuous position size — any fraction in [-1, 1] of capital, long or short. Which family is the natural fit, and why?"
+  options={[
+    { text: "Policy-gradient methods — they output a distribution over a continuous action directly, with no argmax over an infinite action set to compute.", correct: true },
+    { text: "Value-based methods — Q-learning's max over actions handles continuous sizes effortlessly.", },
+    { text: "Neither — RL only works with discrete buy/sell/hold actions.", },
+    { text: "It makes no difference; both families treat continuous and discrete actions identically.", },
+  ]}
+  explanation="Value methods need argmaxₐ Q(s,a). Over a continuum that's an optimization problem at every step — awkward at best. Policy methods parameterize π_θ(a|s) (say a Gaussian over the fraction) and sample directly, so continuous and stochastic actions are native. That's exactly why continuous control leans policy-based."
+/>
+
+## Two ways to learn to act
+
+A **value-based** method learns a number for situations (and situation–action pairs), then derives the policy by acting greedily with respect to those numbers. A **policy-based** method skips straight to the policy: it parameterizes the action distribution and nudges the parameters toward more reward. **Actor–critic** methods refuse to choose — they keep a policy (the *actor*) and a value estimate (the *critic*) and let the critic make the actor's learning less noisy.
+
+| Dimension | Value-based (Q-learning, DQN) | Policy-based (REINFORCE, PPO) | Actor–critic (A2C, PPO, SAC) |
+|---|---|---|---|
+| What's learned | $Q(s,a)$ — worth of each action | $\pi_\theta(a\mid s)$ — the policy itself | Both: actor $\pi_\theta$ + critic $V$/$Q$ |
+| Action space | Discrete (needs argmax) | Discrete **or** continuous | Discrete **or** continuous |
+| Policy type | Deterministic (greedy) | Naturally stochastic | Stochastic |
+| Sample efficiency | Higher (replay reuses data) | Lower (often on-policy) | Medium |
+| Stability | Can diverge (deadly triad) | Noisy gradients, high variance | Critic tames the variance |
+| Trading fit | Discretized trades, dense data | Continuous sizing, exploration risk | The modern default |
+
+### When to use it
+
+Reach for **value-based** when actions are a small discrete menu and you have (or can replay) lots of data. Reach for **policy-based** when the action is continuous, when you want a *stochastic* policy on purpose, or when the optimal behaviour is best expressed as "tilt this way" rather than "pick the max." Reach for **actor–critic** when you want the continuous-action reach of policy methods *without* drowning in gradient variance — which, in practice, is most of the time.
+
+## Value functions and Q-learning
+
+Two value functions anchor the whole value-based world. The **state value** $V^\pi(s)$ is the expected discounted return from state $s$ if you follow policy $\pi$ forever after. The **action value** $Q^\pi(s,a)$ is the same, but you commit to action $a$ *first* and follow $\pi$ thereafter:
+
+$$Q^\pi(s,a) = \mathbb{E}\!\left[\,r_t + \gamma r_{t+1} + \gamma^2 r_{t+2} + \cdots \;\middle|\; s_t = s,\, a_t = a\right]$$
+
+The magic is that these values obey a self-referential consistency rule, the **Bellman equation** — the value of now equals the immediate reward plus the discounted value of next:
+
+$$Q^*(s,a) = \mathbb{E}\!\left[\,r + \gamma \max_{a'} Q^*(s', a')\,\right]$$
+
+You rarely know that expectation analytically, so you *sample* it. **Temporal-difference (TD) learning** updates each estimate toward a one-step-ahead "target" built from real experience and the current estimate of the next state — it bootstraps, learning a guess from a slightly better guess. Tabular **Q-learning** is the canonical TD rule:
+
+$$Q(s,a) \leftarrow Q(s,a) + \alpha\Big[\,r + \gamma \max_{a'} Q(s', a') - Q(s,a)\,\Big]$$
+
+The bracketed term is the **TD error**: how surprised you were. Multiply by learning rate $\alpha$ and nudge.
+
+### A worked Q-update
+
+State $s$ = "holding, momentum up", action $a$ = *buy*. Suppose $Q(s, \text{buy}) = 4.0$, learning rate $\alpha = 0.1$, discount $\gamma = 0.9$. You take *buy*, collect reward $r = 2.0$ (a tidy P&L tick), and land in $s'$ where your current estimates are $Q(s', \text{sell}) = 6.0$, $Q(s', \text{hold}) = 5.0$, $Q(s', \text{buy}) = 3.0$.
+
+- Greedy next value: $\max_{a'} Q(s', a') = 6.0$.
+- TD target: $r + \gamma \cdot 6.0 = 2.0 + 0.9 \times 6.0 = 2.0 + 5.4 = 7.4$.
+- TD error: $7.4 - 4.0 = 3.4$.
+- New estimate: $4.0 + 0.1 \times 3.4 = 4.0 + 0.34 = 4.34$.
+
+One experience, one small step: $Q(s, \text{buy})$ rose from $4.00$ to $4.34$. Repeat across millions of transitions and the table converges toward $Q^*$.
+
+**On-policy vs off-policy in one line:** *Q-learning* is **off-policy** — its target uses $\max_{a'}$, the *best* next action, regardless of what you actually do next; *SARSA* is **on-policy** — it uses $Q(s', a')$ for the action you *actually* take, so it learns the value of the policy you're really running (exploration warts and all).
+
+<FillBlank
+  client:visible
+  question="Fill in the bootstrapping bracket."
+  text="The term r + γ·maxₐ′ Q(s′,a′) − Q(s,a) is called the {{TD error|Bellman residual budget|policy gradient|advantage clip}}, and Q-learning is {{off-policy|on-policy|model-based|supervised}} because its target uses the maximizing next action rather than the one actually taken."
+  explanation="That bracket is the temporal-difference (TD) error — your one-step surprise. Because the target maxes over a′ instead of using the action you'll actually pick, Q-learning evaluates the greedy policy while behaving however it likes: off-policy."
+/>
+
+## Deep Q-Networks (DQN)
+
+A table works when states are a handful of discrete buckets. Real markets hand you continuous, high-dimensional states — prices, spreads, order-book imbalance, inventory — and the table explodes. The fix is **function approximation**: replace the lookup table with a neural network $Q_\theta(s,a)$ that *generalizes* across similar states. That's a **Deep Q-Network (DQN)**.
+
+But naively training a net on bootstrapped TD targets is gloriously unstable, for two reasons DQN patches:
+
+- **Experience replay.** Store transitions $(s, a, r, s')$ in a buffer and train on random minibatches. This breaks the temporal correlation of consecutive market ticks (otherwise the net overfits to whatever regime it's currently staring at) and lets each experience be reused many times — a big sample-efficiency win.
+- **Target networks.** The TD target $r + \gamma \max_{a'} Q_\theta(s', a')$ depends on the *same* weights you're updating — you're chasing a target that moves every step. DQN freezes a copy $Q_{\theta^-}$ for the target and only syncs it periodically, so the goalposts hold still long enough to aim.
+
+<Callout variant="warning" title="The deadly triad">
+Combine **function approximation** + **bootstrapping** (TD targets built from your own estimates) + **off-policy** learning and value methods can *diverge* — estimates blow up instead of converging. All three together are the danger; replay buffers and target networks are damage control, not a cure. When a DQN's Q-values march off to infinity, the triad is usually the culprit.
+</Callout>
+
+Because the values you bootstrap from are sampled estimates, more experience means tighter, less noisy value estimates — the same law of large numbers that makes any Monte-Carlo average settle down. Watch sampled estimates converge as samples accumulate:
+
+<MonteCarloConverge client:visible title="Value estimates settle as samples accumulate" caption="Each new sampled transition refines the estimate; the noisy early guesses give way to a stable value." />
+
+### When to use it
+
+DQN shines when the **action set is discrete and small** — `{sell, hold, buy}`, or a handful of discretized position sizes like `{-100%, -50%, 0, +50%, +100%}` — and you have abundant, replayable data. The instant you want a genuinely continuous size, DQN's $\max_{a'}$ becomes a search over a continuum and the elegance evaporates. That's your cue to cross over to policy methods.
+
+<MCQ
+  client:visible
+  question="A DQN's learned Q-values steadily climb toward absurdly large numbers during training and never stabilize. What's the most likely diagnosis?"
+  options={[
+    { text: "The deadly triad — function approximation, bootstrapping, and off-policy updates interacting; mitigate with a target network and replay, or reduce the learning rate.", correct: true },
+    { text: "The discount factor γ is too small, so future rewards are ignored.", },
+    { text: "The reward is perfectly shaped, so values must grow without bound.", },
+    { text: "Experience replay is the cause and should be removed entirely.", },
+  ]}
+  explanation="Diverging Q-values are the deadly triad's signature. Removing replay would make correlation worse, not better. The standard mitigations are a frozen target network, replay, gradient/return clipping, and a gentler learning rate."
+/>
+
+## Policy gradients
+
+Policy methods throw out the appraiser. Parameterize the policy directly — $\pi_\theta(a \mid s)$, e.g. a softmax over discrete actions or a Gaussian over a continuous position size — and **ascend the gradient of expected return** $J(\theta) = \mathbb{E}_{\pi_\theta}[\text{return}]$:
+
+$$\nabla_\theta J(\theta) = \mathbb{E}_{\pi_\theta}\!\left[\,\nabla_\theta \log \pi_\theta(a \mid s)\, \cdot\, R\,\right]$$
+
+This is the **score-function** (likelihood-ratio) estimator, and **REINFORCE** is its simplest incarnation: run an episode, and for every action taken, push its log-probability *up* if the episode's return $R$ was good and *down* if it was bad — scaled by how good. No argmax, no Bellman table; you sculpt the action distribution by reinforcing the trajectories that paid off.
+
+The upside is exactly what the pretest flagged: policy gradients handle **continuous and stochastic** policies natively — a stochastic policy is sometimes *optimal* (think mixed strategies, or deliberate exploration). The downside is brutal: the gradient is a **high-variance** Monte-Carlo estimate (one lucky tail trade can dominate a whole episode's signal), and vanilla REINFORCE is **sample-inefficient** because it's on-policy — every gradient step needs fresh trajectories from the current policy, so old data is thrown away.
+
+### When to use it
+
+Use a pure policy gradient when the action is continuous or you genuinely want stochasticity, *and* sampling is cheap. In trading, sampling is rarely cheap — which is precisely why the next idea exists.
+
+## Actor–critic and PPO
+
+The variance problem has a clean fix: stop scaling by the raw return $R$ and scale by how much *better* an action was than expected. Introduce a **critic** — a learned value estimate $V(s)$ — and define the **advantage**:
+
+$$A(s,a) = Q(s,a) - V(s)$$
+
+A positive advantage means "this action beat the baseline; do more of it"; negative means "below par; do less." Subtracting the baseline $V(s)$ slashes variance without biasing the gradient. The **actor** ($\pi_\theta$) proposes, the **critic** ($V$) grades, and the actor learns from the grade instead of the noisy raw return. That's **actor–critic** in one sentence.
+
+**PPO (Proximal Policy Optimization)** adds the move that made policy methods reliable enough for production: it **clips** the policy update so a single batch can't yank the policy too far from where it was. Formally it bounds the probability ratio $r_t(\theta) = \pi_\theta / \pi_{\theta_{\text{old}}}$ inside $[1-\epsilon, 1+\epsilon]$, so one over-enthusiastic batch can't destroy a hard-won policy. The result is a robust, low-tuning, continuous-control workhorse — the **modern default**.
+
+The continuous-action lineage worth knowing by name: **A2C/A3C** (synchronous/asynchronous advantage actor–critic), **DDPG** (deterministic continuous control with a replay buffer — a value/policy hybrid), and **SAC (Soft Actor-Critic)**, which adds an entropy bonus to keep the policy exploring. For continuous position sizing, PPO and SAC are the names you'll reach for first.
+
+<Reveal client:visible>
+  <details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+    <summary className="cursor-pointer font-medium">Why does subtracting V(s) lower variance but not bias the gradient?</summary>
+
+    **Answer.** The baseline $V(s)$ depends only on the *state*, not the action, so in expectation $\mathbb{E}_a[\nabla_\theta \log \pi_\theta(a\mid s)\,V(s)] = 0$ — it adds nothing to the true gradient (no bias). But it *re-centers* the reward signal around the typical value of the state, so you're no longer multiplying log-probs by a number whose scale and sign swing wildly with the state's overall goodness. Smaller, better-centered multipliers means lower variance. Free lunch, basically.
+
+  </details>
+</Reveal>
+
+### When to use it
+
+Default to **PPO** when the action is continuous, you want stable training without endless hyperparameter babysitting, and you can afford reasonably fresh on-policy data. Reach for **SAC** when sample efficiency matters more and you want built-in exploration via the entropy term. Use plain **A2C** when you want something simpler and have a fast simulator.
+
+## Exploration vs exploitation under transaction costs
+
+Every RL agent faces the same tension: **exploit** the best-known action to bank reward now, or **explore** an uncertain action that *might* be better. Standard tools:
+
+- **ε-greedy** — act greedily with probability $1-\varepsilon$, random otherwise; anneal $\varepsilon$ down over training. Cheap and ubiquitous in value methods.
+- **Entropy bonuses** — add a reward for a high-entropy (less certain) policy, so the agent doesn't collapse to one action too early. This is SAC's whole personality.
+- **Optimistic initialization** — start every $Q(s,a)$ high so untried actions look attractive; the agent explores them just to find out they were overrated.
+
+Here's the trading twist that breaks the textbook. In a video game, an exploratory move is *free* — worst case you lose a pretend life. In markets, **every exploratory trade pays the spread, plus fees, plus market impact.** A policy that explores by randomly trading isn't gathering cheap information; it's *bleeding real money on every random click.* Naive ε-greedy in live trading is a slow-motion donation to your broker.
+
+<Callout variant="warning" title="Exploration isn't free here">
+A backtest that lets the agent "explore" by trading at will, then reports the *post-exploration* policy's returns, is quietly lying — the exploration cost was real capital. Two practitioner responses: (1) **offline / batch RL** — learn from a fixed dataset of historical interactions with **no live exploration at all**, accepting that you can only evaluate actions the data already covers; and (2) **conservative policies** that stay close to a known-safe behaviour and explore only where the data supports it. When every probe costs the spread, the cheapest experiment is the one you run on data you already paid for.
+</Callout>
+
+### When to use it
+
+Use **live exploration** (ε-greedy, entropy) only in a faithful *simulator* where mistakes are free. For anything touching real capital, lean **offline/batch RL** and conservative, data-supported policies — and treat any "exploratory" trade's spread and impact as a real, budgeted cost, not a rounding error.
+
+<MatchConcepts
+  client:visible
+  question="Match each method or idea to its one-line description."
+  pairs={[
+    { term: "Q-learning", definition: "Off-policy TD: update Q(s,a) toward r + γ·maxₐ′Q(s′,a′)." },
+    { term: "DQN", definition: "Q-learning with a neural net, experience replay, and a target network." },
+    { term: "REINFORCE", definition: "Policy gradient that pushes action log-probs up by an episode's return." },
+    { term: "Actor–critic", definition: "A policy (actor) trained on a critic's value/advantage estimate to cut variance." },
+    { term: "PPO", definition: "Actor–critic that clips the policy update so one batch can't move it too far." },
+    { term: "ε-greedy", definition: "Exploration: act greedily most of the time, random with probability ε." },
+  ]}
+  explanation="Q-learning and DQN are value-based; REINFORCE is a pure policy gradient; actor–critic and PPO blend the two; ε-greedy is an exploration rule (not a learning family)."
+/>
+
+<MindMap
+  client:visible
+  title="The RL algorithm map"
+  root={{
+    label: "RL methods",
+    children: [
+      { label: "Value-based", children: [
+        { label: "V and Q functions" },
+        { label: "Bellman equation and TD learning" },
+        { label: "Q-learning (off-policy), SARSA (on-policy)" },
+        { label: "DQN: replay, target net, deadly triad" },
+      ] },
+      { label: "Policy-based", children: [
+        { label: "Parameterize policy pi-theta" },
+        { label: "REINFORCE, score-function gradient" },
+        { label: "High variance, continuous actions OK" },
+      ] },
+      { label: "Actor-critic", children: [
+        { label: "Critic gives advantage A equals Q minus V" },
+        { label: "PPO clips the update" },
+        { label: "A2C, DDPG, SAC lineage" },
+      ] },
+      { label: "Exploration vs exploitation", children: [
+        { label: "Epsilon-greedy, entropy, optimism" },
+        { label: "Every explore trade pays the spread" },
+        { label: "Offline and batch RL, conservative policies" },
+      ] },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Algorithms checkpoint"
+  questions={[
+    {
+      question: "With Q(s,a)=10, α=0.5, γ=1, reward r=2, and next-state values {3, 7, 1}, what is the updated Q(s,a) after one Q-learning step?",
+      options: [
+        { text: "10.0 (no change)", },
+        { text: "9.5", correct: true },
+        { text: "12.0", },
+        { text: "4.5", },
+      ],
+      explanation: "Target = r + γ·max = 2 + 1×7 = 9. TD error = 9 − 10 = −1. New Q = 10 + 0.5×(−1) = 9.5. The value was too high, so it ticked down.",
+    },
+    {
+      question: "Which statement about the actor–critic advantage A(s,a) = Q(s,a) − V(s) is correct?",
+      options: [
+        { text: "Subtracting V(s) reduces gradient variance without biasing the policy gradient.", correct: true },
+        { text: "It biases the gradient toward the critic's errors and should be avoided.", },
+        { text: "It converts a policy method into a pure value method.", },
+        { text: "It only works for discrete action spaces.", },
+      ],
+      explanation: "V(s) is a state-only baseline, so it has zero expectation under the action distribution — no bias — while re-centering the signal to cut variance. It works for discrete and continuous actions alike.",
+    },
+    {
+      question: "Why does naive ε-greedy exploration behave very differently in live trading than in a video game?",
+      options: [
+        { text: "Because every exploratory trade pays real spread, fees, and impact — exploration costs actual money.", correct: true },
+        { text: "Because markets have no states, so ε-greedy is undefined.", },
+        { text: "Because ε must always be exactly 0.5 in finance.", },
+        { text: "Because trading rewards are always deterministic, removing the need to explore.", },
+      ],
+      explanation: "In a game an exploratory action is free; in markets each random trade crosses the spread and moves price. That's why practitioners favour offline/batch RL and conservative policies over live random exploration.",
+    },
+    {
+      question: "Your action is a continuous hedge ratio in [-1, 1], data is scarce and expensive, and you cannot explore live. Which approach fits best?",
+      options: [
+        { text: "An actor–critic / PPO-style policy trained offline on historical data — continuous actions, with a critic to tame variance and no live exploration.", correct: true },
+        { text: "Tabular Q-learning with a fine grid and live ε-greedy exploration.", },
+        { text: "A vanilla DQN, since its argmax handles continuous actions effortlessly.", },
+        { text: "Pure REINFORCE with fresh on-policy rollouts collected live each step.", },
+      ],
+      explanation: "Continuous action rules out tabular Q-learning and DQN (both need a discrete argmax). Scarce data and no live exploration rule out on-policy REINFORCE rollouts. An offline-trained actor–critic/PPO policy fits all three constraints.",
+    },
+  ]}
+/>
+
+You can now place any algorithm on the map: value-based or policy-based or a marriage of both, on-policy or off, and explore-hungry or cost-cautious. **Next, in lesson 4 — "Optimal Execution as an RL Problem" — we point this whole toolkit at the most concrete trading task there is:** slicing a large parent order into child trades over time, trading off market impact against timing risk, where the reward *is* the execution cost and the spread you've been worrying about becomes the main character.

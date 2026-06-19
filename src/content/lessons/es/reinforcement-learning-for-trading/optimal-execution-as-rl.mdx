@@ -1,0 +1,301 @@
+---
+title: "La ejecución óptima como problema de RL"
+description: "Trocear una orden grande para equilibrar el impacto de mercado frente al riesgo de temporización — la forma cerrada de Almgren–Chriss y su frontera eficiente, plantear la ejecución como un proceso de decisión de Markov, leer una política de ejecución aprendida como un mapa de estado a acción, y qué aporta de verdad el aprendizaje por refuerzo frente a lo que simplemente vuelve a deducir."
+topic: "es/reinforcement-learning-for-trading"
+order: 4
+minutes: 16
+updated: 2026-06-19
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, MarketImpactCurve, ExecutionSchedule, ExecutionPolicyHeatmap } from '@/components/react';
+
+Vuestro fondo acaba de deciros que compréis un millón de acciones antes del cierre. No podéis simplemente estampar una única orden de mercado gigantesca contra el libro — no hay un millón de acciones esperando en la mejor oferta, y aunque las hubiera, engullirlas todas tiraría del precio en vuestra contra con tanta violencia que las últimas acciones costarían muchísimo más que las primeras. Así que trocéis la orden en pedazos y los vais metiendo a lo largo del tiempo. Pero en cuanto decidís ir despacio, aparece un nuevo enemigo: mientras os entretenéis, el precio puede alejarse por su cuenta. Comprad despacio y la acción podría dispararse antes de que acabéis; vended despacio y podría desplomarse. Estáis atrapados entre dos costes que tiran en direcciones opuestas.
+
+Ese aprieto *es* el problema. Operad rápido y pagáis **impacto de mercado** — movéis el precio al demandar liquidez más rápido de lo que el mercado puede suministrarla. Operad despacio y pagáis **riesgo de temporización** — más tiempo en el mercado significa más exposición a la simple y vieja volatilidad. La ejecución no es un problema de predicción ("¿subirá la acción?"); es un **problema de control** ("dado que *debo* operar este tamaño, ¿qué calendario minimiza mi coste total?"). Y un problema de control con un estado, acciones y una recompensa tiene exactamente la forma de un MDP — por lo que la ejecución óptima es la victoria canónica e indiscutida del aprendizaje por refuerzo en el trading.
+
+<MCQ
+  client:visible
+  pretest
+  pretestLabel="Antes de leer — adivina"
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  question="Debéis liquidar una posición grande antes del cierre. Operar de forma demasiado agresiva frente a demasiado pasiva os cuesta de dos maneras distintas. ¿Qué emparejamiento es el correcto?"
+  options={[
+    { text: "Demasiado agresivo → mayor impacto de mercado (movéis el precio en vuestra contra); demasiado pasivo → mayor riesgo de temporización/volatilidad (más exposición a una deriva adversa del precio).", correct: true },
+    { text: "Demasiado agresivo → más riesgo de temporización; demasiado pasivo → más impacto. La velocidad reduce el impacto porque acabáis antes.", },
+    { text: "Ambos extremos cuestan lo mismo; el calendario nunca importa, solo importa la cantidad total.", },
+    { text: "Demasiado agresivo → menor coste siempre, porque adelantaros a vuestra propia orden fija el precio de hoy.", },
+  ]}
+  explanation="Los dos costes se contraponen en direcciones opuestas. La agresividad concentra vuestra demanda en el tiempo, así que consumís liquidez más rápido de lo que se rellena y pagáis más impacto. La pasividad alarga la operación, dejando vuestro inventario sin terminar expuesto a la volatilidad — eso es el riesgo de temporización. La ejecución óptima es el calendario que equilibra ambos; ningún extremo es gratis."
+/>
+
+## El problema de la ejecución
+
+Reducidlo a lo esencial. Tenéis $Q$ acciones que liquidar a lo largo de un horizonte $T$, repartido en $N$ pasos temporales iguales. En cada paso elegís cuántas acciones $n_k$ operar, con $\sum_k n_k = Q$. La secuencia $\{n_1, n_2, \ldots, n_N\}$ es vuestro **calendario de ejecución**, y el total que aún queda por hacer es vuestro **inventario**. Vuestro objetivo: terminar toda la cantidad minimizando el coste total — donde "coste" tiene dos sabores.
+
+El **impacto temporal** es la concesión de precio que pagáis por consumir liquidez *ahora mismo*. Demandad $n_k$ acciones en este instante y barréis el libro más allá de la mejor cotización; cuanto más profundo llegáis, peor vuestra ejecución media. Es crucial que sea *temporal* — en cuanto dejáis de presionar, el libro se rellena y el precio se recupera. El impacto temporal penaliza la **velocidad** de operar: operad el doble de rápido en un trozo y pagáis desproporcionadamente más por acción.
+
+El **impacto permanente** es distinto: es el desplazamiento duradero del precio de equilibrio *causado por la información que revela vuestra operación*. El mercado ve compras persistentes, infiere algo y revaloriza para siempre. No se recupera cuando paráis, y depende de *cuánto* operáis en total, no de cómo de rápido. En el modelo lineal clásico, el impacto permanente es un impuesto fijo sobre toda vuestra orden — desplaza el nivel pero, al ser independiente del calendario en el caso más simple, no cambia la *forma óptima* del calendario.
+
+El **riesgo de temporización (volatilidad)** es el tercer personaje. Cuanto más tiempo permanece sin vender vuestro inventario restante, más expuesto está al propio paseo aleatorio de la acción. Los calendarios lentos tienen un coste de impacto *esperado* menor pero una *varianza* de coste mayor, porque el precio podría vagar lejos mientras todavía tenéis posición. Esta es la tensión sobre la que se construye todo el campo.
+
+<MarketImpactCurve client:visible title="El impacto temporal crece de forma superlineal con la velocidad de operación" caption="El precio de ejecución empeora conforme demandáis liquidez más rápido — los trozos suaves se quedan cerca de la cotización, los trozos agresivos llegan hasta lo profundo del libro." />
+
+<Callout variant="info" title="El impacto es convexo, y ahí está todo el juego">
+Que el impacto temporal suba *más rápido* que linealmente con la velocidad de operación es lo que hace que trocear órdenes merezca la pena. Si el impacto fuera perfectamente lineal, diez operaciones pequeñas costarían exactamente lo mismo que una grande y trocear no os daría nada. Como es convexo, dos operaciones de medio tamaño cuestan menos que una de tamaño completo — así que repartir *reduce* el impacto esperado. El riesgo de temporización es la fuerza que tira hacia el otro lado.
+</Callout>
+
+### Cuándo usarlo
+
+Este planteamiento de impacto frente a riesgo se aplica siempre que movéis un tamaño que es grande en relación con la liquidez disponible: un fondo de pensiones rebalanceando, una reconstitución de índice, un creador de mercado deshaciendo inventario, o una mesa cuantitativa enrutando una orden madre a un algoritmo de ejecución. Para una orden minorista de 100 acciones es irrelevante — sois un error de redondeo en el libro, el impacto es nulo, y deberíais simplemente cruzar el diferencial y seguir adelante.
+
+## Almgren–Chriss, la forma cerrada
+
+En 2000, Almgren y Chriss dieron al problema una respuesta limpia. Su jugada: no minimicéis solo el coste esperado (eso solo dice "id despacio para esquivar el impacto" e ignora el riesgo), y no minimicéis solo la varianza (eso dice "id al instante para esquivar la volatilidad" e ignora el impacto). Minimizad una mezcla **media–varianza**:
+
+$$\min_{\{n_k\}} \; \mathbb{E}[\text{cost}] + \lambda \, \mathrm{Var}[\text{cost}]$$
+
+Aquí $\lambda \ge 0$ es vuestra **aversión al riesgo** — el tipo de cambio entre el coste esperado y su incertidumbre. Barred $\lambda$ y el calendario óptimo se transforma:
+
+- **$\lambda = 0$ (neutral al riesgo).** No os importa la varianza en absoluto, así que solo combatís el impacto. La respuesta es operar lo más *uniformemente* posible — un calendario plano y uniforme, un trozo por paso. Este es el espíritu del **TWAP** (precio medio ponderado por tiempo); ponderad los trozos por el volumen típico en su lugar y obtenéis el **VWAP**.
+- **$\lambda > 0$ (averso al riesgo).** Ahora el inventario sin vender os asusta, así que lo queréis *fuera pronto*. El calendario óptimo **carga al principio**: opera más en los primeros pasos, menos después, siguiendo una trayectoria de inventario restante que **decae exponencialmente**. Cuanto más averso al riesgo seáis, más pronunciada la caída — en el límite, disparáis casi todo de inmediato y os coméis el impacto para matar el riesgo.
+
+Dibujad los pares (coste esperado, varianza) alcanzables conforme variáis $\lambda$ y trazáis la **frontera eficiente de ejecución**: cada punto es la *menor varianza posible para un coste esperado dado* (y viceversa). Los calendarios por debajo de la frontera son imposibles; los calendarios por encima de ella son estrictamente tontos — podríais recortar varianza gratis. Vuestra $\lambda$ solo escoge dónde de la frontera queréis vivir.
+
+<ExecutionSchedule client:visible title="La aversión al riesgo dobla el calendario de plano a cargado al principio" caption="λ = 0 da la rampa descendente recta del TWAP; subir λ tira de la curva de inventario hacia una caída exponencial que se vacía pronto." />
+
+### Un ejemplo resuelto
+
+Liquidad $Q = 100$ acciones a lo largo de $N = 4$ pasos. Supongamos, por usar números redondos, que el plan **neutral al riesgo** opera 25 en cada paso, y que una $\lambda$ **aversa al riesgo** escogida produce el plan cargado al principio 40 / 30 / 20 / 10.
+
+| Paso | Operación TWAP ($\lambda=0$) | Inventario TWAP después | Operación cargada al principio | Inventario cargado al principio después |
+|---|---|---|---|---|
+| 1 | 25 | 75 | 40 | 60 |
+| 2 | 25 | 50 | 30 | 30 |
+| 3 | 25 | 25 | 20 | 10 |
+| 4 | 25 | 0 | 10 | 0 |
+
+Inventario medio mantenido (lo que grava la volatilidad): el TWAP mantiene $(75+50+25+0)/4 = 37.5$ acciones de media; el plan cargado al principio mantiene $(60+30+10+0)/4 = 25$ acciones. El calendario cargado al principio arrastra un tercio menos de inventario a lo largo del tiempo, así que come **menos riesgo de temporización** — al precio de amontonar operaciones al principio y pagar **más impacto** por adelantado. Ese intercambio exacto, menos varianza a cambio de más impacto esperado, es un paso a lo largo de la frontera eficiente.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Si el impacto permanente es un impuesto fijo sobre toda la orden, ¿por qué no cambia la forma del calendario óptimo?</summary>
+
+**Respuesta.** En el modelo lineal más simple de Almgren–Chriss, el impacto permanente por acción operada es constante, así que el coste permanente *total* depende solo de $Q$ (que debéis operar pase lo que pase) y no de *cuándo* lo operáis — es la misma cantidad en dólares para cada calendario. Sube todo el nivel de coste pero se cancela en la optimización sobre la forma del calendario. La forma la decide el tira y afloja entre el impacto **temporal** (que castiga los trozos rápidos) y el riesgo de **volatilidad** (que castiga los lentos). Haced el impacto permanente no lineal o dependiente del estado y esa pulcra separación se rompe — que es exactamente donde el RL empieza a ganarse el pan.
+
+</details>
+</Reveal>
+
+## Plantear la ejecución como un MDP
+
+Las lecciones 1–3 os entrenaron para ver cualquier decisión secuencial bajo incertidumbre como un MDP. La ejecución encaja en el molde a la perfección:
+
+| Elemento del MDP | Ejecución óptima |
+|---|---|
+| **Estado** $s_k$ | Inventario restante, tiempo (o pasos) restantes, más características de mercado: precio, diferencial, volatilidad, profundidad del libro de órdenes y cualquier **señal alfa** de corto plazo |
+| **Acción** $a_k$ | Cuántas acciones operar este paso — o una **tasa de participación** (fracción del volumen actual que tomar) |
+| **Transición** | El inventario disminuye según lo operado; el tiempo avanza; el precio evoluciona estocásticamente (y lo empuja vuestro propio impacto) |
+| **Recompensa** $r_k$ | $-(\text{coste de impacto este paso}) - \lambda \cdot (\text{riesgo incurrido este paso})$ |
+| **Fin del episodio** | El plazo $T$ — con una penalización terminal que fuerza el inventario a cero |
+
+La línea de la recompensa es un guiño directo al diseño de recompensa de la lección 2: estáis codificando el *mismísimo* objetivo media–varianza que minimizó Almgren–Chriss, pero ahora como una señal **por paso** de la que un agente puede aprender. Maximizar la suma descontada de $-\text{impacto} - \lambda\cdot\text{riesgo}$ es idéntico a minimizar $\mathbb{E}[\text{cost}] + \lambda\,\mathrm{Var}[\text{cost}]$ — la negación da la vuelta a "minimizar coste" para convertirlo en "maximizar recompensa", y la penalización de riesgo por paso se acumula en el término de varianza. La penalización terminal es la parte que no debéis olvidar: un agente recompensado solo por operar barato aprende el calendario más barato de todos, que es *no terminar nunca*. La restricción del plazo, "el inventario debe llegar a cero para $T$", es lo que hace honesto el problema.
+
+<Callout variant="warning" title="Olvidad la restricción terminal y el agente hace trampas">
+Sin una penalización dura por el inventario sobrante en $T$, minimizar el impacto se resuelve trivialmente no operando nada — cero impacto, puntuación perfecta, mandato ignorado. Los agentes de ejecución reales fuerzan la finalización o bien con una gran penalización terminal proporcional a las acciones sin vender (el agente suelta el resto para evitarla) o bien encogiendo el conjunto de acciones conforme se acerca el plazo de forma que el único movimiento legal sea "terminar". La restricción hace un trabajo de enseñanza real, no es decoración.
+</Callout>
+
+## Leer una política aprendida
+
+Aquí está la recompensa de la visión del MDP: una política resuelta es simplemente un **mapa de estado a acción** — "dado mi inventario restante, el tiempo que queda y la señal de precio actual, opera *esta* velocidad". Podéis visualizarla como un mapa de calor. Leed la cuadrícula de abajo como una tabla de consulta que el agente consulta en cada paso.
+
+<ExecutionPolicyHeatmap client:visible title="Tres políticas de ejecución como mapas de estado → velocidad de operación" caption="Filas = señal de precio (barato arriba → caro abajo); columnas = tiempo hacia el plazo (izquierda → derecha). Las celdas más oscuras significan operar más fuerte." />
+
+Ahora leed los tres comportamientos en la imagen:
+
+- **TWAP** es un campo plano — la misma velocidad de operación en cada celda. Es *ciego a la señal de precio* (cada fila parece idéntica) y *ciego a la urgencia* (cada columna parece idéntica). Sencillísimo, imposible de manipular y un punto de referencia perfectamente respetable.
+- **Almgren–Chriss** varía a lo largo del eje del *tiempo*: fuerte al principio, desvaneciéndose al final (carga al principio), pero también ignora las filas de la señal de precio — el modelo clásico no tiene ninguna alfa a la que condicionarse, así que cada fila es igual.
+- **Una política de RL aprendida** ilumina *ambos* ejes. Se acelera hacia el plazo como Almgren *y* se condiciona a la señal de precio: cuando la compra parece barata se inclina y opera de más, cuando el precio se le escapa la política se retira y espera, todo ello respetando el reloj. Esa capacidad de respuesta bidimensional es la firma de una política que ha aprendido algo que la forma cerrada nunca modeló.
+
+<Categorize
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  allCorrectLabel="✓ Todo emparejado"
+  instructions="Coloca cada elemento en su grupo."
+  question="Clasifica cada afirmación según la política de ejecución que describe."
+  buckets={["TWAP", "Almgren–Chriss", "Política de RL aprendida"]}
+  items={[
+    { text: "Ignora la señal de precio y opera la misma cantidad en cada paso.", bucket: "TWAP" },
+    { text: "Carga al principio en el tiempo pero no se condiciona a una señal alfa de corto plazo.", bucket: "Almgren–Chriss" },
+    { text: "Se condiciona TANTO al tiempo-hasta-el-plazo COMO a la señal de precio, operando de más cuando la ejecución parece barata.", bucket: "Política de RL aprendida" },
+    { text: "Es el punto de referencia más simple y más difícil de manipular — un calendario plano.", bucket: "TWAP" },
+    { text: "Tiene una trayectoria de inventario en forma cerrada que decae exponencialmente para λ > 0.", bucket: "Almgren–Chriss" },
+  ]}
+  explanation="TWAP es plano tanto en precio como en tiempo. Almgren–Chriss se dobla a lo largo del eje del tiempo (carga al principio) pero, al carecer de señal en el modelo clásico, permanece plano a lo largo del eje del precio. La política aprendida es la única que se condiciona a ambos — esa capacidad de respuesta extra en el eje del precio es precisamente lo que aporta el RL cuando existe una señal explotable."
+/>
+
+<FillBlank
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+  question="Completa el contraste entre el punto de referencia y la política aprendida."
+  text="El TWAP opera a velocidad constante y por tanto es ciego a la {{señal de precio|penalización terminal|inventario}}, mientras que una política de RL aprendida puede operar más fuerte cuando el activo parece {{barato|ilíquido|volátil}} y retirarse cuando el precio se escapa — condicionándose a información que la forma cerrada ignora."
+  explanation="La debilidad definitoria del TWAP es que nunca mira el precio; simplemente ficha la salida con trozos iguales. La ventaja del RL es la temporización oportunista — acelerar hacia precios favorables, decelerar hacia los adversos — que solo da fruto cuando existe una señal genuina de horizonte corto a la que condicionarse."
+/>
+
+## Qué aporta el RL (y qué se limita a volver a deducir)
+
+Hora de la contabilidad honesta, porque aquí el bombo publicitario es espeso. Tomad el mundo *exacto* que asumió Almgren–Chriss: impacto permanente y temporal lineales, volatilidad constante, un único activo, ninguna señal predictiva, un objetivo media–varianza. Apuntad un agente de RL a ese mundo y dejadlo entrenar. ¿Qué aprende?
+
+Aprende Almgren–Chriss. Esencialmente el mismo calendario cargado al principio, con caída exponencial, que la forma cerrada os entrega en una línea de álgebra. Esto no es una decepción — es una **comprobación de cordura**. Si vuestro agente de ejecución *no logra* recuperar Almgren–Chriss en el escenario donde Almgren–Chriss es demostrablemente óptimo, vuestro agente está roto, y acabáis de encontrar el fallo de forma barata. Volver a deducir la respuesta conocida es la prueba unitaria del RL de ejecución.
+
+El RL se gana el pan precisamente donde esas pulcras suposiciones se resquebrajan — es decir, en la realidad:
+
+- **Impacto no lineal o incierto.** El impacto real no es una función lineal limpia; se dobla, depende del régimen, y no conocéis sus parámetros con exactitud. El RL aprende el calendario a partir de los datos sin necesitar que escribáis correctamente el modelo de impacto.
+- **Una señal alfa de corto plazo.** Si tenéis una microprediccón genuina ("es probable que el precio suba un tick en el próximo minuto"), el calendario óptimo debería *acelerar* para comprar antes de la subida y *frenar* ante los movimientos adversos. Almgren–Chriss no tiene hueco para esto; el RL se condiciona a ello de forma nativa.
+- **Liquidez dependiente del régimen.** Los diferenciales se ensanchan, la profundidad se evapora, la volatilidad se agrupa. Una política que lee las condiciones de mercado actuales y adapta su agresividad supera a cualquier calendario fijo calculado en la apertura.
+- **Restricciones duras.** Tasas de participación mínimas y máximas, enrutamiento a dark pools, "no seas más del X% del volumen". El RL maneja restricciones desordenadas y no suaves que la media–varianza en forma cerrada no puede.
+- **Ejecución multiactivo / de cartera.** Liquidar una cesta con precios correlacionados e impacto cruzado es un problema de control de alta dimensión sin forma cerrada limpia. Este es el terreno propio del RL.
+
+<MatchConcepts
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  termsLabel="Términos"
+  definitionsLabel="Definiciones"
+  allCorrectLabel="✓ Todo emparejado"
+  question="Empareja cada escenario de ejecución con si el RL vuelve a deducir la respuesta clásica o aporta valor de verdad."
+  pairs={[
+    { term: "Impacto lineal, volatilidad constante, sin señal, un único activo", definition: "El RL vuelve a deducir Almgren–Chriss — una comprobación de cordura, no una ventaja" },
+    { term: "Una señal alfa fiable de horizonte corto en la que podéis operar", definition: "El RL aporta valor — condiciona el calendario a la señal" },
+    { term: "El impacto es no lineal y sus parámetros son inciertos", definition: "El RL aporta valor — aprende el calendario sin un modelo de impacto correcto" },
+    { term: "Liquidar una cesta correlacionada con impacto cruzado", definition: "El RL aporta valor — control de alta dimensión sin forma cerrada limpia" },
+  ]}
+  explanation="La disciplina consiste en saber en qué cubo estáis. En el mundo de Almgren–Chriss, el RL es excesivo y debería reproducir la fórmula. Las victorias genuinas vienen todas de romper una suposición de Almgren–Chriss: señales, impacto no lineal/incierto, cambios de régimen, restricciones duras o varios activos correlacionados."
+/>
+
+<Callout variant="warning" title="El simulador que os miente">
+El fracaso más seductor del RL de ejecución: vuestro agente publica unos números de backtest preciosos — y es porque aprendió a explotar un *modelo de impacto demasiado amable* en vuestro simulador. Si el simulador cobra de menos por la agresividad, el agente descubre que puede operar tamaños enormes con un impacto caricaturescamente pequeño, y se adelanta y estampa el libro (falso) para "ganar". En real, el impacto verdadero es brutal y la estrategia sangra. El agente no aprendió ejecución; aprendió los fallos de vuestra física. Calibrar el impacto y modelar honestamente la propia huella del agente es la parte difícil — y el tema de la lección 6.
+</Callout>
+
+### Cuándo usarlo
+
+Por defecto, usad Almgren–Chriss (o simplemente TWAP/VWAP) cuando vuestro mundo *sea* aproximadamente su mundo: tamaño modesto, ninguna señal explotable, un único valor líquido, impacto bien entendido. Recurrid al RL cuando tengáis una ventaja real que explotar (una señal), un régimen de impacto difícil de modelar, restricciones no suaves o una cesta correlacionada — y solo después de que confiéis lo suficiente en el modelo de impacto de vuestro simulador como para no estar simplemente aprendiendo sus fallos.
+
+<MindMap
+  client:visible
+  title="La ejecución óptima como RL — el mapa completo"
+  outlineLabel="Esquema"
+  root={{
+    label: "Ejecución óptima",
+    children: [
+      {
+        label: "El equilibrio",
+        children: [
+          { label: "Rápido → impacto de mercado" },
+          { label: "Lento → riesgo de temporización/volatilidad" },
+          { label: "Impacto temporal vs permanente" },
+        ],
+      },
+      {
+        label: "Almgren–Chriss",
+        children: [
+          { label: "Minimizar E[coste] + λ Var[coste]" },
+          { label: "λ = 0 → TWAP uniforme" },
+          { label: "λ > 0 → cargado al principio, caída exp" },
+          { label: "Frontera eficiente de ejecución" },
+        ],
+      },
+      {
+        label: "Como MDP",
+        children: [
+          { label: "Estado → inventario, tiempo, características de mercado, señal" },
+          { label: "Acción → acciones o tasa de participación" },
+          { label: "Recompensa → −impacto − λ riesgo + penalización terminal" },
+        ],
+      },
+      {
+        label: "Qué aporta el RL",
+        children: [
+          { label: "Vuelve a deducir A-C en su propio mundo (cordura)" },
+          { label: "Señal, impacto no lineal, regímenes" },
+          { label: "Restricciones, cestas multiactivo" },
+          { label: "Riesgo → sobreajustar un simulador amable" },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Punto de control de ejecución"
+  questions={[
+    {
+      question: "En el modelo lineal de Almgren–Chriss, subir el parámetro de aversión al riesgo λ, ¿cómo cambia el calendario óptimo?",
+      options: [
+        { text: "Carga más al principio — empujando la trayectoria de inventario hacia una caída exponencial más pronunciada, operando más al principio para recortar la exposición a la volatilidad.", correct: true },
+        { text: "Aplana el calendario hacia el TWAP uniforme, porque una λ mayor significa que os importa menos la varianza.", },
+        { text: "No tiene efecto sobre la forma del calendario; λ solo escala el coste reportado.", },
+        { text: "Carga el calendario al final, retrasando las operaciones para reunir más información de precio.", },
+      ],
+      explanation: "Una λ mayor significa que el inventario sin vender da más miedo, así que lo vaciáis más rápido — una caída exponencial más pronunciada (más carga al principio). λ = 0 es el límite plano del TWAP; subir λ os arrastra a lo largo de la frontera eficiente hacia una varianza menor a costa de más impacto esperado.",
+    },
+    {
+      question: "El impacto temporal y el permanente se diferencian, ¿de qué manera?",
+      options: [
+        { text: "El impacto temporal se recupera en cuanto dejáis de operar y penaliza la velocidad de operación; el impacto permanente es una revalorización duradera que depende de la cantidad total operada.", correct: true },
+        { text: "El impacto temporal es permanente y el permanente es temporal — los nombres son accidentes históricos.", },
+        { text: "Ambos se recuperan por completo tras la operación; la única diferencia es qué bolsa los cobra.", },
+        { text: "El impacto permanente penaliza la velocidad de operación; el temporal depende solo del tamaño total.", },
+      ],
+      explanation: "El impacto temporal es la concesión que pagáis por consumir liquidez ahora; el libro se rellena y el precio se recupera, y escala con cómo de rápido operáis. El impacto permanente es el desplazamiento duradero del precio de equilibrio por la información que revela vuestra operación — no se recupera y escala con la cantidad total.",
+    },
+    {
+      question: "Apuntáis un agente de RL a un mundo simulado con exactamente las suposiciones de Almgren–Chriss: impacto lineal, volatilidad constante, sin señal, un activo. Un agente bien construido debería…",
+      options: [
+        { text: "Volver a deducir aproximadamente el calendario de Almgren–Chriss — una comprobación de cordura tranquilizadora, no prueba de una ventaja.", correct: true },
+        { text: "Superar drásticamente a Almgren–Chriss, demostrando que el RL es estrictamente superior incluso en su propio terreno.", },
+        { text: "Negarse a converger, porque el RL no puede manejar tamaños de operación continuos.", },
+        { text: "Aprender a no terminar nunca la orden, ya que eso minimiza el impacto.", },
+      ],
+      explanation: "En el mundo donde Almgren–Chriss es demostrablemente óptimo, lo mejor que puede hacer cualquier método es igualarlo. Un agente de RL correcto reproduce la forma cerrada — si no lo hace, habéis encontrado un fallo. Las victorias reales aparecen solo una vez que rompéis una suposición (señal, impacto no lineal, restricciones, varios activos). Y no va a 'no terminar nunca' porque la restricción terminal prohíbe el inventario sobrante.",
+    },
+    {
+      question: "Un agente de RL de ejecución muestra resultados de backtest espectaculares. Antes de celebrar, lo más importante que hay que comprobar es…",
+      options: [
+        { text: "Si el agente está explotando un modelo de impacto irrealmente amable en el simulador en lugar de aprender habilidad de ejecución real.", correct: true },
+        { text: "Si usó un método de gradiente de política o uno basado en valor, ya que solo uno puede hacer ejecución.", },
+        { text: "Si λ se fijó exactamente en cero, el único valor válido de aversión al riesgo.", },
+        { text: "Si el calendario es perfectamente plano, ya que lo plano es siempre óptimo.", },
+      ],
+      explanation: "La trampa clásica: el agente aprendió a manipular un simulador que cobra de menos por la agresividad, así que estampa el libro falso para obtener beneficios falsos que se evaporan en real. La calibración honesta del impacto — incluyendo la propia huella del agente — es el paso decisivo, y el foco de la lección 6.",
+    },
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  nextLabel="Siguiente"
+  seeResultsLabel="Ver resultados"
+  backLabel="Atrás"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  completeTitleLabel="Cuestionario completado"
+  correctCountLabel="correctas"
+  gateLabel="Comprueba tu respuesta para continuar."
+/>
+
+## Hacia dónde va esto
+
+La ejecución es el problema de RL más amable del trading porque el objetivo es inequívoco (terminar la orden barato), el punto de referencia es claro (superar a TWAP/Almgren–Chriss), y la realidad rompe la forma cerrada exactamente de las maneras que el RL está construido para absorber. Ya habéis visto la victoria canónica de principio a fin: el equilibrio entre impacto y riesgo, Almgren–Chriss y su frontera eficiente, el planteamiento como MDP, una política aprendida leída en un mapa de calor, y la línea honesta entre lo que el RL vuelve a deducir y lo que aporta de verdad.
+
+Pero la ejecución todavía asume que alguien os entrega la orden y un plazo. La **lección 5, "Agentes creadores de mercado",** da la vuelta a la silla: en lugar de consumir liquidez según un calendario, la *proporcionáis* — cotizando ambos lados del libro, gestionando un inventario que nunca elegisteis tener, y cobrando el diferencial por el privilegio de ser la contraparte contra la que todos los demás operan. El mismo conjunto de herramientas del MDP, una recompensa más salvaje y de dos lados.

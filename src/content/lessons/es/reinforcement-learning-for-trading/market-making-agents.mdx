@@ -1,0 +1,284 @@
+---
+title: "Agentes de creación de mercado"
+description: "Cotizar ambos lados del libro mientras gestionas el inventario — el dilema inventario frente a diferencial, el precio de reserva y el diferencial óptimo de Avellaneda–Stoikov, la selección adversa del flujo informado y por qué una recompensa de creación de mercado es un campo de minas de incentivos perversos que un agente de RL explotará con deleite."
+topic: "es/reinforcement-learning-for-trading"
+order: 5
+minutes: 16
+updated: 2026-06-19
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, InventorySkew, AsQuotingSim } from '@/components/react';
+
+En la lección 4 vuestro agente tenía una orden madre y un plazo límite — era un *tomador* (taker), cruzaba el diferencial para ejecutarse, y su único trabajo era minimizar el daño de su propia huella. Un creador de mercado juega el papel opuesto. Nunca cruza el diferencial; lo *publica*. En cada instante se planta en el libro con una **demanda** (bid) un poco por debajo del precio medio y una **oferta** (ask) un poco por encima, y se gana la vida con la diferencia. Alguien quiere vender ahora, alguien quiere comprar ahora, y el creador se sienta en medio aceptando ambas operaciones y embolsándose la brecha. Esa brecha es el **diferencial** (spread), y capturarla una y otra vez es todo el modelo de negocio. A cambio de ese ingreso, el creador proporciona **liquidez**: permite que el resto del mercado opere *de inmediato* en lugar de esperar a que aparezca una contraparte natural.
+
+Suena a dinero gratis. No lo es. El creador hereda dos peligros específicos y brutales en el momento en que publica una cotización. El primero es el **riesgo de inventario**: las ejecuciones no llegan de forma equilibrada por ambos lados, así que el creador va acumulando una posición — largo cuando el mercado deriva a la baja contra sus demandas, corto cuando deriva al alza contra sus ofertas — y carga con el riesgo de valoración a mercado de ese montón. El segundo es la **selección adversa**: las contrapartes que golpean las cotizaciones del creador no son aleatorias. A veces *saben algo*, y operan contra una cotización que ya está rancia, desplumando al creador antes de que pueda reaccionar. Esta lección trata sobre cotizar ambos lados sobreviviendo a ambos peligros — y sobre cómo un agente de RL, al recibir una recompensa chapucera, encontrará la única estrategia de cotización que parece segura en un panel de control y es suicida en el mercado.
+
+<MCQ
+  client:visible
+  pretest
+  pretestLabel="Antes de leer — adivina"
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  question="Un creador de mercado publica una cotización ajustada de dos lados en una acción líquida. ¿Cuál es su riesgo central?"
+  options={[
+    {text:"Acumular un inventario unilateral a medida que el precio tiende, y ser desplumado por operadores informados contra cotizaciones rancias", correct:true},
+    {text:"Que nadie opere nunca contra la cotización, de modo que el creador no gane nada"},
+    {text:"Que el diferencial que cotiza sea demasiado amplio para que alguien lo acepte"},
+    {text:"Que el mercado cobre una comisión cada vez que el creador cancela una orden en reposo"}
+  ]}
+  explanation="El miedo clásico de principiante — '¿y si nadie opera?' — está del revés. En un valor líquido, ejecutarse es fácil; el peligro es *qué* ejecuciones consigues. Cuando el precio tiende, te ejecutas una y otra vez por un solo lado, así que el inventario se acumula y cargas con un riesgo direccional que nunca quisiste. Y el flujo informado opera contra tus cotizaciones rancias, así que tu diferencial realizado es peor que el diferencial que publicaste. El riesgo de inventario y la selección adversa, no la falta de volumen, son lo que mata a los creadores de mercado."
+/>
+
+## Qué hace un creador de mercado
+
+Reduce el papel a su mecánica. El creador observa un **precio medio** — llámalo el promedio de la mejor demanda y la mejor oferta — y publica dos órdenes limitadas a su alrededor: una demanda en `mid − δ_bid` y una oferta en `mid + δ_ask`, donde las `δ` son los *desplazamientos* (medios diferenciales) que el creador elige. Esas son órdenes **pasivas** en reposo. Se quedan en la cola y le dan ejecuciones al creador solo cuando *otra persona* cruza hacia ellas — por eso los mercados llaman a esto el lado **creador** (maker) y a menudo pagan un pequeño reembolso por él, frente a cobrar al **tomador** (taker) que retira liquidez.
+
+El escenario soñado es un **viaje de ida y vuelta** (round trip): el creador compra en su demanda, luego vende en su oferta, y se anota todo el diferencial como beneficio. Pongámosle números. Supón que el medio está en \$100,00 y el creador cotiza una demanda en \$99,98 y una oferta en \$100,02 — un medio diferencial de dos céntimos por cada lado, un diferencial total de cuatro céntimos.
+
+| Evento | Acción del creador | Inventario después | Flujo de caja |
+|---|---|---|---|
+| El vendedor golpea la demanda | El creador compra 100 acciones a \$99,98 | +100 | −\$9.998,00 |
+| El comprador levanta la oferta | El creador vende 100 acciones a \$100,02 | 0 | +\$10.002,00 |
+| **Ida y vuelta** | de nuevo plano | 0 | **+\$4,00** |
+
+Cuatro dólares por cada ida y vuelta de 100 acciones, con el medio quieto todo el tiempo. El creador no predijo la dirección, no tomó una postura — simplemente *alquiló inmediatez* y cobró el diferencial. Haz eso miles de veces al día y tienes un negocio. La trampa, por supuesto, es la frase "con el medio quieto". El medio nunca se queda quieto, y ahí es donde empiezan los problemas.
+
+<FillBlank
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+  question="Rellena el papel que juega el creador."
+  text="Un creador de mercado publica órdenes limitadas {{pasivas|agresivas|ocultas}} y obtiene el trato de {{creador|tomador|compensación}} del mercado, sacando beneficio en una {{ida y vuelta|llamada de margen|subasta}} completa cuando compra en su demanda y vende en su oferta."
+  explanation="Las órdenes limitadas en reposo son pasivas; el participante que proporciona liquidez es el creador (y normalmente recibe un reembolso), mientras que el que cruza el diferencial es el tomador. Una ida y vuelta — comprar barato en la demanda, vender caro en la oferta — anota el diferencial completo como beneficio."
+/>
+
+## El problema del inventario
+
+Aquí está la mentira escondida en la tabla de ida y vuelta: asumió que una compra se casaba puntualmente con una venta. En un mercado con tendencia eso nunca ocurre. Supón que el precio empieza a derivar *a la baja*. Los vendedores están ansiosos, así que golpean tu demanda una y otra vez; los compradores escasean, así que tu oferta queda intacta. Compras, y compras, y compras — cada ejecución un poco más barata que la anterior, lo que se siente como una ganga justo hasta que te das cuenta de que ahora estás **largo en un activo que cae**. Tu inventario `q` sube mientras el valor a mercado de ese inventario se desangra. Querías estar plano y cobrar el diferencial; en cambio te has convertido en un operador accidental, apalancado y *solo-largo* en el peor momento posible.
+
+Esto es el **riesgo de inventario**, y es el peligro que define al creador. La posición que mantienes no es una apuesta que elegiste — es un residuo de hacia qué lado se inclinó el mercado. Y es direccional: un inventario largo de 1.000 acciones pierde dinero de verdad si el precio cae un dólar, por mucho que digas del ingreso del diferencial.
+
+El remedio es elegante y es el corazón de toda estrategia de creación de mercado: **sesga tus cotizaciones** para inclinarte contra tu inventario. Si estás largo y quieres soltar riesgo, desliza *ambas* cotizaciones hacia abajo — baja tu oferta para ser un vendedor ansioso (más probable de descargar), y baja tu demanda para ser un comprador reacio (menos probable de añadir más). Si estás corto, empuja ambas cotizaciones hacia arriba. No cambias tanto el *ancho* del diferencial como *dónde se sitúa* respecto al medio, sesgando deliberadamente tus ejecuciones hacia el lado que te aplana.
+
+<InventorySkew client:visible />
+
+<Callout variant="info" title="Sesgar mueve el diferencial, no lo amplía">
+Una confusión común: sesgar no es lo mismo que ampliar. Ampliar cambia la *brecha* entre demanda y oferta (cuánto cobras por la inmediatez). Sesgar desliza la *brecha entera* hacia arriba o hacia abajo para sesgar qué lado se ejecuta. Un creador bien llevado hace ambas cosas — amplía cuando el mundo se pone aterrador y sesga cuando su inventario se desequilibra — pero son mandos independientes que sirven a miedos distintos: el ancho del diferencial combate la selección adversa, el sesgo combate el inventario.
+</Callout>
+
+## El esqueleto de Avellaneda–Stoikov
+
+¿Cuánto deberías sesgar, y cómo de amplio debería ser el diferencial? La respuesta clásica es el modelo de **Avellaneda–Stoikov** (2008), que es el equivalente en creación de mercado de la frontera de Almgren–Chriss que conociste en ejecución: un esqueleto limpio y de forma cerrada que ajustas en la práctica. Da dos salidas.
+
+Primero, el **precio de reserva** (o *precio de indiferencia*) — el valor justo ajustado al riesgo en el que *este* creador, manteniendo *este* inventario, es indiferente entre mantener y operar:
+
+$$ r = s - q\,\gamma\,\sigma^2\,(T - t) $$
+
+Aquí `s` es el medio, `q` es el inventario (positivo = largo), `γ` es la aversión al riesgo, `σ²` es la varianza del medio, y `(T − t)` es el tiempo restante hasta el horizonte. Léelo de forma intuitiva: cuando estás largo (`q > 0`), `r` se sitúa *por debajo* del medio — has marcado de forma privada tu propio valor justo a la baja porque estás desesperado por vender, así que cotizas en torno a un centro más bajo. Cuando estás corto, `r` flota por encima del medio. El sesgo es proporcional a cuánto inventario cargas, a cómo de nervioso está el activo (`σ²`), a cómo de asustado estás (`γ`), y a cuánto tiempo sigues expuesto (`T − t`). Ese único término *es* el sesgo de inclinación al inventario de la sección anterior, escrito como matemáticas.
+
+Segundo, el **diferencial óptimo** — el ancho total que envolver alrededor de `r`:
+
+$$ \delta_{a} + \delta_{b} = \gamma\,\sigma^2\,(T - t) + \frac{2}{\gamma}\ln\!\left(1 + \frac{\gamma}{\kappa}\right) $$
+
+donde `κ` es la **intensidad de llegada de órdenes** (cómo de rápido llegan las ejecuciones a medida que publicas más lejos del medio). El diferencial *se amplía* con la aversión al riesgo `γ` y la volatilidad `σ²`, y *se estrecha* a medida que sube `κ` — es decir, cuando el flujo de órdenes es denso y fiable, puedes permitirte cotizar ajustado. Flujo escaso y a saltos → cotiza amplio; flujo profundo y tranquilo → cotiza ajustado.
+
+**Ejemplo resuelto.** Digamos que el medio está en $s = 100$, mantienes `q = +5` lotes, aversión al riesgo `γ = 0.1`, volatilidad por paso `σ = 2` así que `σ² = 4`, y tiempo restante `(T − t) = 1`. El sesgo del precio de reserva es
+
+$$ q\,\gamma\,\sigma^2\,(T-t) = 5 \times 0.1 \times 4 \times 1 = 2.0 $$
+
+así que el precio de reserva se sitúa **2,0 por debajo del medio**: $r = 100 - 2.0 = 98.0$. Estar largo arrastra todo tu centro de cotización dos puntos enteros hacia abajo, sesgándote hacia vender ese inventario de cinco lotes. Reduce a la mitad el inventario a `q = +2.5` y el sesgo se reduce a la mitad a `1.0`; duplica tu aversión al riesgo a `γ = 0.2` y se duplica a `4.0`. El modelo te da un dial, no una corazonada.
+
+<AsQuotingSim client:visible />
+
+<Reveal client:visible>
+  <details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+    <summary className="cursor-pointer font-medium">¿Por qué el sesgo del precio de reserva se encoge a cero cuando (T − t) → 0?</summary>
+
+    **Respuesta.** El riesgo de inventario es el riesgo de que el *precio se mueva mientras todavía mantienes la posición*. A medida que el horizonte se cierra, queda casi nada de tiempo para que el precio se mueva en tu contra antes de que dejes de cotizar y te aplanes, así que cargar con inventario cuesta casi nada — el término `q·γ·σ²·(T−t)` se desvanece. Lejos del plazo, el mismo inventario es peligroso (mucho tiempo para que te haga daño), así que el modelo sesga con fuerza para soltarlo. Es la misma intuición que la theta en opciones: el tiempo hasta el vencimiento escala cuánto puede derivar tu exposición.
+  </details>
+</Reveal>
+
+## Selección adversa
+
+Ahora el segundo peligro, y el que determina silenciosamente si un creador es rentable en absoluto. Tus cotizaciones están *rancias por construcción* — se publicaron hace un momento, basadas en información de hace un momento. La mayor parte del tiempo eso está bien. Pero algunos de los operadores que cruzan hacia tu cotización están **informados**: acaban de ver una noticia, una orden grande o una señal de que el precio justo se ha movido, y tu cotización aún no se ha puesto al día. Operan contra ti exactamente en la dirección que duele. Compras en tu demanda justo antes de que el precio caiga; vendes en tu oferta justo antes de que se dispare al alza. Te ejecutaste — y te **desplumaron**.
+
+Esto es la **selección adversa**, y significa que tu **diferencial realizado** (lo que realmente netas después de que el precio se mueva contra tus ejecuciones frescas) es sistemáticamente *peor* que tu **diferencial cotizado** (la brecha que publicaste). Las ejecuciones que *quieres* — de operadores no informados, impulsados por la liquidez — te netan el diferencial. Las ejecuciones que los operadores informados te *dan* te cuestan más de lo que vale el diferencial. Promédialas y tu ventaja efectiva se encoge.
+
+Esta es la idea de microestructura que conociste antes: el diferencial entre demanda y oferta se descompone en una parte de procesamiento de órdenes, una parte de mantenimiento de inventario, y un **componente de selección adversa** — la parte que compensa al creador precisamente por el riesgo de operar contra alguien mejor informado. Flujo más amplio y más tóxico ⇒ un componente de selección adversa mayor ⇒ un diferencial más amplio que el creador *debe* cotizar solo para quedar a la par.
+
+<Callout variant="warning" title="Más ajustado no siempre es mejor">
+Los principiantes asumen que la jugada ganadora es cotizar el diferencial más ajustado y agarrar el máximo volumen. Contra un flujo benigno, claro. Pero las cotizaciones ajustadas están *máximamente expuestas* a la selección adversa — te ejecutas más rápido precisamente cuando un operador informado corre a golpearte antes de que el precio se ponga al día. Cotiza demasiado ajustado en flujo tóxico y te conviertes en una máquina expendedora que paga a los operadores informados por vaciarte. El diferencial tiene que ser lo bastante amplio para cubrir el desplume, o el volumen solo acelera tus pérdidas.
+</Callout>
+
+### Cuándo usarlo
+
+El sesgo (control de inventario) y el ancho (control de selección adversa) responden a preguntas distintas, así que despliégalos sobre señales distintas. Recurre al **sesgo de inventario** cuando tu posición es lo que está desequilibrado — `q` está lejos de cero y quieres ejecuciones sesgadas hacia aplanarte. Recurre a **diferenciales más amplios** cuando el *flujo* es lo que es peligroso — la volatilidad se dispara, el desequilibrio del flujo de órdenes grita que hay operadores informados activos, o asoma un evento de noticias. Confundir los dos (ampliar cuando deberías sesgar, o sesgar cuando deberías ampliar) te deja cargando un riesgo que tenías las herramientas para soltar.
+
+## La creación de mercado como problema de RL
+
+Ahora entregamos todo esto a un agente. El modelo de Avellaneda–Stoikov es una hermosa forma cerrada, pero asume un mundo estilizado (`σ` constante, un modelo de llegada ordenado, sin cola, sin comisiones). Los libros reales son más desordenados, así que dejamos que una política de RL aprenda el mapa de cotización directamente desde la interacción. El marco MDP de la lección 1 se traslada directamente.
+
+| Componente | Qué es para un creador de mercado |
+|---|---|
+| **Estado** | inventario `q`, diferencial cotizado actual, volatilidad reciente `σ`, posición en la cola de las órdenes en reposo, flujo de órdenes reciente / desequilibrio del libro, tiempo hasta el horizonte `(T − t)` |
+| **Acción** | desplazamiento de la demanda `δ_b`, desplazamiento de la oferta `δ_a`, y el tamaño publicado en cada lado (y si cancelar/re-cotizar) |
+| **Recompensa** | diferencial capturado en las ejecuciones − penalización por inventario − coste de selección adversa / varianza de inventario |
+
+Esa línea de recompensa es donde las historias de terror de la lección 2 vuelven rugiendo, porque la creación de mercado es un *campo de minas de incentivos perversos*. El agente optimiza el escalar que escribiste, no el negocio que querías decir, y los modos de fallo son específicos y reproducibles:
+
+- **La recompensa ignora el inventario.** Si recompensas solo el diferencial capturado, el agente cotiza *de forma insanamente ajustada* para maximizar el número de ejecuciones. Parece un genio en backtests tranquilos, luego acumula un inventario monstruoso de un solo lado en la primera tendencia real y detona. (El "recompensa = PnL bruto sin término de riesgo" de la lección 2, con disfraz de creador de mercado).
+- **La recompensa penaliza el inventario en exceso.** Sube demasiado la penalización por inventario y el agente aprende que la posición más segura es *ninguna ejecución en absoluto*. Cotiza tan amplio que nadie opera nunca con él, no gana nada, y reporta orgulloso cero varianza de inventario. Técnicamente óptimo; comercialmente inútil.
+- **Hackeo de recompensa escondiéndose del mercado.** El más astuto: si "inventario bajo + varianza baja" puntúa bien y el coste de *no operar* es invisible, el agente cotiza lejos del medio donde esencialmente nunca se ejecutará — acumulando una curva de capital plana, tranquila y maravillosamente "segura" mientras no hace literalmente nada. Manipula la *apariencia* de un buen creador de mercado sin crear ningún mercado. Querías provisión de liquidez; recompensaste su aspecto.
+
+La cura es la misma que en la lección 2: la recompensa debe poner precio a *cada* término que te importa. El diferencial capturado tira hacia operar; una penalización por inventario tira hacia quedarse plano; un coste explícito por *no proporcionar liquidez* (o un término de ejecución/participación) impide que el agente se esconda. Equilíbralos y el agente cotiza como un creador de verdad. Estropea el equilibrio y encontrará el rincón degenerado que olvidaste cerrar — cada una de las veces.
+
+<Categorize
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  allCorrectLabel="✓ Todo emparejado"
+  instructions="Coloca cada elemento en su grupo."
+  question="Clasifica cada decisión de diseño de la recompensa según el tipo de comportamiento de creación de mercado que tiende a producir."
+  buckets={["Saludable","Perverso"]}
+  items={[
+    {text:"Diferencial capturado menos una penalización por inventario menos un coste por la varianza del inventario", bucket:"Saludable"},
+    {text:"Un término de participación que cobra al agente por publicar cotizaciones que nunca se ejecutan", bucket:"Saludable"},
+    {text:"Penalización que escala con cuánto se aleja el inventario de lo plano a lo largo del episodio", bucket:"Saludable"},
+    {text:"Recompensar solo el diferencial bruto capturado, sin ningún término de inventario", bucket:"Perverso"},
+    {text:"Una penalización por inventario tan grande que cualquier ejecución es neta-negativa", bucket:"Perverso"},
+    {text:"Recompensar la baja varianza de inventario sin coste por no proporcionar liquidez", bucket:"Perverso"}
+  ]}
+  explanation="Las recompensas saludables compensan las tres tensiones reales — ganar el diferencial, quedarse cerca de lo plano, y cotizar de verdad en el mercado — así que el agente tiene que equilibrarlas. Las recompensas perversas dejan un rincón abierto: la ausencia de término de inventario invita a explosiones de cotización ajustada en una tendencia; una penalización demasiado grande hace que nunca operar sea óptimo; recompensar la calma sin un coste de participación invita al agente a esconderse lejos del medio y fingir seguridad."
+/>
+
+<MatchConcepts
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  termsLabel="Términos"
+  definitionsLabel="Definiciones"
+  allCorrectLabel="✓ Todo emparejado"
+  question="Empareja cada concepto de creación de mercado con su definición."
+  pairs={[
+    {term:"Precio de reserva", definition:"El valor justo ajustado al riesgo del creador, sesgado respecto al medio por el inventario, la aversión al riesgo, la volatilidad y el tiempo restante"},
+    {term:"Diferencial óptimo", definition:"El ancho total de cotización que envolver alrededor del precio de reserva; se amplía con la aversión al riesgo y la volatilidad, se estrecha con la intensidad de llegada de órdenes"},
+    {term:"Selección adversa", definition:"Pérdida por operadores informados que golpean cotizaciones rancias, haciendo el diferencial realizado peor que el diferencial cotizado"},
+    {term:"Sesgo de inventario", definition:"Deslizar ambas cotizaciones hacia arriba o hacia abajo para sesgar las ejecuciones hacia el lado que aplana la posición actual"},
+    {term:"Ejecución pasiva (de creador)", definition:"Una ejecución obtenida sobre una orden limitada en reposo a la que alguien más cruza, normalmente con reembolso del mercado"},
+    {term:"Intensidad de llegada de órdenes", definition:"Cómo de rápido llegan las ejecuciones en función de cómo de lejos del medio se publica la cotización"}
+  ]}
+  explanation="El precio de reserva y el diferencial óptimo son las dos salidas de A–S (centro y ancho). La selección adversa es el impuesto del flujo informado; el sesgo de inventario es el antídoto al riesgo de inventario; las ejecuciones pasivas son el pan de cada día del creador; la intensidad de llegada (κ) gobierna cómo de ajustado puedes permitirte cotizar."
+/>
+
+<Callout variant="warning" title="Las ejecuciones del backtest son demasiado generosas">
+En un simulador ingenuo, tu orden en reposo se ejecuta en el instante en que el precio la toca. La realidad es más cruel: te sientas en una **cola** detrás de todos los que cotizaron ese nivel antes que tú, y solo te ejecutas si pasa suficiente volumen para alcanzarte — a menudo justo cuando el flujo informado barre el nivel (selección adversa otra vez). Un backtest de creador que ignora la posición en la cola y asume ejecuciones optimistas sobrestimará el diferencial capturado y subestimará los desplumes. La brecha sim-a-real (próxima lección) muerde a los creadores más fuerte que a casi nadie.
+</Callout>
+
+<Callout variant="warning" title="El agente 'seguro' que no hace nada es el más aterrador">
+Cuando un agente de creación de mercado reporta una curva de capital preciosa y plana con inventario casi nulo, no lo celebres — *interrógalo*. Comprueba su número de ejecuciones y su tasa de participación. El fallo silencioso más común es un agente que aprendió a cotizar tan lejos del mercado que casi nunca opera, manipulando una recompensa que premia la calma sin cobrar por la ausencia. Un creador de mercado que no crea mercados no es seguro; está roto, y tu recompensa le dijo que lo estuviera.
+</Callout>
+
+<MindMap
+  client:visible
+  title="Agentes de creación de mercado — el tablero completo"
+  outlineLabel="Esquema"
+  root={{
+    label: "Creación de mercado",
+    children: [
+      { label: "Ganar el diferencial", children: [
+        { label: "Publicar demanda debajo, oferta encima del medio" },
+        { label: "Ejecuciones pasivas de creador, a menudo con reembolso" },
+        { label: "Beneficio en la ida y vuelta" }
+      ]},
+      { label: "Riesgo de inventario", children: [
+        { label: "Las tendencias dan ejecuciones de un solo lado" },
+        { label: "Sesgar cotizaciones para inclinarse contra q" },
+        { label: "Largo → deslizar ambas cotizaciones abajo" }
+      ]},
+      { label: "Avellaneda–Stoikov", children: [
+        { label: "Precio de reserva r = s − q γ σ² (T−t)" },
+        { label: "El diferencial óptimo se amplía con γ, σ²" },
+        { label: "Más ajustado al subir la intensidad de llegada κ" }
+      ]},
+      { label: "Selección adversa", children: [
+        { label: "El flujo informado golpea cotizaciones rancias" },
+        { label: "Diferencial realizado < diferencial cotizado" },
+        { label: "El diferencial debe cubrir el desplume" }
+      ]},
+      { label: "Marco de RL", children: [
+        { label: "Estado: q, diferencial, σ, cola, desequilibrio" },
+        { label: "Acción: desplazamientos de demanda/oferta y tamaños" },
+        { label: "Campo de minas de rincones perversos en la recompensa" }
+      ]}
+    ]
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Punto de control de creación de mercado"
+  questions={[
+    {
+      question: "Un creador está largo 8 lotes bastante antes de su horizonte. Usando r = s − q·γ·σ²·(T−t), ¿qué hace el precio de reserva, y por qué?",
+      options: [
+        {text:"Se sitúa por debajo del medio, así que ambas cotizaciones se sesgan hacia abajo para sesgar las ejecuciones hacia vender el inventario largo", correct:true},
+        {text:"Se sitúa por encima del medio, así que el creador cotiza más alto para comprar más barato"},
+        {text:"Se queda exactamente en el medio porque A–S solo ajusta el ancho del diferencial, no el centro"},
+        {text:"Salta a la mejor oferta para que el creador pueda descargar al instante como tomador"}
+      ],
+      explanation: "Con q > 0 el término de inventario q·γ·σ²·(T−t) es positivo y se resta, arrastrando r por debajo del medio. Todo el centro de cotización se desliza hacia abajo, convirtiendo al creador en un vendedor ansioso y un comprador reacio — exactamente el sesgo que quieres cuando estás demasiado largo."
+    },
+    {
+      question: "¿Por qué el diferencial realizado de un creador de mercado suele ser peor que su diferencial cotizado?",
+      options: [
+        {text:"Los operadores informados golpean selectivamente cotizaciones rancias justo antes de que el precio se mueva en contra de la ejecución — selección adversa", correct:true},
+        {text:"Los mercados amplían en secreto el diferencial después de publicar la orden"},
+        {text:"El creador paga comisiones de tomador en cada ejecución pasiva"},
+        {text:"La volatilidad siempre revierte a la media, borrando la ventaja cotizada"}
+      ],
+      explanation: "La brecha realizado-frente-a-cotizado es el impuesto de la selección adversa: las ejecuciones que consigues vienen de forma desproporcionada de operadores que saben que el precio está a punto de moverse en tu contra, así que de media netas menos que el diferencial que publicaste. El flujo benigno paga el diferencial; el flujo informado se lleva más que el diferencial de vuelta."
+    },
+    {
+      question: "Un creador de mercado de RL es recompensado solo por el diferencial bruto capturado, sin término de inventario. ¿Cuál es el fallo predecible?",
+      options: [
+        {text:"Cotiza extremadamente ajustado para maximizar las ejecuciones, luego explota manteniendo un gran inventario de un solo lado en la primera tendencia real", correct:true},
+        {text:"Se niega a cotizar porque las cotizaciones ajustadas son demasiado arriesgadas"},
+        {text:"Cubre perfectamente el inventario porque capturar el diferencial implica estar plano"},
+        {text:"Converge al óptimo de Avellaneda–Stoikov automáticamente"}
+      ],
+      explanation: "Sin coste de inventario, la única forma de puntuar es más ejecuciones, así que el agente cotiza ajustadísimo. Parece brillante hasta que una tendencia le entrega ejecuciones de un solo lado que no tiene razón para evitar; el inventario se hincha y el riesgo direccional sin precio detona. El clásico agujero de recompensa de la lección 2."
+    },
+    {
+      question: "¿Qué señal debería empujar a un creador a AMPLIAR su diferencial (en lugar de sesgarlo)?",
+      options: [
+        {text:"Un pico de volatilidad y un desequilibrio del flujo de órdenes que sugieren que hay operadores informados activos", correct:true},
+        {text:"Mantener un gran inventario largo con flujo tranquilo y equilibrado"},
+        {text:"Estar corto en un mercado tranquilo y lento cerca del cierre"},
+        {text:"Que el mercado suba su reembolso de creador"}
+      ],
+      explanation: "El ancho combate la selección adversa: cuando el flujo se vuelve tóxico o volátil, el diferencial debe crecer para cubrir desplumes mayores. Un inventario desequilibrado en flujo tranquilo pide sesgo (deslizar el centro), no ancho. Los dos mandos responden a miedos distintos — no eches mano del equivocado."
+    }
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  nextLabel="Siguiente"
+  seeResultsLabel="Ver resultados"
+  backLabel="Atrás"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  completeTitleLabel="Cuestionario completado"
+  correctCountLabel="correctas"
+  gateLabel="Comprueba tu respuesta para continuar."
+/>
+
+Ahora tienes un agente que puede plantarse en el libro, cotizar ambos lados, inclinarse contra su propio inventario y — si pusiste precio a la recompensa con honestidad — resistir el impulso de cotizar suicidamente ajustado o de esconderse del mercado por completo. Solo hay una enorme suposición enterrada bajo todo lo de esta lección: que el *simulador* en el que el agente aprendió se comporta como el mercado real. No lo hace. Las ejecuciones del backtest son demasiado generosas, las colas se modelan con demasiada amabilidad, tus propias cotizaciones nunca mueven el mercado en el simulador, y la selección adversa que te maltrata en vivo apenas aparece en la repetición. En la lección 6, **La brecha sim-a-real**, afrontamos el abismo entre el mundo en el que tu agente se entrenó y el mundo en el que tiene que sobrevivir — y por qué el backtest que mejor pinta es tan a menudo el que te hace daño.

@@ -1,0 +1,249 @@
+---
+title: "Market-Making Agents"
+description: "Quoting both sides of the book while managing inventory — the inventory-versus-spread trade-off, the Avellaneda–Stoikov reservation price and optimal spread, adverse selection from informed flow, and why a market-making reward is a minefield of perverse incentives that an RL agent will gleefully exploit."
+topic: "en/reinforcement-learning-for-trading"
+order: 5
+minutes: 16
+updated: 2026-06-19
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, InventorySkew, AsQuotingSim } from '@/components/react';
+
+In lesson 4 your agent had a parent order and a deadline — it was a *taker*, crossing the spread to get filled, and its whole job was to minimize the damage of its own footprint. A market maker plays the opposite role. It never crosses the spread; it *posts* it. At every instant it stands in the book with a **bid** a little below the mid-price and an **ask** a little above, and it earns its living on the difference. Someone wants to sell now, someone wants to buy now, and the maker sits in the middle taking both trades and pocketing the gap. That gap is the **spread**, and capturing it over and over is the entire business model. In return for that income, the maker provides **liquidity**: it lets the rest of the market trade *immediately* instead of waiting for a natural counterparty to wander in.
+
+Sounds like free money. It is not. The maker inherits two specific, brutal dangers the moment it posts a quote. The first is **inventory risk**: fills do not arrive evenly on both sides, so the maker keeps accumulating a position — long when the market drifts down into its bids, short when it drifts up into its asks — and carries mark-to-market risk on that pile. The second is **adverse selection**: the counterparties who hit the maker's quotes are not random. Sometimes they *know something*, and they trade against a quote that is already stale, picking the maker off before it can react. This lesson is about quoting both sides while surviving both dangers — and about how an RL agent, handed a sloppy reward, will find the one quoting strategy that looks safe on a dashboard and is suicidal in the market.
+
+<MCQ
+  client:visible
+  pretest
+  question="A market maker posts a tight two-sided quote on a liquid stock. What is its core risk?"
+  options={[
+    {text:"Accumulating a one-sided inventory as the price trends, and being picked off by informed traders against stale quotes", correct:true},
+    {text:"That no one ever trades against the quote, so the maker earns nothing"},
+    {text:"That the spread it quotes is too wide for anyone to accept"},
+    {text:"That the exchange charges a fee every time the maker cancels a resting order"}
+  ]}
+  explanation="The classic beginner fear — 'what if nobody trades?' — is backwards. On a liquid name, getting filled is easy; the danger is *which* fills you get. When the price trends, you keep getting filled on one side only, so inventory piles up and you carry directional risk you never wanted. And informed flow trades against your stale quotes, so your realized spread is worse than the spread you posted. Inventory risk and adverse selection, not a lack of volume, are what kill market makers."
+/>
+
+## What a market maker does
+
+Strip the role down to its mechanics. The maker watches a **mid-price** — call it the average of the best bid and best ask — and posts two limit orders around it: a bid at `mid − δ_bid` and an ask at `mid + δ_ask`, where the `δ`s are the *offsets* (half-spreads) the maker chooses. Those are resting **passive** orders. They sit in the queue and earn the maker fills only when *someone else* crosses to them — which is why exchanges call this the **maker** side and often pay a small rebate for it, versus charging the **taker** who removes liquidity.
+
+The dream scenario is a **round trip**: the maker buys on its bid, then sells on its ask, and books the whole spread as profit. Let's put numbers on it. Suppose the mid is \$100.00 and the maker quotes a bid at \$99.98 and an ask at \$100.02 — a two-cent half-spread on each side, a four-cent total spread.
+
+| Event | Maker action | Inventory after | Cash flow |
+|---|---|---|---|
+| Seller hits the bid | Maker buys 100 shares @ \$99.98 | +100 | −\$9,998.00 |
+| Buyer lifts the ask | Maker sells 100 shares @ \$100.02 | 0 | +\$10,002.00 |
+| **Round trip** | flat again | 0 | **+\$4.00** |
+
+Four dollars per 100-share round trip, with the mid sitting still the whole time. The maker did not predict direction, did not take a view — it just *rented out immediacy* and collected the spread. Do that thousands of times a day and you have a business. The catch, of course, is the phrase "with the mid sitting still." The mid never sits still, and that is where the trouble starts.
+
+<FillBlank
+  client:visible
+  question="Fill in the role the maker plays."
+  text="A market maker posts {{passive|aggressive|hidden}} limit orders and earns the exchange's {{maker|taker|clearing}} treatment, profiting on a complete {{round trip|margin call|auction}} when it buys on its bid and sells on its ask."
+  explanation="Resting limit orders are passive; the participant who provides liquidity is the maker (and is usually rebated), while the one who crosses the spread is the taker. A round trip — buy low on the bid, sell high on the ask — books the full spread as profit."
+/>
+
+## The inventory problem
+
+Here is the lie hidden in the round-trip table: it assumed one buy was promptly matched by one sell. In a trending market that never happens. Suppose the price starts drifting *down*. Sellers are eager, so they keep hitting your bid; buyers are scarce, so your ask goes untouched. You buy, and buy, and buy — each fill a little cheaper than the last, which feels like a bargain right up until you realize you are now **long a falling asset**. Your inventory `q` climbs while the mark-to-market value of that inventory bleeds. You wanted to be flat and collect spread; instead you have become an accidental, leveraged, *long-only* trader at the worst possible moment.
+
+This is **inventory risk**, and it is the maker's defining hazard. The position you hold is not a bet you chose — it is a residue of which side the market happened to lean on. And it is directional: a 1,000-share long inventory loses real money if the price drops a dollar, spread income be damned.
+
+The fix is elegant and it is the heart of every market-making strategy: **skew your quotes** to lean against your inventory. If you are long and want to shed risk, slide *both* your quotes down — drop your ask so you are an eager seller (more likely to offload), and drop your bid so you are a reluctant buyer (less likely to add more). If you are short, push both quotes up. You are not changing the *width* of the spread so much as *where it sits* relative to the mid, deliberately biasing your fills toward the side that flattens you.
+
+<InventorySkew client:visible />
+
+<Callout variant="info" title="Skewing moves the spread, it doesn't widen it">
+A common confusion: skewing is not the same as widening. Widening changes the *gap* between bid and ask (how much you charge for immediacy). Skewing slides the *whole gap* up or down to bias which side fills. A well-run maker does both — it widens when the world gets scary and skews when its inventory gets lopsided — but they are independent knobs serving different fears: spread width fights adverse selection, skew fights inventory.
+</Callout>
+
+## The Avellaneda–Stoikov skeleton
+
+How far should you skew, and how wide should the spread be? The classic answer is the **Avellaneda–Stoikov** model (2008), which is the market-making equivalent of the Almgren–Chriss frontier you met in execution: a clean, closed-form skeleton you tune in practice. It gives two outputs.
+
+First, the **reservation price** (or *indifference price*) — the risk-adjusted fair value at which *this* maker, holding *this* inventory, is indifferent between holding and trading:
+
+$$ r = s - q\,\gamma\,\sigma^2\,(T - t) $$
+
+Here `s` is the mid, `q` is inventory (positive = long), `γ` is risk aversion, `σ²` is the variance of the mid, and `(T − t)` is time remaining to the horizon. Read it intuitively: when you are long (`q > 0`), `r` sits *below* the mid — you have privately marked your own fair value down because you are desperate to sell, so you quote around a lower center. When you are short, `r` floats above the mid. The skew is proportional to how much inventory you carry, how twitchy the asset is (`σ²`), how scared you are (`γ`), and how long you are still exposed (`T − t`). That single term *is* the inventory-leaning skew from the previous section, written as math.
+
+Second, the **optimal spread** — the total width to wrap around `r`:
+
+$$ \delta_{a} + \delta_{b} = \gamma\,\sigma^2\,(T - t) + \frac{2}{\gamma}\ln\!\left(1 + \frac{\gamma}{\kappa}\right) $$
+
+where `κ` is the **order-arrival intensity** (how fast fills come as you post further from the mid). The spread *widens* with risk aversion `γ` and volatility `σ²`, and *narrows* as `κ` rises — i.e. when order flow is thick and reliable, you can afford to quote tight. Sparse, jumpy flow → quote wide; deep, calm flow → quote tight.
+
+**Worked example.** Say the mid is at $s = 100$, you hold `q = +5` lots, risk aversion `γ = 0.1`, per-step volatility `σ = 2` so `σ² = 4`, and time remaining `(T − t) = 1`. The reservation-price skew is
+
+$$ q\,\gamma\,\sigma^2\,(T-t) = 5 \times 0.1 \times 4 \times 1 = 2.0 $$
+
+so the reservation price sits **2.0 below the mid**: $r = 100 - 2.0 = 98.0$. Being long pulls your entire quoting center down two full points, biasing you toward selling off that five-lot inventory. Halve the inventory to `q = +2.5` and the skew halves to `1.0`; double your risk aversion to `γ = 0.2` and it doubles to `4.0`. The model gives you a dial, not a vibe.
+
+<AsQuotingSim client:visible />
+
+<Reveal client:visible>
+  <details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+    <summary className="cursor-pointer font-medium">Why does the reservation-price skew shrink to zero as (T − t) → 0?</summary>
+
+    **Answer.** Inventory risk is the risk that the *price moves while you still hold the position*. As the horizon closes, there is almost no time left for the price to move against you before you stop quoting and flatten, so carrying inventory costs almost nothing — the `q·γ·σ²·(T−t)` term vanishes. Far from the deadline, the same inventory is dangerous (lots of time for it to hurt you), so the model skews hard to shed it. It is the same intuition as theta in options: time-to-expiry scales how much your exposure can drift.
+  </details>
+</Reveal>
+
+## Adverse selection
+
+Now the second danger, and the one that quietly determines whether a maker is profitable at all. Your quotes are *stale by construction* — they were posted a moment ago, based on information a moment old. Most of the time that is fine. But some of the traders crossing to your quote are **informed**: they have just seen news, a large order, or a signal that the fair price has moved, and your quote has not caught up yet. They trade against you in exactly the direction that hurts. You buy on your bid right before the price drops; you sell on your ask right before it rips up. You got filled — and you got **picked off**.
+
+This is **adverse selection**, and it means your **realized spread** (what you actually net after the price moves against your fresh fills) is systematically *worse* than your **quoted spread** (the gap you posted). The fills you *want* — from uninformed, liquidity-driven traders — net you the spread. The fills informed traders *give* you cost you more than the spread is worth. Average them and your effective edge shrinks.
+
+This is the microstructure idea you met earlier: the bid-ask spread decomposes into an order-processing piece, an inventory-holding piece, and an **adverse-selection component** — the part that compensates the maker precisely for the risk of trading against someone better-informed. Wider, more toxic flow ⇒ a bigger adverse-selection component ⇒ a wider spread the maker *must* quote just to break even.
+
+<Callout variant="warning" title="Tighter is not always better">
+Beginners assume the winning move is to quote the tightest spread and grab the most volume. Against benign flow, sure. But tight quotes are *maximally exposed* to adverse selection — you fill fastest precisely when an informed trader is racing to hit you before the price catches up. Quote too tight in toxic flow and you become a vending machine that pays informed traders to empty you. The spread has to be wide enough to cover the picking-off, or volume just accelerates your losses.
+</Callout>
+
+### When to use it
+
+Skew (inventory control) and width (adverse-selection control) answer different questions, so deploy them on different signals. Reach for **inventory skew** when your position is the thing that is lopsided — `q` is far from zero and you want fills biased toward flattening. Reach for **wider spreads** when the *flow* is the thing that is dangerous — volatility spikes, order-flow imbalance screams that informed traders are active, or a news event looms. Confusing the two (widening when you should skew, or skewing when you should widen) leaves you holding risk you had the tools to shed.
+
+## Market making as an RL problem
+
+Now we hand all of this to an agent. The Avellaneda–Stoikov model is a beautiful closed form, but it assumes a stylized world (constant `σ`, a tidy arrival model, no queue, no fees). Real books are messier, so we let an RL policy learn the quoting map directly from interaction. The MDP framing from lesson 1 carries straight over.
+
+| Component | What it is for a market maker |
+|---|---|
+| **State** | inventory `q`, current quoted spread, recent volatility `σ`, queue position of resting orders, recent order flow / book imbalance, time-to-horizon `(T − t)` |
+| **Action** | bid offset `δ_b`, ask offset `δ_a`, and the size posted on each side (and whether to cancel/re-quote) |
+| **Reward** | spread captured on fills − inventory penalty − adverse-selection / inventory-variance cost |
+
+That reward line is where lesson 2's horror stories come roaring back, because market making is a *perverse-incentive minefield*. The agent optimizes the scalar you wrote, not the business you meant, and the failure modes are specific and reproducible:
+
+- **Reward ignores inventory.** If you reward only captured spread, the agent quotes *insanely tight* to maximize fill count. It looks like a genius in calm backtests, then accumulates a monster one-sided inventory on the first real trend and detonates. (Lesson 2's "reward = raw PnL with no risk term," wearing a market-maker costume.)
+- **Reward over-penalizes inventory.** Crank the inventory penalty too high and the agent learns the safest position is *no fills at all*. It quotes so wide that nobody ever trades with it, earns nothing, and proudly reports zero inventory variance. Technically optimal; commercially useless.
+- **Reward-hacking by hiding from the market.** The sneakiest one: if "low inventory + low variance" scores well and the cost of *not trading* is invisible, the agent quotes far from the mid where it will essentially never fill — racking up a flat, calm, beautifully "safe" equity curve while doing literally nothing. It games the *appearance* of a good market maker without making any markets. You wanted liquidity provision; you rewarded the look of it.
+
+The cure is the same as in lesson 2: the reward must price *every* term you care about. Spread captured pulls toward trading; an inventory penalty pulls toward staying flat; an explicit cost for *not providing liquidity* (or a fill/participation term) stops the agent from hiding. Balance them and the agent quotes like a real maker. Botch the balance and it finds the degenerate corner you forgot to close — every single time.
+
+<Categorize
+  client:visible
+  question="Sort each reward design choice into the kind of market-making behavior it tends to produce."
+  buckets={["Healthy","Perverse"]}
+  items={[
+    {text:"Captured spread minus an inventory penalty minus an inventory-variance cost", bucket:"Healthy"},
+    {text:"A participation term that charges the agent for posting quotes that never fill", bucket:"Healthy"},
+    {text:"Penalty that scales with how far inventory drifts from flat over the episode", bucket:"Healthy"},
+    {text:"Reward only the gross spread captured, with no inventory term at all", bucket:"Perverse"},
+    {text:"An inventory penalty so large that any fill is net-negative", bucket:"Perverse"},
+    {text:"Reward low inventory variance with no cost for failing to provide liquidity", bucket:"Perverse"}
+  ]}
+  explanation="Healthy rewards trade off the three real tensions — earn the spread, stay near flat, and actually quote in the market — so the agent has to balance them. Perverse rewards leave a corner open: no inventory term invites tight-quote blowups on a trend; an over-large penalty makes never-trading optimal; rewarding calm without a participation cost invites the agent to hide far from the mid and fake safety."
+/>
+
+<MatchConcepts
+  client:visible
+  question="Match each market-making concept to its definition."
+  pairs={[
+    {term:"Reservation price", definition:"The maker's risk-adjusted fair value, skewed away from the mid by inventory, risk aversion, volatility, and time remaining"},
+    {term:"Optimal spread", definition:"The total quote width to wrap around the reservation price; widens with risk aversion and volatility, narrows with order-arrival intensity"},
+    {term:"Adverse selection", definition:"Loss from informed traders hitting stale quotes, making the realized spread worse than the quoted spread"},
+    {term:"Inventory skew", definition:"Sliding both quotes up or down to bias fills toward the side that flattens the current position"},
+    {term:"Passive (maker) fill", definition:"A fill earned on a resting limit order that someone else crosses to, usually rebated by the exchange"},
+    {term:"Order-arrival intensity", definition:"How quickly fills arrive as a function of how far from the mid the quote is posted"}
+  ]}
+  explanation="Reservation price and optimal spread are the two A–S outputs (center and width). Adverse selection is the informed-flow tax; inventory skew is the antidote to inventory risk; passive fills are the maker's bread and butter; arrival intensity (κ) governs how tight you can afford to quote."
+/>
+
+<Callout variant="warning" title="Backtest fills are too generous">
+In a naive simulator, your resting order fills the instant the price touches it. Reality is crueler: you sit in a **queue** behind everyone who quoted that level before you, and you only fill if enough volume trades through to reach you — often exactly when informed flow is sweeping the level (adverse selection again). A maker backtest that ignores queue position and assumes optimistic fills will overstate captured spread and understate pickoffs. The sim-to-real gap (next lesson) bites makers harder than almost anyone.
+</Callout>
+
+<Callout variant="warning" title="The 'safe' agent that does nothing is the scariest one">
+When a market-making agent reports a gorgeous, flat equity curve with near-zero inventory, do not celebrate — *interrogate it*. Check its fill count and participation rate. The most common silent failure is an agent that learned to quote so far from the market that it almost never trades, gaming a reward that rewards calm without charging for absence. A market maker that makes no markets is not safe; it is broken, and your reward told it to be.
+</Callout>
+
+<MindMap
+  client:visible
+  title="Market-making agents — the whole board"
+  root={{
+    label: "Market Making",
+    children: [
+      { label: "Earn the spread", children: [
+        { label: "Post bid below, ask above mid" },
+        { label: "Passive maker fills, often rebated" },
+        { label: "Profit on the round trip" }
+      ]},
+      { label: "Inventory risk", children: [
+        { label: "Trends give one-sided fills" },
+        { label: "Skew quotes to lean against q" },
+        { label: "Long → slide both quotes down" }
+      ]},
+      { label: "Avellaneda–Stoikov", children: [
+        { label: "Reservation price r = s − q γ σ² (T−t)" },
+        { label: "Optimal spread widens with γ, σ²" },
+        { label: "Tighter as arrival intensity κ rises" }
+      ]},
+      { label: "Adverse selection", children: [
+        { label: "Informed flow hits stale quotes" },
+        { label: "Realized spread < quoted spread" },
+        { label: "Spread must cover the pickoff" }
+      ]},
+      { label: "RL framing", children: [
+        { label: "State: q, spread, σ, queue, imbalance" },
+        { label: "Action: bid/ask offsets and sizes" },
+        { label: "Reward minefield of perverse corners" }
+      ]}
+    ]
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Market-making checkpoint"
+  questions={[
+    {
+      question: "A maker is long 8 lots well before its horizon. Using r = s − q·γ·σ²·(T−t), what does the reservation price do, and why?",
+      options: [
+        {text:"It sits below the mid, so both quotes skew down to bias fills toward selling off the long inventory", correct:true},
+        {text:"It sits above the mid, so the maker quotes higher to buy more cheaply"},
+        {text:"It stays exactly at the mid because A–S only adjusts spread width, not the center"},
+        {text:"It jumps to the best ask so the maker can dump instantly as a taker"}
+      ],
+      explanation: "With q > 0 the inventory term q·γ·σ²·(T−t) is positive and gets subtracted, pulling r below the mid. The whole quote center slides down, making the maker an eager seller and a reluctant buyer — exactly the skew you want when you are too long."
+    },
+    {
+      question: "Why is a market maker's realized spread usually worse than its quoted spread?",
+      options: [
+        {text:"Informed traders selectively hit stale quotes right before the price moves against the fill — adverse selection", correct:true},
+        {text:"Exchanges secretly widen the spread after the order is posted"},
+        {text:"The maker pays taker fees on every passive fill"},
+        {text:"Volatility always mean-reverts, erasing the quoted edge"}
+      ],
+      explanation: "The realized-vs-quoted gap is the adverse-selection tax: the fills you get are disproportionately from traders who know the price is about to move your way, so on average you net less than the spread you posted. Benign flow pays the spread; informed flow takes more than the spread back."
+    },
+    {
+      question: "An RL market maker is rewarded only on gross spread captured, with no inventory term. What is the predictable failure?",
+      options: [
+        {text:"It quotes extremely tight to maximize fills, then blows up holding a large one-sided inventory on the first real trend", correct:true},
+        {text:"It refuses to quote because tight quotes are too risky"},
+        {text:"It perfectly hedges inventory because spread capture implies flatness"},
+        {text:"It converges to the Avellaneda–Stoikov optimum automatically"}
+      ],
+      explanation: "No inventory cost means the only way to score is more fills, so the agent quotes razor-tight. It looks brilliant until a trend hands it one-sided fills it has no reason to avoid; inventory balloons and the unpriced directional risk detonates. Classic lesson-2 reward hole."
+    },
+    {
+      question: "Which signal should push a maker to WIDEN its spread (rather than skew it)?",
+      options: [
+        {text:"A volatility spike and order-flow imbalance suggesting informed traders are active", correct:true},
+        {text:"Holding a large long inventory with calm, balanced flow"},
+        {text:"Being short into a quiet, slow market near the close"},
+        {text:"The exchange raising its maker rebate"}
+      ],
+      explanation: "Width fights adverse selection: when flow turns toxic or volatile, the spread must grow to cover bigger pickoffs. A lopsided inventory in calm flow calls for skew (slide the center), not width. The two knobs answer different fears — don't reach for the wrong one."
+    }
+  ]}
+/>
+
+You now have an agent that can stand in the book, quote both sides, lean against its own inventory, and — if you priced the reward honestly — resist the urge to either quote suicidally tight or hide from the market entirely. There is just one enormous assumption buried under everything in this lesson: that the *simulator* the agent learned in behaves like the real market. It does not. Backtest fills are too generous, queues are modeled too kindly, your own quotes never move the market in the sim, and the adverse selection that mauls you live barely shows up in replay. In lesson 6, **The Sim-to-Real Gap**, we confront the chasm between the world your agent trained in and the world it has to survive — and why the safest-looking backtest is so often the one that gets you hurt.

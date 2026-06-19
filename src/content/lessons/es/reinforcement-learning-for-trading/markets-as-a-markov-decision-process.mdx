@@ -1,0 +1,295 @@
+---
+title: "Los mercados como proceso de decisión de Markov"
+description: "El lenguaje formal del aprendizaje por refuerzo — estado, acción, recompensa, transición, política, retorno y descuento — por qué el trading encaja en él y la predicción no, y la única característica que separa un mercado de un videojuego: tu acción mueve el entorno."
+topic: "es/reinforcement-learning-for-trading"
+order: 1
+minutes: 15
+updated: 2026-06-19
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, MindMap, RlAgentEnvLoop, MarkovRegimeChain } from '@/components/react';
+
+El aprendizaje automático supervisado es un adivino. Le entregáis un vector de características, os devuelve un número — el retorno de mañana, la probabilidad de ejecución, la volatilidad de la próxima hora — y luego se encoge de hombros y se va a casa. Nunca os dice *cuánto* comprar, *cuándo* parar, ni qué hacer una vez que la orden que acabáis de colocar ha movido el mismísimo precio que tratabais de predecir. La predicción es una respuesta de un solo disparo a una pregunta que nadie llegó a hacer. El trading es una **secuencia de decisiones** que se despliega en el tiempo, y cada una cambia el tablero sobre el que jugáis la siguiente.
+
+El aprendizaje por refuerzo (RL, por sus siglas en inglés) es la disciplina construida exactamente para esa forma: un **agente** toma **acciones**, el mundo responde con una **recompensa** y una situación nueva, y el agente aprende una regla — una **política** — que maximiza la recompensa a *largo plazo*, no solo en el próximo tick. Ese enfoque a largo plazo es también donde reaparece nuestro villano recurrente. A lo largo del curso de aprendizaje automático el enemigo era el **sobreajuste**: un modelo que memorizaba ruido y lo llamaba señal. Sigue siendo el enemigo aquí — solo que ahora lleva un disfraz más astuto, porque un agente de RL puede elegir su propia experiencia de entrenamiento, y un backtest que parece dinero gratis suele ser un agente que ha sobreajustado un simulador en el que nadie debería haber confiado.
+
+<MCQ
+  client:visible
+  pretest
+  pretestLabel="Antes de leer — adivina"
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  question="Tu modelo clava el retorno del día siguiente con un R² fuera de muestra que da envidia en la mesa de trading. ¿Por qué, por sí solo, sigue sin bastar para operar?"
+  options={[
+    { text: "Una predicción de dirección no especifica el tamaño, el momento ni qué hacer después de que tu propia operación haya movido el precio — eso son decisiones, no predicciones.", correct: true },
+    { text: "Sí basta; simplemente compras cuando la predicción es positiva y vendes cuando es negativa." },
+    { text: "El R² es la métrica equivocada — deberías haber reportado el error cuadrático medio en su lugar." },
+    { text: "El modelo será perfecto en cuanto añadas más características y una red más profunda." },
+  ]}
+  explanation="Una predicción de retorno es un único escalar sobre el siguiente paso. El trading necesita una secuencia de acciones dimensionadas y temporizadas, y crucialmente debe tener en cuenta el bucle de retroalimentación: tu ejecución consume liquidez y empuja el precio. Nada de eso vive dentro de un R². Esa es la brecha que el RL está hecho para cerrar."
+/>
+
+## El vocabulario de las decisiones secuenciales
+
+El RL tiene un vocabulario pequeño y preciso, y casi toda la confusión en el campo viene de mezclar dos de estos términos. Definidlos una vez, con cuidado, y el resto del curso es pura ingeniería.
+
+- **Estado $s_t$** — todo lo que el agente observa en el instante $t$ que sea relevante para su decisión. En trading: precio actual, vuestro **inventario** (posición), retornos recientes, desequilibrio del libro de órdenes, hora del día, orden pendiente de ejecutar.
+- **Acción $a_t$** — lo que hace el agente. Comprar/mantener/vender, una posición objetivo, un par de cotizaciones compra–venta, o cuántas órdenes hijas liberar este minuto.
+- **Recompensa $r_t$** — la retroalimentación escalar tras actuar. A menudo un incremento de P&L ajustado al riesgo e incluyendo costes — y diseñarla correctamente es tan peligroso que tiene su propia lección a continuación.
+- **Transición / dinámica $P(s_{t+1} \mid s_t, a_t)$** — la *regla del mundo*: la probabilidad de aterrizar en el siguiente estado dado el estado y la acción actuales. En los mercados es el proceso del precio más el impacto de tu propia operación. Casi nunca la conocéis; muestreáis de ella.
+- **Política $\pi(a \mid s)$** — la estrategia del agente: una correspondencia (posiblemente aleatorizada) de estados a acciones. Este es el objeto que realmente estáis aprendiendo.
+- **Trayectoria / episodio** — una partida completa: $s_0, a_0, r_0, s_1, a_1, r_1, \dots$ Un episodio de trading podría ser un día, o la vida entera de deshacer una orden madre.
+- **Retorno $G_t$** — la recompensa acumulada (descontada) desde el instante $t$ en adelante. Lo que el agente maximiza. *No* es una predicción de precio — una fea coincidencia de vocabulario con la que tendremos mucho cuidado.
+
+| Término de RL | Símbolo | Interpretación en trading |
+|---|---|---|
+| Estado | $s_t$ | Precio, inventario, retornos recientes, desequilibrio del libro, tiempo restante |
+| Acción | $a_t$ | Comprar / mantener / vender, posición objetivo, cotizaciones, tamaño de orden hija |
+| Recompensa | $r_t$ | P&L ajustado al riesgo de este paso, neto de costes e impacto |
+| Transición | $P$ | Dinámica del precio **más** el impacto de mercado de tu operación |
+| Política | $\pi(a\mid s)$ | La estrategia de trading que estás aprendiendo |
+| Episodio | — | Un día, o el deshacer completo de una orden |
+| Retorno | $G_t$ | Recompensa futura acumulada y descontada (el objetivo) |
+
+<Callout variant="tip" title="La trampa de los dos 'retornos'">
+En finanzas, "retorno" significa un cambio porcentual de precio. En RL, "retorno" $G_t$ significa recompensa futura acumulada. No tienen relación. Cuando este curso escribe $G_t$ siempre se refiere al de RL. Cuando se refiere a un cambio de precio, lo dice con palabras.
+</Callout>
+
+<FillBlank
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+  question="Encaja cada idea en su término de RL."
+  text="La estrategia que estás aprendiendo — una correspondencia de situaciones a movimientos — es la {{política|recompensa|transición}}. La regla del mundo que dice dónde aterrizas a continuación es la {{transición|política|retorno}}. La retroalimentación escalar que recibes por actuar es la {{recompensa|estado|episodio}}."
+  explanation="Política = estrategia (estado → acción), transición = dinámica del mundo (estado, acción → siguiente estado), recompensa = el escalar por paso que intentas acumular."
+/>
+
+## Un mercado es un proceso de decisión de Markov
+
+Apilad esas piezas y tenéis un **proceso de decisión de Markov (MDP)** — el objeto formal que estudia el RL. Mecánicamente es un bucle: el agente observa el estado, su política elige una acción, el entorno devuelve una recompensa y el siguiente estado, y vuelta a empezar, eternamente.
+
+<RlAgentEnvLoop client:visible />
+
+El "Markov" en MDP es una promesa sobre el **estado**. Un proceso tiene la **propiedad de Markov** cuando el siguiente estado depende *solo* del estado y la acción actuales — no de todo el historial de cómo llegasteis hasta aquí:
+
+$$P(s_{t+1} \mid s_t, a_t, s_{t-1}, a_{t-1}, \dots) = P(s_{t+1} \mid s_t, a_t).$$
+
+Esto no es una ley de la naturaleza; es una *restricción de diseño sobre lo que metéis en vuestro estado*. Si el "último precio negociado" no resume todo lo relevante — y en los mercados nunca lo hace — entonces el precio por sí solo **no es markoviano**, y un agente que se condiciona solo a él va a ciegas. El arreglo no es añadir memoria del pasado; es **enriquecer el estado** hasta que sea suficiente: añadid vuestro inventario (para que el agente conozca su propia exposición), los retornos recientes (contexto de momentum/reversión a la media) y características del libro de órdenes (desequilibrio, profundidad, horquilla). Un estado bien diseñado hace que la propiedad de Markov sea *lo bastante cierta como para ser útil*.
+
+<MarkovRegimeChain client:visible />
+
+La cadena de arriba muestra la misma idea sobre regímenes: el token decide su siguiente salto usando solo dónde está *ahora*, y sin embargo la proporción de tiempo a largo plazo en cada régimen se asienta en una mezcla fija. Transiciones sin memoria, estadísticas estables — esa es la propiedad de Markov ganándose el sueldo.
+
+### Ejemplo resuelto — un MDP de trading minúsculo de 2 estados
+
+Imaginad un mercado de juguete con dos regímenes como estado relevante: **Calma** y **Volátil**. En cada paso el agente elige un tamaño de posición, pero primero el *mundo* transiciona. Desde **Calma**, la dinámica es:
+
+$$P(\text{Calm}\mid \text{Calm}) = 0.8,\qquad P(\text{Volatile}\mid \text{Calm}) = 0.2.$$
+
+Supongamos que vuestra política en Calma se pone larga, y la recompensa (incremento de P&L) es $r=+2$ si os quedáis en Calma y $r=-5$ si caéis a Volátil estando aún largos. La recompensa *esperada* de un paso de estar largo en Calma es
+
+$$0.8 \times (+2) + 0.2 \times (-5) = 1.6 - 1.0 = +0.6.$$
+
+Fijaos en qué produjo ese número: las **probabilidades de transición**, no una predicción de precio. El agente no predice el próximo retorno — sopesa acciones frente a la *dinámica del mundo*, que es exactamente lo que un MDP os obliga a hacer.
+
+<MCQ
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  question="En el MDP de juguete anterior, decides que el agente también debería conocer su inventario actual antes de elegir un tamaño. ¿Por qué?"
+  options={[
+    { text: "Para mantener el estado markoviano — la acción correcta depende genuinamente de cuánto tienes ya, así que omitir el inventario hace que un estado solo-precio sea insuficiente.", correct: true },
+    { text: "El inventario es irrelevante en un MDP; solo importa el régimen de precio." },
+    { text: "Porque los vectores de estado más grandes siempre entrenan más rápido." },
+    { text: "Para recordar el historial completo de operaciones pasadas dentro del estado." },
+  ]}
+  explanation="La markovianidad va de suficiencia, no de tamaño. Si la acción óptima depende del inventario (lo hace — límites de riesgo, impacto, reversión a la media de tu propia posición), entonces un estado sin él no es markoviano. Añades la variable, no una memoria del historial."
+/>
+
+## El retorno y el factor de descuento γ
+
+El agente no maximiza la próxima recompensa — maximiza el **retorno**, la recompensa acumulada y *descontada* de ahora en adelante:
+
+$$G_t = r_t + \gamma\, r_{t+1} + \gamma^2 r_{t+2} + \dots = \sum_{k=0}^{\infty} \gamma^k\, r_{t+k}.$$
+
+El **factor de descuento** $\gamma \in [0,1)$ decide cuán lejos mira el agente. En $\gamma = 0$ el agente es puramente **miope** — solo le importa $r_t$ y se reventaría feliz en el siguiente paso por un céntimo ahora. A medida que $\gamma \to 1$ se vuelve **previsor**, tratando una recompensa diez pasos por delante casi como una recompensa de hoy. El descuento también mantiene finita la suma infinita y codifica una preferencia por el beneficio cuanto antes mejor.
+
+### Ejemplo resuelto — descontando un flujo de recompensas
+
+Tomad un episodio corto con recompensas $r_0 = 10,\; r_1 = 0,\; r_2 = -4,\; r_3 = 6$ y un descuento de $\gamma = 0.9$. El retorno desde $t=0$ es:
+
+$$G_0 = 10 + 0.9(0) + 0.9^2(-4) + 0.9^3(6).$$
+
+Calculad los pesos: $0.9^2 = 0.81$ y $0.9^3 = 0.729$. Entonces
+
+$$G_0 = 10 + 0 + 0.81(-4) + 0.729(6) = 10 - 3.24 + 4.374 = 11.134.$$
+
+Ahora rehacedlo de forma miope con $\gamma = 0$: $G_0 = 10$ a secas — el agente ni siquiera *ve* el shock de $-4$ ni la recuperación de $+6$. El mismo flujo de recompensas, un sentido de "bueno" completamente distinto, fijado por entero por una sola perilla.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Si ser previsor es mejor, ¿por qué no poner γ = 1 sin más?</summary>
+
+**Respuesta.** Dos razones. Matemáticamente, con un horizonte infinito $\gamma = 1$ puede hacer que $G_t$ diverja, así que el objetivo deja de estar bien definido. En la práctica, los mercados son no estacionarios — una recompensa a 500 pasos vista se proyecta a través de un mundo que habrá cambiado — así que ponderar el futuro lejano tan fuerte como el presente invita al agente a optimizar una fantasía. Un descuento ligeramente por debajo de 1 (digamos 0.99) compra previsión sin apostar la política a un futuro lejano e incognoscible.
+
+</details>
+</Reveal>
+
+<Callout variant="info" title="El diseño de la recompensa es una lección entera">
+Hemos asumido calladamente que la recompensa $r_t$ nos viene dada. No es así — convertir "ganar dinero con cuidado" en un único escalar es el paso más difícil y peligroso del RL aplicado, y es el tema entero de la lección 2.
+</Callout>
+
+## Predicción vs control — la diferencia profunda
+
+Aquí está el abismo entre el curso anterior y este. El aprendizaje supervisado es **predicción**; el RL es **control**.
+
+En la predicción, vuestros datos son (a grandes rasgos) **i.i.d.**, estimáis una correspondencia fija hacia una etiqueta que existe con independencia de vosotros y — crucialmente — **vuestra predicción no cambia el mundo**. Adivinar la lluvia de mañana no altera el tiempo. La etiqueta iba a ser lo que iba a ser.
+
+En el control, **elegís acciones**, y esas acciones cambian qué estados visitáis a continuación — cambian la **distribución futura de datos** de la que vuestro agente aprenderá. En los mercados esto no es una metáfora: una compra grande **mueve el precio** (impacto de mercado), consume liquidez y desplaza el libro de órdenes al que se condiciona la siguiente decisión. El entorno no es un generador pasivo de etiquetas; es una contraparte que reacciona ante vosotros.
+
+| | Aprendizaje supervisado (predicción) | Aprendizaje por refuerzo (control) |
+|---|---|---|
+| Datos | (a grandes rasgos) i.i.d., distribución fija | Generados por tus propias acciones; la distribución cambia |
+| Salida | Una predicción de una etiqueta fija | Una política que elige acciones a lo largo del tiempo |
+| Objetivo | Acertar una etiqueta (pérdida vs. verdad) | Maximizar el retorno acumulado y descontado $G_t$ |
+| Retroalimentación | La etiqueta existe al margen de ti | Tu acción **cambia** el siguiente estado |
+| En los mercados | Predices un retorno; el mercado te ignora | Operas; el **mercado se mueve** por tu culpa |
+| Modo de fallo | Sobreajustar ruido estático | Sobreajustar un simulador que elegiste habitar |
+
+Activad "Impacto de mercado" en la isla del bucle de arriba y podréis verlo directamente: las propias operaciones del agente empujan el precio en su contra, encogiendo cada recompensa posterior. Esa retroalimentación — *tu acción mueve el entorno* — es la única característica que un videojuego, una cuota de mercado y un modelo de predicción nunca pueden representar.
+
+<Callout variant="warning" title="Trampa — dimensionar no es clasificar">
+Un atajo tentador: entrenar un clasificador con etiquetas \{buy, hold, sell\} y llamar a su argmax tu "política". Parece RL; no lo es. Un clasificador optimiza la precisión por ejemplo frente a una etiqueta fija, asumiendo que tu elección no cambia nada. Pero el **tamaño** de la posición, el **momento** y el **impacto** de tu ejecución son decisiones secuenciales y autoafectantes sin etiqueta de verdad fundamental que copiar. Tratar el control como clasificación tira justo lo único — el bucle de retroalimentación — que te hizo recurrir al RL en primer lugar.
+</Callout>
+
+<MatchConcepts
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  termsLabel="Términos"
+  definitionsLabel="Definiciones"
+  allCorrectLabel="✓ Todo emparejado"
+  question="Empareja cada afirmación con el paradigma que describe."
+  pairs={[
+    { term: "Tu salida no cambia los datos futuros que verás", definition: "Predicción (supervisado)" },
+    { term: "Optimizas la recompensa acumulada y descontada sobre una trayectoria", definition: "Control (RL)" },
+    { term: "Una orden grande mueve el precio que verá la siguiente decisión", definition: "Control (RL)" },
+    { term: "Estimar una etiqueta fija a partir de ejemplos a grandes rasgos i.i.d.", definition: "Predicción (supervisado)" },
+  ]}
+  explanation="La línea divisoria es la retroalimentación: en la predicción el mundo es indiferente a tu salida; en el control tu acción remodela la distribución futura de estados. El impacto de mercado convierte el trading de lleno en un problema de control."
+/>
+
+## La política y la función de valor — un anticipo
+
+La política $\pi(a \mid s)$ es todo el juego: una regla (posiblemente estocástica) que, dado un estado, os entrega una acción — o una distribución de probabilidad sobre acciones, para que el agente pueda **explorar** en lugar de explotar siempre su mejor conjetura actual. Todo en este curso es, en última instancia, un método para encontrar una *buena* $\pi$.
+
+Pero ¿cómo sabéis que una política es buena sin jugar infinitos episodios? Estimáis el **valor**. El **valor de estado** $V^\pi(s)$ es el retorno esperado desde el estado $s$ si seguís la política $\pi$ para siempre después; el **valor de acción** $Q^\pi(s,a)$ es el retorno esperado de tomar la acción $a$ en el estado $s$ y seguir $\pi$ a partir de entonces. Estas dos funciones son las vigas de carga de casi todos los algoritmos de RL — os permiten comparar acciones sin enumerar el futuro — y la lección 3 las construye como es debido.
+
+<Quiz
+  client:visible
+  title="Punto de control — el marco del MDP"
+  questions={[
+    {
+      question: "Un agente usa γ = 0.95 y recibe las recompensas r₀ = 4, r₁ = 10. ¿Cuál es la contribución de r₁ al retorno G₀?",
+      options: [
+        { text: "9.5", correct: true },
+        { text: "10" },
+        { text: "0.95" },
+        { text: "4.75" },
+      ],
+      explanation: "La recompensa en t=1 se descuenta una vez: 0.95 × 10 = 9.5. (El propio G₀ sería 4 + 9.5 = 13.5, pero la pregunta solo pide la contribución descontada de r₁.)",
+    },
+    {
+      question: "Estás modelando un agente creador de mercado y notas que la cotización óptima depende mucho del inventario actual, pero tu estado solo incluye el precio medio y la horquilla. ¿Qué ha salido mal?",
+      options: [
+        { text: "El estado no es markoviano — omite una variable de la que depende la acción óptima, así que las transiciones parecen impredecibles cuando en realidad las gobierna el inventario.", correct: true },
+        { text: "Nada — el inventario es una cuestión de recompensa, no de estado." },
+        { text: "γ está demasiado bajo; subirlo recuperará la información que falta." },
+        { text: "La política debería hacerse determinista para arreglarlo." },
+      ],
+      explanation: "La markovianidad es la suficiencia del estado. Si la mejor acción depende del inventario, dejarlo fuera hace el estado insuficiente y la dinámica parece no markoviana. El remedio es añadir la variable.",
+    },
+    {
+      question: "¿Qué afirmación sobre predicción frente a control es VERDADERA?",
+      options: [
+        { text: "En el control, tus acciones cambian la distribución de estados que encontrarás a continuación; en la predicción, tu salida no lo hace.", correct: true },
+        { text: "La predicción maximiza la recompensa acumulada y descontada; el control acierta una etiqueta fija." },
+        { text: "Ambos asumen datos i.i.d. y un mundo indiferente a tu salida." },
+        { text: "El control es solo predicción con más características." },
+      ],
+      explanation: "La característica definitoria del control es el bucle de retroalimentación: las acciones remodelan la distribución futura de datos. En los mercados ese bucle es el impacto de mercado — la acción mueve el entorno.",
+    },
+    {
+      question: "Un compañero propone entrenar un clasificador {buy, hold, sell} sobre barras etiquetadas y desplegar su argmax como política de trading. ¿Cuál es el fallo de fondo — causa y efecto?",
+      options: [
+        { text: "La clasificación asume que tu conjetura de etiqueta no mueve el mundo, así que no puede valorar el impacto de mercado, el dimensionado ni el momento — justo los efectos secuenciales y autoafectantes que el RL existe para manejar.", correct: true },
+        { text: "Los clasificadores son demasiado lentos en inferencia para operar con ellos." },
+        { text: "Tres clases son muy pocas; con más clases se convierte en RL válido." },
+        { text: "El fallo es solo que la precisión es la pérdida equivocada; cambia a F1 y va bien." },
+      ],
+      explanation: "Es un desajuste de paradigma, no de métrica. Un clasificador optimiza la precisión por ejemplo frente a una etiqueta fija e ignora que sus propias ejecuciones cambian el siguiente estado. El tamaño, el momento y el impacto no tienen etiqueta de verdad fundamental que imitar — requieren optimizar un retorno, es decir, control.",
+    },
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  nextLabel="Siguiente"
+  seeResultsLabel="Ver resultados"
+  backLabel="Atrás"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  completeTitleLabel="Cuestionario completado"
+  correctCountLabel="correctas"
+  gateLabel="Comprueba tu respuesta para continuar."
+/>
+
+## Resumen
+
+<MindMap
+  client:visible
+  outlineLabel="Esquema"
+  title="Los mercados como un MDP"
+  caption="Estado, acción, recompensa, transición y política se componen en un proceso de decisión de Markov; el agente maximiza el retorno descontado; y la reacción del mercado a tu operación es lo que hace de esto control, no predicción."
+  root={{
+    label: 'Los mercados como un MDP',
+    children: [
+      { label: 'Las cinco piezas', children: [
+        { label: 'Estado s — lo que observas' },
+        { label: 'Acción a — lo que haces' },
+        { label: 'Recompensa r — feedback escalar' },
+        { label: 'Transición P — regla del mundo' },
+        { label: 'Política pi(a|s) — tu estrategia' },
+      ] },
+      { label: 'Propiedad de Markov', children: [
+        { label: 'El siguiente estado depende solo de ahora' },
+        { label: 'Enriquece el estado hasta que baste' },
+        { label: 'Anade inventario, retornos, libro' },
+      ] },
+      { label: 'Retorno y gamma', children: [
+        { label: 'G = suma de gamma^k por r' },
+        { label: 'gamma tiende a 0: miope' },
+        { label: 'gamma tiende a 1: previsor' },
+      ] },
+      { label: 'Predicción vs control', children: [
+        { label: 'Predicción: la salida ignora el mundo' },
+        { label: 'Control: la acción cambia estados futuros' },
+        { label: 'Mercados: tu operación mueve el precio' },
+      ] },
+      { label: 'Lo que viene', children: [
+        { label: 'V(s) y Q(s,a) — lección 3' },
+        { label: 'Diseño de la recompensa — lección 2' },
+      ] },
+    ],
+  }}
+/>
+
+Ya habláis MDP: sabéis enmarcar un problema de trading como estados, acciones, recompensas, transiciones y una política, sabéis por qué un estado solo-precio rara vez es markoviano, y veis la única característica — *tu acción mueve el entorno* — que hace de esto control y no predicción. Pero fijaos en cuánto nos apoyamos en que la recompensa simplemente *existiera*. A continuación, en **El diseño de la recompensa y sus trampas**, ponemos todo el peso del agente sobre ese único escalar — y observamos qué ocurre cuando "ganar dinero con cuidado" se traduce a matemáticas aunque sea ligeramente mal. Es donde la mayoría de proyectos de RL para trading mueren en silencio, y donde nuestro viejo villano, el sobreajuste, encuentra su disfraz más astuto hasta ahora: un agente que hackea la recompensa que escribisteis en vez del objetivo que quisisteis decir.

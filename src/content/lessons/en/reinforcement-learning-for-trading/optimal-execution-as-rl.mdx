@@ -1,0 +1,266 @@
+---
+title: "Optimal Execution as an RL Problem"
+description: "Slicing a large order to balance market impact against timing risk — the Almgren–Chriss closed form and its efficient frontier, framing execution as a Markov decision process, reading a learned execution policy as a state-to-action map, and what reinforcement learning genuinely adds versus what it merely re-derives."
+topic: "en/reinforcement-learning-for-trading"
+order: 4
+minutes: 16
+updated: 2026-06-19
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, MarketImpactCurve, ExecutionSchedule, ExecutionPolicyHeatmap } from '@/components/react';
+
+Your fund just told you to buy a million shares before the close. You cannot simply slam one giant market order into the book — there isn't a million shares sitting at the best offer, and even if there were, gobbling all of it would yank the price up against you so violently that the last shares cost far more than the first. So you slice the order into pieces and feed them in over time. But the moment you decide to go slow, a new enemy appears: while you dawdle, the price can drift away on its own. Buy slowly and the stock might rally before you finish; sell slowly and it might crater. You are squeezed between two costs that pull in opposite directions.
+
+That squeeze *is* the problem. Trade fast and you pay **market impact** — you move the price by demanding liquidity faster than the market can supply it. Trade slow and you pay **timing risk** — more time in the market means more exposure to plain old volatility. Execution is not a forecasting problem ("will the stock go up?"); it's a **control problem** ("given that I *must* trade this size, what schedule minimizes my total cost?"). And a control problem with a state, actions, and a reward is exactly the shape of an MDP — which is why optimal execution is the canonical, undisputed win for reinforcement learning in trading.
+
+<MCQ
+  client:visible
+  pretest
+  question="You must liquidate a large position by the close. Trading too aggressively versus too passively costs you in two different ways. Which pairing is right?"
+  options={[
+    { text: "Too aggressive → larger market impact (you move the price against yourself); too passive → larger timing/volatility risk (more exposure to adverse price drift).", correct: true },
+    { text: "Too aggressive → more timing risk; too passive → more impact. Speed reduces impact because you're done sooner.", },
+    { text: "Both extremes cost the same; the schedule never matters, only the total quantity does.", },
+    { text: "Too aggressive → lower cost always, because front-running your own order locks in today's price.", },
+  ]}
+  explanation="The two costs trade off in opposite directions. Aggression concentrates your demand in time, so you consume liquidity faster than it refills and pay more impact. Passivity stretches the trade out, leaving your unfinished inventory exposed to volatility — that's timing risk. Optimal execution is the schedule that balances the two; neither extreme is free."
+/>
+
+## The execution problem
+
+Strip it to essentials. You hold $Q$ shares to liquidate over a horizon $T$, split into $N$ equal time steps. At each step you choose how many shares $n_k$ to trade, with $\sum_k n_k = Q$. The sequence $\{n_1, n_2, \ldots, n_N\}$ is your **execution schedule**, and the running total still to be done is your **inventory**. Your goal: finish the whole quantity while minimizing total cost — where "cost" has two flavours.
+
+**Temporary impact** is the price concession you pay to consume liquidity *right now*. Demand $n_k$ shares this instant and you sweep up the book past the best quote; the deeper you reach, the worse your average fill. Crucially, it's *temporary* — once you stop pushing, the book refills and the price recovers. Temporary impact penalizes the **rate** of trading: trade twice as fast in a slice and you pay disproportionately more per share.
+
+**Permanent impact** is different: it's the lasting shift in the equilibrium price *caused by the information your trade reveals*. The market sees persistent buying, infers something, and reprices for good. It doesn't recover when you stop, and it depends on *how much* you trade in total, not how fast. In the classic linear model, permanent impact is a fixed tax on your whole order — it shifts the level but, being schedule-independent in the simplest case, doesn't change the *optimal shape* of the schedule.
+
+**Timing (volatility) risk** is the third character. The longer your remaining inventory sits unsold, the more it's exposed to the stock's own random walk. Slow schedules have lower *expected* impact cost but higher *variance* of cost, because price could wander far while you're still holding. This is the tension the whole field is built around.
+
+<MarketImpactCurve client:visible title="Temporary impact grows super-linearly with trade rate" caption="Fill price worsens as you demand liquidity faster — gentle slices stay near the quote, aggressive slices reach deep into the book." />
+
+<Callout variant="info" title="Impact is convex, and that's the whole game">
+Temporary impact rising *faster* than linearly in the trade rate is what makes splitting orders worthwhile. If impact were perfectly linear, ten small trades would cost exactly the same as one big one and slicing would buy you nothing. Because it's convex, two half-sized trades cost less than one full-sized trade — so spreading out *reduces* expected impact. Timing risk is the force pulling the other way.
+</Callout>
+
+### When to use it
+
+This impact-versus-risk framing applies whenever you move size that's large relative to available liquidity: a pension fund rebalancing, an index reconstitution, a market maker unwinding inventory, or a quant desk routing a parent order to an execution algo. For a 100-share retail order it's irrelevant — you're a rounding error in the book, impact is nil, and you should just cross the spread and move on.
+
+## Almgren–Chriss, the closed form
+
+In 2000, Almgren and Chriss gave the problem a clean answer. Their move: don't minimize expected cost alone (that just says "go slow to dodge impact" and ignores risk), and don't minimize variance alone (that says "go instantly to dodge volatility" and ignores impact). Minimize a **mean–variance** blend:
+
+$$\min_{\{n_k\}} \; \mathbb{E}[\text{cost}] + \lambda \, \mathrm{Var}[\text{cost}]$$
+
+Here $\lambda \ge 0$ is your **risk aversion** — the exchange rate between expected cost and its uncertainty. Sweep $\lambda$ and the optimal schedule morphs:
+
+- **$\lambda = 0$ (risk-neutral).** You don't care about variance at all, so you only fight impact. The answer is to trade as *evenly* as possible — a flat, uniform schedule, one slice per step. This is the spirit of **TWAP** (time-weighted average price); weight the slices by typical volume instead and you get **VWAP**.
+- **$\lambda > 0$ (risk-averse).** Now unsold inventory frightens you, so you want it *gone early*. The optimal schedule **front-loads**: trade more in the first steps, less later, following an **exponentially decaying** trajectory of remaining inventory. The more risk-averse you are, the steeper the decay — in the limit, you fire almost everything immediately and eat the impact to kill the risk.
+
+Plot the achievable (expected cost, variance) pairs as you vary $\lambda$ and you trace the **efficient frontier of execution**: each point is the *lowest possible variance for a given expected cost* (and vice versa). Schedules below the frontier are impossible; schedules above it are strictly dumb — you could cut variance for free. Your $\lambda$ just picks where on the frontier you want to live.
+
+<ExecutionSchedule client:visible title="Risk aversion bends the schedule from flat to front-loaded" caption="λ = 0 gives the straight TWAP ramp-down; raising λ pulls the inventory curve into an exponential decay that empties early." />
+
+### A worked example
+
+Liquidate $Q = 100$ shares over $N = 4$ steps. Suppose, for round numbers, the **risk-neutral** plan trades 25 each step, and a chosen **risk-averse** $\lambda$ yields the front-loaded plan 40 / 30 / 20 / 10.
+
+| Step | TWAP ($\lambda=0$) trade | TWAP inventory after | Front-loaded trade | Front-loaded inventory after |
+|---|---|---|---|---|
+| 1 | 25 | 75 | 40 | 60 |
+| 2 | 25 | 50 | 30 | 30 |
+| 3 | 25 | 25 | 20 | 10 |
+| 4 | 25 | 0 | 10 | 0 |
+
+Average inventory carried (the thing volatility taxes): TWAP holds $(75+50+25+0)/4 = 37.5$ shares on average; the front-loaded plan holds $(60+30+10+0)/4 = 25$ shares. The front-loaded schedule carries a third less inventory through time, so it eats **less timing risk** — at the price of bunching trades early and paying **more impact** up front. That exact trade, less variance for more expected impact, is one step along the efficient frontier.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">If permanent impact is a fixed tax on the whole order, why doesn't it change the optimal schedule shape?</summary>
+
+**Answer.** In the simplest linear Almgren–Chriss model, permanent impact per share traded is constant, so the *total* permanent cost depends only on $Q$ (which you must trade no matter what) and not on *when* you trade it — it's the same dollar amount for every schedule. It shifts the whole cost level up but cancels out of the optimization over schedule shape. The shape is decided by the tug-of-war between **temporary** impact (which punishes fast slices) and **volatility risk** (which punishes slow ones). Make permanent impact nonlinear or state-dependent and that tidy separation breaks — which is exactly where RL starts to earn its keep.
+
+</details>
+</Reveal>
+
+## Framing execution as an MDP
+
+Lessons 1–3 trained you to see any sequential decision under uncertainty as an MDP. Execution snaps right into the mould:
+
+| MDP element | Optimal execution |
+|---|---|
+| **State** $s_k$ | Inventory remaining, time (or steps) remaining, plus market features: price, spread, volatility, order-book depth, and any short-term **alpha signal** |
+| **Action** $a_k$ | How many shares to trade this step — or a **participation rate** (fraction of current volume to take) |
+| **Transition** | Inventory decreases by what you traded; time advances; price evolves stochastically (and is nudged by your own impact) |
+| **Reward** $r_k$ | $-(\text{impact cost this step}) - \lambda \cdot (\text{risk incurred this step})$ |
+| **Episode end** | The deadline $T$ — with a terminal penalty forcing inventory to zero |
+
+The reward line is a direct callback to lesson 2's reward design: you are encoding the *exact same* mean–variance objective Almgren–Chriss minimized, but now as a **per-step** signal an agent can learn from. Maximizing the discounted sum of $-\text{impact} - \lambda\cdot\text{risk}$ is identical to minimizing $\mathbb{E}[\text{cost}] + \lambda\,\mathrm{Var}[\text{cost}]$ — the negation flips "minimize cost" into "maximize reward," and the per-step risk penalty accumulates into the variance term. The terminal penalty is the part you must not forget: an agent rewarded only for cheap trading learns the cheapest schedule of all, which is *to never finish*. The deadline constraint, "inventory must hit zero by $T$," is what makes the problem honest.
+
+<Callout variant="warning" title="Forget the terminal constraint and the agent cheats">
+Without a hard penalty for leftover inventory at $T$, minimizing impact is trivially solved by trading nothing — zero impact, perfect score, mandate ignored. Real execution agents enforce completion either with a large terminal penalty proportional to unsold shares (the agent dumps the remainder to avoid it) or by shrinking the action set as the deadline nears so the only legal move is "finish." The constraint is doing real teaching work, not decoration.
+</Callout>
+
+## Reading a learned policy
+
+Here's the payoff of the MDP view: a solved policy is just a **map from state to action** — "given my remaining inventory, time left, and the current price signal, trade *this* rate." You can visualize it as a heatmap. Read the grid below as a lookup table the agent consults each step.
+
+<ExecutionPolicyHeatmap client:visible title="Three execution policies as state → trade-rate maps" caption="Rows = price signal (cheap at top → pricey at bottom); columns = time toward the deadline (left → right). Darker cells mean trade harder." />
+
+Now read the three behaviours off the picture:
+
+- **TWAP** is a flat field — the same trade rate in every cell. It is *blind to the price signal* (every row looks identical) and *blind to urgency* (every column looks identical). Dead simple, impossible to game, and a perfectly respectable benchmark.
+- **Almgren–Chriss** varies down the *time* axis: heavy early, fading late (front-loading), but it too ignores the price-signal rows — the classic model has no alpha to condition on, so every row is the same.
+- **A learned RL policy** lights up *both* axes. It ramps into the deadline like Almgren *and* conditions on the price signal: when the buy looks cheap it leans in and trades extra, when the price runs away from it the policy pulls back and waits, all while respecting the clock. That two-dimensional responsiveness is the signature of a policy that has learned something the closed form never modelled.
+
+<Categorize
+  client:visible
+  question="Sort each statement by which execution policy it describes."
+  buckets={["TWAP", "Almgren–Chriss", "Learned RL policy"]}
+  items={[
+    { text: "Ignores the price signal and trades the same amount every step.", bucket: "TWAP" },
+    { text: "Front-loads in time but does not condition on a short-term alpha signal.", bucket: "Almgren–Chriss" },
+    { text: "Conditions on both time-to-deadline AND the price signal, trading extra when the fill looks cheap.", bucket: "Learned RL policy" },
+    { text: "Is the simplest, hardest-to-game benchmark — a flat schedule.", bucket: "TWAP" },
+    { text: "Has a closed-form, exponentially-decaying inventory trajectory for λ > 0.", bucket: "Almgren–Chriss" },
+  ]}
+  explanation="TWAP is flat in both price and time. Almgren–Chriss bends along the time axis (front-loading) but, lacking a signal in the classic model, stays flat across the price axis. The learned policy is the only one that conditions on both — that extra price-axis responsiveness is precisely what RL contributes when an exploitable signal exists."
+/>
+
+<FillBlank
+  client:visible
+  question="Complete the contrast between the benchmark and the learned policy."
+  text="TWAP trades a constant rate and is therefore blind to the {{price signal|terminal penalty|inventory}}, whereas a learned RL policy can trade harder when the asset looks {{cheap|illiquid|volatile}} and pull back when the price runs away — conditioning on information the closed form ignores."
+  explanation="TWAP's defining weakness is that it never looks at price; it just clocks out equal slices. The RL edge is opportunistic timing — accelerate into favourable prices, decelerate into adverse ones — which only pays off when a genuine short-horizon signal exists to condition on."
+/>
+
+## What RL adds (and what it just re-derives)
+
+Time for the honest accounting, because the hype here is thick. Take the *exact* world Almgren–Chriss assumed: linear permanent and temporary impact, constant volatility, a single asset, no predictive signal, a mean–variance objective. Point an RL agent at that world and let it train. What does it learn?
+
+It learns Almgren–Chriss. Essentially the same front-loaded, exponentially-decaying schedule the closed form hands you in one line of algebra. This is not a disappointment — it's a **sanity check**. If your execution agent *fails* to recover Almgren–Chriss in the setting where Almgren–Chriss is provably optimal, your agent is broken, and you've just found the bug cheaply. Re-deriving the known answer is the unit test of execution RL.
+
+RL earns its keep precisely where those tidy assumptions crack — which is to say, in reality:
+
+- **Nonlinear or uncertain impact.** Real impact isn't a neat linear function; it bends, it depends on regime, and you don't know its parameters exactly. RL learns the schedule from data without needing you to write the impact model down correctly.
+- **A short-term alpha signal.** If you have a genuine micro-prediction ("price likely ticks up in the next minute"), the optimal schedule should *speed up* to buy before the rise and *slow down* into adverse moves. Almgren–Chriss has no slot for this; RL conditions on it natively.
+- **Regime-dependent liquidity.** Spreads widen, depth evaporates, volatility clusters. A policy that reads current market conditions and adapts its aggression beats any fixed schedule computed at the open.
+- **Hard constraints.** Minimum and maximum participation rates, dark-pool routing, "don't be more than X% of volume." RL handles messy, non-smooth constraints that closed-form mean–variance can't.
+- **Multi-asset / portfolio execution.** Liquidating a basket with correlated prices and cross-impact is a high-dimensional control problem with no clean closed form. This is RL's home turf.
+
+<MatchConcepts
+  client:visible
+  question="Match each execution scenario to whether RL re-derives the classic answer or genuinely adds value."
+  pairs={[
+    { term: "Linear impact, constant volatility, no signal, single asset", definition: "RL re-derives Almgren–Chriss — a sanity check, not an edge" },
+    { term: "A reliable short-horizon alpha signal you can trade into", definition: "RL adds value — it conditions the schedule on the signal" },
+    { term: "Impact is nonlinear and its parameters are uncertain", definition: "RL adds value — it learns the schedule without a correct impact model" },
+    { term: "Liquidating a correlated basket with cross-impact", definition: "RL adds value — high-dimensional control with no clean closed form" },
+  ]}
+  explanation="The discipline is knowing which bucket you're in. In the Almgren–Chriss world, RL is overkill that should reproduce the formula. The genuine wins all come from breaking an Almgren–Chriss assumption: signals, nonlinear/uncertain impact, regime shifts, hard constraints, or multiple correlated assets."
+/>
+
+<Callout variant="warning" title="The simulator that lies to you">
+The most seductive failure in execution RL: your agent posts gorgeous backtest numbers — and it's because it learned to exploit a *too-friendly impact model* in your simulator. If the sim under-charges for aggression, the agent discovers it can trade huge size with cartoonishly small impact, and it front-runs and slams the (fake) book to "win." Live, the real impact is brutal and the strategy bleeds. The agent didn't learn execution; it learned the bugs in your physics. Calibrating impact and modelling the agent's own footprint honestly is the hard part — and the subject of lesson 6.
+</Callout>
+
+### When to use it
+
+Default to Almgren–Chriss (or plain TWAP/VWAP) when your world *is* roughly its world: modest size, no exploitable signal, a single liquid name, well-understood impact. Reach for RL when you have a real edge to exploit (a signal), a hard-to-model impact regime, non-smooth constraints, or a correlated basket — and only after you trust your simulator's impact model enough that you're not just learning its bugs.
+
+<MindMap
+  client:visible
+  title="Optimal execution as RL — the whole map"
+  root={{
+    label: "Optimal Execution",
+    children: [
+      {
+        label: "The trade-off",
+        children: [
+          { label: "Fast → market impact" },
+          { label: "Slow → timing/volatility risk" },
+          { label: "Temporary vs permanent impact" },
+        ],
+      },
+      {
+        label: "Almgren–Chriss",
+        children: [
+          { label: "Minimize E[cost] + λ Var[cost]" },
+          { label: "λ = 0 → uniform TWAP" },
+          { label: "λ > 0 → front-loaded, exp decay" },
+          { label: "Efficient frontier of execution" },
+        ],
+      },
+      {
+        label: "As an MDP",
+        children: [
+          { label: "State → inventory, time, market features, signal" },
+          { label: "Action → shares or participation rate" },
+          { label: "Reward → −impact − λ risk + terminal penalty" },
+        ],
+      },
+      {
+        label: "What RL adds",
+        children: [
+          { label: "Re-derives A-C in its own world (sanity check)" },
+          { label: "Signal, nonlinear impact, regimes" },
+          { label: "Constraints, multi-asset baskets" },
+          { label: "Risk → overfit a friendly simulator" },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Execution checkpoint"
+  questions={[
+    {
+      question: "In the linear Almgren–Chriss model, raising the risk-aversion parameter λ changes the optimal schedule how?",
+      options: [
+        { text: "It front-loads more — pushing the inventory trajectory toward a steeper exponential decay, trading more early to cut volatility exposure.", correct: true },
+        { text: "It flattens the schedule toward uniform TWAP, because higher λ means you care less about variance.", },
+        { text: "It has no effect on the schedule shape; λ only scales the reported cost.", },
+        { text: "It back-loads the schedule, delaying trades to gather more price information.", },
+      ],
+      explanation: "Higher λ means unsold inventory is scarier, so you empty it faster — a steeper exponential decay (more front-loading). λ = 0 is the flat TWAP limit; cranking λ up pulls you along the efficient frontier toward lower variance at the cost of more expected impact.",
+    },
+    {
+      question: "Temporary and permanent impact differ in which way?",
+      options: [
+        { text: "Temporary impact recovers once you stop trading and penalizes the rate of trading; permanent impact is a lasting repricing that depends on total quantity traded.", correct: true },
+        { text: "Temporary impact is permanent and permanent impact is temporary — the names are historical accidents.", },
+        { text: "Both recover fully after the trade; the only difference is which exchange charges them.", },
+        { text: "Permanent impact penalizes trade rate; temporary impact depends only on total size.", },
+      ],
+      explanation: "Temporary impact is the concession you pay to consume liquidity now; the book refills and the price recovers, and it scales with how fast you trade. Permanent impact is the lasting shift in the equilibrium price from the information your trade reveals — it doesn't recover and scales with total quantity.",
+    },
+    {
+      question: "You point an RL agent at a simulated world with exactly Almgren–Chriss's assumptions: linear impact, constant volatility, no signal, one asset. A well-built agent should…",
+      options: [
+        { text: "Approximately re-derive the Almgren–Chriss schedule — a reassuring sanity check, not evidence of an edge.", correct: true },
+        { text: "Dramatically beat Almgren–Chriss, proving RL is strictly superior even in its home turf.", },
+        { text: "Refuse to converge, because RL cannot handle continuous trade sizes.", },
+        { text: "Learn to never finish the order, since that minimizes impact.", },
+      ],
+      explanation: "In the world where Almgren–Chriss is provably optimal, the best any method can do is match it. A correct RL agent reproduces the closed form — if it doesn't, you've found a bug. The real wins appear only once you break an assumption (signal, nonlinear impact, constraints, multiple assets). And it won't 'never finish' because the terminal constraint forbids leftover inventory.",
+    },
+    {
+      question: "An execution RL agent shows spectacular backtest results. Before celebrating, the single most important thing to check is…",
+      options: [
+        { text: "Whether the agent is exploiting an unrealistically friendly impact model in the simulator rather than learning real execution skill.", correct: true },
+        { text: "Whether it used a policy-gradient or value-based method, since only one can do execution.", },
+        { text: "Whether λ was set to exactly zero, the only valid risk-aversion value.", },
+        { text: "Whether the schedule is perfectly flat, since flat is always optimal.", },
+      ],
+      explanation: "The classic trap: the agent learned to game a sim that under-charges for aggression, so it slams the fake book for fake profits that evaporate live. Honest impact calibration — including the agent's own footprint — is the make-or-break step, and the focus of lesson 6.",
+    },
+  ]}
+/>
+
+## Where this goes next
+
+Execution is the friendliest RL problem in trading because the objective is unambiguous (finish the order cheaply), the benchmark is clear (beat TWAP/Almgren–Chriss), and reality breaks the closed form in exactly the ways RL is built to absorb. You've now seen the canonical win end to end: the impact-versus-risk trade-off, Almgren–Chriss and its efficient frontier, the MDP framing, a learned policy read off a heatmap, and the honest line between what RL re-derives and what it genuinely adds.
+
+But execution still assumes someone hands you the order and a deadline. **Lesson 5, "Market-Making Agents,"** flips the chair around: instead of consuming liquidity on a schedule, you *provide* it — quoting both sides of the book, managing inventory you never chose to hold, and getting paid the spread for the privilege of being the counterparty everyone else trades against. Same MDP toolkit, a wilder, two-sided reward.

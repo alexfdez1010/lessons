@@ -68,25 +68,6 @@ export interface UpcomingCourse {
  */
 export const upcomingCourses: UpcomingCourse[] = [
   {
-    slug: 'reinforcement-learning-for-trading',
-    icon: '🤖',
-    difficulty: 'expert',
-    order: 10,
-    accent: 'accent',
-    title: {
-      en: 'Reinforcement Learning for Trading',
-      es: 'Aprendizaje por Refuerzo para Trading',
-    },
-    description: {
-      en: 'Markets as a sequential decision problem: MDPs for execution and market making, reward design, policy-gradient vs Q-learning, and the sim-to-real gap that wrecks naive RL backtests.',
-      es: 'Los mercados como problema de decisión secuencial: MDP para ejecución y creación de mercado, diseño de recompensas, policy-gradient frente a Q-learning, y el salto sim-a-real que arruina los backtests de RL ingenuos.',
-    },
-    dependencies: ['machine-learning-for-alpha', 'algorithmic-trading-and-execution', 'market-microstructure'],
-    tags: ['quantitative-finance', 'trading-and-markets'],
-    buildNotes:
-      'Reinforcement learning where the action moves the market: framing trading as a Markov decision process (state, action, reward, transition), why supervised ML is the wrong frame for execution/sizing, optimal execution as an RL problem (and how it relates to Almgren–Chriss), market-making agents balancing inventory and spread, value-based (Q-learning/DQN) vs policy-gradient (PPO/actor-critic) methods, reward shaping and its pitfalls (reward hacking, myopia), exploration vs exploitation under transaction costs, and the brutal sim-to-real / non-stationarity gap that makes RL backtests even easier to overfit than supervised ones. Carry the overfitting-is-the-enemy theme from machine-learning-for-alpha. Islands: rl-agent-env-loop + execution-policy-heatmap.',
-  },
-  {
     slug: 'deep-learning-for-market-data',
     icon: '🔮',
     difficulty: 'expert',

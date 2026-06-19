@@ -1,0 +1,297 @@
+---
+title: "Métodos basados en valor vs. de gradiente de política"
+description: "Las dos grandes familias del aprendizaje por refuerzo — aprender lo que vale cada situación (Q-learning, DQN) frente a aprender la política directamente (gradientes de política, PPO, actor–crítico) — cuándo encaja cada una en un problema de trading, por qué las acciones continuas te empujan hacia los métodos de política, y el problema de exploración frente a explotación cuando cada operación exploratoria paga el diferencial."
+topic: "es/reinforcement-learning-for-trading"
+order: 3
+minutes: 17
+updated: 2026-06-19
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, MindMap, MonteCarloConverge } from '@/components/react';
+
+Tienes un MDP (lección 1) y una recompensa que confías en que no se pueda manipular (lección 2). Ahora la pregunta de verdad: *¿cómo convierte un agente la experiencia en una buena política?* Hay dos grandes filosofías, y casi todos los algoritmos que te encontrarás pertenecen a un bando, al otro, o a un matrimonio de ambos.
+
+La primera vía es indirecta: **averigua cómo de buena es cada situación y luego actúa con avaricia.** Si conocieras el verdadero valor de mantener, comprar o vender en cada estado del mercado, no necesitarías ninguna "estrategia" — simplemente elegirías la acción de mayor valor y listo. La segunda vía se salta la contabilidad: **aprende a actuar directamente.** Ajusta una política llena de mandos para que las acciones que prefiere conduzcan a más recompensa, sin más. Ambas llegan a una buena política; solo discrepan en si hace falta tasar el mundo entero primero o si puedes aprender a bailar sin medir la sala.
+
+<MCQ
+  client:visible
+  pretest
+  question="La acción de tu agente es un tamaño de posición continuo — cualquier fracción en [-1, 1] del capital, en largo o en corto. ¿Qué familia encaja de forma natural, y por qué?"
+  options={[
+    { text: "Los métodos de gradiente de política — generan directamente una distribución sobre una acción continua, sin ningún argmax sobre un conjunto infinito de acciones que calcular.", correct: true },
+    { text: "Los métodos basados en valor — el max sobre acciones de Q-learning maneja los tamaños continuos sin esfuerzo.", },
+    { text: "Ninguna — el RL solo funciona con acciones discretas de comprar/vender/mantener.", },
+    { text: "No hay diferencia; ambas familias tratan las acciones continuas y discretas de forma idéntica.", },
+  ]}
+  explanation="Los métodos de valor necesitan argmaxₐ Q(s,a). Sobre un continuo eso es un problema de optimización en cada paso — incómodo en el mejor de los casos. Los métodos de política parametrizan π_θ(a|s) (digamos una gaussiana sobre la fracción) y muestrean directamente, así que las acciones continuas y estocásticas son nativas. Por eso precisamente el control continuo se inclina hacia los métodos de política."
+  pretestLabel="Antes de leer — adivina"
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+/>
+
+## Dos formas de aprender a actuar
+
+Un método **basado en valor** aprende un número para las situaciones (y los pares situación–acción), y luego deriva la política actuando con avaricia respecto a esos números. Un método **basado en política** se salta directamente a la política: parametriza la distribución de acciones y empuja los parámetros hacia más recompensa. Los métodos **actor–crítico** se niegan a elegir — mantienen una política (el *actor*) y una estimación de valor (el *crítico*) y dejan que el crítico haga menos ruidoso el aprendizaje del actor.
+
+| Dimensión | Basado en valor (Q-learning, DQN) | Basado en política (REINFORCE, PPO) | Actor–crítico (A2C, PPO, SAC) |
+|---|---|---|---|
+| Qué se aprende | $Q(s,a)$ — valor de cada acción | $\pi_\theta(a\mid s)$ — la política misma | Ambos: actor $\pi_\theta$ + crítico $V$/$Q$ |
+| Espacio de acciones | Discreto (necesita argmax) | Discreto **o** continuo | Discreto **o** continuo |
+| Tipo de política | Determinista (avariciosa) | Naturalmente estocástica | Estocástica |
+| Eficiencia de muestra | Mayor (el replay reutiliza datos) | Menor (a menudo on-policy) | Media |
+| Estabilidad | Puede diverger (tríada mortal) | Gradientes ruidosos, alta varianza | El crítico domestica la varianza |
+| Encaje en trading | Operaciones discretizadas, datos densos | Tamaño continuo, riesgo de exploración | La opción por defecto moderna |
+
+### Cuándo usarlo
+
+Recurre a los métodos **basados en valor** cuando las acciones son un menú discreto pequeño y tienes (o puedes reproducir) muchos datos. Recurre a los **basados en política** cuando la acción es continua, cuando quieres una política *estocástica* a propósito, o cuando el comportamiento óptimo se expresa mejor como "inclínate hacia aquí" que como "elige el máximo." Recurre a **actor–crítico** cuando quieres el alcance de acciones continuas de los métodos de política *sin* ahogarte en la varianza del gradiente — lo cual, en la práctica, es casi siempre.
+
+## Funciones de valor y Q-learning
+
+Dos funciones de valor anclan todo el mundo basado en valor. El **valor de estado** $V^\pi(s)$ es el retorno descontado esperado desde el estado $s$ si sigues la política $\pi$ para siempre a partir de ahí. El **valor de acción** $Q^\pi(s,a)$ es lo mismo, pero te comprometes a la acción $a$ *primero* y sigues $\pi$ después:
+
+$$Q^\pi(s,a) = \mathbb{E}\!\left[\,r_t + \gamma r_{t+1} + \gamma^2 r_{t+2} + \cdots \;\middle|\; s_t = s,\, a_t = a\right]$$
+
+La magia es que estos valores obedecen una regla de consistencia autorreferencial, la **ecuación de Bellman** — el valor de ahora es igual a la recompensa inmediata más el valor descontado del siguiente:
+
+$$Q^*(s,a) = \mathbb{E}\!\left[\,r + \gamma \max_{a'} Q^*(s', a')\,\right]$$
+
+Rara vez conoces esa esperanza de forma analítica, así que la *muestreas*. El **aprendizaje por diferencias temporales (TD)** actualiza cada estimación hacia un "objetivo" a un paso construido a partir de la experiencia real y la estimación actual del siguiente estado — hace *bootstrapping*, aprendiendo una conjetura a partir de una conjetura ligeramente mejor. El **Q-learning** tabular es la regla TD canónica:
+
+$$Q(s,a) \leftarrow Q(s,a) + \alpha\Big[\,r + \gamma \max_{a'} Q(s', a') - Q(s,a)\,\Big]$$
+
+El término entre corchetes es el **error TD**: cómo de sorprendido te quedaste. Multiplícalo por la tasa de aprendizaje $\alpha$ y empuja.
+
+### Una actualización Q resuelta
+
+Estado $s$ = "manteniendo, momentum al alza", acción $a$ = *comprar*. Supón que $Q(s, \text{comprar}) = 4.0$, tasa de aprendizaje $\alpha = 0.1$, descuento $\gamma = 0.9$. Tomas *comprar*, recoges una recompensa $r = 2.0$ (un buen tick de P&L), y aterrizas en $s'$ donde tus estimaciones actuales son $Q(s', \text{vender}) = 6.0$, $Q(s', \text{mantener}) = 5.0$, $Q(s', \text{comprar}) = 3.0$.
+
+- Valor avaricioso del siguiente: $\max_{a'} Q(s', a') = 6.0$.
+- Objetivo TD: $r + \gamma \cdot 6.0 = 2.0 + 0.9 \times 6.0 = 2.0 + 5.4 = 7.4$.
+- Error TD: $7.4 - 4.0 = 3.4$.
+- Nueva estimación: $4.0 + 0.1 \times 3.4 = 4.0 + 0.34 = 4.34$.
+
+Una experiencia, un pequeño paso: $Q(s, \text{comprar})$ subió de $4.00$ a $4.34$. Repítelo a lo largo de millones de transiciones y la tabla converge hacia $Q^*$.
+
+**On-policy vs. off-policy en una línea:** el *Q-learning* es **off-policy** — su objetivo usa $\max_{a'}$, la *mejor* acción siguiente, sin importar lo que hagas de verdad después; el *SARSA* es **on-policy** — usa $Q(s', a')$ para la acción que *realmente* tomas, así que aprende el valor de la política que estás ejecutando de verdad (con las verrugas de la exploración incluidas).
+
+<FillBlank
+  client:visible
+  question="Rellena el corchete del bootstrapping."
+  text="El término r + γ·maxₐ′ Q(s′,a′) − Q(s,a) se llama el {{error TD|presupuesto de residuo de Bellman|gradiente de política|recorte de ventaja}}, y el Q-learning es {{off-policy|on-policy|basado en modelo|supervisado}} porque su objetivo usa la acción siguiente maximizadora en lugar de la que se toma realmente."
+  explanation="Ese corchete es el error de diferencias temporales (TD) — tu sorpresa a un paso. Como el objetivo maximiza sobre a′ en lugar de usar la acción que de verdad elegirás, el Q-learning evalúa la política avariciosa mientras se comporta como le da la gana: off-policy."
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+/>
+
+## Redes Q profundas (DQN)
+
+Una tabla funciona cuando los estados son un puñado de cubos discretos. Los mercados reales te entregan estados continuos y de alta dimensión — precios, diferenciales, desequilibrio del libro de órdenes, inventario — y la tabla explota. El arreglo es la **aproximación de funciones**: reemplaza la tabla de búsqueda por una red neuronal $Q_\theta(s,a)$ que *generaliza* entre estados similares. Eso es una **red Q profunda (DQN)**.
+
+Pero entrenar ingenuamente una red sobre objetivos TD con bootstrapping es gloriosamente inestable, por dos razones que DQN parchea:
+
+- **Replay de experiencia.** Almacena transiciones $(s, a, r, s')$ en un búfer y entrena con minilotes aleatorios. Esto rompe la correlación temporal de ticks de mercado consecutivos (de lo contrario la red se sobreajusta al régimen que esté mirando en ese momento) y permite reutilizar cada experiencia muchas veces — una gran victoria en eficiencia de muestra.
+- **Redes objetivo.** El objetivo TD $r + \gamma \max_{a'} Q_\theta(s', a')$ depende de los *mismos* pesos que estás actualizando — persigues un objetivo que se mueve en cada paso. DQN congela una copia $Q_{\theta^-}$ para el objetivo y solo la sincroniza periódicamente, de modo que las porterías se quedan quietas lo bastante para apuntar.
+
+<Callout variant="warning" title="La tríada mortal">
+Combina **aproximación de funciones** + **bootstrapping** (objetivos TD construidos a partir de tus propias estimaciones) + aprendizaje **off-policy** y los métodos de valor pueden *diverger* — las estimaciones explotan en lugar de converger. Los tres juntos son el peligro; los búferes de replay y las redes objetivo son control de daños, no una cura. Cuando los valores Q de un DQN se marchan al infinito, la tríada suele ser la culpable.
+</Callout>
+
+Como los valores de los que haces bootstrapping son estimaciones muestreadas, más experiencia significa estimaciones de valor más ajustadas y menos ruidosas — la misma ley de los grandes números que hace que cualquier media de Montecarlo se asiente. Mira cómo convergen las estimaciones muestreadas a medida que se acumulan las muestras:
+
+<MonteCarloConverge client:visible title="Las estimaciones de valor se asientan al acumularse las muestras" caption="Cada nueva transición muestreada refina la estimación; las conjeturas ruidosas del principio dan paso a un valor estable." />
+
+### Cuándo usarlo
+
+DQN brilla cuando el **conjunto de acciones es discreto y pequeño** — `{vender, mantener, comprar}`, o un puñado de tamaños de posición discretizados como `{-100%, -50%, 0, +50%, +100%}` — y tienes datos abundantes y reproducibles. En cuanto quieres un tamaño genuinamente continuo, el $\max_{a'}$ de DQN se convierte en una búsqueda sobre un continuo y la elegancia se evapora. Esa es tu señal para cruzar a los métodos de política.
+
+<MCQ
+  client:visible
+  question="Los valores Q aprendidos por un DQN trepan de forma constante hacia números absurdamente grandes durante el entrenamiento y nunca se estabilizan. ¿Cuál es el diagnóstico más probable?"
+  options={[
+    { text: "La tríada mortal — aproximación de funciones, bootstrapping y actualizaciones off-policy interactuando; mitígalo con una red objetivo y replay, o reduce la tasa de aprendizaje.", correct: true },
+    { text: "El factor de descuento γ es demasiado pequeño, así que se ignoran las recompensas futuras.", },
+    { text: "La recompensa está perfectamente moldeada, así que los valores deben crecer sin límite.", },
+    { text: "El replay de experiencia es la causa y debería eliminarse por completo.", },
+  ]}
+  explanation="Los valores Q que divergen son la firma de la tríada mortal. Eliminar el replay empeoraría la correlación, no la mejoraría. Las mitigaciones estándar son una red objetivo congelada, replay, recorte de gradiente/retorno y una tasa de aprendizaje más suave."
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+/>
+
+## Gradientes de política
+
+Los métodos de política prescinden del tasador. Parametriza la política directamente — $\pi_\theta(a \mid s)$, p. ej. un softmax sobre acciones discretas o una gaussiana sobre un tamaño de posición continuo — y **asciende por el gradiente del retorno esperado** $J(\theta) = \mathbb{E}_{\pi_\theta}[\text{retorno}]$:
+
+$$\nabla_\theta J(\theta) = \mathbb{E}_{\pi_\theta}\!\left[\,\nabla_\theta \log \pi_\theta(a \mid s)\, \cdot\, R\,\right]$$
+
+Este es el estimador de la **función de puntuación** (cociente de verosimilitudes), y **REINFORCE** es su encarnación más sencilla: ejecuta un episodio, y para cada acción tomada, empuja su log-probabilidad *hacia arriba* si el retorno del episodio $R$ fue bueno y *hacia abajo* si fue malo — escalado según lo bueno que fuera. Sin argmax, sin tabla de Bellman; esculpes la distribución de acciones reforzando las trayectorias que dieron sus frutos.
+
+La ventaja es exactamente lo que señaló el pretest: los gradientes de política manejan políticas **continuas y estocásticas** de forma nativa — una política estocástica a veces es *óptima* (piensa en estrategias mixtas, o en exploración deliberada). La desventaja es brutal: el gradiente es una estimación de Montecarlo de **alta varianza** (una operación de cola afortunada puede dominar la señal de un episodio entero), y el REINFORCE básico es **ineficiente en muestras** porque es on-policy — cada paso de gradiente necesita trayectorias frescas de la política actual, así que los datos viejos se descartan.
+
+### Cuándo usarlo
+
+Usa un gradiente de política puro cuando la acción es continua o de verdad quieres estocasticidad, *y* muestrear es barato. En trading, muestrear rara vez es barato — y por eso precisamente existe la siguiente idea.
+
+## Actor–crítico y PPO
+
+El problema de la varianza tiene un arreglo limpio: deja de escalar por el retorno bruto $R$ y escala por cuánto *mejor* fue una acción de lo esperado. Introduce un **crítico** — una estimación de valor aprendida $V(s)$ — y define la **ventaja**:
+
+$$A(s,a) = Q(s,a) - V(s)$$
+
+Una ventaja positiva significa "esta acción superó la base; hazla más"; negativa significa "por debajo de lo esperado; hazla menos." Restar la base $V(s)$ recorta la varianza sin sesgar el gradiente. El **actor** ($\pi_\theta$) propone, el **crítico** ($V$) califica, y el actor aprende de la calificación en lugar del retorno bruto ruidoso. Eso es **actor–crítico** en una frase.
+
+**PPO (Optimización de Política Proximal)** añade la jugada que hizo los métodos de política lo bastante fiables para producción: **recorta** la actualización de la política para que un solo lote no pueda arrancar la política demasiado lejos de donde estaba. Formalmente acota el cociente de probabilidades $r_t(\theta) = \pi_\theta / \pi_{\theta_{\text{old}}}$ dentro de $[1-\epsilon, 1+\epsilon]$, de modo que un lote demasiado entusiasta no pueda destruir una política conseguida con esfuerzo. El resultado es un caballo de batalla robusto, de poco ajuste, para control continuo — la **opción por defecto moderna**.
+
+El linaje de acciones continuas que merece la pena conocer por su nombre: **A2C/A3C** (actor–crítico de ventaja síncrono/asíncrono), **DDPG** (control continuo determinista con un búfer de replay — un híbrido valor/política), y **SAC (Soft Actor-Critic)**, que añade un bono de entropía para mantener la política explorando. Para el tamaño de posición continuo, PPO y SAC son los nombres a los que recurrirás primero.
+
+<Reveal client:visible>
+  <details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+    <summary className="cursor-pointer font-medium">¿Por qué restar V(s) reduce la varianza pero no sesga el gradiente?</summary>
+
+    **Respuesta.** La base $V(s)$ depende solo del *estado*, no de la acción, así que en esperanza $\mathbb{E}_a[\nabla_\theta \log \pi_\theta(a\mid s)\,V(s)] = 0$ — no añade nada al gradiente verdadero (sin sesgo). Pero *recentra* la señal de recompensa alrededor del valor típico del estado, así que ya no multiplicas log-probabilidades por un número cuya escala y signo oscilan salvajemente con la bondad general del estado. Multiplicadores más pequeños y mejor centrados significan menor varianza. Básicamente, comida gratis.
+
+  </details>
+</Reveal>
+
+### Cuándo usarlo
+
+Por defecto, **PPO** cuando la acción es continua, quieres un entrenamiento estable sin un sinfín de niñeras de hiperparámetros, y puedes permitirte datos on-policy razonablemente frescos. Recurre a **SAC** cuando la eficiencia de muestra importa más y quieres exploración integrada vía el término de entropía. Usa **A2C** a secas cuando quieres algo más simple y tienes un simulador rápido.
+
+## Exploración vs. explotación bajo costes de transacción
+
+Todo agente de RL se enfrenta a la misma tensión: **explotar** la mejor acción conocida para embolsar recompensa ahora, o **explorar** una acción incierta que *podría* ser mejor. Herramientas estándar:
+
+- **ε-avariciosa** — actúa con avaricia con probabilidad $1-\varepsilon$, aleatoriamente en caso contrario; reduce $\varepsilon$ poco a poco a lo largo del entrenamiento. Barata y ubicua en los métodos de valor.
+- **Bonos de entropía** — añade una recompensa por una política de alta entropía (menos certera), para que el agente no colapse a una sola acción demasiado pronto. Esta es toda la personalidad de SAC.
+- **Inicialización optimista** — arranca cada $Q(s,a)$ alto para que las acciones no probadas parezcan atractivas; el agente las explora solo para descubrir que estaban sobrevaloradas.
+
+Aquí está el giro del trading que rompe el libro de texto. En un videojuego, un movimiento exploratorio es *gratis* — en el peor de los casos pierdes una vida de mentira. En los mercados, **cada operación exploratoria paga el diferencial, más comisiones, más impacto de mercado.** Una política que explora operando al azar no está recogiendo información barata; está *sangrando dinero real en cada clic aleatorio.* La ε-avariciosa ingenua en trading en vivo es una donación a cámara lenta a tu bróker.
+
+<Callout variant="warning" title="Aquí la exploración no es gratis">
+Un backtest que deja al agente "explorar" operando a su antojo, y luego reporta los retornos de la política *posterior a la exploración*, miente en voz baja — el coste de exploración fue capital real. Dos respuestas de los profesionales: (1) **RL offline / por lotes** — aprende de un conjunto de datos fijo de interacciones históricas con **ninguna exploración en vivo en absoluto**, aceptando que solo puedes evaluar acciones que los datos ya cubren; y (2) **políticas conservadoras** que se mantienen cerca de un comportamiento conocido como seguro y solo exploran donde los datos lo respaldan. Cuando cada sondeo cuesta el diferencial, el experimento más barato es el que ejecutas sobre datos que ya pagaste.
+</Callout>
+
+### Cuándo usarlo
+
+Usa la **exploración en vivo** (ε-avariciosa, entropía) solo en un *simulador* fiel donde los errores sean gratis. Para cualquier cosa que toque capital real, inclínate por el **RL offline/por lotes** y políticas conservadoras respaldadas por datos — y trata el diferencial y el impacto de cualquier operación "exploratoria" como un coste real y presupuestado, no como un error de redondeo.
+
+<MatchConcepts
+  client:visible
+  question="Empareja cada método o idea con su descripción de una línea."
+  pairs={[
+    { term: "Q-learning", definition: "TD off-policy: actualiza Q(s,a) hacia r + γ·maxₐ′Q(s′,a′)." },
+    { term: "DQN", definition: "Q-learning con una red neuronal, replay de experiencia y una red objetivo." },
+    { term: "REINFORCE", definition: "Gradiente de política que empuja las log-probabilidades de las acciones por el retorno de un episodio." },
+    { term: "Actor–crítico", definition: "Una política (actor) entrenada con la estimación de valor/ventaja de un crítico para recortar la varianza." },
+    { term: "PPO", definition: "Actor–crítico que recorta la actualización de la política para que un lote no pueda moverla demasiado." },
+    { term: "ε-avariciosa", definition: "Exploración: actúa con avaricia la mayor parte del tiempo, al azar con probabilidad ε." },
+  ]}
+  explanation="Q-learning y DQN son basados en valor; REINFORCE es un gradiente de política puro; actor–crítico y PPO mezclan los dos; ε-avariciosa es una regla de exploración (no una familia de aprendizaje)."
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  termsLabel="Términos"
+  definitionsLabel="Definiciones"
+  allCorrectLabel="✓ Todo emparejado"
+/>
+
+<MindMap
+  client:visible
+  title="El mapa de algoritmos de RL"
+  root={{
+    label: "Métodos de RL",
+    children: [
+      { label: "Basados en valor", children: [
+        { label: "Funciones V y Q" },
+        { label: "Ecuación de Bellman y aprendizaje TD" },
+        { label: "Q-learning (off-policy), SARSA (on-policy)" },
+        { label: "DQN: replay, red objetivo, tríada mortal" },
+      ] },
+      { label: "Basados en política", children: [
+        { label: "Parametrizar la política pi-theta" },
+        { label: "REINFORCE, gradiente de funcion de puntuacion" },
+        { label: "Alta varianza, acciones continuas OK" },
+      ] },
+      { label: "Actor-critico", children: [
+        { label: "El critico da la ventaja A igual a Q menos V" },
+        { label: "PPO recorta la actualizacion" },
+        { label: "Linaje A2C, DDPG, SAC" },
+      ] },
+      { label: "Exploracion vs explotacion", children: [
+        { label: "Epsilon-avariciosa, entropia, optimismo" },
+        { label: "Cada operacion de exploracion paga el diferencial" },
+        { label: "RL offline y por lotes, politicas conservadoras" },
+      ] },
+    ],
+  }}
+  outlineLabel="Esquema"
+/>
+
+<Quiz
+  client:visible
+  title="Punto de control de algoritmos"
+  questions={[
+    {
+      question: "Con Q(s,a)=10, α=0.5, γ=1, recompensa r=2, y valores del siguiente estado {3, 7, 1}, ¿cuál es el Q(s,a) actualizado tras un paso de Q-learning?",
+      options: [
+        { text: "10.0 (sin cambio)", },
+        { text: "9.5", correct: true },
+        { text: "12.0", },
+        { text: "4.5", },
+      ],
+      explanation: "Objetivo = r + γ·max = 2 + 1×7 = 9. Error TD = 9 − 10 = −1. Nuevo Q = 10 + 0.5×(−1) = 9.5. El valor era demasiado alto, así que bajó un poco.",
+    },
+    {
+      question: "¿Qué afirmación sobre la ventaja actor–crítico A(s,a) = Q(s,a) − V(s) es correcta?",
+      options: [
+        { text: "Restar V(s) reduce la varianza del gradiente sin sesgar el gradiente de política.", correct: true },
+        { text: "Sesga el gradiente hacia los errores del crítico y debería evitarse.", },
+        { text: "Convierte un método de política en un método de valor puro.", },
+        { text: "Solo funciona para espacios de acciones discretos.", },
+      ],
+      explanation: "V(s) es una base que depende solo del estado, así que tiene esperanza cero bajo la distribución de acciones — sin sesgo — mientras recentra la señal para recortar la varianza. Funciona igual para acciones discretas y continuas.",
+    },
+    {
+      question: "¿Por qué se comporta la exploración ε-avariciosa ingenua de forma muy distinta en trading en vivo que en un videojuego?",
+      options: [
+        { text: "Porque cada operación exploratoria paga diferencial, comisiones e impacto reales — la exploración cuesta dinero de verdad.", correct: true },
+        { text: "Porque los mercados no tienen estados, así que la ε-avariciosa no está definida.", },
+        { text: "Porque ε debe ser siempre exactamente 0.5 en finanzas.", },
+        { text: "Porque las recompensas del trading son siempre deterministas, lo que elimina la necesidad de explorar.", },
+      ],
+      explanation: "En un juego una acción exploratoria es gratis; en los mercados cada operación aleatoria cruza el diferencial y mueve el precio. Por eso los profesionales prefieren el RL offline/por lotes y las políticas conservadoras a la exploración aleatoria en vivo.",
+    },
+    {
+      question: "Tu acción es un ratio de cobertura continuo en [-1, 1], los datos son escasos y caros, y no puedes explorar en vivo. ¿Qué enfoque encaja mejor?",
+      options: [
+        { text: "Una política tipo actor–crítico / PPO entrenada offline sobre datos históricos — acciones continuas, con un crítico para domar la varianza y sin exploración en vivo.", correct: true },
+        { text: "Q-learning tabular con una rejilla fina y exploración ε-avariciosa en vivo.", },
+        { text: "Un DQN básico, ya que su argmax maneja las acciones continuas sin esfuerzo.", },
+        { text: "REINFORCE puro con rollouts on-policy frescos recogidos en vivo en cada paso.", },
+      ],
+      explanation: "La acción continua descarta el Q-learning tabular y el DQN (ambos necesitan un argmax discreto). Los datos escasos y la imposibilidad de explorar en vivo descartan los rollouts on-policy de REINFORCE. Una política actor–crítico/PPO entrenada offline encaja con las tres restricciones.",
+    },
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  nextLabel="Siguiente"
+  seeResultsLabel="Ver resultados"
+  backLabel="Atrás"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  completeTitleLabel="Cuestionario completado"
+  correctCountLabel="correctas"
+  gateLabel="Comprueba tu respuesta para continuar."
+/>
+
+Ya puedes situar cualquier algoritmo en el mapa: basado en valor o en política o un matrimonio de ambos, on-policy u off, y ávido de exploración o cauto con los costes. **A continuación, en la lección 4 — "La ejecución óptima como problema de RL" — apuntamos todo este arsenal a la tarea de trading más concreta que existe:** trocear una orden madre grande en operaciones hijas a lo largo del tiempo, equilibrando el impacto de mercado frente al riesgo de timing, donde la recompensa *es* el coste de ejecución y el diferencial que llevas preocupándote se convierte en el protagonista.
