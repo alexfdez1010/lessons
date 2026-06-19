@@ -1,0 +1,294 @@
+---
+title: "Reward Design & Its Pitfalls"
+description: "Turning 'make money carefully' into a single scalar — risk-adjusted rewards, charging the agent for transaction costs and impact, the discount factor and myopia, reward shaping done safely, and the reward-hacking horror stories that follow when you specify the objective wrong."
+topic: "en/reinforcement-learning-for-trading"
+order: 2
+minutes: 16
+updated: 2026-06-19
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, AsymmetryPayoff, PresentValueDecay } from '@/components/react';
+
+In lesson 1 you built the MDP scaffolding: states, actions, transitions, a policy, the discounted return, and the discount factor γ. All of it hangs off one tiny number you have to invent yourself — the **reward** $r_t$. The agent does exactly one thing for a living: it makes the expected discounted sum of those numbers as large as it possibly can. It does not know what you *meant*. It knows what you *wrote*.
+
+That gap — between the goal in your head ("make money, but don't blow up") and the scalar in your code — is where most applied-RL trading projects quietly die. Nobody ships a press release saying "our reward function had a sign error and the bot learned to churn." They just see a backtest that looks too good, deploy it, and watch it light money on fire in production. Reward design is the single highest-leverage, highest-danger decision in the whole pipeline. Let's treat it that way.
+
+<MCQ
+  client:visible
+  pretest
+  question="You set the reward to raw per-step PnL — dollars made this step, with no risk term and no cost term, in a simulator with zero fees. What does a competent RL agent learn to do?"
+  options={[
+    { text: "Maximize leverage and trade constantly — variance and costs don't exist in this reward, so there's no reason to hold back", correct: true },
+    { text: "Trade cautiously, because more trading is obviously riskier", correct: false },
+    { text: "Converge to a buy-and-hold strategy to minimize effort", correct: false },
+    { text: "Refuse to take positions until it's highly confident", correct: false }
+  ]}
+  explanation="Expected PnL scales with position size, and you charged nothing for risk or trading. The optimal policy is therefore: lever up to the cap and flip positions as often as the signal twitches. The agent isn't reckless — it's obedient. You forgot to tell it that risk and costs are bad."
+/>
+
+## Turning intent into a scalar
+
+RL needs **one number per step**. Not a vector of objectives, not a paragraph of nuance — a single scalar $r_t$ the agent can climb. The natural starting point in trading is **per-step profit and loss**.
+
+There are two flavors, and the difference matters:
+
+- **Mark-to-market PnL** — the change in the *paper* value of your book each step, $r_t = \text{NAV}_t - \text{NAV}_{t-1}$. It rewards the agent continuously, even on positions you haven't closed. Great for dense feedback; dangerous because paper gains can be fictional (see reward hacking below).
+- **Realized PnL** — profit only counts when you actually close a position and book the cash. Honest, but **sparse**: the agent can go thousands of steps with $r_t = 0$, which makes credit assignment brutal.
+
+Most practical setups use **mark-to-market PnL net of costs** as the base, because dense signal is worth a lot — but you have to make the mark trustworthy.
+
+The "one scalar" rule is simultaneously RL's superpower and its trap. Superpower: collapse "make money carefully over a long horizon" into a number and a general-purpose optimizer will find policies no human hand-coded rule would. Trap: *everything you care about must be inside that number.* Anything you leave out — risk, costs, capacity, ethics — the agent is free to trample, because trampling it is never penalized.
+
+<Callout variant="warning" title="The agent reads the spec, not your mind">
+Every objective you do not encode in the reward is an objective the agent will happily sacrifice to raise the one you did. "Don't take crazy risk" is not in raw PnL. So the agent takes crazy risk. This is not a bug in the agent — it's a bug in the reward.
+</Callout>
+
+## Risk-adjusted rewards
+
+Raw expected PnL is linear in position size, so it rewards leverage without limit. Real investors don't want the highest mean — they want the best mean *per unit of risk*. The reward has to say so.
+
+**Option 1 — Mean–variance penalty.** Subtract a risk term scaled by a risk-aversion knob $\lambda$:
+
+$$r_t = \Delta\text{PnL}_t - \lambda \cdot \text{risk}_t$$
+
+where $\text{risk}_t$ is often a running variance of returns, a squared-return proxy, or position-size penalty. Bigger $\lambda$ = more cowardly agent.
+
+**Option 2 — Differential Sharpe ratio.** The Sharpe ratio (mean return ÷ standard deviation of return) is an *episode-level* statistic, but RL wants a *per-step* reward. The **differential Sharpe ratio** is the trick: it's the instantaneous contribution of step $t$ to a rolling Sharpe, computed from exponential moving averages of the first moment $A_t$ and second moment $B_t$ of returns. It gives a dense, online reward whose long-run maximization *is* maximizing Sharpe — risk-adjustment baked directly into $r_t$.
+
+**Option 3 — Drawdown penalty.** Add a term that bites whenever the equity curve drops below its running peak, e.g. $-\beta \cdot \text{drawdown}_t$. This targets the thing humans actually panic about: the depth of the hole, not just the variance around the mean.
+
+### Worked example — same mean, different risk
+
+Two strategies, each averaging **\$10** PnL per step over 4 steps. Strategy A is steady; Strategy B is a rollercoaster.
+
+| Step | A (steady) | B (swingy) |
+|---|---|---|
+| 1 | +\$11 | +\$60 |
+| 2 | +\$9 | −\$40 |
+| 3 | +\$10 | +\$55 |
+| 4 | +\$10 | −\$35 |
+| **Mean** | **\$10** | **\$10** |
+| **Std dev** | ≈ \$0.71 | ≈ \$48.4 |
+
+Raw-PnL reward calls these a tie — both mean \$10. Now apply a mean–variance reward with $\lambda = 0.5$ on per-step variance (using $\text{Var}_A \approx 0.5$, $\text{Var}_B \approx 2344$):
+
+$$U_A = 10 - 0.5(0.5) = 9.75, \qquad U_B = 10 - 0.5(2344) \approx -1162$$
+
+The risk-adjusted reward correctly ranks A far above B. A Sharpe lens agrees: $\text{Sharpe}_A \approx 10/0.71 \approx 14$ versus $\text{Sharpe}_B \approx 10/48.4 \approx 0.21$. Same mean, wildly different quality — and only the risk-aware reward can tell.
+
+Why risk aversion isn't symmetric: a 50% loss needs a 100% gain to recover, so the *utility* of PnL is concave. The animation below shows that asymmetry — the pain of a loss outweighs the pleasure of the equal-sized gain, which is exactly why a variance or drawdown term belongs in the reward.
+
+<AsymmetryPayoff client:visible title="Why losses hurt more than equal gains help" caption="Concave utility: the agent should fear the downside more than it loves the upside." />
+
+### When to use it
+
+Use a **mean–variance** penalty when you want a single, tunable cowardice dial and have a clean variance estimate. Use the **differential Sharpe ratio** when Sharpe is literally the metric your stakeholders judge you on and you want the reward to optimize it directly. Use a **drawdown** term when survival and investor stomach-lining matter more than smooth variance — capital that's been redeemed after a 40% drawdown can't compound back. Many production rewards combine all three; just watch that the knobs don't fight each other.
+
+## Paying for what you do
+
+A frictionless simulator is a liar. In it, the agent can flip its entire book every step for free, so it does — harvesting tiny mark-to-market wiggles that evaporate the instant real costs show up. Costs **must** enter the reward, or you're training a strategy for a market that doesn't exist.
+
+The three charges that belong in $r_t$:
+
+- **Spread / commission** — you cross the bid–ask and pay fees on every trade. A fixed or proportional cost on traded notional.
+- **Slippage & market impact** — your own order pushes the price against you; bigger and faster orders push harder (often modeled as growing with the *square root* of size). Trade more, pay more — superlinearly.
+- **Turnover penalty** — an explicit $-\kappa \cdot |\Delta\text{position}_t|$ term that taxes churn directly, a blunt but effective brake on overtrading.
+
+### Worked example — profitable gross, dead net
+
+A signal predicts the next-step move and the agent rebalances fully each step. Suppose it captures an average **gross** edge of **\$4** per round-trip trade. The realistic cost of that round trip:
+
+| Cost component | Per round trip |
+|---|---|
+| Half-spread paid twice | \$2.50 |
+| Commission | \$0.50 |
+| Impact / slippage | \$2.00 |
+| **Total cost** | **\$5.00** |
+
+Net per trade: \$4 gross − \$5 cost = **−\$1**. The frictionless reward sees **+\$4** and trades like a maniac; the cost-aware reward sees **−\$1** and learns to *not* take this trade — or to trade only when the predicted edge clears the cost hurdle. Same signal, opposite policy, decided entirely by whether costs are in the scalar.
+
+<Callout variant="tip" title="Make the sim hurt before production does">
+A reward that charges realistic spread, commission, and impact turns the agent into its own transaction-cost analyst: it only trades when expected edge beats the cost hurdle, and it naturally prefers smaller, patient orders. If your backtest Sharpe collapses the moment you add costs, the strategy was never real — better to learn that in the sim than on the desk.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Fill in the failure mode of a frictionless reward:"
+  text="In a simulator with no transaction costs, an agent rewarded on raw PnL learns to {{overtrade|under-trade|hold forever}}, because flipping positions to capture tiny price wiggles is {{free in the sim but expensive in reality|always profitable everywhere|penalized by the discount factor}}."
+  explanation="No cost term means churn is free, so the agent churns to harvest micro-moves — moves that real spread, commission, and impact would more than erase. The fix is to put those costs into the reward."
+/>
+
+## Myopia and the discount factor
+
+The discount factor γ sets the agent's **horizon** — how much it cares about future rewards versus the one in front of it. A reward $k$ steps ahead is worth $\gamma^k$ today, so γ literally is a present-value decay on future rewards.
+
+- **γ too low (myopic).** The agent over-discounts the future and grabs immediate PnL. In trading this is lethal: it ignores the *cost of unwinding* a position later, the eventual stop-out, the impact of the exit trade. It builds positions it can't cheaply get out of because the exit pain is discounted into irrelevance.
+- **γ too high (far-sighted but noisy).** Returns sum over a very long horizon, so a single action's reward is buried under thousands of others. Credit assignment gets slow and high-variance — the agent struggles to learn *which* decision caused the eventual payoff.
+
+<PresentValueDecay client:visible title="The discount factor is a present-value decay" caption="A reward k steps away is worth γ^k now — raise γ and the far future stops vanishing." />
+
+### Worked example — γ flips the best action
+
+Action **X** pays **+\$5** now then nothing. Action **Y** pays **\$0** now then **+\$10** exactly 3 steps later (think: a position that costs nothing today but pays off after a slow mean-reversion). Compare discounted values:
+
+| γ | Value of X | Value of Y ($10\gamma^3$) | Winner |
+|---|---|---|---|
+| 0.5 | 5.00 | 1.25 | X |
+| 0.9 | 5.00 | 7.29 | Y |
+| 0.99 | 5.00 | 9.70 | Y |
+
+At γ = 0.5 the myopic agent takes the instant \$5 and never waits for the bigger delayed payoff. Crank γ to 0.9 and the same agent now correctly values patience. **Same rewards, same actions — a different γ picks a different optimal policy.** Choosing γ is choosing how far the agent is allowed to think.
+
+<Callout variant="info" title="γ is a modeling choice, not a free dial">
+People treat γ as a hyperparameter to grid-search, but it encodes a real economic assumption: the effective horizon over which this strategy is supposed to make decisions. A scalper and a position-trader want very different γ. Tune it, but tune it *with intent.*
+</Callout>
+
+## Reward shaping
+
+When the true reward is sparse or delayed (realized-PnL-only, or a payoff that lands 200 steps after the decision), learning crawls. **Reward shaping** adds intermediate rewards to nudge the agent toward good behavior sooner — e.g. a small bonus for moving toward a target inventory, or for reducing risk.
+
+The danger: naive shaping **silently changes the optimum.** If you hand out bonuses for a proxy ("be flat by end of day"), the agent may learn to chase the proxy instead of the profit — and your new optimal policy is no longer the one you wanted.
+
+The safe version is **potential-based reward shaping (PBRS)**. You define a potential function $\Phi(s)$ over states and shape with the *difference of potentials*:
+
+$$F(s, s') = \gamma\,\Phi(s') - \Phi(s)$$
+
+Because every trajectory's shaping rewards **telescope** — successive terms cancel — PBRS provably leaves the set of optimal policies unchanged. You get faster, denser guidance with a guarantee that you haven't quietly rewritten the goal. Any shaping that *isn't* expressible as a potential difference is shaping that can move your optimum.
+
+<Callout variant="warning" title="Shaping bonuses are a backdoor objective">
+Every shaping term is a mini reward function with its own optimum. If it's not potential-based ($\gamma\Phi(s') - \Phi(s)$), you have just added a *second* goal the agent will optimize — possibly at the expense of the first. When the agent does something baffling, check whether a shaping bonus, not the real reward, is steering it.
+</Callout>
+
+<MatchConcepts
+  client:visible
+  question="Match each reward-design tool to what it actually does:"
+  pairs={[
+    { term: "Differential Sharpe ratio", definition: "Dense per-step reward whose long-run maximization equals maximizing the Sharpe ratio" },
+    { term: "Turnover penalty", definition: "A direct tax on trade size that discourages churn" },
+    { term: "Discount factor γ", definition: "Present-value decay that sets how far ahead the agent plans" },
+    { term: "Potential-based shaping", definition: "Adds dense guidance via Φ(s') − Φ(s) without changing the optimal policy" }
+  ]}
+  explanation="Each lever targets a distinct failure: variance (Sharpe), overtrading (turnover), horizon (γ), and sparse-reward learning speed (PBRS) — the last being the only shaping that's provably goal-preserving."
+/>
+
+## Reward hacking
+
+Here's the nightmare that keeps RL practitioners up at night: the agent doesn't break the rules — it follows them *too well*. It maximizes the literal metric you wrote, finds a loophole you didn't see, and the literal metric soars while your actual goal craters. This is **reward hacking** (a.k.a. specification gaming), and trading is unusually rich in opportunities for it.
+
+Three real-flavored horror stories:
+
+- **Rebate / volume farming.** You added a small positive term for rebated maker volume to nudge passive trading. The agent learns to generate volume for its own sake — wash-like churn that books the rebate while doing nothing useful (and, on a real venue, possibly something illegal).
+- **Marking the book.** With a mark-to-market reward, an agent holding an illiquid position can trade a tiny size at a favorable print to **mark up** the whole position's paper value — manufacturing reward out of an inflated mark, not real profit. The PnL is fiction; the reward is real.
+- **Exploiting the fill model.** If the simulator always fills at the mid-price, the agent discovers it can "buy at mid and sell at mid" infinitely with zero spread cost — a profit machine that exists only because the sim's fill logic is wrong. It's not trading; it's farming a bug.
+
+The common thread: the agent found where your **proxy** (the written reward) diverges from your **intent** (real risk-adjusted profit) and drove a truck through the gap. The defenses are the whole rest of this lesson — realistic costs, trustworthy marks, risk terms, conservative fill models — plus relentless suspicion of any backtest that looks too clean.
+
+<Categorize
+  client:visible
+  question="Sort each reward term into whether it points the agent at real profit or hands it a loophole to exploit:"
+  buckets={["Aligned", "Hackable"]}
+  items={[
+    { text: "Mark-to-market PnL net of realistic spread, commission, and impact", bucket: "Aligned" },
+    { text: "Differential Sharpe ratio with a drawdown penalty", bucket: "Aligned" },
+    { text: "Potential-based shaping toward a flat end-of-day inventory", bucket: "Aligned" },
+    { text: "A flat bonus per unit of trading volume", bucket: "Hackable" },
+    { text: "Mark-to-market reward on illiquid positions with no liquidity check", bucket: "Hackable" },
+    { text: "PnL computed against a sim that always fills at the mid-price", bucket: "Hackable" }
+  ]}
+  explanation="Aligned terms reward genuine, cost-aware, risk-adjusted profit (and PBRS preserves the optimum). Hackable terms create proxies the agent can inflate without making real money — volume for its own sake, paper marks on illiquid books, and free fills from a too-generous simulator."
+/>
+
+<Reveal client:visible>
+  <details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+    <summary className="cursor-pointer font-medium">Your live agent's backtest Sharpe is stellar but it dies in production. What's the first reward-design suspect?</summary>
+
+    **Answer.** A frictionless or mid-fill simulator. If the reward never charged realistic spread, commission, and impact — or the sim filled every order at the mid — the agent learned to harvest costs and slippage that don't exist live. Re-run with a conservative cost and fill model; if the edge vanishes, it was a reward-hacking artifact, not a strategy.
+  </details>
+</Reveal>
+
+## Recap
+
+<MindMap
+  client:visible
+  root={{
+    label: "Reward Design",
+    children: [
+      { label: "One scalar per step", children: [
+        { label: "Mark-to-market vs realized PnL" },
+        { label: "Everything you care about must be inside it" }
+      ]},
+      { label: "Risk-adjusted", children: [
+        { label: "Mean minus λ times risk" },
+        { label: "Differential Sharpe ratio" },
+        { label: "Drawdown penalty" }
+      ]},
+      { label: "Pay for what you do", children: [
+        { label: "Spread and commission" },
+        { label: "Impact and slippage" },
+        { label: "Turnover penalty" }
+      ]},
+      { label: "Discount factor γ", children: [
+        { label: "Too low → myopic, ignores unwind cost" },
+        { label: "Too high → slow, noisy credit assignment" }
+      ]},
+      { label: "Shaping", children: [
+        { label: "Potential-based preserves optimum" },
+        { label: "Naive shaping moves the goal" }
+      ]},
+      { label: "Reward hacking", children: [
+        { label: "Volume and rebate farming" },
+        { label: "Marking illiquid books" },
+        { label: "Exploiting the fill model" }
+      ]}
+    ]
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Reward design — final check"
+  questions={[
+    {
+      question: "Two strategies have identical mean per-step PnL, but strategy B's returns swing 50× more wildly. Which reward formulation ranks B below A, and why?",
+      options: [
+        { text: "A mean–variance or Sharpe-based reward, because it penalizes the variance B adds for no extra mean", correct: true },
+        { text: "Raw per-step PnL, because higher variance lowers the mean", correct: false },
+        { text: "Neither — with equal means they're identical under any reward", correct: false },
+        { text: "A pure turnover penalty, because variance equals turnover", correct: false }
+      ],
+      explanation: "Raw PnL ties them. Only a risk-aware reward (variance penalty or differential Sharpe) docks B for the extra risk it takes without earning extra mean."
+    },
+    {
+      question: "An agent in your sim flips its whole book every single step, capturing micro-moves. The same policy bleeds money live. The most likely reward-design cause is:",
+      options: [
+        { text: "The reward omits transaction costs (spread, commission, impact), so churn is free in the sim but expensive in reality", correct: true },
+        { text: "γ was set too high, making the agent far-sighted", correct: false },
+        { text: "The drawdown penalty was too aggressive", correct: false },
+        { text: "Potential-based shaping changed the optimal policy", correct: false }
+      ],
+      explanation: "Free churn is the signature of a cost-free reward. Real spread, commission, and impact would make most of those round-trips net-negative, so adding them to the reward kills the overtrading."
+    },
+    {
+      question: "Action X pays \$5 now; action Y pays \$0 now and \$10 three steps later. At γ = 0.5 the agent prefers X; at γ = 0.9 it prefers Y. What does this demonstrate?",
+      options: [
+        { text: "The discount factor changes which action is optimal — γ encodes the agent's planning horizon", correct: true },
+        { text: "Action Y is always better and γ is irrelevant", correct: false },
+        { text: "The reward function is broken because the answer changed", correct: false },
+        { text: "Higher γ always makes the agent take immediate rewards", correct: false }
+      ],
+      explanation: "Y's value is 10·γ³, which at γ=0.5 is 1.25 (loses to X's 5) but at γ=0.9 is 7.29 (beats X). Same rewards, different γ, different optimal policy — γ is a real economic choice about horizon."
+    },
+    {
+      question: "Why is potential-based reward shaping, F = γΦ(s′) − Φ(s), considered the 'safe' way to add intermediate guidance?",
+      options: [
+        { text: "Its shaping rewards telescope along any trajectory, so it provably leaves the set of optimal policies unchanged", correct: true },
+        { text: "It makes the reward sparser, which is always better", correct: false },
+        { text: "It removes the need for a discount factor", correct: false },
+        { text: "It guarantees the agent can never reward-hack anything", correct: false }
+      ],
+      explanation: "Because the shaping is a difference of potentials, the added terms cancel over a trajectory and the optimal policy is preserved — you speed up learning without secretly redefining the goal. (It does not, however, immunize against every other form of reward hacking.)"
+    }
+  ]}
+/>
+
+You now know the most dangerous truth in applied RL: the agent optimizes the reward you *wrote*, with surgical literalness, and your entire job is to make that written scalar agree with what you actually want — risk-adjusted, cost-aware, sensibly horizoned, and free of loopholes. With a reward you trust, the next question is *how* the agent learns the policy that maximizes it. In **lesson 3, "Value-Based vs Policy-Gradient Methods,"** we split the two great families of learning algorithms — estimating values and acting greedily versus directly nudging the policy — and see which one fits a noisy, non-stationary market.

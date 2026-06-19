@@ -1,0 +1,262 @@
+---
+title: "Markets as a Markov Decision Process"
+description: "The formal language of reinforcement learning — state, action, reward, transition, policy, return and discounting — why trading fits it and forecasting does not, and the one feature that separates a market from a video game: your action moves the environment."
+topic: "en/reinforcement-learning-for-trading"
+order: 1
+minutes: 15
+updated: 2026-06-19
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, MindMap, RlAgentEnvLoop, MarkovRegimeChain } from '@/components/react';
+
+Supervised machine learning is a fortune-teller. You hand it a feature vector, it hands back a number — tomorrow's return, the probability of a fill, next hour's volatility — and then it shrugs and goes home. It never tells you *how much* to buy, *when* to stop, or what to do once the order you just placed has moved the very price you were trying to predict. Forecasting is a one-shot answer to a question nobody actually asked. Trading is a **sequence of decisions** unfolding in time, each one changing the board you play the next one on.
+
+Reinforcement learning (RL) is the discipline built for exactly that shape: an **agent** takes **actions**, the world answers with a **reward** and a new situation, and the agent learns a rule — a **policy** — that maximizes reward over the *long run*, not just the next tick. That long-run framing is also where our recurring villain returns. Across the machine-learning course the enemy was **overfitting**: a model that memorized noise and called it signal. It is still the enemy here — only now it wears a craftier disguise, because an RL agent gets to choose its own training experience, and a backtest that looks like free money is usually an agent that has overfit a simulator nobody should have trusted.
+
+<MCQ
+  client:visible
+  pretest
+  question="Your model nails next-day return with an out-of-sample R² that makes the desk jealous. Why is that, on its own, still not enough to trade?"
+  options={[
+    { text: "A forecast of direction doesn't specify size, timing, or what to do after your own trade has moved the price — those are decisions, not predictions.", correct: true },
+    { text: "It is enough; you just buy when the forecast is positive and sell when it's negative." },
+    { text: "R² is the wrong metric — you should have reported mean squared error instead." },
+    { text: "The model will be perfect once you add more features and a deeper network." },
+  ]}
+  explanation="A return forecast is a single scalar about the next step. Trading needs a sequence of sized, timed actions, and crucially must account for the feedback loop: your fill consumes liquidity and pushes the price. None of that lives inside an R². This is the gap RL is built to close."
+/>
+
+## The vocabulary of sequential decisions
+
+RL has a small, precise vocabulary, and almost every confusion in the field comes from blurring two of these terms together. Define them once, carefully, and the rest of the course is just engineering.
+
+- **State $s_t$** — everything the agent observes at time $t$ that is relevant to its decision. In trading: current price, your **inventory** (position), recent returns, order-book imbalance, time-of-day, remaining order to execute.
+- **Action $a_t$** — what the agent does. Buy/hold/sell, a target position, a quoted bid–ask pair, or how many child orders to release this minute.
+- **Reward $r_t$** — the scalar feedback after acting. Often a risk-adjusted, cost-inclusive P&L increment — and designing it correctly is so dangerous it gets its own lesson next.
+- **Transition / dynamics $P(s_{t+1} \mid s_t, a_t)$** — the *rule of the world*: the probability of landing in the next state given the current state and action. In markets this is the price process plus the impact of your own trade. You almost never know it; you sample from it.
+- **Policy $\pi(a \mid s)$** — the agent's strategy: a (possibly randomized) mapping from states to actions. This is the object you are actually learning.
+- **Trajectory / episode** — one full play-through: $s_0, a_0, r_0, s_1, a_1, r_1, \dots$ A trading episode might be one day, or the lifetime of unwinding one parent order.
+- **Return $G_t$** — the cumulative (discounted) reward from time $t$ onward. The thing the agent maximizes. *Not* a price forecast — an ugly coincidence of vocabulary we will be very careful about.
+
+| RL term | Symbol | Trading interpretation |
+|---|---|---|
+| State | $s_t$ | Price, inventory, recent returns, book imbalance, time left |
+| Action | $a_t$ | Buy / hold / sell, target position, quotes, child-order size |
+| Reward | $r_t$ | Risk-adjusted P&L this step, net of costs and impact |
+| Transition | $P$ | Price dynamics **plus** your trade's market impact |
+| Policy | $\pi(a\mid s)$ | The trading strategy you're learning |
+| Episode | — | One day, or one full order unwind |
+| Return | $G_t$ | Cumulative discounted future reward (the objective) |
+
+<Callout variant="tip" title="The two 'returns' trap">
+In finance, "return" means a percentage price change. In RL, "return" $G_t$ means cumulative future reward. They are unrelated. When this course writes $G_t$ it always means the RL one. When it means a price change, it says so in words.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Slot each idea into its RL term."
+  text="The strategy you are learning — a mapping from situations to moves — is the {{policy|reward|transition}}. The rule of the world that says where you land next is the {{transition|policy|return}}. The scalar feedback you get for acting is the {{reward|state|episode}}."
+  explanation="Policy = strategy (state → action), transition = dynamics of the world (state, action → next state), reward = the per-step scalar you're trying to accumulate."
+/>
+
+## A market is a Markov decision process
+
+Stack those pieces together and you have a **Markov decision process (MDP)** — the formal object RL studies. Mechanically it's a loop: the agent observes the state, its policy picks an action, the environment returns a reward and the next state, and around it goes, forever.
+
+<RlAgentEnvLoop client:visible />
+
+The "Markov" in MDP is a promise about the **state**. A process has the **Markov property** when the next state depends *only* on the current state and action — not on the entire history of how you got here:
+
+$$P(s_{t+1} \mid s_t, a_t, s_{t-1}, a_{t-1}, \dots) = P(s_{t+1} \mid s_t, a_t).$$
+
+This is not a law of nature; it is a *design constraint on what you put in your state*. If "last traded price" doesn't summarize everything relevant — and in markets it never does — then the price alone is **not Markov**, and an agent that conditions only on it is flying blind. The fix is not to bolt on memory of the past; it is to **enrich the state** until it is sufficient: add your inventory (so the agent knows its own exposure), recent returns (momentum/mean-reversion context), and order-book features (imbalance, depth, spread). A well-engineered state makes the Markov property *true enough to be useful*.
+
+<MarkovRegimeChain client:visible />
+
+The chain above shows the same idea on regimes: the token decides its next hop using only where it is *now*, yet the long-run share of time in each regime settles to a fixed mix. Memoryless transitions, stable statistics — that is the Markov property earning its keep.
+
+### Worked example — a tiny 2-state trading MDP
+
+Picture a toy market with two regimes as the relevant state: **Calm** and **Volatile**. Each step the agent picks a position size, but first the *world* transitions. From **Calm**, the dynamics are:
+
+$$P(\text{Calm}\mid \text{Calm}) = 0.8,\qquad P(\text{Volatile}\mid \text{Calm}) = 0.2.$$
+
+Suppose your policy in Calm goes long, and the reward (P&L increment) is $r=+2$ if you stay in Calm and $r=-5$ if you tip into Volatile while still long. The *expected* one-step reward of being long in Calm is
+
+$$0.8 \times (+2) + 0.2 \times (-5) = 1.6 - 1.0 = +0.6.$$
+
+Notice what made that number: the **transition probabilities**, not a forecast of price. The agent isn't predicting the next return — it's weighing actions against the *dynamics of the world*, which is exactly what an MDP forces you to do.
+
+<MCQ
+  client:visible
+  question="In the toy MDP above, you decide the agent should also know its current inventory before choosing a size. Why?"
+  options={[
+    { text: "To keep the state Markov — the right action genuinely depends on how much you already hold, so omitting inventory makes price-only state insufficient.", correct: true },
+    { text: "Inventory is irrelevant in an MDP; only the price regime matters." },
+    { text: "Because larger state vectors always train faster." },
+    { text: "To remember the full history of past trades inside the state." },
+  ]}
+  explanation="Markovness is about sufficiency, not size. If the optimal action depends on inventory (it does — risk limits, impact, mean-reversion of your own position), then a state without it isn't Markov. You add the variable, not a memory of history."
+/>
+
+## The return and the discount factor γ
+
+The agent doesn't maximize the next reward — it maximizes the **return**, the cumulative *discounted* reward from now on:
+
+$$G_t = r_t + \gamma\, r_{t+1} + \gamma^2 r_{t+2} + \dots = \sum_{k=0}^{\infty} \gamma^k\, r_{t+k}.$$
+
+The **discount factor** $\gamma \in [0,1)$ decides how far the agent looks ahead. At $\gamma = 0$ the agent is purely **myopic** — it cares only about $r_t$ and would happily blow up next step for a penny now. As $\gamma \to 1$ it becomes **far-sighted**, treating a reward ten steps out almost like a reward today. Discounting also keeps the infinite sum finite and encodes a preference for sooner-rather-than-later profit.
+
+### Worked example — discounting a reward stream
+
+Take a short episode with rewards $r_0 = 10,\; r_1 = 0,\; r_2 = -4,\; r_3 = 6$ and a discount of $\gamma = 0.9$. The return from $t=0$ is:
+
+$$G_0 = 10 + 0.9(0) + 0.9^2(-4) + 0.9^3(6).$$
+
+Compute the weights: $0.9^2 = 0.81$ and $0.9^3 = 0.729$. So
+
+$$G_0 = 10 + 0 + 0.81(-4) + 0.729(6) = 10 - 3.24 + 4.374 = 11.134.$$
+
+Now redo it myopically with $\gamma = 0$: $G_0 = 10$ flat — the agent never even *sees* the $-4$ shock or the $+6$ recovery. Same reward stream, completely different sense of "good," set entirely by one knob.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">If far-sightedness is better, why not just set γ = 1?</summary>
+
+**Answer.** Two reasons. Mathematically, with an infinite horizon $\gamma = 1$ can make $G_t$ diverge, so the objective stops being well-defined. Practically, markets are non-stationary — a reward 500 steps out is forecast through a world that will have changed — so weighting the far future as heavily as the present invites the agent to optimize a fantasy. A discount slightly below 1 (say 0.99) buys far-sightedness without betting the policy on a distant, unknowable future.
+
+</details>
+</Reveal>
+
+<Callout variant="info" title="Reward design is a whole lesson">
+We've quietly assumed the reward $r_t$ is handed to us. It isn't — turning "make money carefully" into a single scalar is the hardest, most dangerous step in applied RL, and it's the entire subject of lesson 2.
+</Callout>
+
+## Prediction vs control — the deep difference
+
+Here is the chasm between the previous course and this one. Supervised learning is **prediction**; RL is **control**.
+
+In prediction, your data is (roughly) **i.i.d.**, you estimate a fixed mapping to a label that exists independently of you, and — crucially — **your prediction does not change the world**. Guessing tomorrow's rain doesn't alter the weather. The label was going to be whatever it was going to be.
+
+In control, you **choose actions**, and those actions change which states you visit next — they change the **future data distribution** your agent will learn from. In markets this is not a metaphor: a large buy **moves the price** (market impact), consumes liquidity, and shifts the order book the next decision is conditioned on. The environment is not a passive label generator; it's a counterparty that reacts to you.
+
+| | Supervised learning (prediction) | Reinforcement learning (control) |
+|---|---|---|
+| Data | (roughly) i.i.d., fixed distribution | Generated by your own actions; distribution shifts |
+| Output | A prediction of a fixed label | A policy choosing actions over time |
+| Objective | Match a label (loss vs. truth) | Maximize cumulative discounted return $G_t$ |
+| Feedback | The label exists regardless of you | Your action **changes** the next state |
+| In markets | Forecast a return; market ignores you | You trade; the **market moves** because of you |
+| Failure mode | Overfit static noise | Overfit a simulator you chose to live in |
+
+Flip on "Market impact" in the loop island above and you can watch this directly: the agent's own trades push the price against it, shrinking every subsequent reward. That feedback — *your action moves the environment* — is the one feature a video game and a market share and a forecasting model can never represent.
+
+<Callout variant="warning" title="Pitfall — sizing is not classification">
+A tempting shortcut: train a classifier on \{buy, hold, sell\} labels and call the argmax your "policy." It looks like RL; it isn't. A classifier optimizes per-example accuracy against a fixed label, assuming your choice doesn't change anything. But position **size**, **timing**, and the **impact** of your fill are sequential, self-affecting decisions with no ground-truth label to copy. Treating control as classification throws away the exact thing — the feedback loop — that made you reach for RL in the first place.
+</Callout>
+
+<MatchConcepts
+  client:visible
+  question="Match each statement to the paradigm it describes."
+  pairs={[
+    { term: "Your output doesn't change the future data you'll see", definition: "Prediction (supervised)" },
+    { term: "You optimize cumulative discounted reward over a trajectory", definition: "Control (RL)" },
+    { term: "A large order moves the price the next decision sees", definition: "Control (RL)" },
+    { term: "Estimate a fixed label from roughly i.i.d. examples", definition: "Prediction (supervised)" },
+  ]}
+  explanation="The dividing line is feedback: in prediction the world is indifferent to your output; in control your action reshapes the future state distribution. Market impact makes trading squarely a control problem."
+/>
+
+## The policy and the value function — a preview
+
+The policy $\pi(a \mid s)$ is the whole game: a (possibly stochastic) rule that, given a state, hands you an action — or a probability distribution over actions, so the agent can **explore** rather than always exploiting its current best guess. Everything in this course is, ultimately, a method for finding a *good* $\pi$.
+
+But how do you know a policy is good without playing infinitely many episodes? You estimate **value**. The **state-value** $V^\pi(s)$ is the expected return from state $s$ if you follow policy $\pi$ forever after; the **action-value** $Q^\pi(s,a)$ is the expected return from taking action $a$ in state $s$ and following $\pi$ thereafter. These two functions are the load-bearing beams of nearly every RL algorithm — they let you compare actions without enumerating the future — and lesson 3 builds them properly.
+
+<Quiz
+  client:visible
+  title="Checkpoint — the MDP frame"
+  questions={[
+    {
+      question: "An agent uses γ = 0.95 and receives rewards r₀ = 4, r₁ = 10. What is the contribution of r₁ to the return G₀?",
+      options: [
+        { text: "9.5", correct: true },
+        { text: "10" },
+        { text: "0.95" },
+        { text: "4.75" },
+      ],
+      explanation: "The reward at t=1 is discounted once: 0.95 × 10 = 9.5. (G₀ itself would be 4 + 9.5 = 13.5, but the question asks only for r₁'s discounted contribution.)",
+    },
+    {
+      question: "You're modeling a market-making agent and notice the optimal quote depends heavily on current inventory, but your state only includes mid-price and spread. What has gone wrong?",
+      options: [
+        { text: "The state isn't Markov — it omits a variable the optimal action depends on, so transitions look unpredictable when they're actually inventory-driven.", correct: true },
+        { text: "Nothing — inventory is a reward concern, not a state concern." },
+        { text: "γ is set too low; raising it will recover the missing information." },
+        { text: "The policy should be made deterministic to fix it." },
+      ],
+      explanation: "Markovness is sufficiency of the state. If the best action depends on inventory, leaving inventory out makes the state insufficient and the dynamics appear non-Markov. The remedy is to add the variable.",
+    },
+    {
+      question: "Which statement about prediction versus control is TRUE?",
+      options: [
+        { text: "In control, your actions change the distribution of states you'll encounter next; in prediction, your output doesn't.", correct: true },
+        { text: "Prediction maximizes cumulative discounted reward; control matches a fixed label." },
+        { text: "Both assume i.i.d. data and a world indifferent to your output." },
+        { text: "Control is just prediction with more features." },
+      ],
+      explanation: "The defining feature of control is the feedback loop: actions reshape the future data distribution. In markets that loop is market impact — the action moves the environment.",
+    },
+    {
+      question: "A teammate proposes training a {buy, hold, sell} classifier on labeled bars and deploying its argmax as the trading policy. What's the core flaw — cause and effect?",
+      options: [
+        { text: "Classification assumes your label-guess doesn't move the world, so it can't price market impact, sizing, or timing — exactly the sequential, self-affecting effects RL exists to handle.", correct: true },
+        { text: "Classifiers are too slow at inference to trade with." },
+        { text: "Three classes are too few; with more classes it becomes valid RL." },
+        { text: "The flaw is only that accuracy is the wrong loss; swap in F1 and it's fine." },
+      ],
+      explanation: "It's a paradigm mismatch, not a metric one. A classifier optimizes per-example accuracy against a fixed label and ignores that its own fills change the next state. Size, timing, and impact have no ground-truth label to imitate — they require optimizing a return, i.e. control.",
+    },
+  ]}
+/>
+
+## Recap
+
+<MindMap
+  client:visible
+  title="Markets as an MDP"
+  caption="State, action, reward, transition and policy compose into a Markov decision process; the agent maximizes discounted return; and the market's reaction to your trade is what makes this control, not prediction."
+  root={{
+    label: 'Markets as an MDP',
+    children: [
+      { label: 'The five pieces', children: [
+        { label: 'State s — what you observe' },
+        { label: 'Action a — what you do' },
+        { label: 'Reward r — scalar feedback' },
+        { label: 'Transition P — rule of the world' },
+        { label: 'Policy π(a|s) — your strategy' },
+      ] },
+      { label: 'Markov property', children: [
+        { label: 'Next state depends only on now' },
+        { label: 'Enrich state until sufficient' },
+        { label: 'Add inventory, returns, book features' },
+      ] },
+      { label: 'Return and γ', children: [
+        { label: 'G = Σ γᵏ r' },
+        { label: 'γ → 0 myopic' },
+        { label: 'γ → 1 far-sighted' },
+      ] },
+      { label: 'Prediction vs control', children: [
+        { label: 'Prediction: output ignores world' },
+        { label: 'Control: action changes future states' },
+        { label: 'Markets: your trade moves the price' },
+      ] },
+      { label: 'Coming next', children: [
+        { label: 'V(s) and Q(s,a) — lesson 3' },
+        { label: 'Reward design — lesson 2' },
+      ] },
+    ],
+  }}
+/>
+
+You now speak MDP: you can frame a trading problem as states, actions, rewards, transitions and a policy, you know why a price-only state is rarely Markov, and you can see the one feature — *your action moves the environment* — that makes this control rather than forecasting. But notice how much we leaned on the reward simply *existing*. Next, in **Reward Design & Its Pitfalls**, we put the whole weight of the agent on that single scalar — and watch what happens when "make money carefully" is even slightly mistranslated into math. It's where most RL trading projects quietly die, and where our old villain, overfitting, finds its craftiest disguise yet: an agent that hacks the reward you wrote instead of the goal you meant.
