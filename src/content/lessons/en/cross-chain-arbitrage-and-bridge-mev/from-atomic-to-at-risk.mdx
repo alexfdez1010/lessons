@@ -1,0 +1,417 @@
+---
+title: "From Atomic to At-Risk"
+description: "Why crossing chains breaks the single-transaction atomicity guarantee and turns clean arbitrage into an inventory-heavy, latency-bound carry trade."
+topic: "en/cross-chain-arbitrage-and-bridge-mev"
+order: 1
+minutes: 10
+updated: 2026-06-20
+---
+
+import { Callout, MCQ, FillBlank, Categorize, MatchConcepts, MindMap, Quiz, Reveal, CrossChainSettlementTimeline } from '@/components/react';
+
+On-chain arbitrage felt like printing money with a safety net. You borrowed millions you didn't have, swapped through a few pools, repaid the loan, and pocketed the difference — and if any step failed, the whole thing simply *didn't happen*. That safety net had a name you probably never thought about: **atomicity**. This whole course is about what happens when you yank it away by crossing chains. Spoiler: every risk you thought arbitrage didn't have comes flooding back.
+
+Let's start by appreciating the hero before we kill it off.
+
+## Atomicity, the guarantee you took for granted
+
+<MCQ
+  client:visible
+  pretest
+  question="In a same-chain atomic arbitrage, what happens to your position if the final repay-the-flash-loan step would fail?"
+  options={[
+    { text: "The entire transaction reverts as if it never ran — you're left holding nothing but a gas bill", correct: true, explanation: "All-or-nothing. A failed step unwinds every prior step in the same transaction." },
+    { text: "You keep the tokens from the legs that already succeeded", explanation: "There is no 'partial fill' within an atomic transaction — it's all or nothing." },
+    { text: "The loan auto-rolls to the next block", explanation: "Flash loans live and die inside one transaction; there is no roll-over." },
+    { text: "You're forced to hold the inventory until the price recovers", explanation: "That's the cross-chain world. Atomic arb never leaves you holding inventory." },
+  ]}
+  explanation="Atomicity = all steps commit together or none do. A failing repay reverts the borrow and the swaps with it."
+/>
+
+**Analogy.** A same-chain atomic arb is a vending machine. You drop in a coin, the machine either dispenses your snack *or* spits your coin straight back. There is no universe where it keeps your coin and gives you nothing — the transaction commits in full or rolls back in full.
+
+**Definition.** An **atomic transaction** is a sequence of state changes (borrow, swap, swap, repay) that the chain executes as a single indivisible unit: either *every* change is applied, or — if any sub-step reverts — *none* are. On the EVM, a `revert` anywhere bubbles up and unwinds the whole call tree.
+
+This single property hands you four gifts, and the rest of this course is the story of losing all four:
+
+| Gift of atomicity | What it means in practice |
+|---|---|
+| **(a) No inventory / price risk mid-trade** | You never *hold* the asset across price moves; buy and sell settle in the same instant (same block). |
+| **(b) Capital-light** | A **flash loan** (borrow + repay within one transaction) lets you trade millions with ~zero own capital. |
+| **(c) Downside bounded to gas** | If the trade isn't profitable, it reverts; your worst case is the gas you burned, not the trade's notional. |
+| **(d) No settlement / counterparty risk** | There's no "other side" who might not deliver — the chain settles atomically, with no withdrawal queue or bridge to trust. |
+
+**Worked example.** ETH trades at \$1995 in pool X and \$2000 in pool Y, same chain. You flash-borrow \$1,995,000 USDC, buy 1000 ETH in X at \$1995, sell those 1000 ETH in Y at \$2000 for \$2,000,000, repay the \$1,995,000, and keep $2{,}000{,}000 - 1{,}995{,}000 = $ **\$5000** gross, minus gas. If pool Y had moved against you *before* your buy leg, the sell wouldn't clear your repay and the transaction would revert — cost: gas only. You risked basically nothing but the gas.
+
+<Callout variant="warning" title="The pitfall: assuming atomicity is a law of nature">
+Atomicity is a property of a **single ledger executing a single transaction** — not a property of "blockchains" in general. The moment a trade needs *two* ledgers to agree, no single transaction can span both, and the guarantee evaporates. Traders who internalize atomicity as "how crypto works" get blindsided the first time they cross a chain.
+</Callout>
+
+<MCQ
+  client:visible
+  question="Which gift of atomicity is the direct reason a same-chain arb can run with almost no own capital?"
+  options={[
+    { text: "Capital-light execution via flash loans (borrow and repay inside one transaction)", correct: true, explanation: "Because the loan is repaid in the same atomic transaction, the lender bears no risk and you need little capital of your own." },
+    { text: "Downside bounded to gas", explanation: "Important, but that's about loss capping, not about needing little capital." },
+    { text: "No settlement risk", explanation: "True of atomic arb, but not the mechanism behind capital-efficiency." },
+    { text: "No inventory risk", explanation: "A consequence of same-block settlement, not the capital-efficiency lever itself." },
+  ]}
+  explanation="Flash loans are only safe for the lender BECAUSE atomicity guarantees repayment in the same transaction — that's what makes the trade capital-light."
+/>
+
+<MatchConcepts
+  client:visible
+  question="Match each atomicity gift to the precise thing it removes from the trade."
+  pairs={[
+    { term: "No inventory/price risk", definition: "You never hold the asset across a price move — buy and sell land in the same block" },
+    { term: "Capital-light", definition: "A flash loan supplies the notional; your own capital can be near zero" },
+    { term: "Downside bounded to gas", definition: "An unprofitable attempt reverts, so your max loss is the gas spent" },
+    { term: "No settlement/counterparty risk", definition: "There is no second party or withdrawal queue that might fail to deliver" },
+  ]}
+  explanation="Each gift removes a distinct risk: price exposure, capital needs, tail losses, and counterparty failure."
+  checkLabel="Check"
+  retryLabel="Retry"
+  allCorrectLabel="✓ All correct"
+/>
+
+### When it matters
+
+Atomicity matters most precisely when the opportunity is competitive and thin. Because downside is capped at gas, you can fire speculative bundles at slim edges and let the failures revert for free. That risk-free-retry economics is *only* available on a single ledger — and it's the first thing you forfeit when you cross chains.
+
+## Two chains, no shared transaction
+
+<MCQ
+  client:visible
+  pretest
+  question="Can a single transaction read the price on Chain A and, conditional on it, execute a swap on Chain B, all-or-nothing?"
+  options={[
+    { text: "No — A and B have separate ledgers, validators, and clocks, so no one transaction can touch both", correct: true, explanation: "There is no shared execution context across two chains; a transaction lives entirely on one chain." },
+    { text: "Yes, if both chains run the EVM", explanation: "Shared bytecode doesn't mean shared state; each chain still has its own independent ledger and validator set." },
+    { text: "Yes, via a bridge contract that wraps both legs", explanation: "A bridge passes a message between two separate transactions; it does not create one atomic transaction across both." },
+    { text: "Only on rollups that share Ethereum L1", explanation: "Even rollups settling to the same L1 execute and confirm independently; cross-rollup actions are still two transactions." },
+  ]}
+  explanation="Two chains = two ledgers, two validator sets, two clocks. No single transaction spans them, so atomicity can't either."
+/>
+
+**Analogy.** Atomic arb is one cashier ringing up your whole basket in a single beep. Cross-chain arb is two stores in two cities with two cashiers and two cash drawers, connected by a courier on a motorbike. You hand over money in City A *now*, and a courier eventually tells City B what happened. Between "now" and "eventually," anything can move.
+
+**Definition.** A **cross-chain arbitrage** is necessarily **two independent legs** — sell on Chain A, buy on Chain B (or vice versa) — that are *coordinated* by a **bridge message** (a cross-chain communication that relays state or moves value), but are **not bound into one transaction**. Three consequences follow immediately:
+
+- **No cross-chain flash loan.** A flash loan must repay in the same transaction; there is no single transaction here, so no one will lend you the notional risk-free. You bring your own capital.
+- **No cross-chain revert.** If leg two becomes unprofitable, leg one has *already settled* on Chain A. You can't undo it; you're now holding inventory you didn't want.
+- **A settlement gap in time.** The two legs are separated by block inclusion, finality waits, and bridge relay — seconds to minutes during which you are exposed.
+
+**Worked example — the canonical trade.** ETH is \$2000 on Chain A and \$2020 on Chain B: a gross gap of \$20/ETH, or **1.0%**. Atomic instinct says "buy A, sell B, done." But you can't. Instead:
+
+1. **Leg 1 (now, on A):** buy ETH at \$2000 (or sell, depending on direction) — this settles on Chain A's clock.
+2. **The gap:** you wait for A to include and finalize the block, then a bridge relays the message/value to B. With a 12s block time, 12 confirmations ≈ **144s** of finality, plus a bridge relay ≈ **90s**, for an exposure window of roughly **234s (~4 minutes)** and total settlement near **250s**.
+3. **Leg 2 (later, on B):** *now* you execute at whatever \$2020-ish has become. If ETH drifted, that 1% gap may have shrunk, vanished, or inverted.
+
+<Callout variant="info" title="The gap is the whole game">
+In atomic arb the two legs share a timestamp, so the price gap you measured is the price gap you capture. Cross-chain, the legs are minutes apart — you capture the gap *as it will be at leg two*, not the gap you saw at leg one. Everything in this course is about pricing and surviving that gap.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Fill in why cross-chain arb can't be atomic."
+  text="Chain A and Chain B each have their own ledger, validator set, and {{clock|mempool|gas token}}, so no single {{transaction|opcode|signature}} can span both; the legs are merely coordinated by a {{bridge message|smart contract|liquidity pool}}."
+  explanation="Separate clocks/ledgers mean no shared transaction; a bridge message coordinates two independent legs, it does not fuse them."
+  instructions="Choose the correct option for each blank and check."
+/>
+
+<MCQ
+  client:visible
+  allowMultiple
+  question="Select EVERY statement that is true once a trade spans two chains. (Multiple answers.)"
+  options={[
+    { text: "There is no cross-chain flash loan, so you must front your own capital", correct: true, explanation: "No single transaction means no in-transaction repayment, so no flash loan." },
+    { text: "There is no cross-chain revert; leg one settles even if leg two turns bad", correct: true, explanation: "Leg one is final on A before leg two runs on B — it can't be unwound." },
+    { text: "You are exposed to price moves during the settlement gap", correct: true, explanation: "Minutes between legs = minutes of inventory/price risk." },
+    { text: "Your downside is still bounded to gas", explanation: "False — once leg one settles, your downside is the full inventory move, not just gas." },
+  ]}
+  explanation="Crossing chains keeps the idea of arbitrage but strips three of atomicity's gifts at once: no flash loan, no revert, and live price exposure."
+/>
+
+### When it matters
+
+The settlement gap matters more the *faster* an asset moves and the *thinner* your gap. A 1% gap that takes 4 minutes to capture is fine for a sleepy stablecoin pair and terrifying for a volatile alt. We'll quantify exactly how the gap erodes in the next lesson — but notice the mindset shift: you're no longer asking "is there a gap?" but "will the gap *survive* until leg two?"
+
+## The non-atomic cousin: CEX–DEX arbitrage
+
+<MCQ
+  client:visible
+  pretest
+  question="In CEX–DEX arbitrage (a centralized exchange vs. an on-chain pool), why must you keep balances sitting on BOTH venues ahead of time?"
+  options={[
+    { text: "Because moving funds between a CEX and the chain has latency, so you pre-position inventory to trade instantly on each side", correct: true, explanation: "Withdrawals/deposits take time; to act on a fleeting gap you hold inventory on both venues in advance." },
+    { text: "Because the CEX charges less if you pre-fund", explanation: "It's about latency and instant execution, not a funding discount." },
+    { text: "Because flash loans work across a CEX and a DEX", explanation: "Flash loans don't reach into a centralized exchange; that's exactly why you pre-position." },
+    { text: "Because the two prices are always identical", explanation: "If they were identical there'd be no arb; the point is to capture the gap quickly." },
+  ]}
+  explanation="No atomic link across a CEX and a chain means you pre-stock inventory on both sides and eat settlement latency — exactly the cross-chain shape."
+/>
+
+Here's the reframe that this whole lesson is building toward. Cross-chain arbitrage is **not** a sibling of atomic on-chain arb. Its real twin is the trade quant desks have run for years: **CEX–DEX arbitrage** — arbitraging price between a **centralized exchange** (CEX, an off-chain order-book venue) and an on-chain **DEX** pool.
+
+**Analogy.** CEX–DEX arb is also two stores with a courier: the exchange and the chain. You keep cash in both registers (balances on the CEX *and* tokens on-chain), trade one side instantly, and *later* rebalance via a deposit or withdrawal that clears on its own slow schedule. Sound familiar? It's the City-A/City-B courier story again — just with an exchange playing one of the cities.
+
+Let's line all three up across the axes that actually matter:
+
+| Axis | Atomic on-chain arb | CEX–DEX arb | Cross-chain arb |
+|---|---|---|---|
+| **Atomic (one transaction)?** | ✅ Yes | ❌ No | ❌ No |
+| **Own capital needed?** | ❌ ~None (flash loan) | ✅ Yes — pre-funded on both venues | ✅ Yes — pre-positioned on both chains |
+| **Inventory held mid-trade?** | ❌ Never | ✅ Yes — across deposit/withdraw latency | ✅ Yes — across the bridge/finality gap |
+| **Settlement / counterparty risk?** | ❌ None | ✅ Yes — CEX solvency, withdrawal halts | ✅ Yes — bridge failure, reorgs, relay delay |
+| **Downside if it fails?** | Gas only | Full inventory move (+ stuck funds) | Full inventory move (+ stuck funds) |
+| **Bound by speed/latency?** | Block time | Withdraw/deposit + matching latency | Finality + bridge relay latency |
+
+Read down the last two columns: **CEX–DEX and cross-chain are the same animal.** Both are non-atomic, capital-heavy, inventory-holding, latency-bound, and exposed to a counterparty (an exchange, or a bridge). The atomic column is the odd one out.
+
+<Callout variant="warning" title="Pitfall: 'it's still arbitrage, so it must be low-risk'">
+The word "arbitrage" smuggles in a low-risk connotation it earned *only* in the atomic setting. A cross-chain "arb" with a 4-minute exposure window on an 80%-vol asset is a directional inventory bet for those 4 minutes. Calling it arbitrage doesn't make the price stand still.
+</Callout>
+
+<Categorize
+  client:visible
+  question="Sort each property into the kind of arbitrage it belongs to."
+  buckets={['Atomic on-chain arb', 'Non-atomic arb (CEX–DEX & cross-chain)']}
+  items={[
+    { text: "Borrow → trade → repay in one transaction", bucket: 'Atomic on-chain arb' },
+    { text: "Worst-case loss is just the gas spent", bucket: 'Atomic on-chain arb' },
+    { text: "Capital-light via flash loans", bucket: 'Atomic on-chain arb' },
+    { text: "Must pre-position inventory on both venues", bucket: 'Non-atomic arb (CEX–DEX & cross-chain)' },
+    { text: "Exposed to a counterparty (exchange or bridge)", bucket: 'Non-atomic arb (CEX–DEX & cross-chain)' },
+    { text: "Price can move against you between the two legs", bucket: 'Non-atomic arb (CEX–DEX & cross-chain)' },
+  ]}
+  explanation="Cross-chain arb shares every property in the right bucket with CEX–DEX arb — and none of the left bucket's gifts."
+  checkLabel="Check"
+  retryLabel="Retry"
+  allCorrectLabel="✓ All correct"
+/>
+
+<MCQ
+  client:visible
+  question="A trader says: 'Cross-chain arb is just atomic arb with an extra hop.' What's the single biggest error in that framing?"
+  options={[
+    { text: "It keeps the atomicity assumption — but the extra 'hop' is exactly what destroys atomicity, turning it into a CEX–DEX-style inventory trade", correct: true, explanation: "The bridge hop isn't a minor add-on; it's the thing that removes the all-or-nothing guarantee and reintroduces inventory and counterparty risk." },
+    { text: "Cross-chain arb has lower fees than atomic arb", explanation: "Fees aren't the point; the framing error is about atomicity and risk class." },
+    { text: "Atomic arb also holds inventory between legs", explanation: "It doesn't — same-block settlement means no inventory is held." },
+    { text: "Cross-chain arb doesn't need any capital", explanation: "It needs significant pre-positioned capital — the opposite of capital-light." },
+  ]}
+  explanation="The 'extra hop' IS the atomicity break. That's why cross-chain arb belongs with CEX–DEX, not with atomic arb."
+/>
+
+### When it matters
+
+If you already run a CEX–DEX desk, you have a head start: your risk plumbing — inventory limits, venue-credit caps, latency budgets, rebalancing logic — ports almost directly to cross-chain. If you come from pure atomic searching, the mental model you must *unlearn* is "the chain protects me." Across chains, only your inventory management and your bridge choice protect you.
+
+## What you're really running
+
+<MCQ
+  client:visible
+  pretest
+  question="Strip away the label. What kind of trade is cross-chain 'arbitrage' actually most like?"
+  options={[
+    { text: "A capital-intensive, latency-bound carry trade with tail risk, dressed as arbitrage", correct: true, explanation: "You lock up inventory, earn a spread that's only realized after a delay, and wear tail risk over the window — that's a carry trade." },
+    { text: "A risk-free arbitrage, just slower", explanation: "Nothing risk-free about holding volatile inventory across a multi-minute window." },
+    { text: "A market-making strategy with no inventory", explanation: "It is inventory-heavy by construction — the opposite of no inventory." },
+    { text: "A flash-loan strategy with bounded gas downside", explanation: "No flash loan and no bounded downside once leg one settles." },
+  ]}
+  explanation="It's a carry trade in an arbitrage costume: you fund inventory, wait, and collect a spread you only hope survives the window."
+/>
+
+Put it all together. Cross-chain arbitrage is a **capital-intensive, latency-bound, tail-risky carry trade wearing an arbitrage costume.**
+
+**Definition.** A **carry trade** is a position you *fund and hold* to collect a spread that accrues (or is realized) over time, while bearing the risk that the underlying moves against you during the hold. Map it onto cross-chain:
+
+- **You fund it.** Inventory must sit on *both* chains in advance. Canonical sizing: pre-position \$2,000,000 on each side → **\$4,000,000** total locked and idle, earning nothing while it waits.
+- **You hold it.** The spread (that \$20/ETH, 1% gap) is only realized after the ~234s exposure window and ~250s total settlement — you're long/short inventory the whole time.
+- **You bear tail risk.** Crypto's annualized vol ≈ **80%**. Scaled to a 4-minute window via square-root-of-time, expected drift is ≈ **±0.2%** — a fifth of your 1% gap, gone or doubled by noise alone. And that's the *calm* case; reorgs and bridge halts are the fat tail.
+- **You pay carry costs.** Rebalancing inventory back across the bridge costs ≈ **0.05% (5 bps)** per trip, plus the opportunity cost of \$4M sitting idle.
+
+**Worked example — the costume comes off.** Your gross edge is the 1% gap on the traded notional. Say you move \$2,000,000 of ETH: gross $0.01 \times 2{,}000{,}000 = $ **\$20,000**. Now subtract the carry-trade realities:
+
+| Line item | Amount | Note |
+|---|---|---|
+| Gross gap (1% on \$2M) | **+\$20,000** | The number that lured you in |
+| Bridge rebalance fee (5 bps on \$2M) | **−\$1000** | $0.0005 \times 2{,}000{,}000$ |
+| Expected price drift over window (≈0.2% on \$2M) | **±\$4000** | $0.002 \times 2{,}000{,}000$ — symmetric *noise*, not edge |
+| Idle-capital opportunity cost (\$4M parked) | **−\$\$\$** | Real, and easy to forget |
+
+The headline \$20,000 is really *\$19,000 minus a ±\$4000 coin-flip minus your funding cost* — and that's before a bridge has a bad day. Same gap, wildly different trade.
+
+<Callout variant="warning" title="Pitfall: pricing the gap, ignoring the carry">
+The classic beginner mistake is to quote the 1% gap as the P&L. The gap is the *gross*; the trade's true expectancy is gap minus drift risk minus bridge fees minus the cost of \$4M sitting idle. Price the carry, not just the gap, or you'll happily run negative-expectancy 'arbs' all day.
+</Callout>
+
+Now *see* the gap you've been reading about. Below is the at-risk window you'll spend the next lessons quantifying. Drag the confirmation and bridge-latency sliders and watch the exposure window — and the illustrative price drift — grow. Note the **atomic baseline** chip: that's the world you left behind, where the window was zero.
+
+<CrossChainSettlementTimeline client:visible />
+
+<Reveal client:visible>
+<Callout variant="tip" title="What to take from the timeline">
+Every second you add to confirmations or bridge relay widens the exposure window, and the illustrative drift grows with the square root of that time. The atomic baseline sits at zero seconds and zero drift — which is exactly why atomic arb felt risk-free and cross-chain never will. Your job as a cross-chain trader is to make the gap big enough, and the window small enough, that the spread reliably beats the drift.
+</Callout>
+</Reveal>
+
+<MCQ
+  client:visible
+  question="Spaced recall: in the SAME-chain atomic version of this trade, what would the exposure window and worst-case downside be?"
+  options={[
+    { text: "Zero exposure window (same block) and downside bounded to gas", correct: true, explanation: "Both legs settle atomically in one transaction, so there's no window and no inventory loss — only gas if it reverts." },
+    { text: "~234 seconds and full inventory risk", explanation: "That's the cross-chain version; the atomic one has no window." },
+    { text: "Zero window but full inventory risk", explanation: "No window means no inventory is held, so there's no inventory risk." },
+    { text: "~90 seconds (bridge relay) and gas-only downside", explanation: "There's no bridge in the same-chain trade, hence zero window." },
+  ]}
+  explanation="The atomic baseline: window = 0s, downside = gas. The whole point of the timeline is to show how far cross-chain departs from that."
+/>
+
+### When it matters
+
+This reframing matters from the very first sizing decision. If you size and hedge cross-chain arb like atomic arb (no inventory limits, no drift budget, assuming the gap is the P&L), you'll be over-levered and under-hedged the instant volatility spikes. Treat it as a carry trade and the right questions appear on their own: How much inventory? For how long? Hedged how? Over which bridge? The remaining lessons answer each of those.
+
+## Recap
+
+You walked in thinking arbitrage was inherently safe and walked out knowing that safety was on loan from atomicity — and that crossing chains calls the loan. Cross-chain arb keeps the *name* but inherits the *risk profile* of CEX–DEX arbitrage: capital-heavy, inventory-holding, latency-bound, and tail-risky.
+
+<MindMap
+  client:visible
+  title="From atomic to at-risk"
+  caption="The mindset shift this whole course builds on."
+  outlineLabel="Text outline"
+  root={{
+    label: 'From atomic to at-risk',
+    children: [
+      {
+        label: 'Gifts of atomicity',
+        children: [
+          { label: 'No inventory/price risk (same block)' },
+          { label: 'Capital-light via flash loans' },
+          { label: 'Downside bounded to gas' },
+          { label: 'No settlement/counterparty risk' },
+        ],
+      },
+      {
+        label: 'Why two chains break it',
+        children: [
+          { label: 'Separate ledgers, validators, clocks' },
+          { label: 'No single transaction spans both' },
+          { label: 'No cross-chain flash loan or revert' },
+          { label: 'A settlement gap opens between legs' },
+        ],
+      },
+      {
+        label: 'The CEX–DEX cousin',
+        children: [
+          { label: 'Pre-position inventory on both venues' },
+          { label: 'Latency: withdraw/deposit ↔ bridge relay' },
+          { label: 'Counterparty: exchange ↔ bridge' },
+          { label: 'Same risk class, not atomic arb' },
+        ],
+      },
+      {
+        label: 'A carry trade in disguise',
+        children: [
+          { label: '$4M locked, idle on both sides' },
+          { label: 'Spread realized only after the window' },
+          { label: 'Drift ≈ ±0.2% vs a 1% gap' },
+          { label: 'Price the carry, not just the gap' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="From Atomic to At-Risk — mixed recap"
+  questions={[
+    {
+      question: "What is the core property a same-chain atomic arbitrage relies on?",
+      options: [
+        { text: "All steps commit together or none do — the transaction is all-or-nothing", correct: true },
+        { text: "The price is guaranteed not to move during the day" },
+        { text: "Gas fees are refunded on success" },
+        { text: "Both chains share the same validator set" },
+      ],
+      explanation: "Atomicity = indivisible all-or-nothing execution within one transaction on one ledger.",
+    },
+    {
+      question: "Which of atomicity's four gifts is the reason your downside is just gas when an atomic arb fails?",
+      options: [
+        { text: "An unprofitable attempt reverts, so nothing but gas is spent", correct: true },
+        { text: "The flash loan is forgiven" },
+        { text: "The DEX reimburses your slippage" },
+        { text: "You hold inventory until it recovers" },
+      ],
+      explanation: "Revert-on-fail caps the loss at gas — no inventory, no notional loss.",
+    },
+    {
+      question: "Why is there no cross-chain flash loan?",
+      options: [
+        { text: "A flash loan must be repaid within the same transaction, and no single transaction spans two chains", correct: true },
+        { text: "Bridges legally prohibit lending" },
+        { text: "Gas tokens differ between chains" },
+        { text: "Flash loans only exist on Layer 2s" },
+      ],
+      explanation: "No shared transaction → no in-transaction repayment → no flash loan across chains.",
+    },
+    {
+      question: "Across the comparison table, cross-chain arbitrage lines up most closely with which other strategy?",
+      options: [
+        { text: "CEX–DEX arbitrage — both are non-atomic, inventory-heavy, latency-bound, counterparty-exposed", correct: true },
+        { text: "Atomic on-chain arbitrage" },
+        { text: "Passive index investing" },
+        { text: "Same-block sandwich MEV" },
+      ],
+      explanation: "Cross-chain and CEX–DEX share every non-atomic property; atomic arb is the outlier.",
+    },
+    {
+      question: "Using the canonical numbers, roughly how long is the exposure window between the two legs?",
+      options: [
+        { text: "About 234 seconds (~4 minutes): ~144s finality + ~90s bridge relay", correct: true },
+        { text: "About 12 seconds (one block)" },
+        { text: "Effectively zero — it's atomic" },
+        { text: "About one hour" },
+      ],
+      explanation: "12 confirmations at 12s ≈ 144s, plus ~90s relay ≈ 234s of exposure.",
+    },
+    {
+      question: "Crypto vol ≈ 80%/yr. Scaled to the ~4-minute window, the illustrative price drift (≈±0.2%) compares to the 1% gap how?",
+      options: [
+        { text: "It's roughly one-fifth of the gap — material noise that can erase a chunk of the edge", correct: true },
+        { text: "It's negligible — less than a basis point" },
+        { text: "It exceeds the gap by 10x" },
+        { text: "It's irrelevant because the trade is atomic" },
+      ],
+      explanation: "±0.2% against a 1% gap is about 20% of the edge — far from negligible.",
+    },
+    {
+      question: "In the canonical inventory model, how much capital sits locked and idle across both chains?",
+      options: [
+        { text: "$4,000,000 — about $2,000,000 pre-positioned on each side", correct: true },
+        { text: "$0 — it's all flash-borrowed" },
+        { text: "$20,000 — just the expected profit" },
+        { text: "$2,020 — one ETH's worth" },
+      ],
+      explanation: "Non-atomic means you front the inventory: ~$2M each side, $4M total, earning nothing while it waits.",
+    },
+    {
+      question: "What's the cleanest one-line description of what cross-chain arbitrage really is?",
+      options: [
+        { text: "A capital-intensive, latency-bound, tail-risky carry trade wearing an arbitrage costume", correct: true },
+        { text: "A risk-free arbitrage that's just a bit slower" },
+        { text: "A flash-loan strategy with downside bounded to gas" },
+        { text: "A market-making strategy that never holds inventory" },
+      ],
+      explanation: "Fund inventory, hold across a window, collect a spread that may not survive — that's a carry trade.",
+    },
+  ]}
+  questionLabel="Question"
+  ofLabel="of"
+  scoreLabel="Your score"
+  restartLabel="Restart"
+  nextLabel="Next"
+  backLabel="Back"
+/>

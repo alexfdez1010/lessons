@@ -1,0 +1,453 @@
+---
+title: "De atómico a en riesgo"
+description: "Por qué cruzar cadenas rompe la atomicidad de transacción única y convierte un arbitraje limpio en un carry trade cargado de inventario y atado a la latencia."
+topic: "es/cross-chain-arbitrage-and-bridge-mev"
+order: 1
+minutes: 10
+updated: 2026-06-20
+---
+
+import { Callout, MCQ, FillBlank, Categorize, MatchConcepts, MindMap, Quiz, Reveal, CrossChainSettlementTimeline } from '@/components/react';
+
+El arbitraje on-chain parecía imprimir dinero con red de seguridad. Pedías prestados millones que no tenías, hacías unos cuantos swaps por varios pools, devolvías el préstamo y te quedabas con la diferencia — y si algún paso fallaba, sencillamente *no pasaba nada*. Esa red de seguridad tenía un nombre en el que probablemente nunca pensaste: **atomicidad**. Todo este curso trata de lo que ocurre cuando se la arrancas cruzando cadenas. Aviso: todos los riesgos que creías que el arbitraje no tenía vuelven en tromba.
+
+Empecemos apreciando al héroe antes de cargárnoslo.
+
+## La atomicidad, la garantía que dabas por sentada
+
+<MCQ
+  client:visible
+  pretest
+  question="En un arbitraje atómico en la misma cadena, ¿qué le pasa a tu posición si el paso final de devolver el flash loan fuera a fallar?"
+  options={[
+    { text: "La transacción entera se revierte como si nunca se hubiera ejecutado — te quedas sin nada salvo una factura de gas", correct: true, explanation: "Todo o nada. Un paso fallido deshace todos los pasos anteriores dentro de la misma transacción." },
+    { text: "Te quedas con los tokens de las patas que ya habían tenido éxito", explanation: "No existe el 'llenado parcial' dentro de una transacción atómica — es todo o nada." },
+    { text: "El préstamo se renueva automáticamente al siguiente bloque", explanation: "Los flash loans nacen y mueren dentro de una transacción; no hay renovación." },
+    { text: "Te ves obligado a mantener el inventario hasta que el precio se recupere", explanation: "Ese es el mundo cross-chain. El arbitraje atómico nunca te deja con inventario en la mano." },
+  ]}
+  explanation="Atomicidad = todos los pasos se confirman juntos o ninguno. Una devolución fallida revierte el préstamo y los swaps con él."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+**Analogía.** Un arbitraje atómico en la misma cadena es una máquina expendedora. Metes una moneda y la máquina o te suelta tu aperitivo *o* te devuelve la moneda directamente. No existe un universo en el que se quede con tu moneda y no te dé nada — la transacción se confirma por completo o se revierte por completo.
+
+**Definición.** Una **transacción atómica** es una secuencia de cambios de estado (pedir prestado, swap, swap, devolver) que la cadena ejecuta como una única unidad indivisible: o se aplican *todos* los cambios, o — si algún subpaso se revierte — *ninguno*. En la EVM, un `revert` en cualquier punto sube hasta arriba y deshace el árbol de llamadas entero.
+
+Esta única propiedad te entrega cuatro regalos, y el resto de este curso es la historia de perderlos los cuatro:
+
+| Regalo de la atomicidad | Qué significa en la práctica |
+|---|---|
+| **(a) Sin riesgo de inventario / precio a mitad del trade** | Nunca *mantienes* el activo a través de movimientos de precio; compra y venta liquidan en el mismo instante (mismo bloque). |
+| **(b) Capital ligero** | Un **flash loan** (pedir prestado + devolver dentro de una transacción) te deja operar millones con ~cero capital propio. |
+| **(c) Pérdida acotada al gas** | Si el trade no es rentable, se revierte; tu peor caso es el gas que quemaste, no el nocional del trade. |
+| **(d) Sin riesgo de liquidación / contraparte** | No hay una "otra parte" que pudiera no entregar — la cadena liquida atómicamente, sin cola de retirada ni puente en el que confiar. |
+
+**Ejemplo trabajado.** El ETH cotiza a \$1995 en el pool X y a \$2000 en el pool Y, misma cadena. Pides un flash loan de \$1,995,000 USDC, compras 1000 ETH en X a \$1995, vendes esos 1000 ETH en Y a \$2000 por \$2,000,000, devuelves los \$1,995,000 y te quedas con $2{,}000{,}000 - 1{,}995{,}000 = $ **\$5000** brutos, menos gas. Si el pool Y se hubiera movido en tu contra *antes* de tu pata de compra, la venta no cubriría la devolución y la transacción se revertiría — coste: solo gas. No arriesgaste prácticamente nada salvo el gas.
+
+<Callout variant="warning" title="La trampa: asumir que la atomicidad es una ley de la naturaleza">
+La atomicidad es una propiedad de **un único libro mayor ejecutando una única transacción** — no una propiedad de "las blockchains" en general. En cuanto un trade necesita que *dos* libros mayores se pongan de acuerdo, ninguna transacción única puede abarcar ambos, y la garantía se evapora. Los traders que interiorizan la atomicidad como "así funciona el cripto" se llevan un susto la primera vez que cruzan una cadena.
+</Callout>
+
+<MCQ
+  client:visible
+  question="¿Cuál de los regalos de la atomicidad es la razón directa de que un arbitraje en la misma cadena pueda funcionar con casi nada de capital propio?"
+  options={[
+    { text: "Ejecución de capital ligero vía flash loans (pedir prestado y devolver dentro de una transacción)", correct: true, explanation: "Como el préstamo se devuelve en la misma transacción atómica, el prestamista no asume riesgo y tú necesitas poco capital propio." },
+    { text: "Pérdida acotada al gas", explanation: "Importante, pero eso va de limitar la pérdida, no de necesitar poco capital." },
+    { text: "Sin riesgo de liquidación", explanation: "Cierto del arbitraje atómico, pero no es el mecanismo detrás de la eficiencia de capital." },
+    { text: "Sin riesgo de inventario", explanation: "Una consecuencia de la liquidación en el mismo bloque, no la palanca de eficiencia de capital en sí." },
+  ]}
+  explanation="Los flash loans solo son seguros para el prestamista PORQUE la atomicidad garantiza la devolución en la misma transacción — eso es lo que hace que el trade sea de capital ligero."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+<MatchConcepts
+  client:visible
+  question="Empareja cada regalo de la atomicidad con la cosa concreta que elimina del trade."
+  pairs={[
+    { term: "Sin riesgo de inventario/precio", definition: "Nunca mantienes el activo a través de un movimiento de precio — compra y venta caen en el mismo bloque" },
+    { term: "Capital ligero", definition: "Un flash loan aporta el nocional; tu propio capital puede ser casi cero" },
+    { term: "Pérdida acotada al gas", definition: "Un intento no rentable se revierte, así que tu pérdida máxima es el gas gastado" },
+    { term: "Sin riesgo de liquidación/contraparte", definition: "No hay una segunda parte ni cola de retirada que pudiera no entregar" },
+  ]}
+  explanation="Cada regalo elimina un riesgo distinto: exposición al precio, necesidad de capital, pérdidas de cola y fallo de contraparte."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  allCorrectLabel="✓ Todo correcto"
+/>
+
+### Cuándo importa
+
+La atomicidad importa más precisamente cuando la oportunidad es competida y fina. Como la pérdida está acotada al gas, puedes disparar bundles especulativos contra márgenes mínimos y dejar que los fallos se reviertan gratis. Esa economía de reintento sin riesgo *solo* está disponible en un único libro mayor — y es lo primero que pierdes al cruzar cadenas.
+
+## Dos cadenas, ninguna transacción compartida
+
+<MCQ
+  client:visible
+  pretest
+  question="¿Puede una única transacción leer el precio en la Cadena A y, condicionada a él, ejecutar un swap en la Cadena B, todo o nada?"
+  options={[
+    { text: "No — A y B tienen libros mayores, validadores y relojes separados, así que ninguna transacción única puede tocar ambas", correct: true, explanation: "No hay un contexto de ejecución compartido entre dos cadenas; una transacción vive enteramente en una cadena." },
+    { text: "Sí, si ambas cadenas ejecutan la EVM", explanation: "Compartir bytecode no significa compartir estado; cada cadena sigue teniendo su propio libro mayor y conjunto de validadores independiente." },
+    { text: "Sí, mediante un contrato de puente que envuelve ambas patas", explanation: "Un puente pasa un mensaje entre dos transacciones separadas; no crea una única transacción atómica sobre ambas." },
+    { text: "Solo en rollups que comparten la L1 de Ethereum", explanation: "Incluso rollups que liquidan en la misma L1 ejecutan y confirman de forma independiente; las acciones cross-rollup siguen siendo dos transacciones." },
+  ]}
+  explanation="Dos cadenas = dos libros mayores, dos conjuntos de validadores, dos relojes. Ninguna transacción única los abarca, así que la atomicidad tampoco puede."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+**Analogía.** El arbitraje atómico es un único cajero pasando toda tu cesta por caja en un solo pitido. El arbitraje cross-chain son dos tiendas en dos ciudades con dos cajeros y dos cajones de dinero, conectados por un mensajero en moto. Entregas dinero en la Ciudad A *ahora*, y un mensajero acaba contándole a la Ciudad B lo que pasó. Entre el "ahora" y el "acaba", cualquier cosa puede moverse.
+
+**Definición.** Un **arbitraje cross-chain** son necesariamente **dos patas independientes** — vender en la Cadena A, comprar en la Cadena B (o viceversa) — que están *coordinadas* por un **mensaje de puente** (una comunicación cross-chain que retransmite estado o mueve valor), pero que **no están ligadas en una sola transacción**. De ahí se derivan inmediatamente tres consecuencias:
+
+- **Sin flash loan cross-chain.** Un flash loan debe devolverse en la misma transacción; aquí no hay una única transacción, así que nadie te prestará el nocional sin riesgo. Pones tu propio capital.
+- **Sin revert cross-chain.** Si la segunda pata deja de ser rentable, la primera *ya ha liquidado* en la Cadena A. No puedes deshacerla; ahora mantienes un inventario que no querías.
+- **Un hueco de liquidación en el tiempo.** Las dos patas están separadas por la inclusión en bloque, las esperas de finalidad y el relay del puente — segundos a minutos durante los cuales estás expuesto.
+
+**Ejemplo trabajado — el trade canónico.** El ETH está a \$2000 en la Cadena A y a \$2020 en la Cadena B: un hueco bruto de \$20/ETH, o un **1,0%**. El instinto atómico dice "compra en A, vende en B, listo". Pero no puedes. En su lugar:
+
+1. **Pata 1 (ahora, en A):** compras ETH a \$2000 (o vendes, según la dirección) — esto liquida al reloj de la Cadena A.
+2. **El hueco:** esperas a que A incluya y finalice el bloque, y después un puente retransmite el mensaje/valor a B. Con un tiempo de bloque de 12s, 12 confirmaciones ≈ **144s** de finalidad, más un relay de puente ≈ **90s**, para una ventana de exposición de aproximadamente **234s (~4 minutos)** y una liquidación total cercana a **250s**.
+3. **Pata 2 (después, en B):** *ahora* ejecutas a lo que se haya convertido ese \$2020-y-pico. Si el ETH ha derivado, ese hueco del 1% puede haberse encogido, desaparecido o invertido.
+
+<Callout variant="info" title="El hueco es todo el juego">
+En el arbitraje atómico las dos patas comparten una marca de tiempo, así que el hueco de precio que mediste es el hueco de precio que capturas. En cross-chain, las patas están a minutos de distancia — capturas el hueco *tal como será en la segunda pata*, no el hueco que viste en la primera. Todo en este curso trata de poner precio a ese hueco y sobrevivirlo.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Completa por qué el arbitraje cross-chain no puede ser atómico."
+  text="La Cadena A y la Cadena B tienen cada una su propio libro mayor, conjunto de validadores y {{reloj|mempool|token de gas}}, así que ninguna {{transacción|opcode|firma}} única puede abarcar ambas; las patas están meramente coordinadas por un {{mensaje de puente|contrato inteligente|pool de liquidez}}."
+  explanation="Relojes/libros mayores separados significan que no hay transacción compartida; un mensaje de puente coordina dos patas independientes, no las fusiona."
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+<MCQ
+  client:visible
+  allowMultiple
+  question="Selecciona TODAS las afirmaciones verdaderas en cuanto un trade abarca dos cadenas. (Varias respuestas.)"
+  options={[
+    { text: "No hay flash loan cross-chain, así que debes adelantar tu propio capital", correct: true, explanation: "Ninguna transacción única significa que no hay devolución dentro de la transacción, así que no hay flash loan." },
+    { text: "No hay revert cross-chain; la primera pata liquida aunque la segunda se tuerza", correct: true, explanation: "La primera pata es definitiva en A antes de que la segunda se ejecute en B — no puede deshacerse." },
+    { text: "Estás expuesto a movimientos de precio durante el hueco de liquidación", correct: true, explanation: "Minutos entre patas = minutos de riesgo de inventario/precio." },
+    { text: "Tu pérdida sigue acotada al gas", explanation: "Falso — una vez liquida la primera pata, tu pérdida es el movimiento completo del inventario, no solo el gas." },
+  ]}
+  explanation="Cruzar cadenas conserva la idea del arbitraje pero arranca tres de los regalos de la atomicidad a la vez: sin flash loan, sin revert y con exposición de precio en vivo."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+### Cuándo importa
+
+El hueco de liquidación importa más cuanto más *rápido* se mueve un activo y más *fino* es tu hueco. Un hueco del 1% que tarda 4 minutos en capturarse está bien para un par de stablecoins adormilado y es aterrador para una alt volátil. Cuantificaremos exactamente cómo se erosiona el hueco en la próxima lección — pero fíjate en el cambio de mentalidad: ya no te preguntas "¿hay un hueco?" sino "¿*sobrevivirá* el hueco hasta la segunda pata?".
+
+## El primo no atómico: el arbitraje CEX–DEX
+
+<MCQ
+  client:visible
+  pretest
+  question="En el arbitraje CEX–DEX (un exchange centralizado frente a un pool on-chain), ¿por qué debes mantener saldos en AMBOS sitios por adelantado?"
+  options={[
+    { text: "Porque mover fondos entre un CEX y la cadena tiene latencia, así que pre-posicionas inventario para operar al instante en cada lado", correct: true, explanation: "Retiradas/depósitos llevan tiempo; para actuar sobre un hueco fugaz mantienes inventario en ambos sitios por adelantado." },
+    { text: "Porque el CEX cobra menos si pre-financias", explanation: "Va de latencia y ejecución instantánea, no de un descuento de financiación." },
+    { text: "Porque los flash loans funcionan entre un CEX y un DEX", explanation: "Los flash loans no llegan a un exchange centralizado; precisamente por eso pre-posicionas." },
+    { text: "Porque los dos precios son siempre idénticos", explanation: "Si fueran idénticos no habría arbitraje; la cuestión es capturar el hueco rápido." },
+  ]}
+  explanation="Que no haya enlace atómico entre un CEX y una cadena significa que pre-cargas inventario en ambos lados y te comes la latencia de liquidación — exactamente la forma del cross-chain."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+Aquí está el replanteamiento hacia el que apunta toda esta lección. El arbitraje cross-chain **no** es un hermano del arbitraje atómico on-chain. Su verdadero gemelo es el trade que las mesas quant llevan años ejecutando: el **arbitraje CEX–DEX** — arbitrar precio entre un **exchange centralizado** (CEX, un sitio de libro de órdenes off-chain) y un pool **DEX** on-chain.
+
+**Analogía.** El arbitraje CEX–DEX también son dos tiendas con un mensajero: el exchange y la cadena. Mantienes dinero en ambas cajas (saldos en el CEX *y* tokens on-chain), operas un lado al instante y *después* reequilibras vía un depósito o una retirada que se compensa a su propio ritmo lento. ¿Te suena? Es otra vez la historia del mensajero Ciudad-A/Ciudad-B — solo que con un exchange haciendo de una de las ciudades.
+
+Pongamos los tres en fila a lo largo de los ejes que de verdad importan:
+
+| Eje | Arbitraje atómico on-chain | Arbitraje CEX–DEX | Arbitraje cross-chain |
+|---|---|---|---|
+| **¿Atómico (una transacción)?** | ✅ Sí | ❌ No | ❌ No |
+| **¿Capital propio necesario?** | ❌ ~Ninguno (flash loan) | ✅ Sí — pre-financiado en ambos sitios | ✅ Sí — pre-posicionado en ambas cadenas |
+| **¿Inventario en mano a mitad del trade?** | ❌ Nunca | ✅ Sí — durante la latencia de depósito/retirada | ✅ Sí — durante el hueco de puente/finalidad |
+| **¿Riesgo de liquidación / contraparte?** | ❌ Ninguno | ✅ Sí — solvencia del CEX, paradas de retirada | ✅ Sí — fallo de puente, reorgs, retraso de relay |
+| **¿Pérdida si falla?** | Solo gas | Movimiento completo del inventario (+ fondos atascados) | Movimiento completo del inventario (+ fondos atascados) |
+| **¿Limitado por velocidad/latencia?** | Tiempo de bloque | Latencia de retirada/depósito + matching | Latencia de finalidad + relay del puente |
+
+Lee hacia abajo las dos últimas columnas: **CEX–DEX y cross-chain son el mismo animal.** Ambos son no atómicos, intensivos en capital, mantienen inventario, están atados a la latencia y expuestos a una contraparte (un exchange o un puente). La columna atómica es la que desentona.
+
+<Callout variant="warning" title="Trampa: 'sigue siendo arbitraje, así que debe ser de bajo riesgo'">
+La palabra "arbitraje" cuela una connotación de bajo riesgo que solo se ganó *en* el escenario atómico. Un "arbitraje" cross-chain con una ventana de exposición de 4 minutos sobre un activo con 80% de volatilidad es una apuesta direccional de inventario durante esos 4 minutos. Llamarlo arbitraje no hace que el precio se quede quieto.
+</Callout>
+
+<Categorize
+  client:visible
+  question="Clasifica cada propiedad en el tipo de arbitraje al que pertenece."
+  buckets={['Arbitraje atómico on-chain', 'Arbitraje no atómico (CEX–DEX y cross-chain)']}
+  items={[
+    { text: "Pedir prestado → operar → devolver en una transacción", bucket: 'Arbitraje atómico on-chain' },
+    { text: "La pérdida en el peor caso es solo el gas gastado", bucket: 'Arbitraje atómico on-chain' },
+    { text: "Capital ligero vía flash loans", bucket: 'Arbitraje atómico on-chain' },
+    { text: "Hay que pre-posicionar inventario en ambos sitios", bucket: 'Arbitraje no atómico (CEX–DEX y cross-chain)' },
+    { text: "Expuesto a una contraparte (exchange o puente)", bucket: 'Arbitraje no atómico (CEX–DEX y cross-chain)' },
+    { text: "El precio puede moverse en tu contra entre las dos patas", bucket: 'Arbitraje no atómico (CEX–DEX y cross-chain)' },
+  ]}
+  explanation="El arbitraje cross-chain comparte cada propiedad del cubo derecho con el arbitraje CEX–DEX — y ninguno de los regalos del cubo izquierdo."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  allCorrectLabel="✓ Todo correcto"
+/>
+
+<MCQ
+  client:visible
+  question="Un trader dice: 'El arbitraje cross-chain es solo arbitraje atómico con un salto extra.' ¿Cuál es el mayor error de ese planteamiento?"
+  options={[
+    { text: "Conserva la suposición de atomicidad — pero el 'salto' extra es precisamente lo que destruye la atomicidad, convirtiéndolo en un trade de inventario estilo CEX–DEX", correct: true, explanation: "El salto del puente no es un añadido menor; es lo que elimina la garantía de todo o nada y reintroduce el riesgo de inventario y de contraparte." },
+    { text: "El arbitraje cross-chain tiene comisiones más bajas que el atómico", explanation: "Las comisiones no son el punto; el error del planteamiento es sobre atomicidad y clase de riesgo." },
+    { text: "El arbitraje atómico también mantiene inventario entre patas", explanation: "No lo hace — la liquidación en el mismo bloque significa que no se mantiene inventario." },
+    { text: "El arbitraje cross-chain no necesita capital", explanation: "Necesita un capital pre-posicionado considerable — lo contrario de capital ligero." },
+  ]}
+  explanation="El 'salto extra' ES la ruptura de la atomicidad. Por eso el arbitraje cross-chain va con el CEX–DEX, no con el atómico."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+### Cuándo importa
+
+Si ya operas una mesa CEX–DEX, partes con ventaja: tu fontanería de riesgo — límites de inventario, topes de crédito por sitio, presupuestos de latencia, lógica de reequilibrio — se traslada casi directamente al cross-chain. Si vienes del searching atómico puro, el modelo mental que debes *desaprender* es "la cadena me protege". Entre cadenas, solo te protegen tu gestión de inventario y tu elección de puente.
+
+## Lo que de verdad estás ejecutando
+
+<MCQ
+  client:visible
+  pretest
+  question="Quita la etiqueta. ¿A qué tipo de trade se parece más en realidad el 'arbitraje' cross-chain?"
+  options={[
+    { text: "Un carry trade intensivo en capital, atado a la latencia y con riesgo de cola, disfrazado de arbitraje", correct: true, explanation: "Bloqueas inventario, ganas un diferencial que solo se realiza tras un retraso y cargas con riesgo de cola durante la ventana — eso es un carry trade." },
+    { text: "Un arbitraje sin riesgo, solo que más lento", explanation: "Nada de sin riesgo cuando mantienes inventario volátil a lo largo de una ventana de varios minutos." },
+    { text: "Una estrategia de market making sin inventario", explanation: "Es intensivo en inventario por construcción — lo contrario de sin inventario." },
+    { text: "Una estrategia de flash loan con pérdida acotada al gas", explanation: "Sin flash loan y sin pérdida acotada una vez liquida la primera pata." },
+  ]}
+  explanation="Es un carry trade con disfraz de arbitraje: financias inventario, esperas y cobras un diferencial que solo esperas que sobreviva a la ventana."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+Júntalo todo. El arbitraje cross-chain es un **carry trade intensivo en capital, atado a la latencia y con riesgo de cola, con un disfraz de arbitraje.**
+
+**Definición.** Un **carry trade** es una posición que *financias y mantienes* para cobrar un diferencial que se acumula (o se realiza) con el tiempo, mientras cargas con el riesgo de que el subyacente se mueva en tu contra durante la tenencia. Mapéalo sobre el cross-chain:
+
+- **Lo financias.** El inventario debe estar en *ambas* cadenas por adelantado. Dimensionamiento canónico: pre-posicionar \$2,000,000 en cada lado → **\$4,000,000** en total bloqueados y ociosos, sin ganar nada mientras esperan.
+- **Lo mantienes.** El diferencial (ese hueco de \$20/ETH, 1%) solo se realiza tras la ventana de exposición de ~234s y la liquidación total de ~250s — estás largo/corto de inventario todo ese tiempo.
+- **Cargas con el riesgo de cola.** La volatilidad anualizada del cripto ≈ **80%**. Escalada a una ventana de 4 minutos vía raíz cuadrada del tiempo, la deriva esperada es ≈ **±0,2%** — una quinta parte de tu hueco del 1%, esfumada o duplicada solo por el ruido. Y ese es el caso *tranquilo*; reorgs y paradas de puente son la cola gruesa.
+- **Pagas costes de carry.** Reequilibrar el inventario de vuelta por el puente cuesta ≈ **0,05% (5 pb)** por viaje, más el coste de oportunidad de los \$4M parados.
+
+**Ejemplo trabajado — se cae el disfraz.** Tu margen bruto es el hueco del 1% sobre el nocional operado. Digamos que mueves \$2,000,000 de ETH: bruto $0.01 \times 2{,}000{,}000 = $ **\$20,000**. Ahora resta las realidades del carry trade:
+
+| Partida | Importe | Nota |
+|---|---|---|
+| Hueco bruto (1% sobre \$2M) | **+\$20,000** | El número que te atrajo |
+| Comisión de reequilibrio del puente (5 pb sobre \$2M) | **−\$1000** | $0.0005 \times 2{,}000{,}000$ |
+| Deriva de precio esperada en la ventana (≈0,2% sobre \$2M) | **±\$4000** | $0.002 \times 2{,}000{,}000$ — *ruido* simétrico, no margen |
+| Coste de oportunidad del capital ocioso (\$4M aparcados) | **−\$\$\$** | Real, y fácil de olvidar |
+
+Los \$20,000 de titular son en realidad *\$19,000 menos un cara-o-cruz de ±\$4000 menos tu coste de financiación* — y eso antes de que un puente tenga un mal día. Mismo hueco, trade radicalmente distinto.
+
+<Callout variant="warning" title="Trampa: poner precio al hueco, ignorar el carry">
+El error clásico de principiante es citar el hueco del 1% como el P&L. El hueco es el *bruto*; la verdadera esperanza del trade es hueco menos riesgo de deriva menos comisiones de puente menos el coste de los \$4M parados. Pon precio al carry, no solo al hueco, o estarás encantado ejecutando 'arbitrajes' de esperanza negativa todo el día.
+</Callout>
+
+Ahora *mira* el hueco del que has estado leyendo. Abajo está la ventana en riesgo que pasarás las próximas lecciones cuantificando. Arrastra los sliders de confirmaciones y latencia del puente y observa cómo crecen la ventana de exposición — y la deriva de precio ilustrativa. Fíjate en el chip de **línea base atómica**: ese es el mundo que dejaste atrás, donde la ventana era cero.
+
+<CrossChainSettlementTimeline
+  client:visible
+  title="Arbitraje cross-chain: la ventana de exposición"
+  sellLegLabel="Pata de venta enviada (Cadena A)"
+  blockInclusionLabel="Inclusión en bloque (Cadena A)"
+  finalityWaitLabel="Espera de finalidad (Cadena A)"
+  bridgeRelayLabel="Relay del puente"
+  buyLegLabel="Pata de compra ejecuta (Cadena B)"
+  confirmationsLabel="Confirmaciones esperadas (profundidad de finalidad)"
+  bridgeLatencyLabel="Latencia del puente"
+  exposureLabel="Ventana de exposición (el precio puede moverse)"
+  totalLabel="Tiempo total de liquidación"
+  driftLabel="Deriva de precio ilustrativa"
+  atomicLabel="Arbitraje atómico monocadena"
+  atomicNote="Un bloque, exposición ≈ 0: ambas patas liquidan juntas o ninguna."
+  secondsSuffix=" s"
+  minutesSuffix=" min"
+  caption="Sube las confirmaciones o la latencia del puente y mira cómo se ensancha la ventana de exposición — y cómo crece la deriva con la raíz cuadrada del tiempo. La línea base atómica se sienta en cero."
+/>
+
+<Reveal client:visible>
+<Callout variant="tip" title="Qué llevarte de la línea temporal">
+Cada segundo que añades a las confirmaciones o al relay del puente ensancha la ventana de exposición, y la deriva ilustrativa crece con la raíz cuadrada de ese tiempo. La línea base atómica se sienta en cero segundos y cero deriva — que es exactamente por qué el arbitraje atómico parecía sin riesgo y el cross-chain nunca lo será. Tu trabajo como trader cross-chain es hacer el hueco lo bastante grande, y la ventana lo bastante pequeña, para que el diferencial bata de forma fiable a la deriva.
+</Callout>
+</Reveal>
+
+<MCQ
+  client:visible
+  question="Recuerdo espaciado: en la versión atómica EN LA MISMA CADENA de este trade, ¿cuáles serían la ventana de exposición y la pérdida en el peor caso?"
+  options={[
+    { text: "Ventana de exposición cero (mismo bloque) y pérdida acotada al gas", correct: true, explanation: "Ambas patas liquidan atómicamente en una transacción, así que no hay ventana ni pérdida de inventario — solo gas si se revierte." },
+    { text: "~234 segundos y riesgo de inventario completo", explanation: "Esa es la versión cross-chain; la atómica no tiene ventana." },
+    { text: "Ventana cero pero riesgo de inventario completo", explanation: "Ventana cero significa que no se mantiene inventario, así que no hay riesgo de inventario." },
+    { text: "~90 segundos (relay del puente) y pérdida solo de gas", explanation: "No hay puente en el trade de la misma cadena, de ahí la ventana cero." },
+  ]}
+  explanation="La línea base atómica: ventana = 0s, pérdida = gas. Todo el sentido de la línea temporal es mostrar cuánto se aleja el cross-chain de eso."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+### Cuándo importa
+
+Este replanteamiento importa desde la primerísima decisión de dimensionamiento. Si dimensionas y cubres el arbitraje cross-chain como el atómico (sin límites de inventario, sin presupuesto de deriva, asumiendo que el hueco es el P&L), estarás sobreapalancado y sub-cubierto en cuanto la volatilidad se dispare. Trátalo como un carry trade y las preguntas correctas aparecen solas: ¿cuánto inventario?, ¿durante cuánto tiempo?, ¿cubierto cómo?, ¿por qué puente? Las lecciones restantes responden a cada una.
+
+## Repaso
+
+Entraste pensando que el arbitraje era intrínsecamente seguro y saliste sabiendo que esa seguridad estaba prestada por la atomicidad — y que cruzar cadenas reclama el préstamo. El arbitraje cross-chain conserva el *nombre* pero hereda el *perfil de riesgo* del arbitraje CEX–DEX: intensivo en capital, mantenedor de inventario, atado a la latencia y con riesgo de cola.
+
+<MindMap
+  client:visible
+  title="De atómico a en riesgo"
+  caption="El cambio de mentalidad sobre el que se construye todo este curso."
+  outlineLabel="Esquema de texto"
+  root={{
+    label: 'De atómico a en riesgo',
+    children: [
+      {
+        label: 'Regalos de la atomicidad',
+        children: [
+          { label: 'Sin riesgo de inventario/precio (mismo bloque)' },
+          { label: 'Capital ligero vía flash loans' },
+          { label: 'Pérdida acotada al gas' },
+          { label: 'Sin riesgo de liquidación/contraparte' },
+        ],
+      },
+      {
+        label: 'Por qué dos cadenas lo rompen',
+        children: [
+          { label: 'Libros mayores, validadores y relojes separados' },
+          { label: 'Ninguna transacción única abarca ambas' },
+          { label: 'Sin flash loan ni revert cross-chain' },
+          { label: 'Se abre un hueco de liquidación entre patas' },
+        ],
+      },
+      {
+        label: 'El primo CEX–DEX',
+        children: [
+          { label: 'Pre-posicionar inventario en ambos sitios' },
+          { label: 'Latencia: retirada/depósito ↔ relay del puente' },
+          { label: 'Contraparte: exchange ↔ puente' },
+          { label: 'Misma clase de riesgo, no arbitraje atómico' },
+        ],
+      },
+      {
+        label: 'Un carry trade disfrazado',
+        children: [
+          { label: '$4M bloqueados, ociosos en ambos lados' },
+          { label: 'Diferencial realizado solo tras la ventana' },
+          { label: 'Deriva ≈ ±0,2% frente a un hueco del 1%' },
+          { label: 'Pon precio al carry, no solo al hueco' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="De atómico a en riesgo — repaso mixto"
+  questions={[
+    {
+      question: "¿Cuál es la propiedad central de la que depende un arbitraje atómico en la misma cadena?",
+      options: [
+        { text: "Todos los pasos se confirman juntos o ninguno — la transacción es todo o nada", correct: true },
+        { text: "Se garantiza que el precio no se moverá durante el día" },
+        { text: "Las comisiones de gas se reembolsan en caso de éxito" },
+        { text: "Ambas cadenas comparten el mismo conjunto de validadores" },
+      ],
+      explanation: "Atomicidad = ejecución indivisible de todo o nada dentro de una transacción en un libro mayor.",
+    },
+    {
+      question: "¿Cuál de los cuatro regalos de la atomicidad es la razón de que tu pérdida sea solo el gas cuando un arbitraje atómico falla?",
+      options: [
+        { text: "Un intento no rentable se revierte, así que no se gasta más que gas", correct: true },
+        { text: "El flash loan se condona" },
+        { text: "El DEX te reembolsa el slippage" },
+        { text: "Mantienes inventario hasta que se recupera" },
+      ],
+      explanation: "El revert al fallar acota la pérdida al gas — sin inventario, sin pérdida de nocional.",
+    },
+    {
+      question: "¿Por qué no hay flash loan cross-chain?",
+      options: [
+        { text: "Un flash loan debe devolverse dentro de la misma transacción, y ninguna transacción única abarca dos cadenas", correct: true },
+        { text: "Los puentes prohíben legalmente prestar" },
+        { text: "Los tokens de gas difieren entre cadenas" },
+        { text: "Los flash loans solo existen en Layer 2s" },
+      ],
+      explanation: "Sin transacción compartida → sin devolución dentro de la transacción → sin flash loan entre cadenas.",
+    },
+    {
+      question: "En la tabla de comparación, ¿con qué otra estrategia se alinea más de cerca el arbitraje cross-chain?",
+      options: [
+        { text: "Arbitraje CEX–DEX — ambos son no atómicos, intensivos en inventario, atados a la latencia y expuestos a contraparte", correct: true },
+        { text: "Arbitraje atómico on-chain" },
+        { text: "Inversión pasiva en índices" },
+        { text: "MEV sándwich en el mismo bloque" },
+      ],
+      explanation: "Cross-chain y CEX–DEX comparten todas las propiedades no atómicas; el arbitraje atómico es el que desentona.",
+    },
+    {
+      question: "Usando los números canónicos, ¿cuánto dura aproximadamente la ventana de exposición entre las dos patas?",
+      options: [
+        { text: "Unos 234 segundos (~4 minutos): ~144s de finalidad + ~90s de relay del puente", correct: true },
+        { text: "Unos 12 segundos (un bloque)" },
+        { text: "Efectivamente cero — es atómico" },
+        { text: "Aproximadamente una hora" },
+      ],
+      explanation: "12 confirmaciones a 12s ≈ 144s, más ~90s de relay ≈ 234s de exposición.",
+    },
+    {
+      question: "Volatilidad del cripto ≈ 80%/año. Escalada a la ventana de ~4 minutos, la deriva de precio ilustrativa (≈±0,2%) ¿cómo se compara con el hueco del 1%?",
+      options: [
+        { text: "Es aproximadamente una quinta parte del hueco — ruido material que puede borrar un trozo del margen", correct: true },
+        { text: "Es insignificante — menos de un punto básico" },
+        { text: "Supera el hueco en 10x" },
+        { text: "Es irrelevante porque el trade es atómico" },
+      ],
+      explanation: "±0,2% frente a un hueco del 1% es alrededor del 20% del margen — lejos de ser insignificante.",
+    },
+    {
+      question: "En el modelo de inventario canónico, ¿cuánto capital queda bloqueado y ocioso entre ambas cadenas?",
+      options: [
+        { text: "$4,000,000 — alrededor de $2,000,000 pre-posicionados en cada lado", correct: true },
+        { text: "$0 — todo es flash-prestado" },
+        { text: "$20,000 — solo el beneficio esperado" },
+        { text: "$2,020 — el valor de un ETH" },
+      ],
+      explanation: "No atómico significa que adelantas el inventario: ~$2M cada lado, $4M en total, sin ganar nada mientras espera.",
+    },
+    {
+      question: "¿Cuál es la descripción de una línea más limpia de lo que es realmente el arbitraje cross-chain?",
+      options: [
+        { text: "Un carry trade intensivo en capital, atado a la latencia y con riesgo de cola, con un disfraz de arbitraje", correct: true },
+        { text: "Un arbitraje sin riesgo que solo es un poco más lento" },
+        { text: "Una estrategia de flash loan con pérdida acotada al gas" },
+        { text: "Una estrategia de market making que nunca mantiene inventario" },
+      ],
+      explanation: "Financiar inventario, mantenerlo durante una ventana, cobrar un diferencial que quizá no sobreviva — eso es un carry trade.",
+    },
+  ]}
+  questionLabel="Pregunta"
+  ofLabel="de"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  nextLabel="Siguiente"
+  backLabel="Atrás"
+/>

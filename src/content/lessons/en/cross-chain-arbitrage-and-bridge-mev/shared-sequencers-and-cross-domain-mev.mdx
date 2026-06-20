@@ -1,0 +1,466 @@
+---
+title: "Shared Sequencers & Cross-Domain MEV"
+description: "Where MEV reappears across chains, what centralized and shared sequencers change, and the bonded-relayer, escrow, and intent designs that approximate lost atomicity."
+topic: "en/cross-chain-arbitrage-and-bridge-mev"
+order: 6
+minutes: 13
+updated: 2026-06-20
+---
+
+import { Callout, MCQ, FillBlank, Categorize, MatchConcepts, MindMap, Quiz, Reveal, MevSupplyChain } from '@/components/react';
+
+You spent five lessons learning that cross-chain arbitrage is hard because the two legs don't settle in one transaction. Buy ETH on chain A at \$2000, sell on chain B at \$2020, and somewhere between those two clicks you are exposed: holding inventory, waiting on finality, trusting a bridge, praying nothing depegs. The 1% gap is the carrot; the **exposure window** is the stick.
+
+This capstone asks the question the whole course has been circling: **can we buy atomicity back?** And while we're answering it — where does all that ordering power, all that MEV, actually *go* when you smear a market across many chains? Spoiler: it doesn't evaporate. It moves to a new throne. Let's find the throne.
+
+## MEV doesn't die, it relocates
+
+<MCQ
+  client:visible
+  pretest
+  question="In a world with ten rollups instead of one chain, what happens to MEV?"
+  options={[
+    { text: "It mostly disappears — competition across chains drives extractable value to zero.", explanation: "Competition compresses some single-chain MEV, but spreading the market across domains creates brand-new ordering opportunities. It relocates, it doesn't vanish." },
+    { text: "It relocates and even grows — new value comes from coordinating ordering across domains.", correct: true, explanation: "Exactly. More venues means more cross-chain price gaps and more places to control ordering — including a new prize: ordering two legs across two chains at once." },
+    { text: "It stays identical to single-chain MEV in every way.", explanation: "Single-chain MEV (sandwiches, backruns) still exists, but a multi-chain world adds a distinct category that needs ordering power on more than one chain." },
+    { text: "It becomes impossible because no one sees all the chains' mempools.", explanation: "Fragmented visibility makes it harder, not impossible — and whoever DOES see multiple domains at once gains an edge." },
+  ]}
+  explanation="MEV is a property of the right to order transactions. Add more chains and you add more ordering rights — including the new right to order across chains."
+/>
+
+Think of MEV like water pressure in a building. You can't make the pressure go away by adding more pipes — you just move where it pushes hardest. Split one chain into ten rollups and the **maximal extractable value** (the profit a party can earn purely by choosing what transactions to include and in what order) doesn't drain out the bottom. It pools in new joints.
+
+The classic single-chain plays you already know still happen *inside* each chain:
+
+- **Sandwich** — wedge a victim's swap between your buy and sell.
+- **Backrun** — land a transaction immediately after a known one (a big trade, an oracle update) to harvest the move it causes.
+- **PBS / MEV-Boost** — proposer-builder separation, where searchers build ordered bundles, builders assemble blocks, and a relay runs a sealed-bid auction so the proposer collects the value without choosing the order.
+
+But a multi-chain world mints a brand-new species on top of those.
+
+**Cross-domain MEV** is the value extractable by *controlling or coordinating transaction ordering across two or more chains or rollups at once.* Two flagship examples: (1) capturing a cross-chain arbitrage by ordering *both* legs favorably — your buy on chain A and your sell on chain B each land exactly where you want them; (2) **backrunning a bridge deposit** — you see a large deposit confirm on the source chain and race to act on the destination chain before the price there reacts.
+
+The hero diagram below is the single-chain MEV supply chain you met earlier — searcher, builder, relay, proposer — re-cast as a *cross-domain* pipeline. The punchline is the same structural fact: **whoever holds the right to order wins**, and in a multi-chain world that right can span domains.
+
+<MevSupplyChain
+  client:visible
+  title="The cross-domain MEV supply chain"
+  stages={[
+    { name: 'Two pending legs', role: 'A user wants to buy ETH on chain A and sell on chain B. Two transactions, two domains — and right now, no one guarantees they land together.' },
+    { name: 'Cross-domain searcher', role: 'Watches both chains. Spots the A→B price gap (or a fresh bridge deposit) and packages a two-leg, cross-domain bundle with the exact ordering it wants.' },
+    { name: 'Builder(s) / domains', role: 'Each chain has its own block to build. The bundle only pays off if BOTH chains order the legs as requested — across two independent builders, that is not guaranteed.' },
+    { name: 'Coordinator / relay', role: 'Whoever can coordinate ordering across both domains (a shared sequencer, a bonded relayer, a solver) holds the new throne — the cross-domain ordering right.' },
+    { name: 'Captured cross-domain MEV', role: 'The party that best coordinates the two legs captures the arb. The user gets filled; the coordinator pockets the residual edge for bearing the risk.' },
+  ]}
+  flowLabels={['two-leg intent', 'cross-domain bundle', 'two blocks', 'coordinated order']}
+  bidLabel="coordination value"
+  paymentLabel="cross-domain MEV"
+  caption="Single-chain MEV separated the right to ORDER from the right to PROPOSE. Cross-domain MEV adds a harder problem: the right to order must now span MULTIPLE chains at once. Whoever can coordinate ordering across domains holds a new, more powerful throne."
+/>
+
+<Callout variant="warning" title="Misconception: 'more chains = less MEV'">
+It feels intuitive that fragmenting liquidity across many rollups dilutes everyone's edge. But MEV isn't a fixed pie that gets sliced thinner — it's generated wherever someone controls ordering. More venues means more price gaps *between* venues, and a new, scarce, valuable thing: the ability to see and order across several domains at once. Fragmentation creates cross-domain MEV; it doesn't kill it.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Define the new category precisely."
+  text="Cross-domain MEV is value extractable by controlling or coordinating transaction {{ordering|inclusion|signing}} across {{two or more|exactly one|all known}} chains at once."
+  explanation="It's specifically about ORDERING power that spans MULTIPLE domains — e.g. landing both legs of a cross-chain arb favorably."
+  instructions="Choose the correct option for each blank and check."
+/>
+
+### When it matters
+
+Cross-domain MEV is the dominant lens the moment a strategy touches more than one chain. If your arb, liquidation, or backrun depends on what happens on a *second* domain, you are no longer competing only against local searchers — you're competing against whoever can best coordinate ordering across both. That party sets the floor on what edge is left for you.
+
+## Sequencers: the rollup's order-maker
+
+<MCQ
+  client:visible
+  pretest
+  question="On most rollups live today, who decides the order of transactions?"
+  options={[
+    { text: "A decentralized validator set, the same as Ethereum L1.", explanation: "That's the roadmap for many, but the reality today is far more centralized." },
+    { text: "A single sequencer operated by the rollup team.", correct: true, explanation: "Correct. Most production rollups run one centralized sequencer run by the team — it orders txs and posts batches to L1." },
+    { text: "Users vote on ordering each block.", explanation: "No rollup orders transactions by user vote — that would be unworkably slow." },
+    { text: "Ethereum's proposer orders rollup transactions directly.", explanation: "L1 stores the rollup's data, but the rollup's own sequencer decides the order before posting batches." },
+  ]}
+  explanation="A rollup's sequencer is the party that receives transactions, picks their order, and posts batches to L1. Today that's almost always one centralized operator."
+/>
+
+Picture a single train dispatcher at one station, holding the only clipboard that says which train leaves and in what order. Every passenger (transaction) has to go through that one person. Fast and tidy — and also a perfect spot to play favorites.
+
+A **sequencer** is the component of a rollup that *receives transactions, decides their order, and posts the resulting batches down to L1* (Ethereum) for data availability and settlement. Most rollups in production today run a **single centralized sequencer** operated by the rollup team itself. One clipboard, one dispatcher.
+
+That operator has a *structural* advantage. Because it sees the incoming transaction flow and chooses the order, it can — in principle — **front-run** (insert its own transaction ahead of yours), **censor** (delay or drop transactions it dislikes), or simply harvest ordering MEV that no one else can touch. It's a latency-and-ordering monopoly.
+
+In practice that power is *mitigated*, not removed, by three things:
+
+- **Reputation** — the team's business depends on not visibly abusing users.
+- **Forced-inclusion / escape hatches** — mechanisms that let you submit a transaction directly to L1 if the sequencer censors you, so it can't censor you *forever*.
+- **Decentralization roadmaps** — public commitments to hand sequencing to a permissionless set over time.
+
+| Centralized sequencer | Pros | Cons |
+|---|---|---|
+| Speed | Sub-second soft confirmations — feels instant | — |
+| Cost | Cheap, simple to operate; no consensus overhead | — |
+| Trust | — | You trust one operator not to front-run or censor |
+| Censorship | — | Can delay/drop txs (escape hatch is slow) |
+| MEV | — | Operator can capture ordering MEV exclusively |
+| Resilience | — | Single point of failure: sequencer down = chain stalls |
+
+<Callout variant="info" title="Soft confirmation ≠ finality">
+A centralized sequencer's instant "confirmation" is a *promise* it will include your tx in the next batch. Real finality only arrives once the batch is posted to L1 and that L1 block finalizes. For a cross-chain arb, that gap between soft-confirm and L1-finality is exactly the **exposure window** from earlier in the course — don't mistake fast UX for settled funds.
+</Callout>
+
+<Categorize
+  client:visible
+  question="Sort each property as a strength or a weakness of a single centralized sequencer."
+  buckets={['Strength', 'Weakness']}
+  items={[
+    { text: 'Sub-second soft confirmations', bucket: 'Strength' },
+    { text: 'Cheap and simple to run', bucket: 'Strength' },
+    { text: 'Operator can front-run or censor', bucket: 'Weakness' },
+    { text: 'Single point of failure', bucket: 'Weakness' },
+    { text: 'Exclusive capture of ordering MEV', bucket: 'Weakness' },
+    { text: 'No consensus coordination overhead', bucket: 'Strength' },
+  ]}
+  explanation="The centralized sequencer trades trust, censorship-resistance, and MEV fairness for speed, simplicity, and cost."
+  checkLabel="Check"
+  retryLabel="Retry"
+  allCorrectLabel="✓ All correct"
+/>
+
+### When it matters
+
+If you're arbing into or out of a rollup, the sequencer is the gatekeeper of your fill. Its latency edge means it can, in principle, see your inbound arb and react first; its censorship power means your escape-hatch fallback may be too slow to save a time-sensitive trade. Knowing whether a chain runs one operator's clipboard — and how fast its forced-inclusion path is — is part of pricing the leg.
+
+## Shared sequencers
+
+<MCQ
+  client:visible
+  pretest
+  question="What is the headline capability a shared sequencer can offer that separate per-rollup sequencers cannot?"
+  options={[
+    { text: "Lower gas fees on every rollup it serves.", explanation: "Fees aren't the point — coordination is. A shared sequencer's superpower is cross-rollup ATOMICITY." },
+    { text: "Atomic cross-rollup inclusion — bundling txs on two rollups so they land together or not at all.", correct: true, explanation: "Exactly. By ordering for many rollups at once, it can guarantee both legs land together — restoring atomicity ACROSS rollups." },
+    { text: "Instant finality on Ethereum L1.", explanation: "It can't change L1's finality; it coordinates ordering across the rollups it sequences." },
+    { text: "Eliminating MEV entirely.", explanation: "It concentrates ordering power rather than eliminating it — arguably a bigger MEV throne, not a smaller one." },
+  ]}
+  explanation="A shared sequencer orders for MANY rollups together, so it can promise both legs of a cross-rollup transaction land atomically."
+/>
+
+Now imagine the dispatcher upgrades: instead of one clipboard per station, *one* dispatcher coordinates the timetables of *many* stations at once. If a passenger needs to catch a connecting train at a second station, the dispatcher can guarantee both trains wait for each other — or neither leaves. That's a **shared sequencer**.
+
+A **shared sequencer** is a sequencing layer that orders transactions for *many rollups together* (designs like Espresso and Astria pursue this). Because one party builds the ordering for several chains in the same beat, it can offer the prize this whole course has been chasing: **atomic cross-rollup inclusion.** It can bundle a transaction on rollup X and a transaction on rollup Y so that **they land together or not at all** — restoring atomicity *across rollups* and enabling genuinely atomic cross-rollup arbitrage. Buy on X, sell on Y, both in one indivisible commitment. No exposure window between the legs.
+
+That's the upside, and it's enormous: it directly dissolves the Lesson 1 problem for any pair of chains that share the sequencer.
+
+The cost is equally enormous, and it's the theme of this lesson made literal:
+
+- **A new cross-domain MEV throne.** Concentrating ordering power over many chains in one place creates the single most powerful seat for cross-domain MEV that exists. The shared sequencer *is* the entity best positioned to coordinate ordering across domains — exactly the value we defined earlier.
+- **Trust and censorship, scaled up.** A centralized sequencer can censor one chain; a shared one can censor — or extract from — *all* the chains it serves. The forced-inclusion and decentralization questions don't go away; they get multiplied.
+- **It only helps shared chains.** A shared sequencer restores atomicity *only between rollups that actually use it.* Two arbitrary independent L1s — say Bitcoin and an unrelated chain — share no sequencer, so this buys them nothing. Atomicity here is a club good, not a universal one.
+
+| | Per-rollup centralized sequencer | Shared sequencer |
+|---|---|---|
+| Atomic cross-rollup inclusion | ✗ (each chain orders alone) | ✓ (for chains in the set) |
+| Cross-rollup atomic arb | ✗ | ✓ (within the set) |
+| Ordering power concentration | One chain | Many chains at once |
+| Censorship blast radius | One rollup | Every rollup it serves |
+| Helps independent L1s? | n/a | ✗ — only shared chains |
+
+<Callout variant="warning" title="Misconception: 'a shared sequencer makes cross-chain arb risk-free everywhere'">
+It restores atomicity *only* across the specific rollups that opt into it. Your canonical A↔B arb is risk-free under a shared sequencer **only if both A and B use that same sequencer.** The moment one leg lives on a chain outside the set — most of the real cross-chain universe — you're back to inventory, finality, and bridge risk. Shared sequencing is a powerful local fix, not a universal one.
+</Callout>
+
+<MatchConcepts
+  client:visible
+  question="Match each sequencing concept to its defining trait."
+  pairs={[
+    { term: 'Centralized sequencer', definition: 'One operator orders a single rollup and posts its batches to L1' },
+    { term: 'Shared sequencer', definition: 'Orders many rollups together, enabling atomic cross-rollup inclusion' },
+    { term: 'Forced inclusion', definition: 'Escape hatch letting users submit txs to L1 if the sequencer censors them' },
+    { term: 'Cross-domain MEV throne', definition: 'The concentrated power created by coordinating ordering over many chains' },
+  ]}
+  explanation="A shared sequencer buys atomicity for its member chains, but the very thing that grants that power — coordinating ordering across domains — is also the biggest cross-domain MEV seat."
+  checkLabel="Check"
+  retryLabel="Retry"
+  allCorrectLabel="✓ All correct"
+/>
+
+### When it matters
+
+Shared sequencers reshape the strategy map for any rollup ecosystem that adopts them. If your two legs both live inside a shared-sequencer set, atomic cross-rollup arb is on the table and the edge collapses toward whoever wins the sequencer's auction. If even one leg is outside, the classic carry-trade risks reassert themselves — so the first question for any cross-rollup strategy is simply: *do both chains share a sequencer?*
+
+## Approximating atomicity without a shared sequencer
+
+<MCQ
+  client:visible
+  pretest
+  question="For two genuinely independent chains with no shared sequencer, what's the best we can do about atomicity?"
+  options={[
+    { text: "Nothing — atomic-feeling UX is impossible without a shared sequencer.", explanation: "Too pessimistic. Several mechanisms approximate atomicity by moving the risk to a specialized party." },
+    { text: "Approximate it — shift the latency/finality risk onto a relayer, escrow, or solver so the user feels atomicity.", correct: true, explanation: "Right. You can't make independent chains commit together, but you can pay someone to absorb the in-between risk and hand the user a near-atomic outcome." },
+    { text: "Force both chains to adopt the same L1, making them atomic.", explanation: "You generally can't rehome independent chains; the practical answer is to approximate atomicity, not re-architect the chains." },
+    { text: "Wait for both chains to finalize before either leg starts.", explanation: "That's the opposite of atomic — it maximizes the exposure window rather than collapsing it." },
+  ]}
+  explanation="Independent chains can't be made to commit in one transaction, but you can approximate atomicity by having a specialized party absorb the cross-chain risk."
+/>
+
+No shared sequencer between your two chains? Then you can't get *true* atomicity — but you can rent something that *feels* like it by paying a specialist to eat the risk in the middle. Three families do this, and the trick to understanding each is to ask one question: **who bears the residual inventory/finality/tail risk?**
+
+**1. Bonded relayers / fast-fill (e.g. Across).** A **relayer** fronts the user's funds on the destination chain *instantly* out of its own inventory, then reclaims the slow canonical bridge transfer afterward. To keep it honest, the relayer posts a **bond** — collateral that gets **slashed** (confiscated) if it misbehaves. The user gets near-atomic UX (funds on B in seconds); the relayer eats the latency and finality risk of the slow leg.
+- *Approximation gap:* it works only if the bond is large enough to deter cheating, and only if relayers actually *show up* to fill. No relayer, no fast fill — you fall back to the slow bridge.
+
+**2. Escrow / HTLC atomic swaps.** A **hashed timelock contract (HTLC)** locks funds on both chains behind the same secret hash, with a timeout. Either *both* claims happen (the secret is revealed, both sides unlock) or *both* refund after the timeout. This is genuinely atomic-*ish*: the cryptography guarantees you can't be left half-filled.
+- *Approximation gap:* it's slow (you wait out timelocks), it locks capital on both sides while pending, and it's exposed to **griefing** and the **free-option problem** — the party who reveals the secret last can choose to walk away if the price moved against them, having tied up the counterparty's capital for free. That optionality has real value, and the counterparty pays for it.
+
+**3. Intent-based systems (UniswapX, CoW Protocol, Across-as-intents).** The user signs a desired *outcome*, not a sequence of transactions: *"I want at least X of token Y on chain B in exchange for my token on chain A."* Competing **solvers** (specialized fillers) then bid to satisfy that intent, taking on the cross-chain execution and *all its risk* themselves. The user gets an atomic-feeling, guaranteed outcome — they either get their X of Y or the intent isn't filled — while the solver bears the residual inventory, finality, and tail risk.
+- *Approximation gap:* trust shifts to solvers and the competition between them. If solvers collude or centralize, the user's effective price worsens; and the *same underlying bridge risk* the solver uses to move funds is still sitting there — just on the solver's books instead of yours.
+
+<MatchConcepts
+  client:visible
+  question="Match each atomicity-approximating mechanism to who ultimately bears the cross-chain risk."
+  pairs={[
+    { term: 'Bonded relayer / fast-fill', definition: 'The relayer — it fronts funds and eats the slow-bridge latency/finality risk, backed by a slashable bond' },
+    { term: 'HTLC / escrow atomic swap', definition: 'Both counterparties — capital locked on both chains, exposed to timeouts, griefing, and the free-option problem' },
+    { term: 'Intent + solvers', definition: 'The winning solver — it guarantees the user an outcome and absorbs the execution, inventory, and tail risk' },
+    { term: 'Shared sequencer (for contrast)', definition: 'No one bears in-between risk — there is no in-between, because both legs commit atomically' },
+  ]}
+  explanation="Every approximation works by relocating the exposure window onto a specialized party. The user buys atomic-feeling UX; the specialist sells risk-bearing."
+  checkLabel="Check"
+  retryLabel="Retry"
+  allCorrectLabel="✓ All correct"
+/>
+
+Here's the trade-off space side by side. Notice nothing scores well on *every* axis — that's the whole point.
+
+| Mechanism | Atomicity | Latency (user) | Capital locked | Main residual risk |
+|---|---|---|---|---|
+| Shared sequencer | True (within set) | Fast | Low | Sequencer trust / censorship |
+| Bonded relayer (fast-fill) | Near-atomic UX | Fast | Relayer's inventory | Bond too small / no relayer shows |
+| HTLC / escrow swap | Atomic-ish (crypto) | Slow (timelocks) | High (both chains) | Griefing, free-option problem |
+| Intent + solvers | Atomic-feeling outcome | Fast | Solver's inventory | Solver centralization, bridge risk |
+
+<Callout variant="warning" title="Misconception: 'intents and fast-fills make bridge risk disappear'">
+They make it *invisible to the user*, which is not the same as gone. When a solver or relayer fills your intent instantly, it's fronting funds and then using the same slow, trust-bearing bridge underneath to make itself whole. The depeg, the validator-set compromise, the finality reversal — all the tail risk from earlier lessons still exists. It's just been moved onto the solver's balance sheet, and you're paying a spread for that transfer.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Fill in the relayer mechanism."
+  text="In fast-fill bridging, a relayer fronts the user's funds on the destination chain instantly and posts a {{bond|fee|refund}} that is {{slashed|refunded|doubled}} if it misbehaves, so the user gets near-atomic UX while the relayer bears the latency risk."
+  explanation="The bond is slashable collateral — it's what makes the relayer's instant promise credible."
+  instructions="Choose the correct option for each blank and check."
+/>
+
+### When it matters
+
+These three are the actual toolkit you'll use in production, because most real cross-chain pairs *don't* share a sequencer. Picking among them is a risk-routing decision: fast-fill and intents give your users speed by selling the in-between risk to a relayer/solver (you pay a spread); HTLCs give you cryptographic safety at the cost of speed and capital. The right choice depends on which axis — latency, capital, or trust — your strategy can least afford to spend.
+
+## The frontier: buying back atomicity
+
+<MCQ
+  client:visible
+  pretest
+  question="What single problem does this entire course — and this whole design space — ultimately trace back to?"
+  options={[
+    { text: "Gas fees being too high on Ethereum.", explanation: "Fees matter, but they're not the root. The root is the loss of single-transaction atomicity across chains." },
+    { text: "The loss of single-transaction atomicity, which forces inventory, exposure-window, and tail risk.", correct: true, explanation: "Exactly. Lose atomicity and every downstream risk follows; the whole design space is the industry trying to buy it back." },
+    { text: "Stablecoins occasionally depegging.", explanation: "Depegs are one tail risk, but they're a symptom of having to hold value across an exposure window — itself caused by lost atomicity." },
+    { text: "Too few rollups existing today.", explanation: "More rollups would add cross-domain MEV, not solve the atomicity problem." },
+  ]}
+  explanation="Lost atomicity is the root cause; inventory, exposure window, and tail risk are its consequences; and every mechanism in this lesson is an attempt to restore it."
+/>
+
+Step back and look at the whole arc. One thread runs through every lesson in this course, and it's the loss of a single primitive: **atomicity** — the property, free on any one chain, that a buy and a sell either *both* execute or *neither* does, inside one transaction.
+
+Lesson 1 took that away the moment the two legs lived on different chains. And everything since has been the bill for that loss:
+
+- You must hold **inventory** between the legs.
+- You sit inside an **exposure window** where price can move against you.
+- You inherit **bridge trust and tail risk** — depegs, finality reversals, validator-set compromise.
+
+Seen that way, this entire final lesson is one idea wearing four costumes. Shared sequencers, bonded relayers, HTLC escrows, intent+solver systems — **they are all the industry trying to buy atomicity back.** And each pays for it with a different currency:
+
+| Mechanism | What it pays with |
+|---|---|
+| Shared sequencer | Trust + ordering-power centralization |
+| Bonded relayer | Capital (the bond + fronted inventory) + relayer trust |
+| HTLC / escrow | Latency + locked capital + free-option exposure |
+| Intent + solvers | Solver trust + centralization + the underlying bridge risk |
+
+<Reveal client:visible>
+<Callout variant="success" title="The honest verdict">
+Until atomicity is *fully* restored across arbitrary chains — which no mechanism does today — cross-chain arbitrage stays what it has been the whole course: a **capital-intensive, risk-bearing carry trade.** You front inventory, you wait, you carry tail risk, and you collect the spread for doing so. And the deepest prize goes to whoever best *approximates* atomicity: the party that most credibly coordinates ordering across domains — a shared sequencer, a well-bonded relayer network, a dominant solver — captures the cross-domain MEV. Buying atomicity back and capturing cross-domain MEV are, in the end, the same business.
+</Callout>
+</Reveal>
+
+<Callout variant="warning" title="Misconception: 'one of these will soon make cross-chain arb trivial and risk-free'">
+None of them removes the root problem for the general case — they relocate it. A shared sequencer fixes only its member chains; a fast-fill or intent moves the risk onto a relayer/solver who still uses a trust-bearing bridge underneath. Where there is residual risk, there is a spread to be earned for bearing it — which is precisely why this stays a *trade*, not a free lunch. The frontier is about who bears the risk most efficiently, not about making it vanish.
+</Callout>
+
+<MCQ
+  client:visible
+  question="A solver fills your cross-chain intent instantly and you receive your tokens on chain B. Which statement is most accurate?"
+  options={[
+    { text: "Atomicity was truly restored; no one bore any cross-chain risk.", explanation: "You FELT atomicity, but the solver bore the in-between risk — it fronted funds and reclaimed via a slow, trust-bearing bridge." },
+    { text: "You got an atomic-feeling outcome, but the solver absorbed the inventory, finality, and bridge risk — and charged a spread for it.", correct: true, explanation: "Exactly. The exposure window didn't vanish; it moved onto the solver's books, and the spread you paid is the price of that transfer." },
+    { text: "The bridge risk was eliminated because the transfer was instant to you.", explanation: "Instant to YOU. The underlying bridge transfer the solver relies on still carries every tail risk from earlier lessons." },
+    { text: "Cross-domain MEV played no role here.", explanation: "Solver competition to fill intents IS a cross-domain MEV market — whoever coordinates the legs best wins the right to fill." },
+  ]}
+  explanation="Spaced recall: intents give atomic-feeling UX by relocating the exposure window onto the solver, who still runs the underlying bridge risk and competes in a cross-domain MEV market."
+/>
+
+### When it matters
+
+This is the lens to carry out of the course. Any cross-chain product you evaluate — a bridge, an intent app, a new rollup's sequencer design — answer two questions: *how much atomicity does it actually restore, and for whom?* and *what is it paying with — trust, capital, latency, or centralization?* The answers tell you where the residual risk sits, who's getting paid to bear it, and whether there's still an edge left for you.
+
+## Recap
+
+<MindMap
+  client:visible
+  title="Shared sequencers & cross-domain MEV"
+  caption="The capstone in one map: MEV relocates rather than dies, sequencers hold the ordering throne, and the whole design space is an attempt to buy back the atomicity Lesson 1 took away."
+  outlineLabel="Text outline"
+  root={{
+    label: 'Shared sequencers & cross-domain MEV',
+    children: [
+      {
+        label: 'MEV relocates, not dies',
+        children: [
+          { label: 'Single-chain plays persist (sandwich, backrun, PBS)' },
+          { label: 'Cross-domain MEV = ordering power across ≥2 chains' },
+          { label: 'Backrunning a bridge deposit on the destination' },
+        ],
+      },
+      {
+        label: 'Centralized sequencers',
+        children: [
+          { label: 'One operator orders a rollup, posts batches to L1' },
+          { label: 'Front-run / censor / capture ordering MEV' },
+          { label: 'Mitigated by reputation, forced inclusion, decentralization' },
+        ],
+      },
+      {
+        label: 'Shared sequencers',
+        children: [
+          { label: 'Order many rollups together (Espresso, Astria-style)' },
+          { label: 'Atomic cross-rollup inclusion → atomic arb' },
+          { label: 'Cost: cross-domain MEV throne; only shared chains' },
+        ],
+      },
+      {
+        label: 'Approximating atomicity',
+        children: [
+          { label: 'Bonded relayers / fast-fill → relayer bears risk' },
+          { label: 'HTLC / escrow → both sides, free-option problem' },
+          { label: 'Intents + solvers → solver bears residual risk' },
+        ],
+      },
+      {
+        label: 'Buying atomicity back',
+        children: [
+          { label: 'Root cause = lost single-tx atomicity (Lesson 1)' },
+          { label: 'Each fix pays with trust / capital / latency / centralization' },
+          { label: 'Until restored: a risk-bearing carry trade' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Capstone check: cross-domain MEV & buying atomicity back"
+  questions={[
+    {
+      question: "What best describes cross-domain MEV?",
+      options: [
+        { text: "Value from controlling or coordinating transaction ordering across two or more chains at once", correct: true },
+        { text: "Gas fees collected by a rollup's sequencer" },
+        { text: "Profit from holding a stablecoin through a depeg" },
+        { text: "The bond a relayer posts before fronting funds" },
+      ],
+      explanation: "Cross-domain MEV is specifically about ordering power that spans multiple domains — e.g. landing both legs of a cross-chain arb favorably.",
+    },
+    {
+      question: "On most production rollups today, the sequencer is…",
+      options: [
+        { text: "A single operator run by the rollup team that orders txs and posts batches to L1", correct: true },
+        { text: "A fully decentralized validator set identical to Ethereum L1" },
+        { text: "Chosen by user vote each block" },
+        { text: "Ethereum's own proposer" },
+      ],
+      explanation: "Most rollups run one centralized sequencer today, mitigated (not removed) by reputation, forced inclusion, and decentralization roadmaps.",
+    },
+    {
+      question: "The headline capability of a shared sequencer is…",
+      options: [
+        { text: "Atomic cross-rollup inclusion — both legs land together or not at all, for chains in its set", correct: true },
+        { text: "Eliminating MEV across all chains" },
+        { text: "Making Ethereum L1 finalize instantly" },
+        { text: "Guaranteeing the lowest gas fees on every chain" },
+      ],
+      explanation: "By ordering many rollups together it restores atomicity across them — but only for chains that actually share it, and it becomes a powerful cross-domain MEV throne.",
+    },
+    {
+      question: "In a bonded-relayer fast-fill (e.g. Across), who bears the slow-bridge latency and finality risk?",
+      options: [
+        { text: "The relayer, who fronts funds instantly and reclaims the slow transfer, backed by a slashable bond", correct: true },
+        { text: "The user, who waits out the full bridge delay" },
+        { text: "The L1 sequencer" },
+        { text: "No one — the risk is eliminated" },
+      ],
+      explanation: "The relayer eats the latency/finality risk; the bond is slashable collateral that makes its instant promise credible. The user gets near-atomic UX.",
+    },
+    {
+      question: "The free-option problem in HTLC atomic swaps refers to…",
+      options: [
+        { text: "The party revealing the secret last can walk away if the price moved, having tied up the counterparty's capital for free", correct: true },
+        { text: "Swaps being free of any fee" },
+        { text: "A relayer getting its bond back automatically" },
+        { text: "Solvers bidding zero to fill an intent" },
+      ],
+      explanation: "The last revealer holds valuable optionality — they can abandon an unfavorable swap, having locked the counterparty's capital during the timelock for nothing.",
+    },
+    {
+      question: "When a solver fills your cross-chain intent instantly, the bridge tail risk…",
+      options: [
+        { text: "Still exists, but has moved onto the solver's balance sheet — you pay a spread for that transfer", correct: true },
+        { text: "Is permanently eliminated by the instant fill" },
+        { text: "Is transferred back to the user" },
+        { text: "Becomes the sequencer's responsibility" },
+      ],
+      explanation: "Intents give atomic-feeling UX by relocating the exposure window onto the solver, who still uses a trust-bearing bridge underneath.",
+    },
+    {
+      question: "What is the single root cause this whole course traces cross-chain arb risk back to?",
+      options: [
+        { text: "The loss of single-transaction atomicity once the two legs live on different chains", correct: true },
+        { text: "High Ethereum gas fees" },
+        { text: "Too few rollups existing" },
+        { text: "Sequencers being too fast" },
+      ],
+      explanation: "Lose atomicity and inventory, exposure window, and tail risk all follow. Every mechanism in this lesson is an attempt to buy it back.",
+    },
+    {
+      question: "The honest verdict of the course is best stated as…",
+      options: [
+        { text: "Until atomicity is fully restored, cross-chain arb stays a capital-intensive, risk-bearing carry trade — and whoever best approximates atomicity captures the cross-domain MEV", correct: true },
+        { text: "Cross-chain arb is now risk-free thanks to shared sequencers" },
+        { text: "MEV has been eliminated by intent systems" },
+        { text: "Bridges no longer carry any tail risk" },
+      ],
+      explanation: "Buying atomicity back and capturing cross-domain MEV turn out to be the same business: the party that most credibly coordinates ordering across domains earns the residual edge.",
+    },
+  ]}
+  questionLabel="Question"
+  ofLabel="of"
+  scoreLabel="Your score"
+  restartLabel="Restart"
+  nextLabel="Next"
+  backLabel="Back"
+/>

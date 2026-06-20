@@ -1,0 +1,509 @@
+---
+title: "How Bridges Move Value"
+description: "Lock-and-mint, burn-and-mint, and liquidity-network bridges, the messaging layer beneath them, and why every bridge is two transactions on two ledgers."
+topic: "en/cross-chain-arbitrage-and-bridge-mev"
+order: 2
+minutes: 12
+updated: 2026-06-20
+---
+
+import { Callout, MCQ, FillBlank, Categorize, MatchConcepts, MindMap, Quiz, Reveal, CrossChainSettlementTimeline } from '@/components/react';
+
+You found a 1% gap: ETH is \$2000 on Chain A and \$2020 on Chain B. The trade is obvious — buy on A, sell on B. The problem is that A and B don't share a ledger, don't share a clock, and have never been introduced. To act on both sides you need to *move value across the gap*, and the thing that does that is a **bridge**.
+
+A bridge is not a teleporter. It is a **cross-chain messenger**: it observes an event on a source chain and, on the strength of that observation, causes an action on a destination chain. Three canonical designs dominate — lock-and-mint, burn-and-mint, and liquidity networks — and by the end of this lesson you should be able to tell them apart at a glance *and* see the punchline they all share: under the hood, every single one is **two transactions on two ledgers**, never one atomic move.
+
+Let's build that up from the messaging layer.
+
+## The messaging layer underneath
+
+<MCQ
+  client:visible
+  pretest
+  question="Strip a bridge down to its core. What is the one thing every bridge fundamentally is?"
+  options={[
+    { text: "A cross-chain message: 'event X happened on chain A → do action Y on chain B'", correct: true, explanation: "Exactly. Custody contracts, wrapped tokens, and LP inventory are implementation details bolted onto this one primitive." },
+    { text: "A single atomic transaction that executes on both chains at once", explanation: "There is no shared execution context across independent chains, so a single atomic cross-chain transaction does not exist." },
+    { text: "A shared ledger that both chains read and write to", explanation: "If A and B shared a ledger they'd be one chain and you wouldn't need a bridge at all." },
+    { text: "A price oracle that quotes ETH on both chains", explanation: "Bridges may use oracles for attestation, but a price feed is not what moves value." },
+  ]}
+  explanation="Every bridge sits on a cross-chain message. Everything else is plumbing around it."
+/>
+
+Peel away the marketing and every bridge reduces to a **cross-chain message**: a statement of the form *"this event happened on the source chain, therefore perform this action on the destination chain."* Lock happened on A → mint on B. Burn happened on A → unlock on B. Deposit happened on A → pay out on B. Same skeleton every time.
+
+**Precise definition.** A *cross-chain message* is an assertion about source-chain state, delivered to the destination chain along with enough information for the destination contract to act on it. The hard part is not delivering the bytes — it's getting the destination chain to *believe* them.
+
+That belief is the whole ballgame, because Chain B cannot natively read Chain A's state. So a bridge always has to answer one question: **who attests that the source event really happened?** The usual answers:
+
+| Attestation model | Who vouches | One-line idea |
+|---|---|---|
+| External validators / multisig | An off-chain committee | A quorum signs "yes, the lock happened." Trust the committee. |
+| Oracle network | A designated relayer set | Specialized nodes watch A and report to B. |
+| Light client / native verification | Math on B verifies A's headers | B re-checks A's consensus proofs itself. Least trust, most expensive. |
+
+<Callout variant="info" title="We're only naming the trust models here">
+The full trust treatment — how attestation sets get compromised, what a 51% bridge committee looks like, and why most bridge hacks are *messaging* hacks — is Lesson 5. For now, just hold onto the question: <em>who is vouching?</em>
+</Callout>
+
+### The wire-transfer analogy
+
+Think of a wire transfer between two banks that **don't share a ledger**. Your bank debits your account; the recipient's bank credits theirs. But the credit only posts because *someone vouched* that the debit actually happened — a clearing network, a SWIFT message, a correspondent bank. The two banks never touch a common book; they trust an intermediary's message. A bridge is the same shape: a debit on A, a credit on B, and an attestation in the middle saying "the debit is real, go ahead and post the credit."
+
+<MatchConcepts
+  client:visible
+  question="Map each bridge piece to its wire-transfer counterpart."
+  pairs={[
+    { term: "Source-chain lock/burn", definition: "The debit at your bank" },
+    { term: "Destination-chain mint/payout", definition: "The credit at the recipient's bank" },
+    { term: "Attestation / message", definition: "The clearing message vouching the debit happened" },
+    { term: "Validators / oracle / light client", definition: "The correspondent bank or clearing network you trust" },
+  ]}
+  explanation="The bridge maps cleanly onto interbank settlement: a debit, a credit, and a trusted message linking them. No shared ledger required."
+  checkLabel="Check"
+  retryLabel="Retry"
+  allCorrectLabel="✓ All correct"
+/>
+
+<FillBlank
+  client:visible
+  question="Complete the core invariant of the messaging layer."
+  text="Chain B cannot natively read Chain A's state, so a bridge must rely on {{an attestation that the source event happened|a shared ledger between the chains|an atomic two-chain transaction}} before the destination action fires."
+  explanation="Because the chains are independent, the destination action is gated on someone attesting to the source event — not on a shared ledger or atomicity."
+  instructions="Choose the correct option for each blank and check."
+/>
+
+### When it matters
+
+The messaging layer is *the* thing you're actually trusting when you bridge. As an arbitrageur, your capital is at risk not on the chains themselves but on the message between them — if the attestation set lies or stalls, your value is stuck in transit. Every design below is a different way of dressing up this same message, so knowing it's there keeps you from confusing "wrapped token" or "LP payout" with the real risk surface.
+
+## Lock-and-mint (and burn-to-unlock)
+
+<MCQ
+  client:visible
+  pretest
+  question="In a classic lock-and-mint bridge, what lands in your wallet on the destination chain?"
+  options={[
+    { text: "A wrapped representation of the asset, minted 1:1 and backed by the locked original", correct: true, explanation: "The original is custodied on the source chain; what you hold on B is an IOU minted against it." },
+    { text: "The exact same native token that left the source chain", explanation: "The native token never leaves A — it's locked. You get a wrapped derivative on B." },
+    { text: "Nothing — the bridge just sends a message and you keep your original", explanation: "Then no value would have moved. Lock-and-mint specifically mints a destination token." },
+    { text: "Stablecoins equal to the dollar value, regardless of asset", explanation: "Lock-and-mint mirrors the asset, it doesn't convert it to stablecoins." },
+  ]}
+  explanation="Lock the original on A, mint a 1:1-backed wrapped token on B. The wrapped token is a claim on the locked original."
+/>
+
+**Definition.** A *lock-and-mint* bridge takes the native asset on the source chain, **locks** it in a custody contract, and **mints** a wrapped representation of it on the destination chain — a derivative token backed 1:1 by the locked original. To go back, you **burn** the wrapped token on B, which signals the custody contract on A to **unlock** the original. Lock to go, burn to return.
+
+### Worked example: bridging 100 ETH
+
+You bridge 100 ETH from A to B through a lock-and-mint bridge.
+
+| Step | Chain A (source) | Chain B (destination) |
+|---|---|---|
+| 1. You deposit | 100 ETH locked in custody contract | — |
+| 2. Message attested | "100 ETH locked" relayed to B | — |
+| 3. Mint | — | 100 wrapped-ETH minted to your wallet |
+| 4. (Later) return | 100 ETH unlocked to you | 100 wrapped-ETH burned |
+
+The wrapped-ETH on B is worth one locked ETH on A — no more, no less. The invariant the bridge promises: **wrapped supply on B = locked balance on A**, always 1:1.
+
+<Callout variant="warning" title="The wrapped token is only as sound as the lock">
+That 1:1 peg is a *promise*, not a law of physics. The wrapped token's entire value comes from the locked original sitting in a custody contract on A. If that contract is drained — a bug, a stolen key, a malicious upgrade — the backing vanishes and the wrapped token <strong>depegs toward zero</strong> while still trading on B as if nothing happened. The custody contract is a giant honeypot: one address holding everyone's locked assets. We'll quantify this tail risk later, but file it now: <em>holding wrapped tokens means holding the custody contract's solvency risk.</em>
+</Callout>
+
+### The fragmentation problem
+
+Because anyone can stand up a lock-and-mint bridge, you end up with **many non-fungible wrapped versions of the "same" asset**: Bridge-X-ETH, Bridge-Y-ETH, Bridge-Z-ETH — all nominally "ETH on B," none interchangeable, each backed by a *different* custody contract with a *different* trust set. Liquidity splinters across these variants, and a pool quoting "ETH" might mean any one of them. For an arbitrageur, this is a footgun: the "ETH" you sell on B might be a wrapped variant you can't redeem through the bridge you used.
+
+<FillBlank
+  client:visible
+  question="Fill in the lock-and-mint lifecycle."
+  text="To bridge A→B you {{lock|burn|mint}} the original on A and {{mint|lock|burn}} a wrapped token on B; to return B→A you {{burn|lock|mint}} the wrapped token on B to {{unlock|relock|re-mint}} the original on A."
+  explanation="Lock→mint going out; burn→unlock coming back. The wrapped token's supply tracks the locked balance."
+  instructions="Choose the correct option for each blank and check."
+/>
+
+<MCQ
+  client:visible
+  question="A lock-and-mint custody contract on Chain A is exploited and emptied. What happens to the wrapped token on Chain B?"
+  options={[
+    { text: "It loses its backing and depegs toward zero, even though it keeps trading on B", correct: true, explanation: "The wrapped token is a claim on locked collateral. No collateral, no claim — the market reprices it down once the drain is known." },
+    { text: "Nothing — the wrapped token is a separate, independently backed asset", explanation: "It isn't independently backed; its only backing is the now-empty custody contract." },
+    { text: "Chain B automatically burns all wrapped tokens to protect holders", explanation: "Chains don't auto-burn; the wrapped supply persists, now unbacked." },
+    { text: "The bridge reverses every prior transfer atomically", explanation: "There is no atomic cross-chain reversal — that's the whole non-atomicity theme." },
+  ]}
+  explanation="Wrapped = IOU against locked collateral. Drain the collateral and the IOU is worthless, regardless of what the chart on B still shows."
+/>
+
+### When it matters
+
+Lock-and-mint is the most general design — it works for *any* asset, even one whose issuer has no idea the bridge exists, because it only needs a custody contract, not mint authority. That generality is why it's everywhere, and why the fragmentation + custody-honeypot risks are everywhere too. As an arb, you reach for lock-and-mint when no native/canonical path exists, and you price in the depeg tail.
+
+## Burn-and-mint (canonical/native bridges)
+
+<MCQ
+  client:visible
+  pretest
+  question="What makes burn-and-mint possible where lock-and-mint is the only option for, say, a random ERC-20?"
+  options={[
+    { text: "The asset's issuer controls mint authority on BOTH chains, so it can destroy supply on A and create canonical supply on B", correct: true, explanation: "Burn-and-mint needs an authority that can mint the real asset on the destination — only the issuer (or a rollup's native bridge) has that." },
+    { text: "Burn-and-mint doesn't need any attestation at all", explanation: "It still rides the messaging layer — a burn on A must be attested before a mint on B." },
+    { text: "It locks the asset in a contract and mints a wrapped twin", explanation: "That's lock-and-mint. Burn-and-mint destroys supply rather than custodying it." },
+    { text: "It only works for stablecoins, never for native tokens", explanation: "It also powers rollup native token bridges; not stablecoin-only." },
+  ]}
+  explanation="Burn-and-mint requires mint authority on both chains — the issuer's superpower. Then there's no wrapped derivative and no same-shape custody honeypot."
+/>
+
+**Definition.** A *burn-and-mint* bridge applies when a single entity controls **mint authority on both chains** — the asset's issuer, or a rollup's native bridge. Instead of locking the asset, it **burns** (destroys) the supply on the source chain and **mints** the *canonical* asset on the destination chain. What lands on B isn't a wrapped derivative — it's the real, issuer-blessed token, indistinguishable from any other unit of it. Total supply across chains stays constant: burn N on A, mint N on B.
+
+Circle's **CCTP** (Cross-Chain Transfer Protocol) does this for USDC: burn native USDC on A, attest the burn, mint native USDC on B. Rollup **native token bridges** work the same way for the rollup's canonical assets.
+
+### Worked example: bridging \$1,000,000 USDC via CCTP
+
+| Step | Chain A (source) | Chain B (destination) |
+|---|---|---|
+| 1. Burn | 1,000,000 native USDC destroyed | — |
+| 2. Attest | Burn message signed by issuer attestor | — |
+| 3. Mint | — | 1,000,000 native USDC minted |
+
+No custody contract holds your million dollars; the supply on A simply ceases to exist and reappears on B. There is no second-class wrapped USDC to depeg — what you hold on B is *the* USDC.
+
+### Lock-and-mint vs burn-and-mint, side by side
+
+| | Lock-and-mint | Burn-and-mint |
+|---|---|---|
+| What happens to the asset on A | **Locked** in a custody contract | **Burned** (destroyed) |
+| What lands on B | A **wrapped derivative** (1:1 claim) | The **canonical** asset itself |
+| What backs the destination token | The locked original on A | Issuer's cross-chain mint authority |
+| Who can run it | Anyone, for any asset | Only the issuer / native bridge |
+| Main risk | Custody contract drained → wrapped depegs; fragmentation | Issuer / attestor compromise; censorship by the issuer |
+| Fungibility on B | Fragmented (many wrapped variants) | Single canonical unit, fully fungible |
+
+<Callout variant="tip" title="Why arbitrageurs love canonical bridges">
+Burn-and-mint hands you the <em>real</em> asset, so your sell leg on B isn't quoted in some wrapped variant with thin, splintered liquidity. No depeg-to-zero custody tail, no "which wETH is this?" fungibility puzzle. The trade-off: you're now trusting the issuer's attestor set and its right to freeze or censor — a different, more centralized risk, but a cleaner asset.
+</Callout>
+
+<MatchConcepts
+  client:visible
+  question="Match each mechanism to what lands on the destination chain."
+  pairs={[
+    { term: "Lock-and-mint", definition: "A wrapped derivative backed by locked collateral" },
+    { term: "Burn-and-mint", definition: "The canonical asset, minted by its issuer" },
+    { term: "Burn-to-unlock (the return leg of lock-and-mint)", definition: "The original asset, released from custody" },
+  ]}
+  explanation="Lock-and-mint produces a wrapped claim; burn-and-mint produces the real thing; the return leg of lock-and-mint releases the custodied original."
+  checkLabel="Check"
+  retryLabel="Retry"
+  allCorrectLabel="✓ All correct"
+/>
+
+<MCQ
+  client:visible
+  question="Spaced recall — from the messaging-layer section: regardless of whether a bridge locks-and-mints or burns-and-mints, what must happen before the destination action fires?"
+  options={[
+    { text: "The source event must be attested to the destination chain", correct: true, explanation: "Both designs gate the destination action on an attestation of the source-chain event. The trust model differs; the gating doesn't." },
+    { text: "The two chains must merge their ledgers temporarily", explanation: "Independent chains never merge ledgers; that's why attestation exists." },
+    { text: "The arbitrageur must hold wrapped tokens on both chains first", explanation: "No pre-holding requirement; the message is what's required." },
+    { text: "A price oracle must confirm the assets are equal in value", explanation: "Value attestation isn't the gate — event attestation is." },
+  ]}
+  explanation="Lock-and-mint and burn-and-mint differ in what moves, but both fire the destination action only after the source event is attested."
+/>
+
+### When it matters
+
+When a canonical/native path exists for your asset — native USDC via CCTP, a rollup's native bridge for its own token — prefer it. You get the real asset and dodge the wrapped-derivative depeg tail. You can't *always* get one (it requires issuer cooperation), which is exactly why lock-and-mint and the next design still exist.
+
+## Liquidity-network ("inventory") bridges
+
+<MCQ
+  client:visible
+  pretest
+  question="A liquidity-network bridge pays you on Chain B without locking or burning anything. Where do the funds on B come from?"
+  options={[
+    { text: "From inventory that liquidity providers have pre-funded on the B side", correct: true, explanation: "LPs hold capital on both chains; you're paid out of the existing B-side pool. No mint involved." },
+    { text: "From freshly minted wrapped tokens", explanation: "That's lock-and-mint. Liquidity networks don't mint anything." },
+    { text: "From the source chain, teleported instantly", explanation: "Nothing teleports; your A-side deposit and the B-side payout are settled later." },
+    { text: "From the destination chain's block reward", explanation: "Block rewards pay validators, not bridge users." },
+  ]}
+  explanation="No minting at all — LPs pre-fund inventory on both chains and pay you out of the destination-side pool, reconciling the imbalance afterward."
+/>
+
+**Definition.** A *liquidity-network* (or *inventory*) bridge does **no minting whatsoever**. Liquidity providers pre-fund inventory on **both** chains. When you deposit on A, the bridge immediately pays you out of its **existing B-side inventory**, then settles the A↔B imbalance later (often optimistically, with the relayer fronting capital and getting reimbursed once the A-side deposit finalizes). Think Across, Hop, Stargate-style designs.
+
+The payoff: in the optimistic case you get paid on B **without waiting for source-chain finality**, because the LP is willing to front you against your deposit and eat the finality risk for a fee. The constraint: you can only be paid as much as the **B-side inventory** holds, and that inventory gets lopsided and must be **rebalanced**.
+
+### Worked example: bridging \$1,000,000 with the canonical numbers
+
+You move \$1,000,000 (in USDC) from A to B through an inventory bridge that runs \$2,000,000 of inventory on each side and charges a **0.05% (5 bps)** fee.
+
+- You deposit \$1,000,000 on A.
+- The bridge pays you $1{,}000{,}000 \times (1 - 0.0005)$, i.e. **\$999,500** out of its B-side inventory. The \$500 is the bridge fee.
+- B-side inventory drops from \$2,000,000 to \$1,000,000; A-side inventory rises (after your deposit finalizes) toward \$3,000,000.
+- The bridge is now **\$2,000,000 imbalanced** and must rebalance — shuffle inventory back across, or wait for flow in the opposite direction — before it can serve another large A→B transfer.
+
+| | Before | After your \$1,000,000 A→B transfer |
+|---|---|---|
+| A-side inventory | \$2,000,000 | ~\$3,000,000 |
+| B-side inventory | \$2,000,000 | \$1,000,000 |
+| You receive on B | — | \$999,500 (5 bps fee) |
+| Bridge state | Balanced | Imbalanced; needs rebalancing |
+
+<Callout variant="warning" title="Inventory is a hard ceiling, and rebalancing isn't free">
+A liquidity-network bridge can only pay you out of what's actually sitting on the destination side. Try to push \$3,000,000 through \$2,000,000 of B-side inventory and the bridge either rejects the trade, quotes a worse price, or makes you wait. And the rebalancing that restores capacity costs real money — it's capital tied up, plus the bridge's own cross-chain settlement. <strong>Don't mistake "fast in the happy path" for "infinite capacity."</strong> A fat arb you can't size into is just a screenshot.
+</Callout>
+
+### This is how *you* operate
+
+Here's the part that matters for the rest of the course: a liquidity-network bridge **is a cross-chain arbitrageur wearing a bridge costume.** It holds inventory on both chains, pays out of local inventory for speed, and rebalances when it gets lopsided. That's *exactly* the playbook a serious cross-chain arb runs — pre-position capital on both sides so you can act instantly, then rebalance. Lesson 4 is entirely about that inventory-and-rebalancing game; this design is your first look at it.
+
+<MCQ
+  client:visible
+  allowMultiple
+  question="Select EVERY statement that is true of liquidity-network bridges. (More than one.)"
+  options={[
+    { text: "They mint no new tokens; payout comes from pre-funded destination inventory", correct: true, explanation: "Correct — inventory in, inventory out, no minting." },
+    { text: "In the optimistic case they can pay out before source-chain finality", correct: true, explanation: "Correct — the LP fronts capital against your deposit, eating finality risk for a fee." },
+    { text: "Their throughput is capped by available destination-side inventory", correct: true, explanation: "Correct — you can't be paid more than the destination pool holds." },
+    { text: "They require the asset's issuer to control mint authority on both chains", explanation: "That's burn-and-mint. Liquidity networks need no mint authority at all." },
+    { text: "They eliminate the need for any cross-chain message", explanation: "Wrong — the A↔B imbalance still settles via the messaging layer; only the user-facing payout is fronted early." },
+  ]}
+  explanation="No minting, optimistic fast payout, inventory-capped throughput — all true. Issuer mint authority and 'no message needed' are not."
+/>
+
+<FillBlank
+  client:visible
+  question="Fill in the inventory-bridge mechanics."
+  text="A liquidity-network bridge pays you from {{pre-funded destination inventory|freshly minted wrapped tokens|the source chain directly}}, which makes it fast but means its capacity is {{capped by available inventory|effectively unlimited|set by the issuer}}, so it must periodically {{rebalance|burn supply|re-attest}}."
+  explanation="Pay from inventory → fast but inventory-capped → must rebalance. That's the inventory-bridge trilemma in one sentence."
+  instructions="Choose the correct option for each blank and check."
+/>
+
+### When it matters
+
+Inventory bridges win when **speed** beats everything and the size fits the available inventory — which is most retail and small-arb flow. They lose on **large** transfers that blow past the destination pool, where you'll hit rejects, slippage, or queues. And philosophically, they're the model to internalize, because running your own cross-chain inventory is the endgame this course is building toward.
+
+## Why every design is two transactions on two ledgers
+
+<MCQ
+  client:visible
+  pretest
+  question="Across lock-and-mint, burn-and-mint, AND liquidity-network bridges, what structural feature is unavoidable on independent chains?"
+  options={[
+    { text: "Settlement is non-atomic: a source transaction, then (after attestation/finality) a separate destination transaction", correct: true, explanation: "No shared execution context means no atomicity. It's always two legs with a gap between them." },
+    { text: "All three can settle atomically if you pay a higher fee", explanation: "Fees can't buy atomicity across chains with separate consensus — it doesn't exist." },
+    { text: "All three avoid any waiting period entirely", explanation: "Even the optimistic inventory case shifts the wait to the LP; the imbalance still settles later." },
+    { text: "All three mint a wrapped token at some point", explanation: "Burn-and-mint produces canonical tokens; inventory bridges mint nothing. Wrapping isn't universal." },
+  ]}
+  explanation="Different mechanisms, same skeleton: source tx → attestation/finality → destination tx. Two legs, never one atomic move."
+/>
+
+We've met three mechanisms that look very different — one locks, one burns, one just shuffles inventory. But zoom out and they share **one settlement shape**:
+
+> **source transaction → (wait for finality) → relay/attestation → destination transaction**
+
+There is no atomic version of this on independent chains. On a *single* chain, a transaction either fully happens or fully reverts — that atomicity is exactly what makes single-chain flash-loan arb safe. Across *two* chains with separate consensus and no shared state, that guarantee evaporates. You commit the first leg, then you *wait*, exposed, hoping the second leg lands at a price you still like.
+
+### Walk the timeline
+
+The hero visual below traces a single non-atomic cross-chain transfer through its stages — sell submitted on A → block inclusion → finality wait → bridge relay → buy executes on B — and lets you dial the two knobs that set your **exposure window**: how many confirmations you wait for, and how long the bridge relay takes.
+
+<CrossChainSettlementTimeline client:visible />
+
+Play with it using our canonical numbers: ~12 confirmations at ~12s/block is ~144s of finality, plus a ~90s bridge relay, gives an **exposure window of ~234s (~4 minutes)** and a **total settlement near ~250s**. Toggle the **atomic baseline** chip and notice it collapses to zero — because on a single chain there *is* no window. That gap is where everything in this course lives: at ~80% annualized volatility, ~4 minutes of drift is roughly ±0.2%, which can quietly eat a fifth of your 1% gap before your second leg even fires.
+
+### The three designs, lined up against the same skeleton
+
+| Bridge design | Leg 1 on A (source tx) | What's attested | Leg 2 on B (destination tx) | What's trusted |
+|---|---|---|---|---|
+| Lock-and-mint | Lock original in custody | "Lock happened" | Mint wrapped token | Custody contract + attestors |
+| Burn-and-mint | Burn canonical supply | "Burn happened" | Mint canonical token | Issuer's mint authority + attestors |
+| Liquidity-network | Deposit into A-side pool | "Deposit happened" | Pay from B-side inventory | LP solvency + relayer attestation |
+
+Same two-legged shape, every row. What differs is **what moves** (a wrapped claim, a canonical token, or LP inventory) and **who you trust** (a custody contract, an issuer, or a liquidity provider). What *never* differs is the existence of two legs and a gap between them.
+
+<Callout variant="info" title="The thesis of the whole course in one line">
+Bridges differ in <em>what moves</em> and <em>who is trusted</em> — but every one of them is two transactions on two ledgers with an exposure window in between. Cross-chain arbitrage is the craft of profiting across that window without getting wrecked by it.
+</Callout>
+
+<Categorize
+  client:visible
+  question="Sort each trait under the bridge design it defines."
+  buckets={['Lock-and-mint', 'Burn-and-mint', 'Liquidity-network']}
+  items={[
+    { text: "Original is custodied; a 1:1 wrapped derivative is minted on B", bucket: 'Lock-and-mint' },
+    { text: "Suffers fragmentation into many non-fungible wrapped variants", bucket: 'Lock-and-mint' },
+    { text: "Issuer destroys supply on A and mints the canonical asset on B", bucket: 'Burn-and-mint' },
+    { text: "Powers Circle's CCTP for native USDC", bucket: 'Burn-and-mint' },
+    { text: "Pays out of pre-funded destination inventory, no minting", bucket: 'Liquidity-network' },
+    { text: "Throughput capped by inventory; must be rebalanced", bucket: 'Liquidity-network' },
+  ]}
+  explanation="Custody+wrapped+fragmentation → lock-and-mint. Burn+canonical+CCTP → burn-and-mint. Inventory payout+capacity cap+rebalancing → liquidity-network."
+  checkLabel="Check"
+  retryLabel="Retry"
+  allCorrectLabel="✓ All correct"
+/>
+
+<MCQ
+  client:visible
+  question="An arbitrageur completes leg 1 (sell ETH on A) and is waiting on finality + bridge relay before leg 2 (buy on B). During this ~4-minute window, what is their actual risk?"
+  options={[
+    { text: "Price drift: ETH can move against them before the second leg executes, since the move is non-atomic", correct: true, explanation: "The window is exactly the non-atomicity gap. At ~80% vol, ~4 minutes is ~±0.2% drift — a real chunk of a 1% edge." },
+    { text: "Nothing — the bridge guarantees the second leg executes at the original price", explanation: "No such guarantee exists; the second leg executes at the future price, whatever it is." },
+    { text: "The first transaction might revert on its own after minutes", explanation: "Leg 1 already finalized; it won't spontaneously revert. The risk is the price during the gap." },
+    { text: "Both legs could execute twice", explanation: "Double-execution isn't the structural risk here; price drift across the window is." },
+  ]}
+  explanation="The exposure window is the price-drift risk created by non-atomicity. That window is the entire reason cross-chain arb is harder than single-chain arb."
+/>
+
+### When it matters
+
+Always. The two-legged shape is the load-bearing fact of this entire course: it's why you need inventory (to skip a leg), why finality choice is a risk dial, and why MEV searchers can pick you off mid-transfer. Internalize "two transactions, two ledgers, one gap" and the rest of the curriculum is footnotes on managing that gap.
+
+## Recap
+
+<MindMap
+  client:visible
+  title="How bridges move value"
+  caption="Three mechanisms, one shared settlement shape."
+  outlineLabel="Text outline"
+  root={{
+    label: 'How bridges move value',
+    children: [
+      {
+        label: 'Messaging layer',
+        children: [
+          { label: '"Event on A → action on B"' },
+          { label: 'Who attests? oracle / validators / light client (Lesson 5)' },
+          { label: 'Wire transfer with no shared ledger' },
+        ],
+      },
+      {
+        label: 'Lock-and-mint',
+        children: [
+          { label: 'Lock original on A → mint wrapped on B (1:1)' },
+          { label: 'Burn wrapped on B → unlock original on A' },
+          { label: 'Risk: custody drained → wrapped depegs; fragmentation' },
+        ],
+      },
+      {
+        label: 'Burn-and-mint',
+        children: [
+          { label: 'Issuer mints on both chains (CCTP, native bridges)' },
+          { label: 'Burn on A → mint canonical asset on B' },
+          { label: 'No wrapped derivative; trust issuer / attestors' },
+        ],
+      },
+      {
+        label: 'Liquidity-network',
+        children: [
+          { label: 'No minting; pay from pre-funded B-side inventory' },
+          { label: 'Fast (optimistic, pre-finality) but inventory-capped' },
+          { label: 'Mirrors how a cross-chain arb operates (Lesson 4)' },
+        ],
+      },
+      {
+        label: 'Two legs always',
+        children: [
+          { label: 'source tx → finality → relay → destination tx' },
+          { label: 'No atomicity across independent chains' },
+          { label: 'The exposure window = price-drift risk' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="How bridges move value — mixed recap"
+  questionLabel="Question"
+  ofLabel="of"
+  scoreLabel="Your score"
+  restartLabel="Restart"
+  nextLabel="Next"
+  backLabel="Back"
+  questions={[
+    {
+      question: "Reduced to its essence, every bridge is fundamentally…",
+      options: [
+        { text: "a cross-chain message: an attested 'event on A → action on B'", correct: true },
+        { text: "a single atomic transaction spanning both chains" },
+        { text: "a shared ledger jointly maintained by both chains" },
+        { text: "a price oracle synchronizing two markets" },
+      ],
+      explanation: "Custody, wrapping, and inventory are plumbing around one primitive: the attested cross-chain message.",
+    },
+    {
+      question: "In lock-and-mint, the wrapped token on the destination chain is backed by…",
+      options: [
+        { text: "the original asset locked in a custody contract on the source chain", correct: true },
+        { text: "the issuer's mint authority on both chains" },
+        { text: "a liquidity provider's destination-side inventory" },
+        { text: "nothing — it's an unbacked synthetic" },
+      ],
+      explanation: "Wrapped = a 1:1 claim on the locked original. Drain the lock and the claim is worthless.",
+    },
+    {
+      question: "Which bridge design hands you the canonical asset with no wrapped derivative?",
+      options: [
+        { text: "Burn-and-mint, e.g. Circle's CCTP for USDC", correct: true },
+        { text: "Lock-and-mint" },
+        { text: "Liquidity-network" },
+        { text: "None — every bridge produces a wrapped token" },
+      ],
+      explanation: "Burn-and-mint requires issuer mint authority on both chains and produces the real, fungible asset.",
+    },
+    {
+      question: "A liquidity-network bridge can pay you on B before source-chain finality because…",
+      options: [
+        { text: "a liquidity provider fronts capital from B-side inventory and absorbs the finality risk for a fee", correct: true },
+        { text: "it mints wrapped tokens that don't need finality" },
+        { text: "the two chains briefly share a ledger" },
+        { text: "the issuer pre-authorizes the mint" },
+      ],
+      explanation: "The optimistic payout shifts finality risk onto the LP, who's compensated by the bridge fee.",
+    },
+    {
+      question: "You push \\$1,000,000 A→B through an inventory bridge with \\$2,000,000 of inventory per side at 5 bps. You receive on B…",
+      options: [
+        { text: "\\$999,500, leaving the B side with \\$1,000,000 and the bridge imbalanced", correct: true },
+        { text: "\\$1,000,000 exactly, with no fee and no imbalance" },
+        { text: "\\$995,000, after a 0.5% fee" },
+        { text: "\\$1,000,500, including a rebalancing rebate" },
+      ],
+      explanation: "5 bps of \\$1,000,000 is \\$500, so you net \\$999,500; B-side inventory falls to \\$1,000,000 and must be rebalanced.",
+    },
+    {
+      question: "The exposure window in a cross-chain transfer is the time between…",
+      options: [
+        { text: "completing the source leg and the destination leg executing", correct: true },
+        { text: "submitting and confirming a single on-chain transaction" },
+        { text: "two consecutive blocks on the same chain" },
+        { text: "depositing and withdrawing from the same AMM pool" },
+      ],
+      explanation: "Two legs on two ledgers create a gap — finality + relay — during which price can drift against you.",
+    },
+    {
+      question: "Why is there no atomic version of a cross-chain transfer on independent chains?",
+      options: [
+        { text: "The chains have separate consensus and no shared execution context, so the two legs can't be bound into one all-or-nothing transaction", correct: true },
+        { text: "Atomicity is simply too expensive in gas" },
+        { text: "Bridges deliberately disable atomicity to charge fees" },
+        { text: "It exists, but only for stablecoins" },
+      ],
+      explanation: "Single-chain atomicity comes from one shared execution context. Two independent chains have none, so settlement is inherently two-legged.",
+    },
+    {
+      question: "Which liability do lock-and-mint and burn-and-mint NOT share?",
+      options: [
+        { text: "A single custody contract holding everyone's locked assets as a same-shape honeypot", correct: true },
+        { text: "Dependence on an attestation of the source-chain event" },
+        { text: "A two-legged, non-atomic settlement shape" },
+        { text: "Exposure to attestor-set compromise" },
+      ],
+      explanation: "Burn-and-mint destroys supply rather than custodying it, so it lacks the lock-and-mint custody honeypot — though it still rides attestation and the two-leg shape.",
+    },
+  ]}
+/>
+
+You can now tell the three canonical bridge designs apart — what each one *moves*, what *backs* it, and who you're *trusting* — and you've seen the single structural fact under all of them: two transactions, two ledgers, one exposure window. Next, we put a number on the danger lurking in that window.

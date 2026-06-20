@@ -1,0 +1,435 @@
+---
+title: "The Risks Atomicity Hid"
+description: "Inventory risk, bridge latency, and probabilistic finality / reorg risk — the exposure window between your two legs where the price can move against you."
+topic: "en/cross-chain-arbitrage-and-bridge-mev"
+order: 3
+minutes: 12
+updated: 2026-06-20
+---
+
+import { Callout, MCQ, FillBlank, Categorize, MatchConcepts, MindMap, Quiz, Reveal, CrossChainSettlementTimeline } from '@/components/react';
+
+On a single chain, atomicity was your bodyguard. Your flash-loan arb either executed both legs in one transaction or reverted as if nothing happened — buy and sell were welded together, settled in the same block, hedged for exactly zero seconds. You could quote profit on a snapshot of the AMM curves and *that snapshot was the truth*, because nothing could change between leg one and leg two. There was no "between."
+
+Cross-chain settlement deletes that bodyguard. As the earlier lessons established, a cross-chain arb is **two independent legs on two independent ledgers**, and nothing forces them to settle together. Leg one commits on chain A; leg two settles on chain B some minutes later. In that gap you are exposed — naked, directional, at the mercy of the tape. This lesson is about decomposing exactly *what* lives in that gap.
+
+The unifying idea is the **exposure window**: the stretch of wall-clock time between when your first leg is committed and your second leg settles, during which you are **not hedged**. Atomicity hid three risks inside a window of length zero. Stretch the window to minutes and all three wake up. Let's name them.
+
+## The exposure window
+
+<MCQ
+  client:visible
+  pretest
+  question="In a single-chain atomic flash-loan arb, how long are you directionally exposed between the buy leg and the sell leg?"
+  options={[
+    { text: "Effectively zero — both legs settle in the same transaction/block, so there is no 'between'.", correct: true, explanation: "Atomicity welds the legs together: they execute as one unit or revert together. Exposure time ≈ 0." },
+    { text: "One block — the buy lands, then the sell lands in the next block.", explanation: "No — atomic means *same* transaction, not consecutive transactions. There is no inter-block gap." },
+    { text: "About 12 seconds, the average block time.", explanation: "That's the block interval, but an atomic arb's legs both live inside one block, so the exposed gap is ~0." },
+    { text: "It depends on gas — higher gas shortens the window.", explanation: "Gas affects inclusion priority, not atomicity. The window is structurally zero regardless of gas." },
+  ]}
+  explanation="The whole trick of atomic arb is that exposure time is structurally zero. Cross-chain throws that away."
+/>
+
+**Analogy.** Atomic arb is a *simultaneous* swap: two people slap their cards on the table at the exact same instant, and a referee guarantees both hands flip or neither does. Cross-chain arb is a *relay race in slow motion*: you hand off your baton on chain A, then sprint to chain B, and only when you arrive does the trade complete. The whole time you're running, the price is allowed to move. That run is the exposure window.
+
+**Definition.** The **exposure window** $\Delta t$ is the elapsed time from *commitment of leg one* to *settlement of leg two*. For a cross-chain arb it decomposes cleanly into two waits:
+
+$$\Delta t = t_{\text{finality}} + t_{\text{relay}}$$
+
+where $t_{\text{finality}}$ is the time you wait for your source-chain leg to be deep enough that the bridge will trust it (confirmations), and $t_{\text{relay}}$ is the time the bridge takes to carry the message and let leg two execute on the destination.
+
+Render the hero below and **drag the sliders** — the *confirmations* slider grows the finality wait, the *bridge latency* slider grows the relay, and you'll watch both the exposure window and the illustrative price drift swell. The "atomic baseline" chip is your reminder of where this number used to live: ~0.
+
+<CrossChainSettlementTimeline client:visible />
+
+### The math the window reintroduces
+
+Price doesn't drift linearly with time — it diffuses. Under the standard random-walk model, the standard deviation of the return over a window scales with the **square root of time**:
+
+$$\sigma_{\text{window}} = \sigma_{\text{ann}}\sqrt{\Delta t / T}$$
+
+where $\sigma_{\text{ann}}$ is annualized volatility, $T$ is one year in seconds ($31{,}536{,}000$), and $\Delta t$ is the window in seconds. Let's plug in the canonical scenario: ETH priced in USDC, chain A at \$2000, chain B at \$2020 — a 1% gross gap of \$20/ETH. Block time ≈ 12s, so 12 confirmations ≈ 144s of finality wait; bridge relay ≈ 90s. That gives an exposure window of:
+
+$$\Delta t = 144 + 90 = 234 \text{ s} \approx 4 \text{ min}$$
+
+Crypto annualized vol runs hot — take $\sigma_{\text{ann}} = 0.80$ (80%). Then:
+
+$$\sigma_{\text{window}} = 0.80 \times \sqrt{234 / 31{,}536{,}000} = 0.80 \times 0.00272 \approx 0.0022$$
+
+So a **1-sigma** move over your ~4-minute window is about **±0.22%** of price — roughly $0.0022 \times 2000$, i.e. **±\$4.4** on a \$2000 ETH. Set that against your 1% gap (\$20): one sigma is about a *fifth* of your edge. That sounds comfortable until you remember that a 2-sigma move (~±\$8.8) is routine and a 3-sigma move (~±\$13.2) is a Tuesday in crypto — and an adverse 3-sigma move eats two-thirds of the gap. The edge that looked like a sure thing is actually a thin cushion against a fat-tailed coin flip.
+
+**The deep point:** atomic arb's exposure window is ~0, so $\sigma_{\text{window}} \approx 0$ — risk-free in the model. Cross-chain arb's window is *minutes*, and because risk scales with $\sqrt{\Delta t}$, you can't make it vanish by being clever; you can only trade it down by waiting *less*, which (we'll see) conflicts with waiting *enough* for safety.
+
+<Callout variant="warning" title="Pitfall: treating the gap as locked-in profit">
+The 1% gap is what you'd capture **if both legs settled now**. They don't. The number you actually realize is the gap *minus whatever the price did during the window*. Quoting the snapshot gap as profit is like quoting a stock's price as your sale proceeds before you've placed the sell order — technically a number, just not *your* number.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Fill in the square-root-of-time scaling and what it implies."
+  text="Price drift over a window scales with the {{square root|cube|logarithm}} of elapsed time, so doubling the exposure window multiplies the 1-sigma drift by about {{1.41|2|4}}. With ~80% annual vol, a ~4-minute window gives a 1-sigma move near {{0.22%|2.2%|0.02%}} of price."
+  instructions="Choose the correct option for each blank and check."
+  explanation="σ_window = σ_ann·√(Δt/T): drift grows with √time, so 2× the window is √2 ≈ 1.41× the drift, and 234s at 80% vol gives ≈0.22%."
+/>
+
+### When it matters
+
+The exposure window dominates your risk whenever the gap is *thin* relative to volatility and the window is *long*. A fat 3% gap on a low-vol pair with a 30-second window barely cares about drift; a 0.4% gap on volatile ETH with a 6-minute window is mostly a volatility bet wearing an arbitrage costume. Always size the window against the gap before you size the trade.
+
+## Inventory risk
+
+<MCQ
+  client:visible
+  pretest
+  question="You buy 100 ETH on chain A at $2000, planning to sell on chain B at $2020. While the bridge relays, what is your actual market position?"
+  options={[
+    { text: "Long 100 ETH — an unhedged directional position you didn't want.", correct: true, explanation: "Exactly. Until the B leg lands, the second half of the hedge doesn't exist. You're just long ETH." },
+    { text: "Market-neutral — it's an arbitrage, so the legs cancel.", explanation: "They only cancel once BOTH settle. Mid-window, only leg one exists, so you're directional." },
+    { text: "Short 100 ETH, because you've committed to sell on B.", explanation: "You haven't sold yet — the B leg is pending. Your only *settled* position is the long buy on A." },
+    { text: "Flat — the bridge holds the risk for you.", explanation: "Bridges relay messages and custody assets; they do not hedge your price exposure." },
+  ]}
+  explanation="Between legs you are holding the asset. That holding IS a directional bet."
+/>
+
+**Analogy.** You agree to buy a house for \$2000k and flip it to a waiting buyer for \$2020k — \$20k locked in, supposedly. But you have to *close* on the purchase before the resale paperwork clears, and the housing market moves while the lawyers shuffle documents. For those weeks you simply *own a house*, fully exposed to the market, regardless of your tidy flip plan. **Inventory risk** is owning the thing in the gap.
+
+**Definition.** **Inventory risk** is the price risk of the asset you are *holding* between legs. After leg one, you have a real, settled position — long the asset you bought (or short the asset you sold and can't yet offset). Until the offsetting leg settles, that position is naked directional exposure. Its P&L per unit of adverse move is the full position size, not some hedged fraction.
+
+### Worked example
+
+Buy **100 ETH on A at \$2000** (cost \$200,000), intending to sell on **B at \$2020** for \$202,000 — a gross edge of **\$2,000**. Now suppose ETH drifts *down* 0.5% during the window. The price you'll actually sell at on B tracks the market, so it slides too:
+
+| Outcome on the held 100 ETH | Arithmetic | Result |
+|---|---|---|
+| Adverse drift on inventory | $-0.005 \times 100 \times 2000$ | **−\$1,000** |
+| Gross arb edge (gap) | $0.01 \times 100 \times 2000$ | +\$2,000 |
+| Net (drift eats half) | $2000 - 1000$ | **+\$1,000** |
+
+A 0.5% adverse move erased **half** your edge. Push the adverse move to 1% and the loss on inventory is $-0.01 \times 100 \times 2000 = $ **−\$2,000**, which exactly cancels the gap — you did all that work for zero. Any drift past 1% and the "arbitrage" is a *loss*. Note the asymmetry: the gap is fixed at \$2,000, but the inventory loss scales without limit as the move grows.
+
+<Callout variant="warning" title="Pitfall: 'it's arbitrage, so it's market-neutral'">
+Market-neutrality is a property of *simultaneous* legs. It is **only true when both legs settle together** — which on one chain they do, and across chains they emphatically don't. For the minutes your second leg is in transit you hold a pure directional position. Calling that "market-neutral" is calling a half-built bridge "a bridge."
+</Callout>
+
+<MatchConcepts
+  client:visible
+  question="Match each phase of the cross-chain arb to the position you actually hold."
+  pairs={[
+    { term: "Before leg one commits", definition: "Flat — no position yet, pure opportunity on a screen." },
+    { term: "After leg one, before leg two", definition: "Inventory risk — unhedged long (or short) the traded asset." },
+    { term: "After both legs settle", definition: "Flat again — the hedge is complete and the edge is realized." },
+    { term: "Atomic single-chain arb", definition: "Never holds inventory — both legs settle in one transaction." },
+  ]}
+  explanation="Inventory risk lives entirely in the middle phase, which atomicity collapses to zero duration."
+  checkLabel="Check"
+  retryLabel="Retry"
+  allCorrectLabel="✓ All correct"
+/>
+
+### When it matters
+
+Inventory risk scales with **position size × adverse move**, so it bites hardest when you're pushing size to make a thin gap worth the gas. Doubling your ETH to double the \$2,000 edge also *doubles* the dollar loss from any drift — the risk grows in lockstep with the reward, which is precisely why blindly scaling up a thin cross-chain gap is a trap.
+
+## Latency risk
+
+<MCQ
+  client:visible
+  pretest
+  question="You spot a 1% gap and fire leg one. Your bridge takes 8 minutes to let leg two land. What's the dominant risk SPECIFIC to that delay (beyond price drift)?"
+  options={[
+    { text: "The opportunity itself may be gone — the gap reverts or a faster arb closes it before your second leg can execute.", correct: true, explanation: "Latency risk is the risk that by the time you CAN act on B, the gap you're chasing no longer exists." },
+    { text: "Your gas estimate will be stale.", explanation: "Gas can be re-estimated; the real loss is the vanished opportunity, not a stale gas quote." },
+    { text: "The bridge will charge a higher fee for slowness.", explanation: "Fees are roughly fixed per route; the cost of latency is missed capture, not a surcharge." },
+    { text: "Nothing — you've already committed, so the outcome is locked.", explanation: "Committing leg one does NOT lock the gap; the gap can close while leg two is still in transit." },
+  ]}
+  explanation="Slow bridges mean the gap can evaporate before you finish capturing it."
+/>
+
+**Analogy.** You see a great fare on a flight and start a slow checkout that takes ten minutes to process. Two things can go wrong: the airline reprices the seat (the gap reverts), or someone else grabs the last seat first (a competitor closes it). Either way, the deal you *saw* isn't the deal you *get*. **Latency risk** is the price of being slow in a race where the prize disappears.
+
+**Definition.** **Latency risk** is the risk that the time to settle leg two is long enough that the opportunity changes character before you capture it — the gap reverts, or a competing arbitrageur (racing the same public gap) closes it first. Unlike inventory risk, which is about *price moving against your held position*, latency risk is about the *opportunity structure itself decaying* during the wait. Bridges are the slow link: a fast liquidity-network bridge clears in seconds-to-minutes, while canonical or optimistic bridges can take minutes-to-hours.
+
+### Bridge latencies and capture probability
+
+| Bridge type | Typical leg-two latency | What it does to capture |
+|---|---|---|
+| Fast liquidity network (e.g. relayer-fronted) | seconds → ~2 min | High capture: short race, gap often survives |
+| Canonical / native rollup bridge (deposits) | minutes → ~20 min | Lower capture: long enough that gaps frequently revert |
+| Optimistic bridge (challenge window) | **hours** (often ~7-day max on withdrawals) | Near-zero *for arb*: the gap is long dead before funds clear |
+
+The intuition in numbers: suppose a given 1% gap historically persists for an average of ~3 minutes before competition closes it. A 30-second bridge captures it almost always; a 4-minute bridge captures it maybe half the time; an optimistic bridge with an hours-long window captures it essentially never. Your **expected** profit is the gap times the probability the gap is still alive when leg two lands — and that probability falls steeply with latency.
+
+<Callout variant="warning" title="Pitfall: quoting profit on the gap you SAW">
+The gap on your screen is the gap *now*. The only gap that pays you is the gap that *survives the latency*. Build your P&L on the **expected surviving gap** — gap × P(still open when leg two settles) — not the snapshot. A 1% gap behind a 20-minute bridge might have an expected surviving value closer to 0.1%.
+</Callout>
+
+<Categorize
+  client:visible
+  question="Sort each consequence by which risk it primarily belongs to."
+  buckets={['Inventory risk', 'Latency risk']}
+  items={[
+    { text: "ETH drops 0.6% while your held position waits to be offset", bucket: 'Inventory risk' },
+    { text: "A rival arb closes the same gap before your leg two lands", bucket: 'Latency risk' },
+    { text: "Your unhedged long loses money on an adverse tick", bucket: 'Inventory risk' },
+    { text: "The gap reverts to zero during a 15-minute bridge wait", bucket: 'Latency risk' },
+    { text: "Position size × adverse move determines the loss", bucket: 'Inventory risk' },
+    { text: "Optimistic bridge's hours-long window makes capture ~impossible", bucket: 'Latency risk' },
+  ]}
+  explanation="Inventory risk = your held position moving; latency risk = the opportunity decaying while you wait."
+  checkLabel="Check"
+  retryLabel="Retry"
+  allCorrectLabel="✓ All correct"
+/>
+
+### When it matters
+
+Latency risk dominates for **fast-mean-reverting gaps** and **crowded routes**. A structural, slow-moving mispricing tolerates a slow bridge; a fleeting micro-gap on a heavily-watched pair is a foot race you'll lose the moment your bridge is slower than the field's. Match the bridge speed to the gap's half-life, or don't take the trade.
+
+## Probabilistic finality & reorg risk
+
+<MCQ
+  client:visible
+  pretest
+  question="You act on chain B after just ONE confirmation of your source leg on chain A, and chain A then reorgs that block away. What's your situation?"
+  options={[
+    { text: "One-legged: your source leg vanished, so you hold a naked, unhedged position on B with no offset.", correct: true, explanation: "A reorg can erase a not-yet-final source leg, leaving leg two stranded with nothing on the other side." },
+    { text: "Fine — chain B's settlement protects chain A's leg.", explanation: "Chains are independent. B can't un-reorg A; your A leg is simply gone." },
+    { text: "The bridge automatically refunds you.", explanation: "If the bridge relayed a message that A later invalidates, you may be on the hook, not made whole." },
+    { text: "The reorg only delays you; the leg comes back.", explanation: "Reorged transactions aren't guaranteed to be re-included — they can be dropped entirely." },
+  ]}
+  explanation="Acting before source finality risks a one-legged position if the source reorgs."
+/>
+
+**Analogy.** **Probabilistic finality** is ink that's still wet. On chains where recent blocks can be **reorged** (reorganized — replaced by a competing chain segment), the last few blocks aren't truly settled; they can be peeled off and rewritten. Acting on the destination before the source is dry is like shipping a signed contract before the other party's signature has actually set — if their ink smears away, you've shipped against nothing.
+
+**Definition.** **Reorg risk** is the risk that the source-chain block containing leg one gets reorged away after you've already acted on the destination, leaving you with a **one-legged (naked) position**. **Confirmations** are your defense: each additional block buried on top of yours lowers the probability it can be reorged. Ethereum reaches **full economic finality** only after ~2 epochs (~**12.8 minutes**); acting on a *single* confirmation is acting on something that is statistically likely but absolutely *not* final.
+
+The cruel trade-off: confirmations buy safety against reorgs but **cost time**, and time *is* the exposure window. More confirmations → lower reorg probability → but a longer window → more price drift. You cannot minimize both at once. This is exactly the tension the timeline island makes physical — drag the *confirmations* slider up and watch reorg-safety improve while the exposure window (and the drift readout) gets *worse*.
+
+### Worked example: confirmations vs. drift
+
+Block ≈ 12s, 80% annual vol, 90s bridge relay held fixed. Compare confirmation depths:
+
+| Confirmations | Finality wait | Window $\Delta t$ | 1-sigma drift | Reorg safety |
+|---|---|---|---|---|
+| 1 | 12s | 102s | $0.80\sqrt{102/31{,}536{,}000} \approx 0.14\%$ | Poor — single-block reorgs happen |
+| 12 | 144s | 234s | $\approx 0.22\%$ | Strong vs short reorgs |
+| 64 (~finality) | 768s | 858s | $0.80\sqrt{858/31{,}536{,}000} \approx 0.42\%$ | Near-final, reorg ~negligible |
+
+Going from 1 to 64 confirmations cuts reorg risk dramatically but **triples** the expected drift cost (0.14% → 0.42%) — which against a 1% gap is the difference between a comfortable cushion and a coin-flip. The "right" depth is wherever the marginal reorg risk you remove stops being worth the marginal drift you add.
+
+<Callout variant="warning" title="Pitfall: confusing 'confirmed' with 'final'">
+One confirmation means *included*, not *settled*. On probabilistic-finality chains, a handful of recent blocks can always be rewritten; bridges that act on a not-yet-final source message can later have that message reversed, leaving you holding the one-legged bag. Treat finality as a *time cost you must pay*, not a checkbox that's instantly true.
+</Callout>
+
+<Reveal client:visible>
+<Callout variant="info" title="Make it concrete on the island">
+Scroll back to the timeline and set confirmations to 1, then to 64. Watch the exposure window and drift readouts move *together* — every block of reorg safety you add is paid for in drift. That single slider is the whole reorg-vs-window trade-off in one drag.
+</Callout>
+</Reveal>
+
+### When it matters
+
+Reorg risk matters most on chains with **weak or slow finality** and when the **source leg** is the one you commit first. On a fast-finality destination you can be aggressive about acting; on a probabilistic source you must wait out confirmations — and that wait, not the bridge, is often the bigger slice of your exposure window for volatile assets.
+
+## Putting it together: the risk-adjusted gap
+
+<MCQ
+  client:visible
+  pretest
+  question="Which inequality must hold for a cross-chain arb to be worth doing?"
+  options={[
+    { text: "Gross gap > bridge fee + expected adverse drift + tail allowance.", correct: true, explanation: "The gap must clear ALL the costs the window reintroduces, plus a buffer for rare catastrophes." },
+    { text: "Gross gap > bridge fee. That's the only real cost.", explanation: "Ignores drift and tail risk — the very costs atomicity used to make zero." },
+    { text: "Gross gap > 0. Any positive gap is profitable.", explanation: "A positive snapshot gap can still be a guaranteed loss after drift and fees." },
+    { text: "Gross gap > annualized volatility.", explanation: "Vol must be scaled to the WINDOW (√-of-time), not compared to the annual figure directly." },
+  ]}
+  explanation="A cross-chain arb only clears if the gap beats fees, expected drift, AND a tail buffer."
+/>
+
+**Analogy.** This is the **cost-stack** mindset from the on-chain arb course, with new floors added to the building. There, your gross gap had to clear gas + slippage + fees. Here the window stacks two more floors on top: **expected adverse drift** and a **tail allowance** for the rare reorg/hack catastrophe. You only profit if the gap is taller than the whole stack.
+
+**The inequality.** Let $g$ be the gross gap (as a fraction of price), $f$ the bridge fee, $d$ the expected adverse drift cost, and $\tau$ a tail allowance. The trade clears only if:
+
+$$g > f + d + \tau$$
+
+### Worked decision
+
+Take the canonical 1% gap and stack the costs:
+
+| Component | Value | Note |
+|---|---|---|
+| Gross gap $g$ | +1.00% | The \$20 on \$2000 |
+| Bridge fee $f$ | −0.05% | Typical fast-bridge route fee |
+| Expected drift cost $d$ | −0.22% | The 1-sigma window drift from section 1 |
+| Tail allowance $\tau$ | −0.30% | Reorg/hack buffer (foreshadows Lesson 5) |
+| **Net edge** | **+0.43%** | $1.00 - 0.05 - 0.22 - 0.30$ |
+
+**Thin but positive** — \$0.43 of edge per \$100, before you've even priced the gas on both chains. Now run a **0.3% gap** through the same stack:
+
+$$0.30\% - 0.05\% - 0.22\% - 0.30\% = -0.27\%$$
+
+**Negative.** The 0.3% gap *looked* like free money on the screen and is a guaranteed loser once the window's costs are honest. The lesson: cross-chain arb has a much higher *minimum viable gap* than atomic arb, because atomicity used to zero out $d$ and shrink $\tau$ — and the bigger your bridge latency and confirmation depth, the higher that minimum climbs.
+
+<Callout variant="tip" title="The mental model">
+Atomic arb: profit if gap > gas + slippage + fees. Cross-chain arb: profit if gap > fees + **expected drift** + **tail allowance** (+ gas on both chains). The two new terms are the rent atomicity used to pay for you. Everything in this lesson is an accounting of that rent.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Complete the risk-adjusted decision."
+  text="A 1% gap nets about {{+0.43%|+0.95%|−0.43%}} after a 0.05% fee, 0.22% expected drift, and 0.30% tail allowance — thin but positive. The same stack turns a {{0.3%|3.0%|1.3%}} gap {{negative|positive|neutral}}, because its minimum viable gap sits above 0.3%."
+  instructions="Choose the correct option for each blank and check."
+  explanation="1.00 − 0.05 − 0.22 − 0.30 = +0.43%; 0.30 − 0.05 − 0.22 − 0.30 = −0.27%, so the small gap fails to clear the stack."
+/>
+
+### When it matters
+
+Always — this inequality is the gatekeeper for *every* cross-chain arb. The terms shift with the route (fee), the asset's volatility and your window (drift), and the chains' finality and bridge security (tail), but the discipline is constant: never take a trade whose gap doesn't clear the *full* stack with room to spare. The thinner the gap, the more ruthlessly you must price $d$ and $\tau$.
+
+## Recap
+
+<MindMap
+  client:visible
+  title="The risks atomicity hid"
+  caption="Atomicity made the exposure window zero. Stretch it to minutes and three risks wake up — and the gap must clear them all."
+  outlineLabel="Text outline"
+  root={{
+    label: 'The risks atomicity hid',
+    children: [
+      {
+        label: 'Exposure window',
+        children: [
+          { label: 'Δt = finality wait + bridge relay' },
+          { label: 'Atomic: ~0; cross-chain: minutes' },
+          { label: 'Drift scales with √time' },
+        ],
+      },
+      {
+        label: 'Inventory risk',
+        children: [
+          { label: 'Hold the asset between legs' },
+          { label: 'Unhedged directional position' },
+          { label: 'Loss = size × adverse move' },
+        ],
+      },
+      {
+        label: 'Latency risk',
+        children: [
+          { label: 'Bridge slow → gap may revert' },
+          { label: 'Competitors close it first' },
+          { label: 'Price the surviving gap, not the seen gap' },
+        ],
+      },
+      {
+        label: 'Finality / reorg risk',
+        children: [
+          { label: 'Source reorg → one-legged position' },
+          { label: 'Confirmations buy safety, cost time' },
+          { label: 'ETH full finality ≈ 12.8 min' },
+        ],
+      },
+      {
+        label: 'Risk-adjusted gap',
+        children: [
+          { label: 'g > fee + drift + tail allowance' },
+          { label: 'Cost-stack mindset from on-chain arb' },
+          { label: 'High minimum viable gap' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="The risks atomicity hid — recap"
+  questionLabel="Question"
+  ofLabel="of"
+  scoreLabel="Your score"
+  restartLabel="Restart"
+  nextLabel="Next"
+  backLabel="Back"
+  questions={[
+    {
+      question: "The exposure window Δt is best decomposed as:",
+      options: [
+        { text: "Finality wait (confirmations) + bridge relay time", correct: true },
+        { text: "Block time + gas auction time" },
+        { text: "Bridge fee + slippage" },
+        { text: "Annualized volatility × position size" },
+      ],
+      explanation: "Δt is the wait for source finality plus the bridge's relay time before leg two can settle.",
+    },
+    {
+      question: "Why can't you make cross-chain drift risk vanish just by being clever?",
+      options: [
+        { text: "Drift scales with √(window), so it only shrinks by shortening the window — which conflicts with waiting for finality", correct: true },
+        { text: "Because gas fees are fixed" },
+        { text: "Because bridges always front-run you" },
+        { text: "You can — a good RPC node removes it entirely" },
+      ],
+      explanation: "σ_window = σ_ann·√(Δt/T). Less window = less drift, but less window also means less reorg safety.",
+    },
+    {
+      question: "You buy 100 ETH on A at \$2000 for a \$2,000 gross edge. ETH drifts down 1% before leg two lands. Net?",
+      options: [
+        { text: "≈ \$0 — the −\$2,000 inventory loss exactly cancels the \$2,000 edge", correct: true },
+        { text: "+\$2,000 — arbitrage is market-neutral" },
+        { text: "−\$2,000 — you lose the whole edge twice" },
+        { text: "+\$1,000 — drift only costs half" },
+      ],
+      explanation: "−0.01 × 100 × 2000 = −\$2,000 on inventory, which cancels the \$2,000 gap. A bigger move goes negative.",
+    },
+    {
+      question: "'It's arbitrage, so it's market-neutral' is true only when…",
+      options: [
+        { text: "Both legs settle together — which atomicity guarantees but cross-chain settlement does not", correct: true },
+        { text: "The gap is wider than 1%" },
+        { text: "You use an optimistic bridge" },
+        { text: "Volatility is below 80%" },
+      ],
+      explanation: "Neutrality needs simultaneous legs. Mid-window you hold a pure directional position.",
+    },
+    {
+      question: "You should quote your expected cross-chain profit using:",
+      options: [
+        { text: "The surviving gap = gap × P(still open when leg two lands)", correct: true },
+        { text: "The snapshot gap you saw on screen" },
+        { text: "The widest gap seen in the last hour" },
+        { text: "The gap plus the bridge fee" },
+      ],
+      explanation: "Latency means the gap can revert or be closed; only the surviving gap actually pays.",
+    },
+    {
+      question: "Acting on the destination after only one source confirmation risks:",
+      options: [
+        { text: "A one-legged naked position if the source block reorgs away", correct: true },
+        { text: "A higher bridge fee" },
+        { text: "Permanent loss of the destination chain" },
+        { text: "Nothing — one confirmation is final" },
+      ],
+      explanation: "One confirmation is 'included', not 'final'. A reorg can erase the source leg, stranding leg two.",
+    },
+    {
+      question: "Increasing confirmation depth from 1 to 64 blocks…",
+      options: [
+        { text: "Lowers reorg probability but lengthens the window, raising expected drift", correct: true },
+        { text: "Lowers both reorg risk and drift at once" },
+        { text: "Has no effect on the exposure window" },
+        { text: "Eliminates the bridge fee" },
+      ],
+      explanation: "Safety and speed trade off: more confirmations = more reorg safety but a longer at-risk window.",
+    },
+    {
+      question: "Per the risk-adjusted gap, a 0.3% gap behind a 0.05% fee, 0.22% drift, and 0.30% tail allowance is:",
+      options: [
+        { text: "A loser — 0.30 − 0.05 − 0.22 − 0.30 = −0.27%, below the minimum viable gap", correct: true },
+        { text: "A winner — any positive gap profits" },
+        { text: "Exactly break-even" },
+        { text: "Profitable only with more confirmations" },
+      ],
+      explanation: "The gap fails to clear the cost stack; cross-chain arb has a high minimum viable gap.",
+    },
+  ]}
+/>

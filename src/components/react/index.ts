@@ -789,3 +789,10 @@ export type { SequenceModelUnrollProps } from '@/components/react/SequenceModelU
 
 export { AttentionWeightsHeatmap, default as AttentionWeightsHeatmapDefault } from '@/components/react/AttentionWeightsHeatmap';
 export type { AttentionWeightsHeatmapProps } from '@/components/react/AttentionWeightsHeatmap';
+
+// Cross-chain-arbitrage-and-bridge-mev islands
+export { CrossChainSettlementTimeline, default as CrossChainSettlementTimelineDefault } from '@/components/react/CrossChainSettlementTimeline';
+export type { CrossChainSettlementTimelineProps } from '@/components/react/CrossChainSettlementTimeline';
+
+export { BridgeInventoryBalance, default as BridgeInventoryBalanceDefault } from '@/components/react/BridgeInventoryBalance';
+export type { BridgeInventoryBalanceProps } from '@/components/react/BridgeInventoryBalance';

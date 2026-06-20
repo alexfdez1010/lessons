@@ -1,0 +1,467 @@
+---
+title: "Los riesgos que ocultaba la atomicidad"
+description: "Riesgo de inventario, latencia del puente y finalidad probabilística / riesgo de reorg: la ventana de exposición entre tus dos patas donde el precio puede moverse en tu contra."
+topic: "es/cross-chain-arbitrage-and-bridge-mev"
+order: 3
+minutes: 12
+updated: 2026-06-20
+---
+
+import { Callout, MCQ, FillBlank, Categorize, MatchConcepts, MindMap, Quiz, Reveal, CrossChainSettlementTimeline } from '@/components/react';
+
+En una sola cadena, la atomicidad era tu guardaespaldas. Tu arbitraje con flash loan ejecutaba ambas patas en una transacción o revertía como si nada hubiera pasado: compra y venta iban soldadas, liquidaban en el mismo bloque, cubiertas durante exactamente cero segundos. Podías cotizar el beneficio sobre una foto de las curvas del AMM y *esa foto era la verdad*, porque nada podía cambiar entre la pata uno y la pata dos. No había "entremedias".
+
+La liquidación cross-chain borra a ese guardaespaldas. Como dejaron claro las lecciones anteriores, un arbitraje cross-chain son **dos patas independientes en dos libros mayores independientes**, y nada las obliga a liquidar juntas. La pata uno se confirma en la cadena A; la pata dos liquida en la cadena B unos minutos después. En ese hueco estás expuesto: desnudo, direccional, a merced de la cinta. Esta lección va sobre descomponer exactamente *qué* vive en ese hueco.
+
+La idea que lo unifica todo es la **ventana de exposición**: el tramo de tiempo de reloj entre el momento en que se confirma tu primera pata y el momento en que liquida la segunda, durante el cual **no estás cubierto**. La atomicidad escondía tres riesgos dentro de una ventana de longitud cero. Estira la ventana a minutos y los tres despiertan. Vamos a ponerles nombre.
+
+## La ventana de exposición
+
+<MCQ
+  client:visible
+  pretest
+  question="En un arbitraje atómico monocadena con flash loan, ¿durante cuánto tiempo estás expuesto direccionalmente entre la pata de compra y la de venta?"
+  options={[
+    { text: "Efectivamente cero: ambas patas liquidan en la misma transacción/bloque, así que no hay 'entremedias'.", correct: true, explanation: "La atomicidad suelda las patas: se ejecutan como una unidad o revierten juntas. Tiempo de exposición ≈ 0." },
+    { text: "Un bloque: aterriza la compra y luego aterriza la venta en el bloque siguiente.", explanation: "No: atómico significa la *misma* transacción, no transacciones consecutivas. No hay hueco entre bloques." },
+    { text: "Unos 12 segundos, el tiempo medio de bloque.", explanation: "Ese es el intervalo entre bloques, pero las dos patas de un arbitraje atómico viven dentro de un bloque, así que el hueco expuesto es ~0." },
+    { text: "Depende del gas: más gas acorta la ventana.", explanation: "El gas afecta a la prioridad de inclusión, no a la atomicidad. La ventana es estructuralmente cero independientemente del gas." },
+  ]}
+  explanation="Todo el truco del arbitraje atómico es que el tiempo de exposición es estructuralmente cero. El cross-chain tira eso por la borda."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+**Analogía.** El arbitraje atómico es un intercambio *simultáneo*: dos personas plantan sus cartas sobre la mesa en el mismísimo instante, y un árbitro garantiza que ambas manos se voltean o ninguna lo hace. El arbitraje cross-chain es una *carrera de relevos a cámara lenta*: pasas el testigo en la cadena A, luego esprintas hacia la cadena B, y solo cuando llegas se completa la operación. Durante todo el rato que corres, el precio tiene permiso para moverse. Esa carrera es la ventana de exposición.
+
+**Definición.** La **ventana de exposición** $\Delta t$ es el tiempo transcurrido desde la *confirmación de la pata uno* hasta la *liquidación de la pata dos*. Para un arbitraje cross-chain se descompone limpiamente en dos esperas:
+
+$$\Delta t = t_{\text{finality}} + t_{\text{relay}}$$
+
+donde $t_{\text{finality}}$ es el tiempo que esperas a que tu pata en la cadena origen esté lo bastante enterrada como para que el puente confíe en ella (confirmaciones), y $t_{\text{relay}}$ es el tiempo que tarda el puente en transportar el mensaje y dejar que la pata dos se ejecute en el destino.
+
+Renderiza el héroe de abajo y **arrastra los deslizadores**: el de *confirmaciones* hace crecer la espera de finalidad, el de *latencia del puente* hace crecer el relay, y verás cómo se hinchan tanto la ventana de exposición como la deriva de precio ilustrativa. La pastilla de "línea base atómica" es tu recordatorio de dónde solía vivir este número: ~0.
+
+<CrossChainSettlementTimeline
+  client:visible
+  title="Arbitraje cross-chain: la ventana de exposición"
+  sellLegLabel="Pata de venta enviada (Cadena A)"
+  blockInclusionLabel="Inclusión en bloque (Cadena A)"
+  finalityWaitLabel="Espera de finalidad (Cadena A)"
+  bridgeRelayLabel="Relay del puente"
+  buyLegLabel="Pata de compra ejecuta (Cadena B)"
+  confirmationsLabel="Confirmaciones esperadas (profundidad de finalidad)"
+  bridgeLatencyLabel="Latencia del puente"
+  exposureLabel="Ventana de exposición (el precio puede moverse)"
+  totalLabel="Tiempo total de liquidación"
+  driftLabel="Deriva de precio ilustrativa"
+  atomicLabel="Arbitraje atómico monocadena"
+  atomicNote="Un bloque, exposición ≈ 0: ambas patas liquidan juntas o ninguna."
+  secondsSuffix=" s"
+  minutesSuffix=" min"
+  caption="Arrastra los deslizadores: más confirmaciones y más latencia del puente ensanchan la ventana de exposición, y con ella la deriva de precio. La línea base atómica vive en ~0."
+/>
+
+### La matemática que reintroduce la ventana
+
+El precio no deriva linealmente con el tiempo: difunde. Bajo el modelo estándar de paseo aleatorio, la desviación típica del rendimiento a lo largo de una ventana escala con la **raíz cuadrada del tiempo**:
+
+$$\sigma_{\text{window}} = \sigma_{\text{ann}}\sqrt{\Delta t / T}$$
+
+donde $\sigma_{\text{ann}}$ es la volatilidad anualizada, $T$ es un año en segundos ($31{,}536{,}000$) y $\Delta t$ es la ventana en segundos. Metamos el escenario canónico: ETH cotizado en USDC, cadena A a \$2000, cadena B a \$2020, un hueco bruto del 1% de \$20/ETH. Tiempo de bloque ≈ 12s, así que 12 confirmaciones ≈ 144s de espera de finalidad; relay del puente ≈ 90s. Eso da una ventana de exposición de:
+
+$$\Delta t = 144 + 90 = 234 \text{ s} \approx 4 \text{ min}$$
+
+La volatilidad anualizada de las criptos va caliente: tomemos $\sigma_{\text{ann}} = 0.80$ (80%). Entonces:
+
+$$\sigma_{\text{window}} = 0.80 \times \sqrt{234 / 31{,}536{,}000} = 0.80 \times 0.00272 \approx 0.0022$$
+
+Así que un movimiento de **1 sigma** a lo largo de tu ventana de ~4 minutos es de en torno al **±0,22%** del precio, aproximadamente $0.0022 \times 2000$, es decir **±\$4,4** sobre un ETH de \$2000. Ponlo contra tu hueco del 1% (\$20): un sigma es alrededor de una *quinta parte* de tu margen. Eso suena cómodo hasta que recuerdas que un movimiento de 2 sigma (~±\$8,8) es rutinario y uno de 3 sigma (~±\$13,2) es un martes cualquiera en cripto, y un movimiento adverso de 3 sigma se come dos tercios del hueco. El margen que parecía cosa segura es en realidad un colchón fino contra una moneda al aire de colas gruesas.
+
+**El punto profundo:** la ventana de exposición del arbitraje atómico es ~0, así que $\sigma_{\text{window}} \approx 0$ — libre de riesgo en el modelo. La ventana del arbitraje cross-chain es de *minutos*, y como el riesgo escala con $\sqrt{\Delta t}$, no puedes hacerlo desaparecer a base de listeza; solo puedes rebajarlo esperando *menos*, lo cual (ya lo veremos) choca con esperar *lo suficiente* por seguridad.
+
+<Callout variant="warning" title="Trampa: tratar el hueco como beneficio asegurado">
+El hueco del 1% es lo que capturarías **si ambas patas liquidaran ahora mismo**. No lo hacen. El número que de verdad realizas es el hueco *menos lo que hiciera el precio durante la ventana*. Cotizar el hueco de la foto como beneficio es como cotizar el precio de una acción como tus ingresos por venta antes de haber lanzado siquiera la orden de venta: técnicamente es un número, solo que no es *tu* número.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Completa el escalado con la raíz cuadrada del tiempo y lo que implica."
+  text="La deriva de precio a lo largo de una ventana escala con la {{raíz cuadrada|raíz cúbica|logaritmo}} del tiempo transcurrido, así que duplicar la ventana de exposición multiplica la deriva de 1 sigma por aproximadamente {{1,41|2|4}}. Con ~80% de volatilidad anual, una ventana de ~4 minutos da un movimiento de 1 sigma cercano al {{0,22%|2,2%|0,02%}} del precio."
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+  explanation="σ_window = σ_ann·√(Δt/T): la deriva crece con √tiempo, así que 2× la ventana es √2 ≈ 1,41× la deriva, y 234s al 80% de vol da ≈0,22%."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+### Cuándo importa
+
+La ventana de exposición domina tu riesgo siempre que el hueco sea *fino* respecto a la volatilidad y la ventana sea *larga*. Un hueco gordo del 3% en un par de baja volatilidad con una ventana de 30 segundos apenas se preocupa por la deriva; un hueco del 0,4% en ETH volátil con una ventana de 6 minutos es básicamente una apuesta de volatilidad disfrazada de arbitraje. Mide siempre la ventana contra el hueco antes de dimensionar la operación.
+
+## Riesgo de inventario
+
+<MCQ
+  client:visible
+  pretest
+  question="Compras 100 ETH en la cadena A a $2000, con plan de venderlos en la cadena B a $2020. Mientras el puente hace el relay, ¿cuál es tu posición real de mercado?"
+  options={[
+    { text: "Largo 100 ETH: una posición direccional sin cubrir que no querías.", correct: true, explanation: "Exacto. Hasta que aterrice la pata en B, la otra mitad de la cobertura no existe. Simplemente estás largo de ETH." },
+    { text: "Neutral al mercado: es un arbitraje, así que las patas se cancelan.", explanation: "Solo se cancelan una vez liquidan AMBAS. A mitad de ventana solo existe la pata uno, así que eres direccional." },
+    { text: "Corto 100 ETH, porque te has comprometido a vender en B.", explanation: "Aún no has vendido: la pata en B está pendiente. Tu única posición *liquidada* es la compra larga en A." },
+    { text: "Plano: el puente sostiene el riesgo por ti.", explanation: "Los puentes hacen relay de mensajes y custodian activos; no cubren tu exposición de precio." },
+  ]}
+  explanation="Entre patas estás sosteniendo el activo. Esa tenencia ES una apuesta direccional."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+**Analogía.** Acuerdas comprar una casa por \$2000k y revenderla a un comprador que ya espera por \$2020k — \$20k asegurados, supuestamente. Pero tienes que *escriturar* la compra antes de que se tramite el papeleo de la reventa, y el mercado inmobiliario se mueve mientras los abogados barajan documentos. Durante esas semanas simplemente *posees una casa*, plenamente expuesto al mercado, da igual tu pulcro plan de reventa. El **riesgo de inventario** es poseer la cosa en el hueco.
+
+**Definición.** El **riesgo de inventario** es el riesgo de precio del activo que estás *sosteniendo* entre patas. Tras la pata uno, tienes una posición real y liquidada: largo del activo que compraste (o corto del que vendiste y aún no puedes compensar). Hasta que liquide la pata compensatoria, esa posición es exposición direccional desnuda. Su P&L por unidad de movimiento adverso es el tamaño completo de la posición, no una fracción cubierta.
+
+### Ejemplo resuelto
+
+Compra **100 ETH en A a \$2000** (coste \$200.000), con intención de vender en **B a \$2020** por \$202.000 — un margen bruto de **\$2.000**. Ahora supón que el ETH deriva *a la baja* un 0,5% durante la ventana. El precio al que de verdad venderás en B sigue al mercado, así que también resbala:
+
+| Resultado sobre los 100 ETH en cartera | Aritmética | Resultado |
+|---|---|---|
+| Deriva adversa sobre el inventario | $-0.005 \times 100 \times 2000$ | **−\$1.000** |
+| Margen bruto del arbitraje (hueco) | $0.01 \times 100 \times 2000$ | +\$2.000 |
+| Neto (la deriva se come la mitad) | $2000 - 1000$ | **+\$1.000** |
+
+Un movimiento adverso del 0,5% borró **la mitad** de tu margen. Empuja el movimiento adverso al 1% y la pérdida sobre el inventario es $-0.01 \times 100 \times 2000 = $ **−\$2.000**, que cancela exactamente el hueco: hiciste todo ese trabajo para cero. Cualquier deriva más allá del 1% y el "arbitraje" es una *pérdida*. Fíjate en la asimetría: el hueco está fijo en \$2.000, pero la pérdida de inventario escala sin límite a medida que el movimiento crece.
+
+<Callout variant="warning" title="Trampa: 'es arbitraje, así que es neutral al mercado'">
+La neutralidad al mercado es una propiedad de las patas *simultáneas*. **Solo es cierta cuando ambas patas liquidan juntas** — lo cual en una cadena sí ocurre, y entre cadenas rotundamente no. Durante los minutos que tu segunda pata está en tránsito sostienes una posición puramente direccional. Llamar a eso "neutral al mercado" es llamar "puente" a un puente a medio construir.
+</Callout>
+
+<MatchConcepts
+  client:visible
+  question="Empareja cada fase del arbitraje cross-chain con la posición que de verdad sostienes."
+  pairs={[
+    { term: "Antes de que se confirme la pata uno", definition: "Plano: aún sin posición, pura oportunidad en una pantalla." },
+    { term: "Tras la pata uno, antes de la pata dos", definition: "Riesgo de inventario: largo (o corto) sin cubrir del activo operado." },
+    { term: "Tras liquidar ambas patas", definition: "Plano de nuevo: la cobertura está completa y el margen realizado." },
+    { term: "Arbitraje atómico monocadena", definition: "Nunca sostiene inventario: ambas patas liquidan en una transacción." },
+  ]}
+  explanation="El riesgo de inventario vive enteramente en la fase intermedia, que la atomicidad colapsa a duración cero."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  allCorrectLabel="✓ Todo correcto"
+/>
+
+### Cuándo importa
+
+El riesgo de inventario escala con **tamaño de posición × movimiento adverso**, así que muerde más fuerte cuando estás empujando tamaño para que un hueco fino merezca el gas. Duplicar tu ETH para duplicar el margen de \$2.000 también *duplica* la pérdida en dólares de cualquier deriva: el riesgo crece al unísono con la recompensa, que es precisamente por lo que escalar a ciegas un hueco cross-chain fino es una trampa.
+
+## Riesgo de latencia
+
+<MCQ
+  client:visible
+  pretest
+  question="Detectas un hueco del 1% y disparas la pata uno. Tu puente tarda 8 minutos en dejar aterrizar la pata dos. ¿Cuál es el riesgo dominante ESPECÍFICO de ese retraso (más allá de la deriva de precio)?"
+  options={[
+    { text: "La oportunidad en sí puede haberse esfumado: el hueco revierte o un arbitraje más rápido lo cierra antes de que tu segunda pata pueda ejecutarse.", correct: true, explanation: "El riesgo de latencia es el riesgo de que, para cuando PUEDAS actuar en B, el hueco que persigues ya no exista." },
+    { text: "Tu estimación de gas quedará obsoleta.", explanation: "El gas se puede reestimar; la pérdida real es la oportunidad desvanecida, no una cotización de gas obsoleta." },
+    { text: "El puente cobrará una comisión más alta por la lentitud.", explanation: "Las comisiones son más o menos fijas por ruta; el coste de la latencia es la captura perdida, no un recargo." },
+    { text: "Nada: ya te has comprometido, así que el resultado está bloqueado.", explanation: "Confirmar la pata uno NO bloquea el hueco; el hueco puede cerrarse mientras la pata dos sigue en tránsito." },
+  ]}
+  explanation="Los puentes lentos significan que el hueco puede evaporarse antes de que termines de capturarlo."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+**Analogía.** Ves una tarifa estupenda en un vuelo y arrancas un checkout lento que tarda diez minutos en procesarse. Pueden torcerse dos cosas: la aerolínea reprecia el asiento (el hueco revierte), o alguien pilla antes el último asiento (un competidor lo cierra). En cualquier caso, la oferta que *viste* no es la oferta que *consigues*. El **riesgo de latencia** es el precio de ser lento en una carrera donde el premio desaparece.
+
+**Definición.** El **riesgo de latencia** es el riesgo de que el tiempo para liquidar la pata dos sea lo bastante largo como para que la oportunidad cambie de carácter antes de que la captures: el hueco revierte, o un arbitrajista rival (corriendo el mismo hueco público) lo cierra primero. A diferencia del riesgo de inventario, que va sobre que *el precio se mueva contra tu posición en cartera*, el riesgo de latencia va sobre que la *propia estructura de la oportunidad se degrade* durante la espera. Los puentes son el eslabón lento: un puente de red de liquidez rápido se liquida en segundos-a-minutos, mientras que los puentes canónicos u optimistas pueden tardar minutos-a-horas.
+
+### Latencias de puente y probabilidad de captura
+
+| Tipo de puente | Latencia típica de la pata dos | Qué le hace a la captura |
+|---|---|---|
+| Red de liquidez rápida (p. ej. con relayer adelantando fondos) | segundos → ~2 min | Captura alta: carrera corta, el hueco suele sobrevivir |
+| Puente canónico / nativo de rollup (depósitos) | minutos → ~20 min | Captura menor: lo bastante largo como para que los huecos reviertan a menudo |
+| Puente optimista (ventana de impugnación) | **horas** (a menudo ~7 días máx. en retiradas) | Casi cero *para arbitraje*: el hueco lleva mucho muerto antes de que lleguen los fondos |
+
+La intuición en números: supón que un hueco dado del 1% persiste históricamente una media de ~3 minutos antes de que la competencia lo cierre. Un puente de 30 segundos lo captura casi siempre; uno de 4 minutos lo captura quizá la mitad de las veces; un puente optimista con una ventana de horas no lo captura prácticamente nunca. Tu beneficio **esperado** es el hueco por la probabilidad de que el hueco siga vivo cuando aterrice la pata dos, y esa probabilidad cae en picado con la latencia.
+
+<Callout variant="warning" title="Trampa: cotizar el beneficio sobre el hueco que VISTE">
+El hueco en tu pantalla es el hueco de *ahora*. El único hueco que te paga es el que *sobrevive a la latencia*. Construye tu P&L sobre el **hueco superviviente esperado** — hueco × P(siga abierto cuando liquide la pata dos) — no sobre la foto. Un hueco del 1% tras un puente de 20 minutos podría tener un valor superviviente esperado más cerca del 0,1%.
+</Callout>
+
+<Categorize
+  client:visible
+  question="Ordena cada consecuencia según a qué riesgo pertenece principalmente."
+  buckets={['Riesgo de inventario', 'Riesgo de latencia']}
+  items={[
+    { text: "El ETH cae un 0,6% mientras tu posición en cartera espera a ser compensada", bucket: 'Riesgo de inventario' },
+    { text: "Un arbitraje rival cierra el mismo hueco antes de que aterrice tu pata dos", bucket: 'Riesgo de latencia' },
+    { text: "Tu largo sin cubrir pierde dinero en un tick adverso", bucket: 'Riesgo de inventario' },
+    { text: "El hueco revierte a cero durante una espera de puente de 15 minutos", bucket: 'Riesgo de latencia' },
+    { text: "Tamaño de posición × movimiento adverso determina la pérdida", bucket: 'Riesgo de inventario' },
+    { text: "La ventana de horas de un puente optimista hace la captura ~imposible", bucket: 'Riesgo de latencia' },
+  ]}
+  explanation="Riesgo de inventario = tu posición en cartera moviéndose; riesgo de latencia = la oportunidad degradándose mientras esperas."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  allCorrectLabel="✓ Todo correcto"
+/>
+
+### Cuándo importa
+
+El riesgo de latencia domina para los **huecos de reversión rápida a la media** y las **rutas concurridas**. Un mal precio estructural y de movimiento lento tolera un puente lento; un microhueco efímero en un par muy vigilado es una carrera a pie que perderás en cuanto tu puente sea más lento que el del resto. Ajusta la velocidad del puente a la vida media del hueco, o no tomes la operación.
+
+## Finalidad probabilística y riesgo de reorg
+
+<MCQ
+  client:visible
+  pretest
+  question="Actúas en la cadena B tras UNA sola confirmación de tu pata origen en la cadena A, y la cadena A entonces hace reorg de ese bloque. ¿Cuál es tu situación?"
+  options={[
+    { text: "A una sola pata: tu pata origen desapareció, así que sostienes una posición desnuda y sin cubrir en B sin nada que la compense.", correct: true, explanation: "Un reorg puede borrar una pata origen aún no final, dejando la pata dos varada sin nada al otro lado." },
+    { text: "Sin problema: la liquidación de la cadena B protege la pata de la cadena A.", explanation: "Las cadenas son independientes. B no puede deshacer el reorg de A; tu pata en A simplemente ya no está." },
+    { text: "El puente te reembolsa automáticamente.", explanation: "Si el puente hizo relay de un mensaje que A luego invalida, puede que cargues tú con ello, no que te resarzan." },
+    { text: "El reorg solo te retrasa; la pata vuelve.", explanation: "Las transacciones reorganizadas no tienen garantizada su reinclusión: pueden descartarse por completo." },
+  ]}
+  explanation="Actuar antes de la finalidad del origen arriesga una posición a una sola pata si el origen hace reorg."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+**Analogía.** La **finalidad probabilística** es tinta que aún está fresca. En cadenas donde los bloques recientes pueden sufrir **reorg** (reorganizarse — ser reemplazados por un segmento de cadena competidor), los últimos bloques no están de verdad liquidados; pueden desprenderse y reescribirse. Actuar en el destino antes de que el origen esté seco es como enviar un contrato firmado antes de que la firma de la otra parte haya fraguado de verdad: si su tinta se difumina, has enviado contra nada.
+
+**Definición.** El **riesgo de reorg** es el riesgo de que el bloque de la cadena origen que contiene la pata uno sufra un reorg después de que ya hayas actuado en el destino, dejándote con una **posición a una sola pata (desnuda)**. Las **confirmaciones** son tu defensa: cada bloque adicional enterrado encima del tuyo baja la probabilidad de que pueda sufrir reorg. Ethereum alcanza la **finalidad económica plena** solo tras ~2 épocas (~**12,8 minutos**); actuar con una *única* confirmación es actuar sobre algo estadísticamente probable pero en absoluto *final*.
+
+El cruel dilema: las confirmaciones compran seguridad frente a reorgs pero **cuestan tiempo**, y el tiempo *es* la ventana de exposición. Más confirmaciones → menor probabilidad de reorg → pero una ventana más larga → más deriva de precio. No puedes minimizar ambas a la vez. Esta es exactamente la tensión que la isla de la línea temporal hace física: arrastra el deslizador de *confirmaciones* hacia arriba y observa cómo mejora la seguridad anti-reorg mientras la ventana de exposición (y la lectura de deriva) *empeora*.
+
+### Ejemplo resuelto: confirmaciones vs. deriva
+
+Bloque ≈ 12s, 80% de vol anual, relay del puente de 90s mantenido fijo. Compara profundidades de confirmación:
+
+| Confirmaciones | Espera de finalidad | Ventana $\Delta t$ | Deriva de 1 sigma | Seguridad anti-reorg |
+|---|---|---|---|---|
+| 1 | 12s | 102s | $0.80\sqrt{102/31{,}536{,}000} \approx 0.14\%$ | Pobre — los reorgs de un bloque ocurren |
+| 12 | 144s | 234s | $\approx 0.22\%$ | Fuerte frente a reorgs cortos |
+| 64 (~finalidad) | 768s | 858s | $0.80\sqrt{858/31{,}536{,}000} \approx 0.42\%$ | Casi final, reorg ~despreciable |
+
+Pasar de 1 a 64 confirmaciones recorta el riesgo de reorg drásticamente pero **triplica** el coste de deriva esperado (0,14% → 0,42%) — lo cual, contra un hueco del 1%, es la diferencia entre un colchón cómodo y una moneda al aire. La profundidad "correcta" está allá donde el riesgo de reorg marginal que eliminas deja de merecer la deriva marginal que añades.
+
+<Callout variant="warning" title="Trampa: confundir 'confirmado' con 'final'">
+Una confirmación significa *incluido*, no *liquidado*. En las cadenas de finalidad probabilística, un puñado de bloques recientes siempre puede reescribirse; los puentes que actúan sobre un mensaje origen aún no final pueden ver ese mensaje revertido más tarde, dejándote con el muerto a una sola pata. Trata la finalidad como un *coste de tiempo que debes pagar*, no como una casilla que se marca al instante.
+</Callout>
+
+<Reveal client:visible>
+<Callout variant="info" title="Hazlo concreto en la isla">
+Vuelve a la línea temporal y pon las confirmaciones en 1, luego en 64. Observa cómo las lecturas de ventana de exposición y de deriva se mueven *juntas*: cada bloque de seguridad anti-reorg que añades se paga en deriva. Ese único deslizador es todo el dilema reorg-vs-ventana en un solo arrastre.
+</Callout>
+</Reveal>
+
+### Cuándo importa
+
+El riesgo de reorg importa más en cadenas con **finalidad débil o lenta** y cuando la **pata origen** es la que confirmas primero. En un destino de finalidad rápida puedes ser agresivo al actuar; en un origen probabilístico debes esperar a que pasen las confirmaciones — y esa espera, no el puente, es a menudo la rebanada mayor de tu ventana de exposición para activos volátiles.
+
+## Juntándolo todo: el hueco ajustado por riesgo
+
+<MCQ
+  client:visible
+  pretest
+  question="¿Qué desigualdad debe cumplirse para que merezca la pena un arbitraje cross-chain?"
+  options={[
+    { text: "Hueco bruto > comisión del puente + deriva adversa esperada + provisión para colas.", correct: true, explanation: "El hueco debe superar TODOS los costes que reintroduce la ventana, más un colchón para catástrofes raras." },
+    { text: "Hueco bruto > comisión del puente. Es el único coste real.", explanation: "Ignora la deriva y el riesgo de cola: los mismísimos costes que la atomicidad ponía a cero." },
+    { text: "Hueco bruto > 0. Cualquier hueco positivo es rentable.", explanation: "Un hueco positivo en la foto aún puede ser una pérdida garantizada tras la deriva y las comisiones." },
+    { text: "Hueco bruto > volatilidad anualizada.", explanation: "La vol debe escalarse a la VENTANA (√del tiempo), no compararse con la cifra anual directamente." },
+  ]}
+  explanation="Un arbitraje cross-chain solo cuadra si el hueco supera comisiones, deriva esperada Y un colchón de cola."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+**Analogía.** Esta es la mentalidad de **pila de costes** del curso de arbitraje on-chain, con nuevas plantas añadidas al edificio. Allí, tu hueco bruto tenía que superar gas + slippage + comisiones. Aquí la ventana apila dos plantas más encima: la **deriva adversa esperada** y una **provisión para colas** para la rara catástrofe de reorg/hackeo. Solo ganas si el hueco es más alto que toda la pila.
+
+**La desigualdad.** Sea $g$ el hueco bruto (como fracción del precio), $f$ la comisión del puente, $d$ el coste esperado de deriva adversa y $\tau$ una provisión para colas. La operación cuadra solo si:
+
+$$g > f + d + \tau$$
+
+### Decisión resuelta
+
+Toma el hueco canónico del 1% y apila los costes:
+
+| Componente | Valor | Nota |
+|---|---|---|
+| Hueco bruto $g$ | +1,00% | Los \$20 sobre \$2000 |
+| Comisión del puente $f$ | −0,05% | Comisión típica de ruta de puente rápido |
+| Coste de deriva esperado $d$ | −0,22% | La deriva de ventana de 1 sigma de la sección 1 |
+| Provisión para colas $\tau$ | −0,30% | Colchón de reorg/hackeo (anticipa la Lección 5) |
+| **Margen neto** | **+0,43%** | $1.00 - 0.05 - 0.22 - 0.30$ |
+
+**Fino pero positivo** — \$0,43 de margen por \$100, antes incluso de haber valorado el gas en ambas cadenas. Ahora pasa un **hueco del 0,3%** por la misma pila:
+
+$$0.30\% - 0.05\% - 0.22\% - 0.30\% = -0.27\%$$
+
+**Negativo.** El hueco del 0,3% *parecía* dinero gratis en la pantalla y es un perdedor garantizado una vez los costes de la ventana son honestos. La lección: el arbitraje cross-chain tiene un *hueco mínimo viable* mucho más alto que el atómico, porque la atomicidad solía poner a cero $d$ y encoger $\tau$ — y cuanto mayores sean tu latencia de puente y tu profundidad de confirmación, más sube ese mínimo.
+
+<Callout variant="tip" title="El modelo mental">
+Arbitraje atómico: beneficio si hueco > gas + slippage + comisiones. Arbitraje cross-chain: beneficio si hueco > comisiones + **deriva esperada** + **provisión para colas** (+ gas en ambas cadenas). Los dos términos nuevos son el alquiler que la atomicidad pagaba por ti. Todo en esta lección es una contabilidad de ese alquiler.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Completa la decisión ajustada por riesgo."
+  text="Un hueco del 1% deja un neto de en torno a {{+0,43%|+0,95%|−0,43%}} tras una comisión del 0,05%, una deriva esperada del 0,22% y una provisión para colas del 0,30% — fino pero positivo. La misma pila vuelve {{negativo|positivo|neutral}} un hueco del {{0,3%|3,0%|1,3%}}, porque su hueco mínimo viable se sitúa por encima del 0,3%."
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+  explanation="1,00 − 0,05 − 0,22 − 0,30 = +0,43%; 0,30 − 0,05 − 0,22 − 0,30 = −0,27%, así que el hueco pequeño no supera la pila."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+### Cuándo importa
+
+Siempre: esta desigualdad es el guardián de *cada* arbitraje cross-chain. Los términos cambian con la ruta (comisión), la volatilidad del activo y tu ventana (deriva), y la finalidad de las cadenas y la seguridad del puente (cola), pero la disciplina es constante: nunca tomes una operación cuyo hueco no supere la pila *completa* con margen de sobra. Cuanto más fino el hueco, más despiadadamente debes valorar $d$ y $\tau$.
+
+## Repaso
+
+<MindMap
+  client:visible
+  title="Los riesgos que ocultaba la atomicidad"
+  caption="La atomicidad hacía cero la ventana de exposición. Estírala a minutos y despiertan tres riesgos — y el hueco debe superarlos todos."
+  outlineLabel="Esquema de texto"
+  root={{
+    label: 'Los riesgos que ocultaba la atomicidad',
+    children: [
+      {
+        label: 'Ventana de exposición',
+        children: [
+          { label: 'Δt = espera de finalidad + relay del puente' },
+          { label: 'Atómico: ~0; cross-chain: minutos' },
+          { label: 'La deriva escala con √tiempo' },
+        ],
+      },
+      {
+        label: 'Riesgo de inventario',
+        children: [
+          { label: 'Sostener el activo entre patas' },
+          { label: 'Posición direccional sin cubrir' },
+          { label: 'Pérdida = tamaño × movimiento adverso' },
+        ],
+      },
+      {
+        label: 'Riesgo de latencia',
+        children: [
+          { label: 'Puente lento → el hueco puede revertir' },
+          { label: 'Los competidores lo cierran primero' },
+          { label: 'Valora el hueco superviviente, no el que ves' },
+        ],
+      },
+      {
+        label: 'Finalidad / riesgo de reorg',
+        children: [
+          { label: 'Reorg de origen → posición a una sola pata' },
+          { label: 'Las confirmaciones compran seguridad, cuestan tiempo' },
+          { label: 'Finalidad plena de ETH ≈ 12,8 min' },
+        ],
+      },
+      {
+        label: 'Hueco ajustado por riesgo',
+        children: [
+          { label: 'g > comisión + deriva + provisión para colas' },
+          { label: 'Mentalidad de pila de costes del arbitraje on-chain' },
+          { label: 'Hueco mínimo viable alto' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Los riesgos que ocultaba la atomicidad — repaso"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  nextLabel="Siguiente"
+  backLabel="Atrás"
+  questions={[
+    {
+      question: "La ventana de exposición Δt se descompone mejor como:",
+      options: [
+        { text: "Espera de finalidad (confirmaciones) + tiempo de relay del puente", correct: true },
+        { text: "Tiempo de bloque + tiempo de subasta de gas" },
+        { text: "Comisión del puente + slippage" },
+        { text: "Volatilidad anualizada × tamaño de posición" },
+      ],
+      explanation: "Δt es la espera por la finalidad del origen más el tiempo de relay del puente antes de que la pata dos pueda liquidar.",
+    },
+    {
+      question: "¿Por qué no puedes hacer desaparecer el riesgo de deriva cross-chain solo a base de listeza?",
+      options: [
+        { text: "La deriva escala con √(ventana), así que solo se encoge acortando la ventana — lo cual choca con esperar la finalidad", correct: true },
+        { text: "Porque las comisiones de gas son fijas" },
+        { text: "Porque los puentes siempre te hacen front-running" },
+        { text: "Sí puedes: un buen nodo RPC lo elimina por completo" },
+      ],
+      explanation: "σ_window = σ_ann·√(Δt/T). Menos ventana = menos deriva, pero menos ventana también significa menos seguridad anti-reorg.",
+    },
+    {
+      question: "Compras 100 ETH en A a \$2000 por un margen bruto de \$2.000. El ETH deriva a la baja un 1% antes de que aterrice la pata dos. ¿Neto?",
+      options: [
+        { text: "≈ \$0 — la pérdida de inventario de −\$2.000 cancela exactamente el margen de \$2.000", correct: true },
+        { text: "+\$2.000 — el arbitraje es neutral al mercado" },
+        { text: "−\$2.000 — pierdes todo el margen dos veces" },
+        { text: "+\$1.000 — la deriva solo cuesta la mitad" },
+      ],
+      explanation: "−0,01 × 100 × 2000 = −\$2.000 sobre el inventario, que cancela el hueco de \$2.000. Un movimiento mayor se vuelve negativo.",
+    },
+    {
+      question: "'Es arbitraje, así que es neutral al mercado' solo es cierto cuando…",
+      options: [
+        { text: "Ambas patas liquidan juntas — lo que la atomicidad garantiza pero la liquidación cross-chain no", correct: true },
+        { text: "El hueco es más ancho que el 1%" },
+        { text: "Usas un puente optimista" },
+        { text: "La volatilidad está por debajo del 80%" },
+      ],
+      explanation: "La neutralidad necesita patas simultáneas. A mitad de ventana sostienes una posición puramente direccional.",
+    },
+    {
+      question: "Deberías cotizar tu beneficio cross-chain esperado usando:",
+      options: [
+        { text: "El hueco superviviente = hueco × P(siga abierto cuando aterrice la pata dos)", correct: true },
+        { text: "El hueco de la foto que viste en pantalla" },
+        { text: "El hueco más ancho visto en la última hora" },
+        { text: "El hueco más la comisión del puente" },
+      ],
+      explanation: "La latencia significa que el hueco puede revertir o ser cerrado; solo el hueco superviviente paga de verdad.",
+    },
+    {
+      question: "Actuar en el destino tras una sola confirmación del origen arriesga:",
+      options: [
+        { text: "Una posición desnuda a una sola pata si el bloque origen sufre un reorg", correct: true },
+        { text: "Una comisión de puente más alta" },
+        { text: "La pérdida permanente de la cadena destino" },
+        { text: "Nada — una confirmación es final" },
+      ],
+      explanation: "Una confirmación es 'incluido', no 'final'. Un reorg puede borrar la pata origen, dejando varada la pata dos.",
+    },
+    {
+      question: "Aumentar la profundidad de confirmación de 1 a 64 bloques…",
+      options: [
+        { text: "Baja la probabilidad de reorg pero alarga la ventana, subiendo la deriva esperada", correct: true },
+        { text: "Baja a la vez el riesgo de reorg y la deriva" },
+        { text: "No tiene efecto sobre la ventana de exposición" },
+        { text: "Elimina la comisión del puente" },
+      ],
+      explanation: "Seguridad y velocidad se compensan: más confirmaciones = más seguridad anti-reorg pero una ventana en riesgo más larga.",
+    },
+    {
+      question: "Según el hueco ajustado por riesgo, un hueco del 0,3% tras una comisión del 0,05%, una deriva del 0,22% y una provisión para colas del 0,30% es:",
+      options: [
+        { text: "Un perdedor — 0,30 − 0,05 − 0,22 − 0,30 = −0,27%, por debajo del hueco mínimo viable", correct: true },
+        { text: "Un ganador — cualquier hueco positivo da beneficio" },
+        { text: "Exactamente punto de equilibrio" },
+        { text: "Rentable solo con más confirmaciones" },
+      ],
+      explanation: "El hueco no supera la pila de costes; el arbitraje cross-chain tiene un hueco mínimo viable alto.",
+    },
+  ]}
+/>

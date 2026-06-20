@@ -68,25 +68,6 @@ export interface UpcomingCourse {
  */
 export const upcomingCourses: UpcomingCourse[] = [
   {
-    slug: 'cross-chain-arbitrage-and-bridge-mev',
-    icon: '🌉',
-    difficulty: 'expert',
-    order: 12,
-    accent: 'accent',
-    title: {
-      en: 'Cross-Chain Arbitrage & Bridge MEV',
-      es: 'Arbitraje Cross-Chain y MEV de Puentes',
-    },
-    description: {
-      en: 'Arbitrage when settlement is no longer atomic: bridging assets across chains, the inventory and finality risk it reintroduces, shared sequencers, and where MEV reappears in a multi-chain world.',
-      es: 'Arbitraje cuando la liquidación deja de ser atómica: puentear activos entre cadenas, el riesgo de inventario y de finalidad que reintroduce, los secuenciadores compartidos y dónde reaparece el MEV en un mundo multicadena.',
-    },
-    dependencies: ['onchain-arbitrage-and-cross-dex-mev', 'stablecoins', 'ethereum'],
-    tags: ['defi', 'quantitative-finance', 'crypto'],
-    buildNotes:
-      'On-chain arbitrage once the single-transaction atomicity guarantee is gone. How bridges move value across chains (lock-and-mint, burn-and-mint, liquidity-network bridges) and why a cross-chain leg cannot settle in one atomic transaction — so inventory risk, bridge latency and probabilistic finality / reorg risk all return, making cross-chain arb look more like the non-atomic CEX-DEX cousin than pure atomic arb. Capital and rebalancing constraints (you must pre-position inventory on both sides), bridge trust assumptions and the bridge-hack tail risk, shared/centralized sequencers and cross-domain MEV, atomic-cross-chain attempts (bonded relayers, intents, escrow) and why they only approximate atomicity. Carry the cost-stack and capacity themes forward from onchain-arbitrage-and-cross-dex-mev. Islands: cross-chain-settlement-timeline + bridge-inventory-balance.',
-  },
-  {
     slug: 'order-flow-auctions-and-mev-redistribution',
     icon: '📡',
     difficulty: 'expert',

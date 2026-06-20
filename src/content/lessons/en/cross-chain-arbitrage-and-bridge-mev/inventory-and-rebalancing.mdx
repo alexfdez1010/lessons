@@ -1,0 +1,439 @@
+---
+title: "Inventory & Rebalancing"
+description: "Why cross-chain arb pre-positions capital on both chains, how same-direction flow drains one inventory to zero, and how rebalancing cost and idle capital cap capacity."
+topic: "en/cross-chain-arbitrage-and-bridge-mev"
+order: 4
+minutes: 12
+updated: 2026-06-20
+---
+
+import { Callout, MCQ, FillBlank, Categorize, MatchConcepts, MindMap, Quiz, Reveal, BridgeInventoryBalance } from '@/components/react';
+
+Atomic on-chain arbitrage has a beautiful cheat code: the flash loan. You borrow a million dollars, do the trade, and repay it inside a single transaction — if any step fails, the whole thing reverts and you never needed the capital at all. Cross-chain arb does not get that toy. There is **no flash loan that reaches across chains**, because a transaction on Chain A cannot atomically wrap a transaction on Chain B. The money has to be *yours*, and it has to *already be sitting on both chains* before the opportunity shows up.
+
+That single fact — capital must be pre-positioned, finite, and idle — is the whole economic story of this lesson. It turns a strategy that *looks* like free money per trade into a capital-intensive business with a return-on-capital problem.
+
+## Why you must pre-position on both sides
+
+Picture a currency-exchange kiosk at an airport. To serve a tourist who wants euros for dollars, the kiosk must keep **both** dollars and euros in the till. It cannot conjure euros the instant a tourist walks up — if the euro drawer is empty, the deal simply doesn't happen, no matter how good the rate is. Cross-chain arb is exactly this kiosk, run across two blockchains.
+
+<MCQ
+  client:visible
+  pretest
+  question="ETH trades at $2000 on Chain A and $2020 on Chain B. To buy cheap on A and deliver on B and fill BOTH legs promptly, what must already be sitting where, before the gap appears?"
+  options={[
+    { text: "USDC on A (to buy) and ETH on B (to deliver) — both, pre-positioned", correct: true, explanation: "Each leg consumes a different asset on a different chain, and neither can be borrowed atomically across the bridge. You hold both stacks yourself, in advance." },
+    { text: "Just a flash loan callback that spans both chains", explanation: "No such thing exists. A transaction on one chain cannot atomically include a transaction on another." },
+    { text: "Only ETH, on whichever chain is cheaper", explanation: "You need the buy-side currency on A AND the sell-side asset on B; one stack can't fill both legs." },
+    { text: "Nothing — the bridge fronts you the inventory", explanation: "Bridges move your own capital across; they don't lend it to you for the trade." },
+  ]}
+  explanation="Two legs, two chains, two pre-positioned stacks — all yours."
+/>
+
+**Definition.** *Inventory* is the working capital you hold on each chain so you can fill a leg the moment a price gap opens. For our canonical setup you hold the buy-side currency (USDC) and the sell-side asset (ETH) on **each** chain, so you're ready to trade in either direction:
+
+$$
+\text{Capital locked} = \text{Inventory}_A + \text{Inventory}_B
+$$
+
+**Worked example.** You pre-position \$2,000,000 of working capital on Chain A and \$2,000,000 on Chain B. Total capital committed:
+
+$$
+2{,}000{,}000 + 2{,}000{,}000 = 4{,}000{,}000
+$$
+
+That's \$4,000,000 parked across two chains *before you've made a single dollar of profit*, just so both kiosk drawers are stocked.
+
+<Callout variant="warning" title="The flash-loan reflex">
+The atomic-arb instinct is "I'll borrow the capital, trade, repay — zero inventory risk." That reflex is **wrong across chains**. There is no cross-chain flash loan: the buy executes on A and the sell finalizes on B in separate transactions, so nothing can wrap and unwind them together. The capital is yours, it's exposed during the settlement window, and it must be there *first*.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Fill in the contrast between atomic and cross-chain arb."
+  text="Atomic on-chain arb can be {{capital-light|capital-heavy|inventory-bound}} because a {{flash loan|bridge fee|finality wait}} funds the whole trade inside one transaction. Cross-chain arb is {{capital-intensive|risk-free|instant}} because the inventory must be {{pre-positioned|borrowed mid-trade|minted on demand}} on both chains."
+  explanation="Atomic arb borrows the capital atomically and repays it; cross-chain arb has no such loan, so you fund both sides yourself in advance."
+  instructions="Choose the correct option for each blank and check."
+/>
+
+### When it matters
+
+Pre-positioning matters the instant you size a cross-chain strategy. If you budget like an atomic arber — "I only need gas, the flash loan does the rest" — you'll model a capacity that doesn't exist. The real question isn't "how big is the gap?" but "how much inventory am I willing to lock on each chain, idle, to chase it?"
+
+## Same-direction flow drains one side
+
+Now suppose the mispricing is *persistent*: ETH is reliably cheaper on A than on B, so every trade is "buy on A, deliver on B." Back at the kiosk: every customer hands you dollars and wants euros. Your euro drawer empties, your dollar drawer overflows, and eventually you're out of euros and have to close the window — even though customers are still lining up.
+
+<MCQ
+  client:visible
+  pretest
+  question="You keep doing the SAME trade — buy on A, sell on B — over and over. What happens to your two inventories?"
+  options={[
+    { text: "B-side inventory drains toward zero while A-side inventory piles up", correct: true, explanation: "Each trade spends the asset you deliver on B and accumulates what you receive on A. Same-direction flow is one-way drain." },
+    { text: "Both sides stay balanced automatically", explanation: "Only round-trip or two-directional flow self-balances. Persistent one-way flow does not." },
+    { text: "A-side drains to zero", explanation: "A is where you buy and accumulate; it's B (the delivery side) that empties." },
+    { text: "Nothing — inventory regenerates after each block", explanation: "Inventory is finite capital, not a faucet. Nothing refills it but a rebalance." },
+  ]}
+  explanation="One-way flow drains the side you keep delivering on."
+/>
+
+**Drag the slider below until one side hits zero.** This is the whole pitfall in one picture: push net flow toward "sell on B" and watch the B drawer drain while A overflows. When B hits zero you've hit *capacity for this cycle* — the gap can stay wide open and you still can't trade.
+
+<BridgeInventoryBalance client:visible />
+
+**Definition.** *Same-direction (one-way) flow* is a sequence of arbs that all consume the same chain's inventory. Each trade subtracts your trade size from the depleting side:
+
+$$
+\text{Inventory}_B^{(n)} = \text{Inventory}_B^{(0)} - n \times s
+$$
+
+where $s$ is the per-trade size and $n$ the number of trades. Inventory hits zero when $n = \text{Inventory}_B^{(0)} / s$.
+
+**Worked example.** You start with \$2,000,000 on B and trade \$200,000 of ETH per arb:
+
+$$
+n = \frac{2{,}000{,}000}{200{,}000} = 10
+$$
+
+You get **about 10 trades** before B is exhausted and the window slams shut — regardless of how many more juicy gaps appear in block 11.
+
+<Callout variant="warning" title="“The opportunity is infinite, so I'll just keep trading”">
+The *gap* may be persistent, but your *inventory* is not. Each fill is a withdrawal from a finite drawer. Treating a recurring opportunity as recurring *capacity* is how desks discover, mid-session, that they're out of B-side asset with the spread still glowing on screen. Opportunity is a flow; inventory is a stock — and the stock runs dry.
+</Callout>
+
+<MCQ
+  client:visible
+  question="You start with $1,500,000 of deliverable inventory on B and trade $250,000 per arb in the same direction. How many trades before B is empty?"
+  options={[
+    { text: "6", correct: true, explanation: "1,500,000 ÷ 250,000 = 6 trades, then B is exhausted." },
+    { text: "10", explanation: "That would be 2,500,000 of inventory; here you only have 1,500,000." },
+    { text: "4", explanation: "That undercounts — 4 × 250,000 = 1,000,000, leaving 500,000 still available." },
+    { text: "Unlimited, as long as the gap persists", explanation: "Inventory is finite; the gap persisting doesn't refill your drawer." },
+  ]}
+  explanation="Trades-to-empty = depleting-side inventory ÷ trade size."
+/>
+
+### When it matters
+
+It matters the moment your flow stops being two-directional. A market that oscillates (cheap on A, then cheap on B, then back) self-rebalances for free. A market with a *structural* one-way lean — one chain that's persistently the buy side — drains you steadily and forces paid rebalancing. Know which regime you're in before you commit inventory.
+
+## Capacity is capped by inventory, not opportunity
+
+Here's the line that should be tattooed on every cross-chain desk: **throughput per cycle is set by your inventory on the depleting side, divided by your trade size — full stop.** The size, frequency, and lusciousness of the gap don't enter the formula. You already met this shape in the prerequisite course as the AMM-depth ceiling: pool depth capped how much you could trade before slippage ate the edge. Same idea, new bottleneck — now it's *your own capital* that's the depth.
+
+<MCQ
+  client:visible
+  pretest
+  question="What primarily caps how many cross-chain arbs you can fill in one cycle (before rebalancing)?"
+  options={[
+    { text: "Your inventory on the depleting side, divided by trade size", correct: true, explanation: "Capacity = depleting-side inventory ÷ trade size. The gap's juiciness doesn't change the count." },
+    { text: "How wide and frequent the price gap is", explanation: "A wider gap raises profit per trade, not how many trades your finite inventory funds." },
+    { text: "Block time on the slower chain", explanation: "Block time affects latency and the exposure window, not the inventory-bounded trade count." },
+    { text: "The bridge's published throughput limit", explanation: "Even an infinitely fast bridge can't refill inventory you've already spent within the cycle." },
+  ]}
+  explanation="Capacity is an inventory ceiling, the cross-chain cousin of the AMM-depth ceiling."
+/>
+
+**Definition / formula.** *Cycle capacity* is the number of arbs fundable before you must rebalance:
+
+$$
+\text{Capacity} = \frac{\text{Inventory}_\text{depleting}}{s}
+$$
+
+Bigger inventory buys more trades per cycle — but it also locks more capital. The dial that turns up capacity is *capital*, and capital is never free.
+
+| Depleting-side inventory | Trade size $s$ | Trades per cycle | Capital locked (both sides) |
+|---|---|---|---|
+| \$1,000,000 | \$200,000 | 5 | \$2,000,000 |
+| \$2,000,000 | \$200,000 | 10 | \$4,000,000 |
+| \$4,000,000 | \$200,000 | 20 | \$8,000,000 |
+| \$2,000,000 | \$100,000 | 20 | \$4,000,000 |
+
+**Worked example.** Doubling depleting-side inventory from \$2,000,000 to \$4,000,000 (at $s$ = \$200,000) doubles trades per cycle from 10 to 20 — but it also doubles total capital locked to \$8,000,000. You bought throughput with capital, one-for-one.
+
+<Categorize
+  client:visible
+  question="Sort each factor by whether it changes your per-cycle TRADE COUNT or only your PROFIT PER TRADE."
+  buckets={['Changes trade count', 'Changes profit per trade']}
+  items={[
+    { text: "Depleting-side inventory size", bucket: 'Changes trade count' },
+    { text: "Trade size s", bucket: 'Changes trade count' },
+    { text: "Width of the price gap (e.g. 1% vs 2%)", bucket: 'Changes profit per trade' },
+    { text: "Net edge after fees and drift", bucket: 'Changes profit per trade' },
+    { text: "How much capital you pre-position", bucket: 'Changes trade count' },
+  ]}
+  explanation="Inventory and trade size set the COUNT; the gap and net edge set the VALUE of each trade. Capacity is an inventory ceiling, not an opportunity ceiling."
+/>
+
+<Callout variant="warning" title="Confusing a fat gap with high capacity">
+A 2% gap is twice as profitable *per trade* as a 1% gap — but it does **not** let you do more trades. If your inventory funds 10 fills, it funds 10 fills whether each one nets 0.7% or 1.4%. Sizing your strategy off the gap's width instead of your inventory's depth is how you promise a backer throughput you physically cannot deliver.
+</Callout>
+
+### When it matters
+
+Capacity-as-inventory matters whenever you're forecasting volume or pitching size. "We can capture this all day" is only true up to `inventory ÷ trade size` trades — after that you're idle until a (costly, slow) rebalance. Forecast in *cycles*, not in *opportunities*.
+
+## Rebalancing cost & time
+
+So B is empty and A is overflowing. To reopen the window you must **rebalance**: rebridge inventory from the full side back to the empty side. That costs the bridge fee, and — because this is itself a cross-chain transfer — it eats the **settlement/finality wait** too. While the capital is in transit it is *unusable*: not trading, not earning, just floating between chains like luggage on a delayed flight.
+
+<MCQ
+  client:visible
+  pretest
+  question="Rebalancing inventory from the full chain back to the empty one costs you which TWO things?"
+  options={[
+    { text: "A bridge fee AND a settlement/finality wait during which the capital is idle in transit", correct: true, explanation: "Rebalancing is itself a cross-chain transfer: you pay the bridge's fee and you eat the finality delay, with the rebridged capital unusable the whole time." },
+    { text: "Only gas on the destination chain", explanation: "Gas is trivial next to the bridge fee on a million-dollar transfer, and it ignores the downtime entirely." },
+    { text: "Nothing — bridges rebalance for free to attract volume", explanation: "Bridges charge a fee precisely for moving liquidity; rebalancing is exactly that." },
+    { text: "A flash-loan premium", explanation: "No flash loan is involved; you're moving your own capital across the bridge." },
+  ]}
+  explanation="Two costs: the bridge fee, and the finality downtime."
+/>
+
+**Definition / formula.** The *rebalancing fee* is the bridge rate times the amount moved; amortized per trade it's that fee spread across the trades the rebalance re-enables:
+
+$$
+\text{Rebalance fee} = r \times M, \qquad \text{Net per trade} = g - \frac{r \times M}{n}
+$$
+
+where $r$ is the bridge rate (5 bps here), $M$ the amount rebridged, $g$ the gross spread captured per trade, and $n$ the trades the rebalance unlocks.
+
+**Worked example.** You rebridge \$1,000,000 back to B at a 0.05% bridge fee:
+
+$$
+0.0005 \times 1{,}000{,}000 = 500, \quad \text{i.e. } \$500
+$$
+
+plus roughly **4 minutes** of downtime while that \$1,000,000 settles (no trading on those funds meanwhile). That \$1,000,000 refills 5 trades of \$200,000. Amortized, the rebalance costs:
+
+$$
+\frac{500}{5} = 100, \quad \text{i.e. } \$100 \text{ per trade}
+$$
+
+On a \$200,000 trade, \$100 is 5 bps of drag — small if you rebalance rarely, but a recurring tax that grows the *more often* you have to do it. Rebalance after every 2 trades instead of every 5 and the per-trade tax climbs sharply.
+
+| Trades unlocked per rebalance, $n$ | Rebalance fee | Amortized cost per trade | As bps of a \$200k trade |
+|---|---|---|---|
+| 10 | \$500 | \$50 | 2.5 bps |
+| 5 | \$500 | \$100 | 5 bps |
+| 2 | \$500 | \$250 | 12.5 bps |
+
+<Callout variant="warning" title="Sizing the strategy as if rebalancing were free">
+A back-of-envelope that counts only gross spread per trade and *ignores* the rebalancing tax is the classic trap. A strategy that looks like +0.7% per fill can go **net-negative** once you amortize \$500-a-pop rebalances over too few trades — especially in a structurally one-way market where you rebalance constantly. Always net the amortized rebalance cost out of the edge before declaring victory.
+</Callout>
+
+<MCQ
+  client:visible
+  question="Gross edge is 0.7% on a $200,000 trade ($1,400). A rebalance costs $500 and unlocks just 2 trades. What's the NET edge per trade after amortizing the rebalance?"
+  options={[
+    { text: "About \$1,150 (0.575%) — \$1,400 gross minus \$250 amortized", correct: true, explanation: "$500 / 2 = $250 amortized per trade; $1,400 − $250 = $1,150, i.e. 0.575% of $200,000." },
+    { text: "\$1,400 — rebalancing doesn't affect per-trade math", explanation: "It absolutely does once amortized; ignoring it overstates the edge." },
+    { text: "\$900 (0.45%)", explanation: "That subtracts the full $500, not the $250 per-trade share." },
+    { text: "\$1,395 — rebalancing is negligible", explanation: "$250 of drag on a $1,400 edge is ~18% of the profit, hardly negligible." },
+  ]}
+  explanation="Net = gross − (rebalance fee ÷ trades unlocked). Frequent rebalancing eats real edge."
+/>
+
+### When it matters
+
+Rebalancing cost matters most exactly when the opportunity looks best: a strong, persistent one-way gap. The stronger the lean, the faster you drain, the more often you rebalance, and the heavier the amortized tax. Net it in *before* scaling, not after.
+
+## The capital drag (return on capital)
+
+Now the honest part — the part that turns a trader's grin into an accountant's frown. You've locked \$4,000,000 across two chains. That capital is **idle**: it isn't earning staking rewards or lending yield; it's sitting in drawers waiting for tourists. The right scorecard for cross-chain arb is therefore **not** profit per trade. It's **return on capital (ROC)**: net profit per period divided by the capital you tied up to earn it.
+
+<MCQ
+  client:visible
+  pretest
+  question="Which metric honestly captures whether a cross-chain arb is worth running?"
+  options={[
+    { text: "Return on capital — net profit per period ÷ total capital locked", correct: true, explanation: "It charges the strategy for ALL the idle inventory it requires, which is the real cost of cross-chain arb." },
+    { text: "Profit per trade, ignoring locked capital", explanation: "A trade can be profitable while the capital it ties up earns less than just lending that capital." },
+    { text: "Gross spread width", explanation: "That ignores fees, rebalancing, AND the opportunity cost of the locked inventory." },
+    { text: "Number of trades per day", explanation: "Volume without ROC says nothing about whether the capital was well spent." },
+  ]}
+  explanation="ROC charges the strategy for the idle capital — the defining cost here."
+/>
+
+**Definition / formula.** Return on capital over a period:
+
+$$
+\text{ROC} = \frac{\text{net profit in period}}{\text{capital locked}}
+$$
+
+And the opportunity cost is the yield that same capital would earn elsewhere (staking/lending) — the benchmark your arb must beat.
+
+**Worked example.** One cycle: ~10 trades, each \$200,000 at ~0.7% net edge (our clean post-fee, post-drift assumption from the prior lessons):
+
+$$
+10 \times 200{,}000 \times 0.007 = 14{,}000
+$$
+
+So **\$14,000 per cycle on \$4,000,000 locked** — a per-cycle ROC of $14{,}000 / 4{,}000{,}000 = 0.35\%$. Now annualize and benchmark. Suppose a cycle (drain + rebalance + redeploy) takes about a day; very roughly 250 trading cycles a year gives:
+
+$$
+250 \times 14{,}000 = 3{,}500{,}000 \quad\Rightarrow\quad \frac{3{,}500{,}000}{4{,}000{,}000} \approx 87.5\%
+$$
+
+That looks fantastic — but it assumes a fresh, full cycle *every* day with no idle gaps and rebalancing already netted out. Thin the gap, add downtime, rebalance more often, and that number falls fast. The discipline is: compare whatever you actually clear against simply **lending the \$4,000,000 at, say, 5%** (\$200,000/yr risk-light). If your honest, rebalancing-and-downtime-adjusted arb nets less than \$200,000 a year, you'd have been richer — and calmer — just lending the capital.
+
+<MatchConcepts
+  client:visible
+  question="Match each quantity to what it measures."
+  pairs={[
+    { term: "Profit per trade", definition: "Edge captured on one fill — flattering, but ignores the idle capital behind it" },
+    { term: "Capital locked", definition: "Inventory_A + Inventory_B sitting idle across both chains" },
+    { term: "Return on capital", definition: "Net profit per period ÷ capital locked — the honest scorecard" },
+    { term: "Opportunity cost", definition: "Yield the same capital would earn just staked or lent" },
+    { term: "Rebalancing tax", definition: "Bridge fee + downtime, amortized across the trades it re-enables" },
+  ]}
+  explanation="ROC ties profit to the capital required; everything else either flatters (profit per trade) or is a cost to net out."
+  checkLabel="Check"
+  retryLabel="Retry"
+  allCorrectLabel="✓ All correct"
+/>
+
+<Callout variant="warning" title="A headline-positive arb that loses to a savings rate">
+This is the punchline of the whole lesson. A strategy can show a positive number on every single trade and **still** be the wrong use of capital — because \$4,000,000 lent at 5% yields \$200,000/yr for almost no work, while your arb, after rebalancing and idle-time drag, might clear less. Cross-chain arb is **capital-intensive** — the polar opposite of capital-light atomic arb, where a flash loan meant your own ROC denominator was nearly zero. Here the denominator *is* the strategy.
+</Callout>
+
+<Reveal client:visible>
+<Callout variant="info" title="Why does atomic arb dodge all of this?">
+Because the flash loan makes the capital-locked denominator nearly zero. You borrow, trade, and repay atomically — almost no inventory pre-positioned, no drain, no rebalancing, no idle drag. ROC explodes because you risked almost no capital of your own. Cross-chain arb can't borrow across the gap, so the capital is real, idle, and the dominant cost. Same arbitrage *idea*, completely different *economics*.
+</Callout>
+</Reveal>
+
+### When it matters
+
+ROC matters at the only moment that counts: deciding whether to run the strategy at all, and at what size. A backer doesn't care that each trade was green; they care whether their \$4,000,000 beat the boring alternative. Lead with ROC, net of rebalancing and downtime — and be honest about the cycles you'll actually complete, not the ones you could in a frictionless dream.
+
+## Recap
+
+<MindMap
+  client:visible
+  title="Inventory & rebalancing"
+  caption="The capital story of cross-chain arb, from pre-positioning to return on capital."
+  outlineLabel="Text outline"
+  root={{
+    label: 'Inventory & rebalancing',
+    children: [
+      { label: 'Pre-position both sides', children: [
+        { label: 'No cross-chain flash loan' },
+        { label: 'Hold buy-side & sell-side on each chain' },
+        { label: 'Capital is yours, idle, exposed' },
+      ]},
+      { label: 'Same-direction drain', children: [
+        { label: 'One-way flow empties one side' },
+        { label: 'Inventory is a finite stock, not a faucet' },
+      ]},
+      { label: 'Capacity = inventory', children: [
+        { label: 'Trades/cycle = inventory ÷ trade size' },
+        { label: 'Gap width sets profit, not count' },
+        { label: 'Cross-chain analogue of AMM-depth ceiling' },
+      ]},
+      { label: 'Rebalancing cost & time', children: [
+        { label: 'Bridge fee + finality downtime' },
+        { label: 'Amortize fee across trades unlocked' },
+        { label: 'Frequent rebalancing rivals the edge' },
+      ]},
+      { label: 'Capital drag / ROC', children: [
+        { label: 'ROC = net profit ÷ capital locked' },
+        { label: 'Opportunity cost vs. lending the capital' },
+        { label: 'Capital-intensive, unlike atomic arb' },
+      ]},
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Inventory & rebalancing — mixed recap"
+  questions={[
+    {
+      question: "Why can't cross-chain arb use a flash loan to avoid pre-positioning inventory?",
+      options: [
+        { text: "A transaction on one chain can't atomically wrap a transaction on another, so the loan can't be repaid in the same atomic unit", correct: true },
+        { text: "Flash loans are banned on rollups" },
+        { text: "Bridges charge too much to make flash loans worthwhile" },
+        { text: "Flash loans only work for stablecoins" },
+      ],
+      explanation: "Atomicity can't span chains, so there's no cross-chain flash loan — the capital must be yours and pre-positioned.",
+    },
+    {
+      question: "You hold \$2,000,000 of deliverable inventory on B and trade \$200,000 per arb, all same-direction. Roughly how many trades before B is empty?",
+      options: [
+        { text: "About 10", correct: true },
+        { text: "About 100" },
+        { text: "Unlimited while the gap persists" },
+        { text: "About 4" },
+      ],
+      explanation: "2,000,000 ÷ 200,000 = 10. Inventory is finite regardless of how persistent the gap is.",
+    },
+    {
+      question: "A 2% gap instead of 1% mainly changes…",
+      options: [
+        { text: "Profit per trade, not how many trades your inventory funds", correct: true },
+        { text: "The number of trades per cycle" },
+        { text: "The bridge's finality time" },
+        { text: "How much capital you must lock" },
+      ],
+      explanation: "Gap width scales value per trade; capacity is still inventory ÷ trade size.",
+    },
+    {
+      question: "Rebalancing \$1,000,000 back to the empty side at a 0.05% bridge fee costs how much in fees, plus what else?",
+      options: [
+        { text: "\$500, plus ~4 minutes of finality downtime where the capital is idle in transit", correct: true },
+        { text: "\$5,000, plus nothing else" },
+        { text: "\$50, plus a flash-loan premium" },
+        { text: "Nothing — rebalancing is free" },
+      ],
+      explanation: "0.0005 × 1,000,000 = $500, and the transfer eats the settlement wait too.",
+    },
+    {
+      question: "A \$500 rebalance unlocks 5 trades. What's the amortized rebalance cost per trade?",
+      options: [
+        { text: "\$100", correct: true },
+        { text: "\$500" },
+        { text: "\$2,500" },
+        { text: "\$25" },
+      ],
+      explanation: "$500 ÷ 5 = $100 per trade — net this out of your gross edge.",
+    },
+    {
+      question: "What's the honest scorecard for a cross-chain arb?",
+      options: [
+        { text: "Return on capital — net profit per period ÷ capital locked", correct: true },
+        { text: "Profit per trade" },
+        { text: "Number of trades per day" },
+        { text: "Gross spread width" },
+      ],
+      explanation: "ROC charges the strategy for all the idle inventory it requires — the defining cost.",
+    },
+    {
+      question: "10 trades/cycle × \$200,000 × 0.7% net ≈ what profit, on \$4,000,000 locked?",
+      options: [
+        { text: "About \$14,000 per cycle", correct: true },
+        { text: "About \$140,000 per cycle" },
+        { text: "About \$1,400 per cycle" },
+        { text: "About \$40,000 per cycle" },
+      ],
+      explanation: "10 × 200,000 × 0.007 = $14,000 — then compare against simply lending the $4M.",
+    },
+    {
+      question: "Why is cross-chain arb 'capital-intensive' compared with atomic on-chain arb?",
+      options: [
+        { text: "Inventory must be pre-positioned and sits idle, making locked capital the dominant cost; atomic arb's flash loan keeps that denominator near zero", correct: true },
+        { text: "Cross-chain gas is far higher than the locked capital" },
+        { text: "Bridges require collateral larger than the trade" },
+        { text: "It uses more blockchains, which is inherently expensive" },
+      ],
+      explanation: "No cross-chain flash loan ⇒ real, idle, pre-positioned capital ⇒ the capital itself is the cost and caps ROC.",
+    },
+  ]}
+  questionLabel="Question"
+  ofLabel="of"
+  scoreLabel="Your score"
+  restartLabel="Restart"
+  nextLabel="Next"
+  backLabel="Back"
+/>
