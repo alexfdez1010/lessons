@@ -1,0 +1,302 @@
+---
+title: "Subastas de flujo de órdenes"
+description: "Las subastas de flujo de órdenes venden en una subasta a sobre cerrado el derecho a hacer back-run de tu swap y te reembolsan la mayor parte de la puja ganadora. Recorre el reparto del reembolso, descubre por qué la competencia entre searchers es el motor, conoce MEVBlocker y MEV-Share, y aprende qué sigue sin poder hacer una OFA."
+topic: "es/order-flow-auctions-and-mev-redistribution"
+order: 2
+minutes: 11
+updated: 2026-06-20
+---
+
+import { Callout, MCQ, FillBlank, Categorize, MatchConcepts, MindMap, Quiz, OfaRefundSplit, BlockOrderTimeline } from '@/components/react';
+
+La lección 1 te dejó con una tesis y un verbo. La tesis: cuando tu swap crea valor extraíble, **tú** eres su dueño natural — no el searcher que casualmente coloca una transacción detrás de la tuya, ni el validador que vende el slot. El verbo era **redistribuir**. Bonito eslogan. Pero un eslogan no devuelve ni un solo wei a tu cartera.
+
+Esta lección convierte el verbo en una máquina. Esa máquina es la **subasta de flujo de órdenes (OFA)**: en lugar de difundir tu transacción a la mempool pública, donde cualquiera puede arrebatarle el valor gratis, la enrutas a través de una subasta que **vende el derecho a ejecutar o hacer back-run de tu transacción a sobre cerrado** — y luego **te reembolsa la mayor parte de la puja ganadora**. El valor que crea tu orden deja de fugarse hacia desconocidos y vuelve a casa. Casi todo.
+
+<MCQ
+  client:visible
+  pretest
+  pretestLabel="Antes de leer — arriésgate a adivinar"
+  question="Una OFA subasta el derecho a hacer back-run de tu swap y te reembolsa el 90% de la puja ganadora. En última instancia, ¿quién paga ese reembolso?"
+  options={[
+    { text: "El searcher que ganó el derecho — con el valor que tu propia orden creó para él.", correct: true, explanation: "Exacto. El reembolso no es caridad del operador ni una subvención del validador. El searcher puja por el derecho a hacerte back-run, esa puja se paga con el valor que creó tu orden, y ~90% de ella se enruta de vuelta a ti. Te están pagando con tu propio zumo." },
+    { text: "El operador de la OFA, de su propia tesorería, como coste de marketing.", explanation: "No — el operador no financia nada. Recauda la puja del searcher y te reenvía la mayor parte, quedándose una pequeña comisión. El dinero se origina en la puja del searcher." },
+    { text: "El validador, que reembolsa al usuario parte de la recompensa del bloque.", explanation: "Aquí los validadores no reembolsan nada. En una OFA la presión competitiva apunta al usuario, no al validador. La puja del searcher es la fuente del reembolso." },
+    { text: "Otros usuarios del mismo bloque, mediante un fondo de seguro compartido.", explanation: "No hay fondo ni subsidio cruzado. El reembolso de cada usuario sale de la subasta sobre su propia orden." },
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+/>
+
+## Qué vende una subasta de flujo de órdenes
+
+Piensa en tu swap como una casa con un pozo de petróleo en el jardín trasero del que no sabías nada. En la mempool pública, anuncias la casa y *cualquiera* puede bombear el petróleo gratis en silencio en cuanto te mudas. Una OFA, en cambio, celebra una **subasta a sobre cerrado por los derechos de perforación** antes de que cierres la venta — y te entrega los ingresos de la subasta.
+
+Con precisión: enrutas tu transacción a la OFA a través de un **endpoint RPC especial** (o una integración de cartera que lo hace por ti) en lugar de soltarla en la mempool pública. El *flujo de órdenes* no es más que el torrente de transacciones que envía un usuario — o una cartera que agrega a muchos usuarios —; enrutarlo a una OFA es elegir adónde va ese torrente. La OFA expone la orden — o solo una **pista** de ella, suficiente para pujar pero no para hacer front-run — a un conjunto de searchers. Esos searchers pujan por el **derecho exclusivo a colocar una transacción en el slot inmediatamente posterior al tuyo**: el **slot de back-run**. Gana la puja más alta, la transacción del ganador se coloca justo detrás de la tuya, y (la mayor parte de) la puja ganadora se te reembolsa.
+
+Ese slot de back-run es el mismo de la cadena de suministro de MEV que ya conoces — el lugar donde un arbitrajista benigno reequilibra un pool que acabas de mover, o un liquidador remata un trabajo que tu operación hizo posible. Aquí tienes el orden por el que se pelea:
+
+<BlockOrderTimeline
+  client:visible
+  caption="El slot de back-run es la posición justo después de tu transacción. En la mempool pública ese slot es un todos contra todos — lo agarra el searcher más rápido. Una OFA subasta ese slot exacto: los searchers pujan por el derecho exclusivo a sentarse ahí, y la puja ganadora financia tu reembolso. Pon la línea temporal en modo Back-run para ver el slot que la subasta vende."
+  victimLabel="Tx de la víctima"
+  attackerLabel="Tx del atacante"
+  noneLabel="Ninguno"
+  frontLabel="Front-run"
+  backLabel="Back-run"
+  sandwichLabel="Sándwich"
+  attackerBeforeLabel="Compra antes"
+  attackerAfterLabel="Vende después"
+  controlsLabel="Elige la posición del atacante"
+  orderingLabel="Orden del bloque, primero el más temprano"
+/>
+
+Así que una OFA no vende tus tokens ni tu operación. Vende un privilegio específico y estrecho — *quién puede actuar inmediatamente después de ti* — y te entrega la recaudación de la taquilla.
+
+## El reparto del reembolso, desglosado
+
+Ahora la aritmética, porque "casi todo" y "la mayor parte" están haciendo mucho trabajo y deberías poder calcular el número real.
+
+Define cuatro cantidades:
+
+- **V** — el **valor extraíble bruto** que tu orden crea en el slot de back-run (el beneficio de arbitraje o liquidación disponible justo detrás de tu operación).
+- **B** — la **puja ganadora**. Los searchers pujan al alza hacia V a medida que sube la competencia, así que escribe `B = c · V`, donde el factor de competencia `c` va de 0 (un único postor perezoso) a 1 (una subasta abarrotada y despiadada).
+- **r** — la **parte reembolsada** que se te enruta (p. ej. 0,90).
+- El reparto se deduce entonces:
+  - **Tu reembolso** `= r · B`
+  - **Comisión del operador** `= (1 − r) · B`
+  - **Beneficio del searcher** `= V − B` (lo que el ganador no entregó en la puja)
+
+Ejemplo resuelto. Tu swap crea \$100 de valor de back-run, así que V = \$100. La subasta es competitiva pero no perfecta, así que la puja ganadora aterriza en el 80% del valor: B = 0,80 × \$100 = \$80. La parte reembolsada es r = 0,90.
+
+- Tu reembolso = 0,90 × \$80 = **\$72**.
+- Comisión del operador = 0,10 × \$80 = **\$8**.
+- Beneficio del searcher = \$100 − \$80 = **\$20**.
+
+Comprobación: \$72 + \$8 + \$20 = \$100 = V. El pastel es exactamente el valor que creó tu orden; la subasta solo decide quién se lleva cada porción. En la mempool pública, habrías obtenido \$0 de esos \$100 — el pastel entero fue a quien ganara el todos contra todos. Ahora sube la competencia: si `c` sube a 0,95, B = \$95, tu reembolso = 0,90 × \$95 = **\$85,50**, y la porción del searcher se reduce a \$5. Cuanto más fuerte pelean los searchers, más de tus propios \$100 vuelve a ti.
+
+<OfaRefundSplit
+  client:visible
+  caption="Arrastra los controles. Tu swap crea $100 de valor de back-run. A medida que compiten más searchers, la puja ganadora trepa hacia los $100 completos — y como la OFA te reembolsa el 90% de esa puja, el valor vuelve a casa. El searcher se queda solo la astilla por encima de su puja; el operador se lleva un pellizco pequeño. Sube la competencia al máximo y capturas casi los $100 enteros que creaste."
+  title="A dónde va el valor del back-run"
+  valueLabel="Valor que crea tu swap"
+  competitionLabel="Competencia entre searchers"
+  refundShareLabel="Parte reembolsada al usuario"
+  userRefundLabel="Te reembolsan"
+  operatorFeeLabel="Comisión del operador OFA"
+  searcherProfitLabel="El searcher se queda"
+  fewSearchersLabel="un postor"
+  manySearchersLabel="muchos postores"
+  ofShareLabel="del valor creado"
+/>
+
+<FillBlank
+  client:visible
+  question="Completa la mecánica del reparto del reembolso."
+  text="La puja ganadora B es igual al factor de competencia por el {{valor extraíble bruto V|comisión del operador|parte reembolsada}} que crea tu orden. Tu reembolso es la parte reembolsada por {{B|V|la comisión del operador}}, y el searcher se queda {{V − B|r · B|(1 − r) · B}}. A medida que sube la competencia, B se acerca a V, así que la porción del searcher {{se reduce|crece|se mantiene fija}}."
+  explanation="B = c · V; tu reembolso = r · B; el searcher se embolsa V − B. Sube la competencia y B → V, colapsando la porción residual del searcher mientras tu reembolso crece hacia r · V."
+/>
+
+## La competencia es el motor
+
+Una OFA con un único postor es una máquina expendedora que te coge el dinero y te dispensa una nota de agradecimiento. Todo el mecanismo *funciona a base de rivalidad*.
+
+Aquí está el porqué. El reembolso es `r · B`, y `B = c · V`. El operador puede fijar `r` con generosidad (90%, incluso 100% en diseños de bien público), pero si `c` está cerca de cero — un searcher, ninguna presión para pujar alto — entonces `B` es una miseria y `r · B` es una miseria de una miseria. Puedes reembolsar el 100% de casi nada y el usuario sigue recibiendo casi nada. Con muchos searchers, `c → 1`, `B → V`, y tu reembolso se acerca a `r · V`: casi todo el valor, escalado solo por el modesto pellizco del operador. **La competencia, no la generosidad, es lo que llena el reembolso.**
+
+Este es el mismo motor de la lección de la pila de costes — apuntado en una nueva dirección. En el MEV on-chain corriente, los searchers también compiten en la subasta pública, pero entregan su beneficio en la puja al **validador** (vía comisiones de prioridad / la subasta de bloques de MEV-Boost). La presión es real; solo que fluye cuesta arriba hacia quien vende el espacio del bloque. Una OFA toma *esa misma* presión competitiva y la apunta a **reembolsar al usuario**. Misma física, beneficiario distinto. No redujiste lo fuerte que pelean los searchers — cambiaste quién recoge el botín de la pelea.
+
+<Callout variant="warning">
+**Una OFA captura el valor de back-run, no el valor de sándwich — por defecto.** El slot que subasta es el que está *detrás* de tu operación, donde viven el arbitraje benigno y las liquidaciones. Ese es valor que tu orden creó de verdad, y reciclártelo es pura ganancia. Pero un **sándwich** ataca por *ambos* lados — una compra delante de ti y una venta detrás — y la pata de front-run depende de que un atacante *vea tu orden completa por adelantado*. Una OFA que expone tu orden entera todavía puede filtrarte a un sandwicher; detener eso requiere la **privacidad** de revelar solo una pista (o nada) de tu orden. Esa es otra herramienta — privacidad programable — que construye la lección 5. Una OFA reembolsa el valor benigno; no te hace a prueba de sándwiches por sí sola.
+</Callout>
+
+## Sistemas reales
+
+Esto no es un experimento mental corriendo sobre rumores de testnet. Las OFA enrutan volumen real en Ethereum hoy.
+
+- **MEVBlocker** — un endpoint RPC de bien público. Apuntas tu cartera hacia él, tus transacciones se saltan la mempool pública, y los searchers pujan por el slot de back-run en una subasta a sobre cerrado. Reembolsa aproximadamente **~90% del valor de back-run capturado** a usuarios y validadores, y su uso es gratuito. Cambiarte a él es un cambio de RPC de una sola vez — sin contrato nuevo, sin token nuevo.
+- **Flashbots MEV-Share** — una OFA de **privacidad programable**. En lugar de exponer tu orden entera, publicas una *pista* configurable (qué pools tocas, quizá, pero no tu tamaño o dirección exactos), y los searchers pujan por hacer back-run contra la pista. Tú eliges cuánto revelar y cómo se reparte el reembolso. Es el puente entre "reembólsame mi valor de back-run" y "no me filtres a los sandwichers", y la lección 5 lo disecciona en detalle.
+- **El patrón general de subasta de back-run** — carteras, agregadores y proveedores de RPC corren cada vez más su propia versión: capturan el flujo de órdenes, subastan el slot de back-run, reembolsan a los usuarios. El mecanismo se ha vuelto una pieza estándar de la fontanería de las carteras en lugar de un experimento de nicho.
+
+| Propiedad | Mempool pública | RPC protegido por OFA |
+|---|---|---|
+| Exposición de la orden | Transacción completa, visible para todos al instante | Orden (o una pista) mostrada solo a los searchers que pujan |
+| Quién se queda el valor de back-run | Quien gane el todos contra todos (y el validador) | Tú — reembolsado ~90% de la puja ganadora |
+| Riesgo de sándwich | Alto: tu orden completa es cebo público | Menor para el back-running; el riesgo de sándwich persiste salvo que la orden se oculte |
+| Acceso de los searchers | Cualquiera que vigile la mempool | Searchers en la subasta, pujando por un slot exclusivo |
+| Coste de cambiar | Ninguno — es lo predeterminado | Un cambio de endpoint RPC de una sola vez |
+
+<Categorize
+  client:visible
+  question="Clasifica cada propiedad en el mundo que describe."
+  buckets={["Mempool pública", "Protegido por OFA"]}
+  items={[
+    { text: "Tu transacción completa es visible para todos en el instante en que la difundes", bucket: "Mempool pública" },
+    { text: "Los searchers pujan en una subasta a sobre cerrado por el slot exclusivo de back-run", bucket: "Protegido por OFA" },
+    { text: "~90% de la puja ganadora se te reembolsa", bucket: "Protegido por OFA" },
+    { text: "El valor de back-run va a quien gane la carrera de latencia (y al validador)", bucket: "Mempool pública" },
+    { text: "Revelas solo una pista de tu orden, no la cosa entera", bucket: "Protegido por OFA" },
+    { text: "Cualquiera que vigile la mempool puede arrebatar valor de tu operación gratis", bucket: "Mempool pública" },
+  ]}
+  explanation="La mempool pública es un todos contra todos transparente donde el valor se fuga hacia el observador más rápido. Una OFA cierra la orden tras una subasta a sobre cerrado y te enruta de vuelta la recaudación."
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  allCorrectLabel="✓ Todo clasificado"
+/>
+
+## Qué no puede hacer una OFA
+
+Las OFA son genuinamente buenas, y precisamente por eso vale la pena ser preciso sobre sus límites — sobrevenderlas es como acabas escaldado.
+
+- **Necesita un operador medianamente fiable.** Alguien corre la subasta, ve el flujo de órdenes y se supone que te reembolsa con honestidad. Si excluye searchers, se queda más de lo que dice, o espía tu flujo, estás confiando en que se porte bien. *Cuánta* confianza, y cómo minimizarla, es todo el tema de la lección 6.
+- **Solo reembolsa lo que los searchers estén dispuestos a pujar.** Sin valor extraíble detrás de tu operación → sin puja → sin reembolso. Un swap diminuto en un pool profundo y ya equilibrado puede crear ~\$0 de valor de back-run; el 90% de \$0 es \$0. La OFA no puede fabricar valor que no existe.
+- **Hay compensaciones de latencia e inclusión.** Correr una subasta lleva tiempo, y enrutar a través de un único operador puede significar una inclusión algo más lenta o dependencia de la conectividad de ese operador que disparar directo a la mempool pública.
+- **Redirige el MEV — no lo elimina.** El arbitraje sigue ocurriendo; la liquidación sigue ocurriendo. La OFA cambia *quién cobra*, no *si ocurre la extracción*. (Para encoger de verdad el valor creado, cambias la ejecución en sí — que es donde entran las intenciones y los solvers, en la próxima lección.)
+
+<MatchConcepts
+  client:visible
+  question="Empareja cada término de OFA con su definición."
+  pairs={[
+    { term: "Flujo de órdenes", definition: "El torrente de transacciones que envía un usuario o cartera — y de cuyo enrutamiento decide el usuario." },
+    { term: "Slot de back-run", definition: "La posición de transacción inmediatamente posterior a la tuya, donde el arbitraje benigno y las liquidaciones capturan valor." },
+    { term: "Parte reembolsada", definition: "La fracción r de la puja ganadora que la OFA enruta de vuelta al usuario." },
+    { term: "Subasta a sobre cerrado", definition: "Un formato de puja donde los searchers presentan ofertas sin ver las de los demás, y la más alta gana el derecho." },
+    { term: "Operador de OFA", definition: "La parte que corre la subasta, expone la orden a los searchers y reenvía el reembolso — el intermediario medianamente fiable." },
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  allCorrectLabel="✓ Todo emparejado"
+/>
+
+<MindMap
+  client:visible
+  root={{
+    label: "Subastas de flujo de órdenes",
+    children: [
+      {
+        label: "Qué vende",
+        children: [
+          { label: "El derecho al slot de back-run" },
+          { label: "Enrutado vía RPC especial, no la mempool" },
+          { label: "Orden o una pista expuesta a searchers" },
+        ],
+      },
+      {
+        label: "Reparto del reembolso",
+        children: [
+          { label: "B = c · V (la puja sube con la competencia)" },
+          { label: "Tu reembolso = r · B" },
+          { label: "Operador = (1−r)·B, searcher = V−B" },
+        ],
+      },
+      {
+        label: "El motor",
+        children: [
+          { label: "La competencia llena el reembolso" },
+          { label: "Misma presión que MEV-Boost…" },
+          { label: "…apuntada al usuario, no al validador" },
+        ],
+      },
+      {
+        label: "Sistemas reales",
+        children: [
+          { label: "MEVBlocker (~90% bien público)" },
+          { label: "Flashbots MEV-Share (privacidad)" },
+          { label: "Subastas de back-run de carteras/RPC" },
+        ],
+      },
+      {
+        label: "Límites",
+        children: [
+          { label: "Operador medianamente fiable" },
+          { label: "Sin puja → sin reembolso" },
+          { label: "Captura back-run, no sándwich" },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Subastas de flujo de órdenes: ponte a prueba"
+  questions={[
+    {
+      question: "Tu operación crea V = $200 de valor de back-run, la subasta lo puja hasta B = 0,75 · V, y la parte reembolsada es r = 0,90. ¿Cuánto se te reembolsa?",
+      options: ["$135", "$150", "$180", "$45"],
+      correct: 0,
+      explanation: "B = 0,75 × $200 = $150. Tu reembolso = r · B = 0,90 × $150 = $135. (El operador se queda $15, y el searcher se embolsa V − B = $50.)",
+    },
+    {
+      question: "Una cartera lanza un RPC enrutado por OFA y dice a los usuarios que 'elimina el MEV de tus operaciones'. ¿Cuál es la corrección más precisa?",
+      options: [
+        "Redirige los ingresos de MEV de vuelta al usuario; la extracción sigue ocurriendo, el dinero solo cambia de manos.",
+        "Reduce las comisiones de gas, que son la verdadera fuente del MEV.",
+        "Elimina el MEV por completo ocultando cada transacción a los validadores.",
+        "Solo funciona si el validador acepta reembolsar parte de la recompensa del bloque.",
+      ],
+      correct: 0,
+      explanation: "Una OFA no impide que ocurran el arbitraje o las liquidaciones — subasta el derecho a hacerlos y te reembolsa los ingresos. Cambia quién cobra, no si ocurre la extracción.",
+    },
+    {
+      question: "¿Qué afirmación sobre la competencia en una OFA es verdadera?",
+      options: [
+        "Con muchos searchers compitiendo, la puja ganadora B se acerca a V, así que tu reembolso se acerca a r · V.",
+        "Una parte reembolsada r más alta garantiza un reembolso grande incluso con un único postor.",
+        "Más competencia baja la puja ganadora porque los searchers se rebajan entre sí.",
+        "La competencia fluye hacia el validador, así que el reembolso del usuario no se ve afectado por ella.",
+      ],
+      correct: 0,
+      explanation: "Reembolso = r · B y B = c · V. Un r generoso no puede rescatar una puja casi nula; necesitas competencia para empujar B → V. La presión que antes alimentaba al validador aquí se apunta al usuario.",
+    },
+    {
+      question: "Un trader enruta a través de una OFA y está encantado de estar 'a salvo de sándwiches' — y luego le hacen un sándwich igualmente. ¿Qué se le escapó a la OFA?",
+      options: [
+        "La OFA expuso la orden completa, así que un sandwicher todavía podía hacerle front-run; las OFA capturan valor de back-run pero no otorgan privacidad por defecto.",
+        "La OFA reembolsó demasiado, sin dejar nada para disuadir a los sandwichers.",
+        "El trader debería haber usado la mempool pública para evitar la subasta.",
+        "Los sándwiches son imposibles tras una OFA, así que este escenario no puede ocurrir.",
+      ],
+      correct: 0,
+      explanation: "La pata de front-run de un sándwich necesita ver tu orden completa por adelantado. Una OFA corriente subasta el slot de back-run pero aún puede revelar tu orden — detener los sándwiches requiere privacidad (lección 5), una herramienta distinta.",
+    },
+    {
+      question: "Un usuario enruta un swap pequeño en un pool profundo y ya equilibrado a través de una OFA y obtiene un reembolso de $0. ¿Por qué?",
+      options: [
+        "Había poco valor extraíble detrás de la operación, así que los searchers no tenían nada por lo que pujar — sin puja, sin reembolso.",
+        "El operador robó el reembolso sin decírselo al usuario.",
+        "Las OFA solo reembolsan a grandes traders institucionales.",
+        "La parte reembolsada se fijó en cero por las reglas del protocolo de Ethereum.",
+      ],
+      correct: 0,
+      explanation: "Una OFA solo puede reembolsar valor que existe. Si la operación crea ~$0 de valor de back-run, la subasta no atrae ninguna puja significativa, y el 90% de nada es nada. El mecanismo redistribuye valor — no puede conjurarlo.",
+    },
+  ]}
+  questionLabel="Pregunta"
+  ofLabel="de"
+  correctCountLabel="correctas"
+  completeLabel="Completado"
+  completeTitleLabel="Cuestionario completado"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  nextLabel="Siguiente"
+  backLabel="Atrás"
+  seeResultsLabel="Ver resultados"
+  gateLabel="Comprueba tu respuesta para continuar."
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  perfectMessage="¡Pleno! Dominas este material."
+  goodMessage="Buen trabajo — un repaso rápido y lo dominas."
+  keepPracticingMessage="Repasa la lección y vuelve a intentarlo."
+/>
+
+Fíjate en la suposición callada que recorre toda esta lección: tú todavía escribiste la transacción. Elegiste el pool, el tamaño, el slippage, la ruta — y la OFA simplemente reembolsa el valor que *tu ejecución especificada* arrojó. Eso es redistribución superpuesta a una ejecución que tú todavía redactaste.
+
+El siguiente movimiento es más radical. ¿Y si dejas de redactar la ejecución por completo — y solo dices *qué resultado quieres*? Ese es el mundo de las **intenciones y los solvers**, donde firmas "dame el mejor precio por 10 ETH" y dejas que un mercado competitivo averigüe el *cómo*. La subasta deja de pujar por las migajas detrás de tu operación y empieza a pujar por *construir la operación misma*. Lección 3.

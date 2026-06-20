@@ -1,0 +1,249 @@
+---
+title: "Order-Flow Auctions"
+description: "Order-flow auctions sell the right to back-run your swap in a sealed auction and refund most of the winning bid to you. Work through the refund split, see why searcher competition is the engine, meet MEVBlocker and MEV-Share, and learn what an OFA still can't do."
+topic: "en/order-flow-auctions-and-mev-redistribution"
+order: 2
+minutes: 11
+updated: 2026-06-20
+---
+
+import { Callout, MCQ, FillBlank, Categorize, MatchConcepts, MindMap, Quiz, OfaRefundSplit, BlockOrderTimeline } from '@/components/react';
+
+Lesson 1 left you with a thesis and a verb. The thesis: when your swap creates extractable value, **you** are the natural owner of it — not the searcher who happens to land a transaction behind yours, and not the validator who sells the slot. The verb was **redistribute**. Nice slogan. But a slogan doesn't move a single wei back into your wallet.
+
+This lesson turns the verb into a machine. That machine is the **order-flow auction (OFA)**: instead of broadcasting your transaction to the public mempool where anyone can pick the value off it for free, you route it through an auction that **sells the right to execute or back-run your transaction in a sealed bid** — and then **refunds most of the winning bid back to you**. The value your order creates stops leaking to strangers and comes home. Mostly.
+
+<MCQ
+  client:visible
+  pretest
+  question="An OFA auctions the right to back-run your swap and refunds you 90% of the winning bid. Ultimately, who pays that refund?"
+  options={[
+    { text: "The searcher who won the right — out of the value your own order created for them.", correct: true, explanation: "Exactly. The refund isn't charity from the operator or a subsidy from the validator. The searcher bids for the right to back-run you, that bid is paid out of the value your order created, and ~90% of it is routed back to you. You're being paid with your own juice." },
+    { text: "The OFA operator, out of its own treasury, as a marketing cost.", explanation: "No — the operator funds nothing. It collects the searcher's bid and forwards most of it to you, keeping a small fee. The money originates with the searcher's bid." },
+    { text: "The validator, who rebates part of the block reward to the user.", explanation: "Validators rebate nothing here. In an OFA the competitive pressure is pointed at the user, not the validator. The searcher's bid is the source of the refund." },
+    { text: "Other users in the same block, via a shared insurance pool.", explanation: "There's no pool and no cross-subsidy. Each user's refund comes from the auction on that user's own order." },
+  ]}
+/>
+
+## What an order-flow auction sells
+
+Think of your swap as a house with an oil well in the backyard you didn't know about. In the public mempool, you list the house and *anyone* can quietly pump the oil for free the moment you move in. An OFA instead holds a **sealed auction for the drilling rights** before you close — and hands you the auction proceeds.
+
+Precisely: you route your transaction to the OFA through a **special RPC endpoint** (or a wallet integration that does it for you) instead of dropping it into the public mempool. *Order flow* is just the stream of transactions a user — or a wallet aggregating many users — sends; routing it to an OFA is choosing where that stream goes. The OFA exposes the order — or only a **hint** of it, enough to bid against but not enough to front-run — to a set of searchers. Those searchers bid for the **exclusive right to land a transaction in the slot immediately after yours**: the **back-run slot**. Highest bid wins, the winner's transaction is placed right behind yours, and (most of) the winning bid is refunded to you.
+
+That back-run slot is the same one from the MEV supply chain you already know — the spot where a benign arbitrageur re-balances a pool you just moved, or a liquidator finishes a job your trade made possible. Here's the ordering it's fighting over:
+
+<BlockOrderTimeline
+  client:visible
+  caption="The back-run slot is the position right after your transaction. In the public mempool that slot is a free-for-all — the fastest searcher grabs it. An OFA auctions that exact slot: searchers bid for the exclusive right to sit there, and the winning bid funds your refund. Set the timeline to Back-run mode to see the slot the auction is selling."
+/>
+
+So an OFA isn't selling your tokens or your trade. It's selling one specific, narrow privilege — *who gets to act immediately after you* — and giving you the gate receipts.
+
+## The refund split, worked out
+
+Now the arithmetic, because "mostly" and "most of" are doing a lot of work and you should be able to compute the actual number.
+
+Define four quantities:
+
+- **V** — the **gross extractable value** your order creates in the back-run slot (the arbitrage or liquidation profit available right behind your trade).
+- **B** — the **winning bid**. Searchers bid up toward V as competition rises, so write `B = c · V`, where the competition factor `c` runs from 0 (one lazy bidder) to 1 (a packed, cutthroat auction).
+- **r** — the **refund share** routed to you (e.g. 0.90).
+- The split then falls out:
+  - **Your refund** `= r · B`
+  - **Operator fee** `= (1 − r) · B`
+  - **Searcher profit** `= V − B` (whatever the winner didn't bid away)
+
+Worked example. Your swap creates \$100 of back-run value, so V = \$100. The auction is competitive but not perfect, so the winning bid lands at 80% of value: B = 0.80 × \$100 = \$80. The refund share is r = 0.90.
+
+- Your refund = 0.90 × \$80 = **\$72**.
+- Operator fee = 0.10 × \$80 = **\$8**.
+- Searcher profit = \$100 − \$80 = **\$20**.
+
+Check: \$72 + \$8 + \$20 = \$100 = V. The pie is exactly the value your order created; the auction just decides who gets which slice. In the public mempool, you'd have gotten \$0 of that \$100 — the whole pie went to whoever won the free-for-all. Now crank competition: if `c` rises to 0.95, B = \$95, your refund = 0.90 × \$95 = **\$85.50**, and the searcher's slice shrinks to \$5. The harder searchers fight, the more of your own \$100 comes back to you.
+
+<OfaRefundSplit
+  client:visible
+  caption="Drag the sliders. Your swap creates $100 of back-run value. As more searchers compete, the winning bid climbs toward the full $100 — and because the OFA refunds 90% of that bid to you, the value comes home. The searcher keeps only the sliver above their bid; the operator takes a small cut. Crank competition to the max and you capture almost the whole $100 you created."
+/>
+
+<FillBlank
+  client:visible
+  question="Fill in the refund-split mechanics."
+  text="The winning bid B equals the competition factor times the {{gross extractable value V|operator fee|refund share}} your order creates. Your refund is the refund share times {{B|V|the operator fee}}, and the searcher keeps {{V − B|r · B|(1 − r) · B}}. As competition rises, B moves toward V, so the searcher's slice {{shrinks|grows|stays fixed}}."
+  explanation="B = c · V; your refund = r · B; the searcher pockets V − B. Push competition up and B → V, collapsing the searcher's residual slice while your refund grows toward r · V."
+/>
+
+## Competition is the engine
+
+An OFA with one bidder is a vending machine that takes your money and dispenses a thank-you note. The whole mechanism *runs on rivalry*.
+
+Here's why. The refund is `r · B`, and `B = c · V`. The operator can set `r` generously (90%, even 100% in public-good designs), but if `c` is near zero — one searcher, no pressure to bid high — then `B` is a pittance and `r · B` is a pittance of a pittance. You can refund 100% of almost nothing and the user still gets almost nothing. With many searchers, `c → 1`, `B → V`, and your refund approaches `r · V`: nearly the full value, scaled only by the operator's modest cut. **Competition, not generosity, is what fills the refund.**
+
+This is the same engine from the cost-stack lesson — pointed in a new direction. In plain on-chain MEV, searchers compete in the public auction too, but they bid their profit away to the **validator** (via priority fees / the MEV-Boost block auction). The pressure is real; it just flows uphill to whoever sells the block space. An OFA takes that *exact same* competitive pressure and aims it at **refunding the user** instead. Same physics, different beneficiary. You didn't reduce how hard searchers fight — you changed who collects the spoils of the fight.
+
+<Callout variant="warning">
+**An OFA captures back-run value, not sandwich value — by default.** The slot it auctions is the one *behind* your trade, where benign arbitrage and liquidations live. That's value your order genuinely created, and recycling it to you is pure upside. But a **sandwich** attacks from *both* sides — a buy in front of you and a sell behind you — and the front-run leg depends on an attacker *seeing your full order in advance*. An OFA that exposes your whole order can still leak you to a sandwicher; stopping that needs the **privacy** of revealing only a hint (or nothing) of your order. That's a different tool — programmable privacy — which lesson 5 builds. An OFA refunds the benign value; it does not by itself make you sandwich-proof.
+</Callout>
+
+## Real systems
+
+This isn't a thought experiment running on testnet vibes. OFAs route real volume on Ethereum today.
+
+- **MEVBlocker** — a public-good RPC endpoint. You point your wallet at it, your transactions skip the public mempool, and searchers bid for the back-run slot in a sealed auction. It refunds roughly **~90% of captured back-run value** to users and validators, and it's free to use. Switching to it is a one-time RPC change — no new contract, no new token.
+- **Flashbots MEV-Share** — a **programmable-privacy** OFA. Instead of exposing your whole order, you publish a configurable *hint* (which pools you touch, perhaps, but not your exact size or direction), and searchers bid to back-run against the hint. You choose how much to reveal and how the refund splits. It's the bridge between "refund my back-run value" and "don't leak me to sandwichers," and lesson 5 dissects it in detail.
+- **The general backrun-auction pattern** — wallets, aggregators, and RPC providers increasingly run their own version: capture the order flow, auction the back-run slot, rebate users. The mechanism has become a standard piece of wallet plumbing rather than a niche experiment.
+
+| Property | Public mempool | OFA-protected RPC |
+|---|---|---|
+| Order exposure | Full transaction, visible to everyone instantly | Order (or a hint) shown only to bidding searchers |
+| Who keeps the back-run value | Whoever wins the free-for-all (and the validator) | You — refunded ~90% of the winning bid |
+| Sandwich risk | High: your full order is public bait | Lower for back-running; sandwich risk persists unless the order is hidden |
+| Searcher access | Anyone watching the mempool | Searchers in the auction, bidding for an exclusive slot |
+| Cost to switch | None — it's the default | A one-time RPC endpoint change |
+
+<Categorize
+  client:visible
+  question="Sort each property into the world it describes."
+  buckets={["Public mempool", "OFA-protected"]}
+  items={[
+    { text: "Your full transaction is visible to everyone the instant you broadcast", bucket: "Public mempool" },
+    { text: "Searchers bid in a sealed auction for the exclusive back-run slot", bucket: "OFA-protected" },
+    { text: "~90% of the winning bid is refunded back to you", bucket: "OFA-protected" },
+    { text: "Back-run value goes to whoever wins the latency race (and the validator)", bucket: "Public mempool" },
+    { text: "You reveal only a hint of your order, not the whole thing", bucket: "OFA-protected" },
+    { text: "Anyone watching the mempool can pick value off your trade for free", bucket: "Public mempool" },
+  ]}
+  explanation="The public mempool is a transparent free-for-all where value leaks to the fastest watcher. An OFA gates the order behind a sealed auction and routes the proceeds back to you."
+/>
+
+## What an OFA can't do
+
+OFAs are genuinely good, which is exactly why it's worth being precise about their limits — overselling them is how you get burned.
+
+- **It needs a trusted-ish operator.** Someone runs the auction, sees the order flow, and is supposed to refund you honestly. If they exclude searchers, skim more than they claim, or peek at your flow, you're trusting them to behave. *How much* trust, and how to minimize it, is the whole subject of lesson 6.
+- **It only refunds what searchers will bid for.** No extractable value behind your trade → no bid → no refund. A tiny swap in a deep, already-balanced pool may create ~\$0 of back-run value; 90% of \$0 is \$0. The OFA can't manufacture value that isn't there.
+- **There are latency and inclusion tradeoffs.** Running an auction takes time, and routing through one operator can mean slightly slower inclusion or dependence on that operator's connectivity than firing straight into the public mempool.
+- **It redirects MEV — it doesn't eliminate it.** The arbitrage still happens; the liquidation still happens. The OFA changes *who gets paid*, not *whether extraction occurs*. (To actually shrink the value created, you change the execution itself — which is where intents and solvers come in, next lesson.)
+
+<MatchConcepts
+  client:visible
+  question="Match each OFA term to its definition."
+  pairs={[
+    { term: "Order flow", definition: "The stream of transactions a user or wallet sends — and which the user chooses where to route." },
+    { term: "Back-run slot", definition: "The transaction position immediately after yours, where benign arbitrage and liquidations capture value." },
+    { term: "Refund share", definition: "The fraction r of the winning bid the OFA routes back to the user." },
+    { term: "Sealed-bid auction", definition: "A bidding format where searchers submit bids without seeing each other's, and the highest wins the right." },
+    { term: "OFA operator", definition: "The party that runs the auction, exposes the order to searchers, and forwards the refund — the trusted-ish middleman." },
+  ]}
+/>
+
+<MindMap
+  client:visible
+  root={{
+    label: "Order-Flow Auctions",
+    children: [
+      {
+        label: "What it sells",
+        children: [
+          { label: "Right to the back-run slot" },
+          { label: "Routed via special RPC, not mempool" },
+          { label: "Order or a hint exposed to searchers" },
+        ],
+      },
+      {
+        label: "Refund split",
+        children: [
+          { label: "B = c · V (bid climbs with competition)" },
+          { label: "Your refund = r · B" },
+          { label: "Operator = (1−r)·B, searcher = V−B" },
+        ],
+      },
+      {
+        label: "The engine",
+        children: [
+          { label: "Competition fills the refund" },
+          { label: "Same pressure as MEV-Boost…" },
+          { label: "…aimed at user, not validator" },
+        ],
+      },
+      {
+        label: "Real systems",
+        children: [
+          { label: "MEVBlocker (~90% public good)" },
+          { label: "Flashbots MEV-Share (privacy)" },
+          { label: "Wallet/RPC backrun auctions" },
+        ],
+      },
+      {
+        label: "Limits",
+        children: [
+          { label: "Trusted-ish operator" },
+          { label: "No bid → no refund" },
+          { label: "Captures back-run, not sandwich" },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Order-flow auctions: check yourself"
+  questions={[
+    {
+      question: "Your trade creates V = $200 of back-run value, the auction bids it to B = 0.75 · V, and the refund share is r = 0.90. How much is refunded to you?",
+      options: ["$135", "$150", "$180", "$45"],
+      correct: 0,
+      explanation: "B = 0.75 × $200 = $150. Your refund = r · B = 0.90 × $150 = $135. (The operator keeps $15, and the searcher pockets V − B = $50.)",
+    },
+    {
+      question: "A wallet ships an OFA-routed RPC and tells users it 'eliminates MEV on your trades.' What's the most accurate correction?",
+      options: [
+        "It redirects MEV proceeds back to the user; the extraction still happens, the money just changes hands.",
+        "It reduces gas fees, which is the real source of MEV.",
+        "It eliminates MEV entirely by hiding every transaction from validators.",
+        "It only works if the validator agrees to refund part of the block reward.",
+      ],
+      correct: 0,
+      explanation: "An OFA doesn't stop arbitrage or liquidations from occurring — it auctions the right to do them and refunds you the proceeds. It changes who gets paid, not whether extraction happens.",
+    },
+    {
+      question: "Which statement about OFA competition is true?",
+      options: [
+        "With many competing searchers the winning bid B approaches V, so your refund approaches r · V.",
+        "A higher refund share r guarantees a large refund even with a single bidder.",
+        "More competition lowers the winning bid because searchers undercut each other.",
+        "Competition flows to the validator, so the user's refund is unaffected by it.",
+      ],
+      correct: 0,
+      explanation: "Refund = r · B and B = c · V. Generous r can't rescue a near-zero bid; you need competition to push B → V. The pressure that used to feed the validator is here aimed at the user.",
+    },
+    {
+      question: "A trader routes through an OFA and is delighted to be 'safe from sandwiches' — then gets sandwiched anyway. What did the OFA miss?",
+      options: [
+        "The OFA exposed the full order, so a sandwicher could still front-run it; OFAs capture back-run value but don't grant privacy by default.",
+        "The OFA refunded too much, leaving nothing to deter sandwichers.",
+        "The trader should have used the public mempool to avoid the auction.",
+        "Sandwiches are impossible after an OFA, so this scenario can't happen.",
+      ],
+      correct: 0,
+      explanation: "A sandwich's front-run leg needs to see your full order in advance. A plain OFA auctions the back-run slot but may still reveal your order — stopping sandwiches needs privacy (lesson 5), a different tool.",
+    },
+    {
+      question: "A user routes a small swap in a deep, already-balanced pool through an OFA and gets a $0 refund. Why?",
+      options: [
+        "There was little extractable value behind the trade, so searchers had nothing to bid for — no bid, no refund.",
+        "The operator stole the refund without telling the user.",
+        "OFAs only refund large institutional traders.",
+        "The refund share was set to zero by Ethereum's protocol rules.",
+      ],
+      correct: 0,
+      explanation: "An OFA can only refund value that exists. If the trade creates ~$0 of back-run value, the auction draws no meaningful bid, and 90% of nothing is nothing. The mechanism redistributes value — it can't conjure it.",
+    },
+  ]}
+/>
+
+Notice the quiet assumption running through this whole lesson: you still wrote the transaction. You picked the pool, the size, the slippage, the route — and the OFA simply refunds the value that *your specified execution* threw off. That's redistribution layered on top of an execution you still authored.
+
+The next move is more radical. What if you stop authoring the execution at all — and just say *what outcome you want*? That's the world of **intents and solvers**, where you sign "give me the best price for 10 ETH" and let a competitive market figure out the *how*. The auction stops bidding for the scraps behind your trade and starts bidding to *build the trade itself*. Lesson 3.

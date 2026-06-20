@@ -1,0 +1,241 @@
+---
+title: "Batch Auctions & Coincidence of Wants"
+description: "How CoW Protocol settles many orders together at one uniform clearing price — killing in-batch ordering MEV and letting opposite trades match peer-to-peer, no AMM, no sandwich, no skim."
+topic: "en/order-flow-auctions-and-mev-redistribution"
+order: 4
+minutes: 11
+updated: 2026-06-20
+---
+
+import { Callout, MCQ, FillBlank, Categorize, MatchConcepts, MindMap, Quiz, BatchAuctionCoW } from '@/components/react';
+
+In lesson 3 we auctioned **one intent at a time**: a single trader's "I want at least *X* out for my *Y* in," handed to competing solvers who raced to fill it. That already moved value back to the user. But it still settled each order on its own timeline, one transaction at a time — and "one transaction at a time" is exactly the soil that ordering MEV grows in.
+
+Batch auctions change one variable and that variable changes everything: instead of settling orders **in sequence**, you collect a bunch of them over a short window and settle them **all at once**, at the same moment, at the same price. That single move kills a whole class of MEV outright and quietly unlocks something even better — letting traders who want opposite things just trade with *each other*. This is the design behind **CoW Protocol** (CoW = *Coincidence of Wants*), and it's what this lesson is about.
+
+<MCQ
+  client:visible
+  pretest
+  question="A batch auction settles every trade of the same pair at one uniform clearing price — the same price for everyone, no matter where their order sits in the batch. What does that do to a searcher hoping to front-run someone *inside* the batch?"
+  options={[
+    { text: "It removes the advantage entirely — since position within the batch doesn't change anyone's price, there's nothing to gain by getting in front.", correct: true, explanation: "Right. Ordering MEV is profit extracted from *being earlier in line*. If everyone clears at the same price regardless of order, the line stops mattering — and the profit evaporates." },
+    { text: "It makes front-running cheaper, because all the orders are conveniently in one place.", explanation: "Bundling the orders doesn't help an attacker: the uniform price means their position relative to a victim is worth exactly zero." },
+    { text: "Nothing — front-running depends on gas price, not on settlement structure.", explanation: "Gas-priority races are how attackers *win* ordering, but the payoff only exists when ordering changes the price. A uniform clearing price removes that payoff." },
+    { text: "It doubles the MEV, because now there are more victims per transaction.", explanation: "More orders in a batch doesn't create more extractable ordering MEV — the uniform price means none of those orders can be picked off by position." },
+  ]}
+/>
+
+Hold onto that intuition — it's the load-bearing wall of the whole design. Now let's build it up properly.
+
+## Batch auctions: settle together, not in sequence
+
+A **batch auction** collects orders over a short **window** (think a few seconds to a couple of minutes), freezes that set, and then clears the entire set **simultaneously** in a single settlement that a solver constructs. Nobody's order executes a moment before anybody else's — they all execute *together*, as one atomic event.
+
+Contrast that with **continuous** (or **serial**) settlement, which is how a vanilla DEX swap works: each order is its own transaction, lands in its own block position, and is therefore exposed to whatever ordering games the block builder and searchers want to play around it. Earlier in the block means a better price means a target on your back.
+
+The analogy: imagine a school currency-exchange day. In the **serial** version, every kid sprints to the teacher's desk one at a time, and the sharp kids at the front of the line get the good rate while the stragglers at the back get fleeced — your *position in line* decides your fate. In the **batch** version, everybody writes their order on a slip, drops it in a box, and at the bell the teacher matches the whole box at once at a single fair rate. There is no front of the line. There is no back of the line. There is just the box.
+
+That's the structural difference. Everything good below flows from "there is just the box."
+
+## The uniform clearing price
+
+Within a batch, **all trades of the same token pair settle at one price — the uniform clearing price — identical for every participant.** Alice and Bob and the anonymous whale all swapping ETH for USDC in the same batch get the *same* number of USDC per ETH. Not "approximately the same." The same.
+
+Here's why that detonates ordering MEV. The entire MEV course so far has been about extracting value from *sequence* — sandwiching, back-running, being first. But profit from sequence only exists if your position in the sequence changes someone's price. In a batch, it doesn't. If everyone clears at, say, **2,000 USDC/ETH** no matter whether their slip was the first or the last pulled from the box, then there is literally no price to front-run *into*. The sandwich has no bread.
+
+A quick worked intuition: suppose six traders in one batch all want to move ETH and USDC, and the batch clears at 2,000 USDC/ETH. The trader who sells 1 ETH gets 2,000 USDC. The trader who sells 50 ETH gets 100,000 USDC — the *same* 2,000 per unit. A searcher who somehow inserts a trade "ahead" of them gains nothing, because that 2,000 was fixed by the batch as a whole, not by who went first.
+
+<FillBlank
+  client:visible
+  question="Fill in the defining properties of a uniform clearing price."
+  text="Within one batch, every trade of the same pair settles at {{exactly one|a slightly different}} price, and that price is {{the same for everyone|better for early orders}} regardless of position in the batch. Because position no longer changes anyone's price, the {{ordering|liquidity}} MEV that sequencing creates has nothing to extract."
+  explanation="One price, identical for all, position-independent. Strip the value out of *being earlier* and ordering MEV — sandwiches, priority races — loses its entire reason to exist inside the batch."
+/>
+
+<Callout variant="warning">
+A uniform clearing price kills **in-batch ordering MEV** — but don't mistake it for a free lunch. The batch still has to get its liquidity from *somewhere*. Whatever the matched orders can't cancel out among themselves (the **residual**) still has to be filled against real on-chain liquidity — AMMs, other venues — and that residual is still exposed to price impact and arbitrage out in the wild. Batching doesn't make the liquidity problem vanish; it **relocates** it to the leftover slice and shrinks it. Useful, not magic.
+</Callout>
+
+## Coincidence of wants (CoWs)
+
+Now the headline act, the thing the protocol is literally named after. A **coincidence of wants** is the happy situation where two traders in the same batch want *opposite* things: Alice wants to sell ETH for USDC, Bob wants to buy ETH with USDC. The classic economics-textbook double coincidence — and on a normal DEX it's tragically wasted, because Alice and Bob each go swap against the pool separately, as strangers.
+
+In a batch auction, the solver can spot that overlap and **match them directly, peer-to-peer, at the uniform clearing price** — Alice's ETH goes straight to Bob, Bob's USDC goes straight to Alice, and **the AMM is never touched** for the matched portion. No AMM swap means: no LP fee paid to the pool, no slippage from moving along the bonding curve, no price impact, and — crucially — **nothing for a sandwicher or arbitrageur to skim**, because there's no public pool trade to skim *from*. Only the **net residual imbalance** (the part that doesn't cancel) gets routed to on-chain liquidity.
+
+The analogy: two neighbours, one holding euros and wanting dollars, the other holding dollars and wanting euros. They can each trudge to the airport currency kiosk and pay its spread twice — or they can just swap with each other across the fence at the honest mid-market rate and keep the kiosk's cut in their own pockets. CoWs are the across-the-fence swap, done at protocol scale.
+
+<BatchAuctionCoW
+  client:visible
+  caption="Toggle the two modes. Settled one by one on the AMM, Alice's ETH→USDC swap and Bob's USDC→ETH swap each pay the pool's fee and slippage and each is exposed to MEV. Batched together, they're opposite trades: the solver matches them peer-to-peer at one uniform clearing price, the AMM is barely touched, and the fees and MEV they would have leaked stay in their pockets."
+/>
+
+Let's walk the numbers in the diagram. **Alice sells 10 ETH** for USDC; **Bob buys 8 ETH** with USDC; the batch clears at **2,000 USDC/ETH**. Take the round-trip cost of routing through the pool — LP fee plus slippage plus MEV leaked — to be about **0.6% of the notional you push through it**.
+
+- **AMM-only path:** each order routes separately. Alice's 10 ETH is 20,000 USDC of notional, costing about 0.6% ≈ **\$120**; Bob's 8 ETH is 16,000 USDC, costing ≈ **\$96**. Total leaked ≈ **\$216**.
+- **Batched path:** 8 of Alice's 10 ETH coincide with Bob's 8 ETH and match **peer-to-peer for free** — no fee, no slippage, no MEV. Only the **2 ETH residual** (4,000 USDC of notional) actually hits the AMM, costing ≈ **\$24**.
+- **Saved by batching:** \$216 − \$24 ≈ **\$192** — roughly **89%** of the leakage, gone, simply because two people who wanted opposite things were allowed to trade with each other.
+
+<Categorize
+  client:visible
+  question="In that worked example, sort each flow by where it actually settles."
+  buckets={["Matched peer-to-peer (CoW)", "Routed to the AMM residual"]}
+  items={[
+    { text: "The 8 ETH where Alice's sell and Bob's buy overlap", bucket: "Matched peer-to-peer (CoW)" },
+    { text: "Bob's USDC paying for those 8 ETH", bucket: "Matched peer-to-peer (CoW)" },
+    { text: "The leftover 2 ETH that no opposite order absorbs", bucket: "Routed to the AMM residual" },
+    { text: "The slice that pays an LP fee and incurs slippage", bucket: "Routed to the AMM residual" },
+    { text: "The slice exposed to sandwich/arbitrage MEV", bucket: "Routed to the AMM residual" },
+    { text: "The slice that pays zero fee and never touches a pool", bucket: "Matched peer-to-peer (CoW)" },
+  ]}
+  explanation="The overlapping 8 ETH (and the USDC against it) clears trader-to-trader at the uniform price — free, private, unskimmable. Only the net 2 ETH residual touches the pool, and only that slice pays fees, slippage, and any MEV exposure."
+/>
+
+## Solvers compete on the whole batch
+
+Same solvers as lesson 3 — the professional fill-finders — but now their job is bigger. In CoW Protocol, each solver submits a **complete settlement for the entire batch**: which orders coincide and get matched peer-to-peer, what the uniform clearing price is, and how the residual is routed across on-chain liquidity. They're not pricing one intent anymore; they're proposing a single consistent plan for the whole box.
+
+The protocol then **picks the settlement that maximises total user surplus** — the solution that gives traders, in aggregate, the most value above their limit prices — and *that* solver wins the right to execute it on-chain. So solver competition now operates at the **batch level**, and two forces push value toward users at once: the **uniform price** (no in-batch ordering edge to sell) and **surplus maximisation** (solvers literally compete to make users better off, because that's the winning condition). The race that used to enrich searchers now enriches the people whose orders are being filled.
+
+<MatchConcepts
+  client:visible
+  question="Match each piece of the batch-auction machine to what it is."
+  pairs={[
+    { term: "Batch auction", definition: "Collecting many orders over a short window and clearing them all simultaneously, instead of one transaction at a time." },
+    { term: "Uniform clearing price", definition: "The single price every trade of the same pair settles at in a batch — identical for everyone, so position in the batch buys no advantage." },
+    { term: "Coincidence of wants", definition: "Two opposite orders in the same batch matched directly peer-to-peer at the clearing price, bypassing the AMM entirely." },
+    { term: "Residual", definition: "The net imbalance left after CoW matching, which still has to be routed to on-chain liquidity." },
+    { term: "Solver settlement", definition: "A complete proposed plan for the whole batch — matches, clearing price, and residual routing — that solvers compete to win on total user surplus." },
+  ]}
+/>
+
+## Costs and limits
+
+Time to be honest, because no design is pure upside and pretending otherwise is how you get fooled.
+
+- **Batch latency.** You wait for the window to close before anything settles. For a long-term swap that's nothing; for someone who wants *instant* execution to the millisecond, the few-seconds wait is a real (if usually tiny) cost. You're trading immediacy for protection.
+- **CoWs need offsetting demand in the same batch.** A coincidence of wants requires someone wanting the opposite of you *right now, in this batch*. Often there isn't enough — most flow still nets out to AMM routing. The dramatic 89%-style savings apply to the **matched portion only**; the residual pays normal costs.
+- **Solver quality and centralisation.** The whole thing leans on a competitive, honest set of solvers finding the best settlement. If that solver set is thin, slow, or captured, surplus maximisation gets weaker — a real concern we'll dig into in **lesson 6**.
+- **You still trust the infrastructure.** Orders, the batch construction, the solver auction — all of it runs on operators and off-chain machinery you're trusting to behave. Batch auctions shrink the MEV attack surface dramatically, but they don't make trust disappear.
+
+<Callout variant="info">
+Reset your mental model: most real batches **don't** neatly cancel out. The headline "two opposite traders match for free" is the *best case*, not the average case. In practice a CoW is a **bonus layered on top of good AMM routing** — when the overlap exists you capture it for free, and when it doesn't, you fall back to a well-routed, surplus-maximised fill. The batch auction's two everyday wins are the uniform price (no in-batch ordering MEV) and competitive surplus maximisation; the peer-to-peer magic is the cherry on top when the demand happens to line up.
+</Callout>
+
+## Recap
+
+<MindMap
+  client:visible
+  root={{
+    label: "Batch auctions & CoWs",
+    children: [
+      {
+        label: "Settle together",
+        children: [
+          { label: "Collect orders over a window" },
+          { label: "Clear all at once, atomically" },
+          { label: "Kills in-batch ordering MEV" },
+        ],
+      },
+      {
+        label: "Uniform clearing price",
+        children: [
+          { label: "One price, same for everyone" },
+          { label: "Position in batch is worthless" },
+          { label: "Sandwich has no bread" },
+        ],
+      },
+      {
+        label: "Coincidence of wants",
+        children: [
+          { label: "Opposite orders match peer-to-peer" },
+          { label: "No AMM = no fee, no slippage, no skim" },
+          { label: "Only the residual hits the pool" },
+        ],
+      },
+      {
+        label: "Solver competition",
+        children: [
+          { label: "Settle the whole batch" },
+          { label: "Win on total user surplus" },
+          { label: "Race now enriches users" },
+        ],
+      },
+      {
+        label: "Limits",
+        children: [
+          { label: "Batch latency" },
+          { label: "Needs offsetting demand" },
+          { label: "Still trusts solvers/infra" },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Batch auctions & coincidence of wants"
+  questions={[
+    {
+      question: "What is a uniform clearing price?",
+      options: [
+        "The single price at which every trade of the same pair settles within a batch, identical for all participants regardless of their position",
+        "A price that improves the further forward your order sits in the batch",
+        "The AMM's spot price at the exact moment the batch opens",
+        "A separate price negotiated privately between each trader and the solver",
+      ],
+      correct: 0,
+      explanation: "One price, the same for everyone in the batch, independent of order position — which is precisely why being 'first' buys no advantage.",
+    },
+    {
+      question: "Alice sells 10 ETH and Bob buys 8 ETH in the same batch at 2,000 USDC/ETH. How much ETH coincides and matches peer-to-peer, and how much is the residual routed to the AMM?",
+      options: [
+        "8 ETH match peer-to-peer; 2 ETH residual goes to the AMM",
+        "10 ETH match peer-to-peer; 0 ETH residual",
+        "2 ETH match peer-to-peer; 8 ETH residual goes to the AMM",
+        "18 ETH match peer-to-peer; nothing hits the AMM",
+      ],
+      correct: 0,
+      explanation: "The overlap is the smaller side: 8 ETH of Alice's sell coincides with Bob's 8 ETH buy and matches directly. The leftover 10 − 8 = 2 ETH is the net residual that still routes to the pool.",
+    },
+    {
+      question: "A trader's swap lands in a batch where, this time, there's no one wanting the opposite side at all. What happens?",
+      options: [
+        "There's no coincidence of wants, so essentially the whole order becomes residual and is routed to on-chain liquidity with a competitive, surplus-maximising fill",
+        "The trade is rejected because batches require a matching counterparty",
+        "The trader is forced to wait indefinitely until an opposite order appears",
+        "The solver invents a fake counterparty to complete the match",
+      ],
+      correct: 0,
+      explanation: "CoWs are a bonus, not a requirement. With no offsetting demand the order is just residual: it gets routed to AMMs/other venues — still at a uniform price and still surplus-maximised, just without the free peer-to-peer slice.",
+    },
+    {
+      question: "Which statement is TRUE about CoW Protocol's solver competition?",
+      options: [
+        "Solvers each submit a complete settlement for the whole batch, and the protocol picks the one that maximises total user surplus",
+        "Each solver prices exactly one order, and the fastest one wins by gas priority",
+        "Solvers bid in ETH for the right to sandwich the batch",
+        "There is no competition; a single official solver sets every batch's price",
+      ],
+      correct: 0,
+      explanation: "Competition happens at the batch level: solvers propose full settlements, and the winning condition is total user surplus — so the race pushes value to users rather than to searchers.",
+    },
+    {
+      question: "Why does matching two opposite orders peer-to-peer eliminate the MEV a sandwicher could extract from them?",
+      options: [
+        "Because the matched portion never executes as a public AMM swap, so there's no pool trade to front-run, back-run, or skim",
+        "Because the solver pays the sandwicher off in advance",
+        "Because peer-to-peer trades are settled on a private blockchain hidden from builders",
+        "Because the uniform price is set so high that sandwiching becomes unprofitable",
+      ],
+      correct: 0,
+      explanation: "Sandwich MEV is extracted from a victim's pool swap. A CoW match settles trader-to-trader and never touches the pool, so there is simply no public swap for an attacker to wrap — the attack surface for that slice disappears.",
+    },
+  ]}
+/>
+
+## Where this leaves us
+
+Batch auctions and intents are a genuine leap: they relocate MEV off the individual trader and onto a residual slice, hand the ordering edge nobody, and turn solver competition into a force that fills *your* order better. But notice the load-bearing word that kept reappearing in the limits section — **trust**. The batch, the solvers, the off-chain machinery: you're trusting all of it to be honest and competitive.
+
+In **lesson 5** we confront that head-on with **MEV-Share and SUAVE**: programmable privacy that lets you reveal *just enough* of your order to get a good fill without handing attackers the whole thing, and the decentralised-sequencing endgame that tries to remove the trusted operator from the picture entirely. We've made the line fair; next we ask whether we even need a line.

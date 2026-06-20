@@ -1,0 +1,280 @@
+---
+title: "Subastas por lotes y coincidencia de deseos"
+description: "Cómo CoW Protocol liquida muchas órdenes a la vez a un único precio de liquidación uniforme — eliminando el MEV de ordenación dentro del lote y permitiendo que las operaciones opuestas se emparejen entre pares, sin AMM, sin sándwich, sin recortes."
+topic: "es/order-flow-auctions-and-mev-redistribution"
+order: 4
+minutes: 11
+updated: 2026-06-20
+---
+
+import { Callout, MCQ, FillBlank, Categorize, MatchConcepts, MindMap, Quiz, BatchAuctionCoW } from '@/components/react';
+
+En la lección 3 subastábamos **una intención cada vez**: el "quiero recibir al menos *X* por mi *Y*" de un único operador, entregado a solvers competidores que corrían por ejecutarlo. Eso ya devolvía valor al usuario. Pero seguía liquidando cada orden en su propia línea temporal, una transacción cada vez — y "una transacción cada vez" es justo el terreno en el que crece el MEV de ordenación.
+
+Las subastas por lotes cambian una sola variable y esa variable lo cambia todo: en lugar de liquidar las órdenes **en secuencia**, recopilas un montón de ellas durante una ventana corta y las liquidas **todas a la vez**, en el mismo momento, al mismo precio. Ese único movimiento elimina de raíz toda una clase de MEV y, sin hacer ruido, desbloquea algo aún mejor — permitir que operadores que quieren cosas opuestas simplemente operen *entre sí*. Este es el diseño detrás de **CoW Protocol** (CoW = *Coincidence of Wants*, coincidencia de deseos), y de eso trata esta lección.
+
+<MCQ
+  client:visible
+  pretest
+  pretestLabel="Antes de leer — arriésgate a adivinar"
+  question="Una subasta por lotes liquida cada operación del mismo par a un único precio de liquidación uniforme — el mismo precio para todos, sin importar dónde quede su orden dentro del lote. ¿Qué le hace eso a un buscador (searcher) que espera adelantarse a alguien *dentro* del lote?"
+  options={[
+    { text: "Elimina la ventaja por completo — como la posición dentro del lote no cambia el precio de nadie, no hay nada que ganar por ponerse delante.", correct: true, explanation: "Correcto. El MEV de ordenación es el beneficio extraído de *ir antes en la cola*. Si todos liquidan al mismo precio sin importar el orden, la cola deja de importar — y el beneficio se evapora." },
+    { text: "Abarata el front-running, porque todas las órdenes están convenientemente en un solo sitio.", explanation: "Agrupar las órdenes no ayuda a un atacante: el precio uniforme hace que su posición respecto a una víctima valga exactamente cero." },
+    { text: "Nada — el front-running depende del precio del gas, no de la estructura de liquidación.", explanation: "Las carreras por prioridad de gas son cómo los atacantes *ganan* la ordenación, pero la recompensa solo existe cuando la ordenación cambia el precio. Un precio de liquidación uniforme elimina esa recompensa." },
+    { text: "Duplica el MEV, porque ahora hay más víctimas por transacción.", explanation: "Más órdenes en un lote no crea más MEV de ordenación extraíble — el precio uniforme implica que ninguna de esas órdenes puede ser exprimida según su posición." },
+  ]}
+/>
+
+Quédate con esa intuición — es el muro de carga de todo el diseño. Ahora construyámoslo bien.
+
+## Subastas por lotes: liquidar juntas, no en secuencia
+
+Una **subasta por lotes** recopila órdenes durante una **ventana** corta (piensa de unos segundos a un par de minutos), congela ese conjunto y luego liquida el conjunto entero **de forma simultánea** en una única liquidación que construye un solver. La orden de nadie se ejecuta un instante antes que la de otro — todas se ejecutan *juntas*, como un único evento atómico.
+
+Contrasta eso con la liquidación **continua** (o **en serie**), que es como funciona un swap normal en un DEX: cada orden es su propia transacción, aterriza en su propia posición del bloque y, por tanto, queda expuesta a cualquier juego de ordenación que el constructor del bloque y los buscadores quieran montar a su alrededor. Ir antes en el bloque significa mejor precio significa una diana en tu espalda.
+
+La analogía: imagina un día de cambio de divisas en el colegio. En la versión **en serie**, cada niño corre al pupitre del profesor de uno en uno, y los espabilados del principio de la cola se llevan el buen cambio mientras a los rezagados del final los despluman — tu *posición en la cola* decide tu destino. En la versión **por lotes**, todos escriben su orden en un papelito, lo echan en una caja y, al sonar el timbre, el profesor empareja la caja entera a la vez a un único cambio justo. No hay principio de cola. No hay final de cola. Solo está la caja.
+
+Esa es la diferencia estructural. Todo lo bueno de abajo brota de "solo está la caja".
+
+## El precio de liquidación uniforme
+
+Dentro de un lote, **todas las operaciones del mismo par de tokens se liquidan a un solo precio — el precio de liquidación uniforme — idéntico para cada participante.** Alice y Bob y la ballena anónima, todos intercambiando ETH por USDC en el mismo lote, reciben el *mismo* número de USDC por ETH. No "aproximadamente el mismo". El mismo.
+
+He aquí por qué eso hace detonar el MEV de ordenación. Todo el curso de MEV hasta ahora ha tratado de extraer valor de la *secuencia* — sándwich, back-running, ir primero. Pero el beneficio de la secuencia solo existe si tu posición en la secuencia cambia el precio de alguien. En un lote, no lo cambia. Si todos liquidan a, digamos, **2.000 USDC/ETH** sin importar si su papelito fue el primero o el último en salir de la caja, entonces literalmente no hay precio *hacia el que* adelantarse. El sándwich se queda sin pan.
+
+Una intuición rápida y trabajada: supón que seis operadores en un mismo lote quieren mover ETH y USDC, y el lote liquida a 2.000 USDC/ETH. El que vende 1 ETH recibe 2.000 USDC. El que vende 50 ETH recibe 100.000 USDC — los *mismos* 2.000 por unidad. Un buscador que de algún modo inserte una operación "por delante" de ellos no gana nada, porque esos 2.000 los fijó el lote en su conjunto, no quién fue primero.
+
+<FillBlank
+  client:visible
+  question="Completa las propiedades que definen un precio de liquidación uniforme."
+  text="Dentro de un mismo lote, cada operación del mismo par se liquida a {{exactamente un|un precio ligeramente distinto}} precio, y ese precio es {{el mismo para todos|mejor para las órdenes tempranas}} sin importar la posición en el lote. Como la posición ya no cambia el precio de nadie, el MEV de {{ordenación|liquidez}} que crea la secuenciación no tiene nada que extraer."
+  explanation="Un precio, idéntico para todos, independiente de la posición. Quita el valor de *ir antes* y el MEV de ordenación — sándwiches, carreras de prioridad — pierde toda su razón de existir dentro del lote."
+/>
+
+<Callout variant="warning">
+Un precio de liquidación uniforme elimina el **MEV de ordenación dentro del lote** — pero no lo confundas con una comida gratis. El lote sigue teniendo que sacar su liquidez de *algún sitio*. Lo que las órdenes emparejadas no consigan cancelar entre sí (el **residual**) todavía tiene que ejecutarse contra liquidez on-chain real — AMMs, otros mercados — y ese residual sigue expuesto al impacto de precio y al arbitraje ahí fuera. Agrupar no hace desaparecer el problema de la liquidez; lo **reubica** en la porción sobrante y lo encoge. Útil, no mágico.
+</Callout>
+
+## Coincidencia de deseos (CoWs)
+
+Ahora el número estrella, aquello a lo que el protocolo debe literalmente su nombre. Una **coincidencia de deseos** es la feliz situación en la que dos operadores del mismo lote quieren cosas *opuestas*: Alice quiere vender ETH por USDC, Bob quiere comprar ETH con USDC. La clásica doble coincidencia de los libros de economía — y en un DEX normal se desperdicia trágicamente, porque Alice y Bob van cada uno a operar contra el pool por separado, como desconocidos.
+
+En una subasta por lotes, el solver puede detectar ese solapamiento y **emparejarlos directamente, entre pares, al precio de liquidación uniforme** — el ETH de Alice va directo a Bob, el USDC de Bob va directo a Alice, y **el AMM nunca se toca** para la porción emparejada. Sin swap en el AMM significa: ninguna comisión de LP pagada al pool, nada de slippage por moverse a lo largo de la curva de enlace, ningún impacto de precio y — crucialmente — **nada que un sándwich o un arbitrajista puedan recortar**, porque no hay operación pública en el pool de la que recortar. Solo el **desequilibrio residual neto** (la parte que no se cancela) se enruta a la liquidez on-chain.
+
+La analogía: dos vecinos, uno con euros y queriendo dólares, el otro con dólares y queriendo euros. Pueden cada uno arrastrarse hasta el quiosco de cambio del aeropuerto y pagar su diferencial dos veces — o pueden simplemente intercambiar entre ellos por encima de la valla al honesto tipo medio de mercado y quedarse la comisión del quiosco en sus propios bolsillos. Las CoWs son ese intercambio por encima de la valla, hecho a escala de protocolo.
+
+<BatchAuctionCoW
+  client:visible
+  title="Liquidar un lote con una coincidencia de deseos"
+  ammModeLabel="Una a una en el AMM"
+  batchModeLabel="Subasta por lotes (CoW)"
+  aliceLabel="Alice: vende 10 ETH → USDC"
+  bobLabel="Bob: compra 8 ETH ← USDC"
+  poolLabel="Pool del AMM"
+  clearingPriceLabel="Precio de liquidación uniforme"
+  cowMatchLabel="Coincidencia de deseos — emparejado entre pares"
+  ammResidualLabel="Residual 2 ETH → AMM"
+  costLabel="Comisiones + MEV filtrado"
+  savingsLabel="Ahorrado al agrupar"
+  groupLabel="Modo de liquidación"
+  caption="Alterna entre los dos modos. Liquidados uno a uno en el AMM, el swap ETH→USDC de Alice y el swap USDC→ETH de Bob pagan cada uno la comisión y el slippage del pool y cada uno queda expuesto al MEV. Agrupados juntos, son operaciones opuestas: el solver los empareja entre pares a un único precio de liquidación uniforme, el AMM apenas se toca, y las comisiones y el MEV que habrían filtrado se quedan en sus bolsillos."
+/>
+
+Recorramos los números del diagrama. **Alice vende 10 ETH** por USDC; **Bob compra 8 ETH** con USDC; el lote liquida a **2.000 USDC/ETH**. Toma el coste de ida y vuelta de enrutar a través del pool — comisión de LP más slippage más MEV filtrado — como en torno al **0,6 % del nocional que empujas por él**.
+
+- **Ruta solo-AMM:** cada orden se enruta por separado. Los 10 ETH de Alice son 20.000 USDC de nocional, costando un 0,6 % ≈ **\$120**; los 8 ETH de Bob son 16.000 USDC, costando ≈ **\$96**. Total filtrado ≈ **\$216**.
+- **Ruta agrupada:** 8 de los 10 ETH de Alice coinciden con los 8 ETH de Bob y se emparejan **entre pares gratis** — sin comisión, sin slippage, sin MEV. Solo el **residual de 2 ETH** (4.000 USDC de nocional) llega de verdad al AMM, costando ≈ **\$24**.
+- **Ahorrado al agrupar:** \$216 − \$24 ≈ **\$192** — aproximadamente el **89 %** de la fuga, desaparecido, simplemente porque a dos personas que querían cosas opuestas se les permitió operar entre sí.
+
+<Categorize
+  client:visible
+  question="En ese ejemplo trabajado, clasifica cada flujo según dónde se liquida realmente."
+  buckets={["Emparejado entre pares (CoW)", "Enrutado al residual del AMM"]}
+  items={[
+    { text: "Los 8 ETH donde la venta de Alice y la compra de Bob se solapan", bucket: "Emparejado entre pares (CoW)" },
+    { text: "El USDC de Bob pagando por esos 8 ETH", bucket: "Emparejado entre pares (CoW)" },
+    { text: "Los 2 ETH sobrantes que ninguna orden opuesta absorbe", bucket: "Enrutado al residual del AMM" },
+    { text: "La porción que paga una comisión de LP e incurre en slippage", bucket: "Enrutado al residual del AMM" },
+    { text: "La porción expuesta al MEV de sándwich/arbitraje", bucket: "Enrutado al residual del AMM" },
+    { text: "La porción que no paga comisión y nunca toca un pool", bucket: "Emparejado entre pares (CoW)" },
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  allCorrectLabel="✓ Todo clasificado"
+  explanation="Los 8 ETH solapados (y el USDC contra ellos) se liquidan operador-a-operador al precio uniforme — gratis, privado, irrecortable. Solo el residual neto de 2 ETH toca el pool, y solo esa porción paga comisiones, slippage y cualquier exposición al MEV."
+/>
+
+## Los solvers compiten por el lote entero
+
+Los mismos solvers que en la lección 3 — los profesionales que encuentran ejecuciones — pero ahora su trabajo es mayor. En CoW Protocol, cada solver presenta una **liquidación completa para el lote entero**: qué órdenes coinciden y se emparejan entre pares, cuál es el precio de liquidación uniforme y cómo se enruta el residual a través de la liquidez on-chain. Ya no están poniendo precio a una intención; están proponiendo un único plan coherente para la caja entera.
+
+Después, el protocolo **elige la liquidación que maximiza el excedente total del usuario** — la solución que da a los operadores, en conjunto, el máximo valor por encima de sus precios límite — y *ese* solver gana el derecho a ejecutarla on-chain. Así que la competencia entre solvers opera ahora a **nivel de lote**, y dos fuerzas empujan el valor hacia los usuarios a la vez: el **precio uniforme** (no hay ventaja de ordenación dentro del lote que vender) y la **maximización del excedente** (los solvers compiten literalmente por dejar a los usuarios en mejor situación, porque esa es la condición de victoria). La carrera que antes enriquecía a los buscadores ahora enriquece a las personas cuyas órdenes se están ejecutando.
+
+<MatchConcepts
+  client:visible
+  question="Empareja cada pieza de la maquinaria de la subasta por lotes con lo que es."
+  pairs={[
+    { term: "Subasta por lotes", definition: "Recopilar muchas órdenes durante una ventana corta y liquidarlas todas de forma simultánea, en lugar de una transacción cada vez." },
+    { term: "Precio de liquidación uniforme", definition: "El único precio al que se liquida cada operación del mismo par en un lote — idéntico para todos, así que la posición en el lote no compra ventaja." },
+    { term: "Coincidencia de deseos", definition: "Dos órdenes opuestas en el mismo lote emparejadas directamente entre pares al precio de liquidación, esquivando el AMM por completo." },
+    { term: "Residual", definition: "El desequilibrio neto que queda tras el emparejamiento CoW, que todavía tiene que enrutarse a la liquidez on-chain." },
+    { term: "Liquidación del solver", definition: "Un plan completo propuesto para el lote entero — emparejamientos, precio de liquidación y enrutamiento del residual — por el que los solvers compiten ganando en excedente total del usuario." },
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  allCorrectLabel="✓ Todo emparejado"
+/>
+
+## Costes y límites
+
+Hora de ser honestos, porque ningún diseño es solo ventajas y fingir lo contrario es cómo acabas engañado.
+
+- **Latencia del lote.** Esperas a que la ventana se cierre antes de que nada se liquide. Para un swap a largo plazo eso no es nada; para alguien que quiere ejecución *instantánea* al milisegundo, la espera de unos segundos es un coste real (aunque normalmente diminuto). Cambias inmediatez por protección.
+- **Las CoWs necesitan demanda compensatoria en el mismo lote.** Una coincidencia de deseos requiere que alguien quiera lo opuesto a ti *ahora mismo, en este lote*. A menudo no hay suficiente — la mayor parte del flujo sigue saliendo por enrutamiento al AMM. Los espectaculares ahorros del estilo 89 % aplican **solo a la porción emparejada**; el residual paga costes normales.
+- **Calidad y centralización de los solvers.** Todo esto se apoya en un conjunto de solvers competitivo y honesto que encuentre la mejor liquidación. Si ese conjunto de solvers es escaso, lento o está capturado, la maximización del excedente se debilita — una preocupación real que profundizaremos en la **lección 6**.
+- **Sigues confiando en la infraestructura.** Las órdenes, la construcción del lote, la subasta de solvers — todo ello corre sobre operadores y maquinaria off-chain en quienes confías que se porten bien. Las subastas por lotes encogen drásticamente la superficie de ataque del MEV, pero no hacen desaparecer la confianza.
+
+<Callout variant="info">
+Reajusta tu modelo mental: la mayoría de los lotes reales **no** se cancelan limpiamente. El titular "dos operadores opuestos se emparejan gratis" es el *mejor caso*, no el caso promedio. En la práctica, una CoW es una **bonificación superpuesta a un buen enrutamiento por AMM** — cuando el solapamiento existe lo capturas gratis, y cuando no, recurres a una ejecución bien enrutada y con excedente maximizado. Las dos victorias cotidianas de la subasta por lotes son el precio uniforme (sin MEV de ordenación dentro del lote) y la maximización competitiva del excedente; la magia entre pares es la guinda cuando la demanda casualmente se alinea.
+</Callout>
+
+## Repaso
+
+<MindMap
+  client:visible
+  root={{
+    label: "Subastas por lotes y CoWs",
+    children: [
+      {
+        label: "Liquidar juntas",
+        children: [
+          { label: "Recopilar órdenes durante una ventana" },
+          { label: "Liquidar todas a la vez, atómicamente" },
+          { label: "Elimina el MEV de ordenación dentro del lote" },
+        ],
+      },
+      {
+        label: "Precio de liquidación uniforme",
+        children: [
+          { label: "Un precio, el mismo para todos" },
+          { label: "La posición en el lote no vale nada" },
+          { label: "El sándwich se queda sin pan" },
+        ],
+      },
+      {
+        label: "Coincidencia de deseos",
+        children: [
+          { label: "Las órdenes opuestas se emparejan entre pares" },
+          { label: "Sin AMM = sin comisión, sin slippage, sin recortes" },
+          { label: "Solo el residual llega al pool" },
+        ],
+      },
+      {
+        label: "Competencia de solvers",
+        children: [
+          { label: "Liquidar el lote entero" },
+          { label: "Ganar en excedente total del usuario" },
+          { label: "La carrera ahora enriquece a los usuarios" },
+        ],
+      },
+      {
+        label: "Límites",
+        children: [
+          { label: "Latencia del lote" },
+          { label: "Necesita demanda compensatoria" },
+          { label: "Aún confía en solvers/infraestructura" },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Subastas por lotes y coincidencia de deseos"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  correctCountLabel="correctas"
+  completeLabel="Completado"
+  completeTitleLabel="Cuestionario completado"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  nextLabel="Siguiente"
+  backLabel="Atrás"
+  seeResultsLabel="Ver resultados"
+  gateLabel="Comprueba tu respuesta para continuar."
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  perfectMessage="¡Pleno! Dominas este material."
+  goodMessage="Buen trabajo — un repaso rápido y lo dominas."
+  keepPracticingMessage="Repasa la lección y vuelve a intentarlo."
+  questions={[
+    {
+      question: "¿Qué es un precio de liquidación uniforme?",
+      options: [
+        "El único precio al que se liquida cada operación del mismo par dentro de un lote, idéntico para todos los participantes sin importar su posición",
+        "Un precio que mejora cuanto más adelante quede tu orden en el lote",
+        "El precio al contado del AMM en el instante exacto en que se abre el lote",
+        "Un precio separado negociado en privado entre cada operador y el solver",
+      ],
+      correct: 0,
+      explanation: "Un precio, el mismo para todos en el lote, independiente de la posición de la orden — que es precisamente por lo que ser 'el primero' no compra ninguna ventaja.",
+    },
+    {
+      question: "Alice vende 10 ETH y Bob compra 8 ETH en el mismo lote a 2.000 USDC/ETH. ¿Cuánto ETH coincide y se empareja entre pares, y cuánto es el residual enrutado al AMM?",
+      options: [
+        "8 ETH se emparejan entre pares; 2 ETH de residual van al AMM",
+        "10 ETH se emparejan entre pares; 0 ETH de residual",
+        "2 ETH se emparejan entre pares; 8 ETH de residual van al AMM",
+        "18 ETH se emparejan entre pares; nada llega al AMM",
+      ],
+      correct: 0,
+      explanation: "El solapamiento es el lado menor: 8 ETH de la venta de Alice coinciden con la compra de 8 ETH de Bob y se emparejan directamente. Los 10 − 8 = 2 ETH sobrantes son el residual neto que aún se enruta al pool.",
+    },
+    {
+      question: "El swap de un operador aterriza en un lote donde, esta vez, no hay nadie que quiera el lado opuesto en absoluto. ¿Qué ocurre?",
+      options: [
+        "No hay coincidencia de deseos, así que esencialmente toda la orden se convierte en residual y se enruta a la liquidez on-chain con una ejecución competitiva que maximiza el excedente",
+        "La operación se rechaza porque los lotes requieren una contraparte que empareje",
+        "El operador se ve forzado a esperar indefinidamente hasta que aparezca una orden opuesta",
+        "El solver inventa una contraparte falsa para completar el emparejamiento",
+      ],
+      correct: 0,
+      explanation: "Las CoWs son una bonificación, no un requisito. Sin demanda compensatoria, la orden es simplemente residual: se enruta a AMMs/otros mercados — aún a un precio uniforme y aún con excedente maximizado, solo que sin la porción gratuita entre pares.",
+    },
+    {
+      question: "¿Qué afirmación es VERDADERA sobre la competencia de solvers de CoW Protocol?",
+      options: [
+        "Cada solver presenta una liquidación completa para el lote entero, y el protocolo elige la que maximiza el excedente total del usuario",
+        "Cada solver pone precio exactamente a una orden, y el más rápido gana por prioridad de gas",
+        "Los solvers pujan en ETH por el derecho a hacer sándwich al lote",
+        "No hay competencia; un único solver oficial fija el precio de cada lote",
+      ],
+      correct: 0,
+      explanation: "La competencia ocurre a nivel de lote: los solvers proponen liquidaciones completas, y la condición de victoria es el excedente total del usuario — así que la carrera empuja el valor hacia los usuarios en lugar de hacia los buscadores.",
+    },
+    {
+      question: "¿Por qué emparejar dos órdenes opuestas entre pares elimina el MEV que un sándwich podría extraerles?",
+      options: [
+        "Porque la porción emparejada nunca se ejecuta como un swap público en el AMM, así que no hay operación en el pool a la que adelantarse, hacer back-running o recortar",
+        "Porque el solver paga al sándwich por adelantado",
+        "Porque las operaciones entre pares se liquidan en una blockchain privada oculta de los constructores",
+        "Porque el precio uniforme se fija tan alto que el sándwich deja de ser rentable",
+      ],
+      correct: 0,
+      explanation: "El MEV de sándwich se extrae del swap de una víctima en el pool. Un emparejamiento CoW se liquida operador-a-operador y nunca toca el pool, así que simplemente no hay swap público que un atacante pueda envolver — la superficie de ataque para esa porción desaparece.",
+    },
+  ]}
+/>
+
+## Dónde nos deja esto
+
+Las subastas por lotes y las intenciones son un salto genuino: reubican el MEV fuera del operador individual y lo ponen sobre una porción residual, no dan la ventaja de ordenación a nadie, y convierten la competencia entre solvers en una fuerza que ejecuta *tu* orden mejor. Pero fíjate en la palabra de carga que no dejaba de reaparecer en la sección de límites — **confianza**. El lote, los solvers, la maquinaria off-chain: confías en que todo eso sea honesto y competitivo.
+
+En la **lección 5** lo afrontamos de frente con **MEV-Share y SUAVE**: privacidad programable que te deja revelar *justo lo suficiente* de tu orden para conseguir una buena ejecución sin entregar el conjunto entero a los atacantes, y el final de partida de la secuenciación descentralizada que intenta retirar por completo al operador de confianza del cuadro. Hemos hecho la cola justa; a continuación nos preguntamos si siquiera necesitamos una cola.

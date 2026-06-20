@@ -1,0 +1,242 @@
+---
+title: "Intents & Solvers"
+description: "Stop signing the route, start signing the outcome. How intent-based trading and competing solvers — with UniswapX's Dutch auction as the worked example — push execution surplus and MEV protection back to the user."
+topic: "en/order-flow-auctions-and-mev-redistribution"
+order: 3
+minutes: 11
+updated: 2026-06-20
+---
+
+import { Callout, MCQ, FillBlank, Categorize, MatchConcepts, MindMap, Quiz, IntentSolverAuction } from '@/components/react';
+
+In the last two lessons, order-flow auctions and backrun refunds gave you a powerful trick: when someone profits *off* your trade, make them bid for the right and hand the surplus back to you. But notice the quiet assumption baked into all of it — **you still wrote the trade**. You picked the pool, the route, the slippage tolerance, the gas. The OFA just refunded value created around a transaction you had already fully specified.
+
+Intents tear up that assumption. Instead of signing *how* to get what you want — an exact path through an exact pool — you sign *what you want*: the outcome. "I'll give 1 ETH; I must walk away with at least 1,950 USDC; figure out the rest." A crowd of competing fillers then races to make it true, and the winner of that race is the one who gives **you** the best deal. This lesson is about that flip — and why it turns out to be one of the cleanest ways yet to route MEV back to the person who created it.
+
+<MCQ
+  client:visible
+  pretest
+  question="Which of these is an *intent* rather than a plain transaction?"
+  options={[
+    { text: "\"Call swap() on the ETH/USDC 0.05% pool, amountIn = 1 ETH, amountOutMin = 1,990 USDC, deadline = block 19,000,001.\"", correct: false, explanation: "This dictates the exact contract, function, pool, and arguments. It's an imperative recipe — a transaction." },
+    { text: "\"Give me at least 1,990 USDC for my 1 ETH, by any route, before the deadline.\"", correct: true, explanation: "Exactly. You state the outcome and constraints and leave the *route* to whoever can fill it best. That declarative form is an intent." },
+    { text: "\"Approve the router to spend 1 ETH, then route through Pool A then Pool B.\"", correct: false, explanation: "Two explicit, ordered contract calls — that's a transaction (a multicall), not an intent." },
+    { text: "\"Send 1 ETH to address 0xabc…\"", correct: false, explanation: "A direct, fully-specified transfer instruction. Imperative, exact — a transaction." },
+  ]}
+/>
+
+## Transactions vs intents
+
+A **transaction** is *imperative*. It is a precise, executable recipe: call this exact function, on this exact contract, with these exact arguments, in this order. The chain does literally what you said — no more, no less. If the pool you named moved against you, your transaction reverts (and you may still eat the gas). You are the router, the strategist, and the one holding the risk.
+
+An **intent** is *declarative*. You describe the desired end state and the constraints it must satisfy, and you stay silent on the method. "I will give 1 ETH. I must receive **at least** 1,950 USDC. Satisfy this however you like, before the deadline." How that gets done — which pools, which chains, which private inventory — is somebody else's problem.
+
+The analogy writes itself. A transaction is dictating **turn-by-turn directions** to a taxi driver: "left here, right at the lights, take the third exit." If a road's closed, you're stuck barking new directions. An intent is telling the driver your **destination** and your **budget** and letting them pick the route — and if there's a faster road, they take it and you arrive sooner. You signed the *destination*, not the *roads*.
+
+And here's the kicker: you sign that intent **off-chain**, usually **gasless**. It's a signed message, not a broadcast transaction. Nothing hits the chain until a filler decides to make it real — on their dime.
+
+| Dimension | Plain transaction | Intent |
+|---|---|---|
+| What you sign | The exact route + args (a recipe) | The outcome + constraints (a goal) |
+| Who picks the route | You, in advance | The filler/solver, at execution time |
+| Who pays gas | You | The solver (it's their transaction) |
+| Failed-tx risk | You — a revert can still cost you gas | The solver — they eat reverts |
+| MEV exposure | You're a sitting target for sandwichers | The solver internalizes or returns it |
+| Form | On-chain broadcast | Off-chain signed message |
+
+<MatchConcepts
+  client:visible
+  question="Match each piece of the intent world to what it actually is."
+  pairs={[
+    { term: "Transaction", definition: "An imperative, fully-specified recipe — exact contract, function, args, and order — that the chain executes verbatim." },
+    { term: "Intent", definition: "A declarative, signed goal — desired outcome plus constraints — that leaves the route to whoever fills it." },
+    { term: "Solver / filler", definition: "A third party who takes your signed intent and competes to produce the best execution that satisfies it." },
+    { term: "Limit price / min-output", definition: "The floor you bind into the intent — the least you'll accept — below which no fill is valid." },
+    { term: "Deadline", definition: "The expiry on the signed intent; after it, the order is dead and nobody can fill it." },
+  ]}
+/>
+
+## Solvers: the competitive fillers
+
+So who are these mysterious route-pickers? **Solvers** (also called **fillers**) are third parties — usually sophisticated trading firms running heavy optimization software — who take your signed intent and **compete to fill it**. Each one searches for the best way to satisfy your goal: routing across dozens of AMMs, tapping their own private inventory, splitting your order across venues, and even **netting it against other users' intents**. Whatever they do, they are contractually bound to deliver **at least** your minimum output, or the settlement contract rejects their fill.
+
+The magic isn't any single solver's cleverness — it's the **competition between them**. When ten firms are all trying to win the right to fill *your* order, the way they win is by offering *you* a better price than the next firm. That pressure squeezes the execution surplus out of the solvers and into your wallet. A lone solver would pocket the edge; a crowd of them coughs most of it up to you.
+
+Think of the travel-booking sites that race to beat each other on the same flight. None of them is doing it for love — each wants your click — but the *competition* is exactly why the fare you see is lower than what any one of them would quote alone. Solvers are that, for your swap.
+
+<Callout variant="info">
+**How a solver can beat a naive AMM swap.** A plain swap just shoves your order through one pool and accepts whatever price impact it causes. A solver has more moves: it can **internalize the backrun value** (capture the arbitrage your trade creates instead of leaving it for a sandwicher), **net your order against an opposite-direction order** so neither touches an AMM and both skip the fees, and reach **off-chain or private liquidity** an AMM can't see. Each of those lets it quote you *better than the pool* and still turn a profit — which is precisely the surplus competition forces it to share.
+</Callout>
+
+## UniswapX: a Dutch auction over your trade
+
+UniswapX is the headline example, and its mechanism is elegant: your intent becomes a **Dutch auction**.
+
+A **Dutch auction** is a *descending-price* auction. It starts at a price too good for any seller and **drops over time** until the first buyer says "yes." Here the roles invert nicely: the thing being auctioned is the *right to fill your order*, and the "price" is the **output guaranteed to you**. It starts **above** the current market price — so high that no solver would touch it, because filling there means filling at a loss — and **decays block by block** toward a floor.
+
+Solvers sit and watch the curve fall. The instant it drops to a level where the **cheapest** solver can fill *profitably*, they pounce and execute. Because solvers compete on cost, the most efficient one breaks even soonest — so the fill lands **earlier** and **higher** on the decay curve, which means **more of the surplus stays with you**. Add more (and cheaper) solvers and the fill happens even sooner, even higher.
+
+<IntentSolverAuction
+  client:visible
+  caption="Press play. You signed an intent to sell 1 ETH for as much USDC as possible. The output guaranteed to you starts above the 2,000 USDC market price — no solver fills at a loss — and decays each block. The instant the curve drops to where the cheapest solver can fill profitably, they execute. More and cheaper solvers competing means the fill lands earlier and higher, so you keep more — the winning solver pockets only their sliver of edge."
+/>
+
+Walk the numbers. Market price is \$2,000 per ETH. Your Dutch auction starts the guaranteed output at \$2,030 and decays toward a floor of \$1,970. At \$2,030, a solver who fills would have to source ETH→USDC worth \$2,000 and hand *you* \$2,030 — a \$30 loss, so nobody bites. As the curve falls, it crosses \$2,000 (still break-even after costs — no) and keeps dropping. The cheapest solver's all-in cost (gas, fees, slippage) is about \$6. The moment the guaranteed output decays to roughly **\$1,994**, that solver's math turns positive: they can fill, deliver you the guaranteed output, and keep the gap. With competition shaving timing tight, the fill lands near **\$1,990** — you pocket \$1,990 (well above your floor and only \$10 under mid-market), and the winning solver keeps their thin **~\$4** sliver of edge. No competing solver, and that auction would have crawled all the way to the \$1,970 floor before anyone bothered — costing you \$20 instead of \$10.
+
+<FillBlank
+  client:visible
+  question="Fill in the Dutch-auction mechanics."
+  text="In a UniswapX Dutch auction, the output guaranteed to the user starts {{above|below}} the market price, so that no solver fills at a {{loss|profit}}, and then {{decays|rises}} over time. The fill happens the moment the curve reaches the point where the {{cheapest|slowest}} solver can fill profitably — and more competition makes the fill land {{earlier and higher|later and lower}}, leaving more surplus with the user."
+  explanation="Start above market (no loss-making fills), decay downward, and the most cost-efficient solver pounces first. Tighter competition pulls the fill earlier/higher on the curve, so the user keeps more."
+/>
+
+## Why intents help the user
+
+Stack up what the user actually gains:
+
+- **Price improvement via competition.** As above: solvers bidding against each other surrender most of the execution edge to you. The \$1,990 fill versus a \$1,970-floor crawl is \$20 of surplus that competition handed back.
+- **Gasless, no failed-tx gas.** You sign a message, not a transaction. The **solver** broadcasts and pays gas — and if the fill reverts, the **solver eats the wasted gas**, not you. Your downside on a failed fill is simply… nothing happens.
+- **Built-in MEV protection.** Your intent never sits in the public mempool as a fat, sandwichable target. The solver internalizes the backrun/arbitrage value (or is forced by competition to price it back to you) instead of a sandwicher skimming it. The MEV your trade creates becomes *your* price improvement.
+- **Cross-chain and complex multi-step actions in one signature.** "Sell ETH on Arbitrum, bridge, and buy this token on Base, ending with at least X" is a single intent. The solver stitches together the bridges and swaps; you sign one outcome instead of orchestrating five fragile transactions.
+
+<Categorize
+  client:visible
+  question="Sort each property into where it belongs."
+  buckets={["True of a plain transaction swap", "True of an intent + solver"]}
+  items={[
+    { text: "You pick the exact pool and route in advance", bucket: "True of a plain transaction swap" },
+    { text: "You pay gas even if the swap reverts", bucket: "True of a plain transaction swap" },
+    { text: "Your order sits in the public mempool, sandwichable", bucket: "True of a plain transaction swap" },
+    { text: "You sign an off-chain message and usually pay no gas", bucket: "True of an intent + solver" },
+    { text: "Competing fillers bid to give you a better price", bucket: "True of an intent + solver" },
+    { text: "The filler eats the gas on a failed/reverted fill", bucket: "True of an intent + solver" },
+    { text: "A multi-chain, multi-step goal is expressed in one signature", bucket: "True of an intent + solver" },
+  ]}
+  explanation="Plain transactions make you the router, the gas-payer, and the mempool target. Intents push routing, gas, revert-risk, and MEV handling onto a competing solver — and let one signature express a complex goal."
+/>
+
+## The catch
+
+Intents are not magic, and pretending otherwise would be exactly the kind of thing this course exists to puncture.
+
+- **You depend on the solver set.** "Best execution" is only as good as the *solvers who actually bid*. If the competitive crowd thins out, the surplus that was flowing to you stays with the filler instead.
+- **Solver centralization risk.** Running a competitive solver takes serious capital, infrastructure, and order flow. That favors a handful of sophisticated firms — and a small set of solvers can quietly behave like an **oligopoly**, filling closer to the floor and keeping more of the edge. (We'll dig into solver/searcher centralization head-on in lesson 6.)
+- **Verifiability / trust.** Did the winning solver *really* give you the best possible fill, or just one that cleared your minimum while it kept the rest? You signed a floor, not a guarantee of optimality. Proving you got the genuine best execution is hard, and the system leans on competition — not cryptographic proof — to keep solvers honest.
+
+<Callout variant="warning">
+An intent protects you **at the floor**, not at the ceiling. The min-output you signed is the *worst* you'll accept — it says nothing about whether the solver squeezed out every last basis point of surplus or skimmed some for itself. With a deep, competitive solver pool that skim is tiny; with a thin or colluding one it can be quietly large. Intents move trust from "the mempool won't rob me" to "the solver market is competitive and honest." Better trust to rely on — but still trust.
+</Callout>
+
+<MindMap
+  client:visible
+  root={{
+    label: "Intents & Solvers",
+    children: [
+      {
+        label: "Transaction vs intent",
+        children: [
+          { label: "Transaction = imperative recipe (exact route/args)" },
+          { label: "Intent = declarative goal (outcome + constraints)" },
+          { label: "Intent signed off-chain, gasless" },
+        ],
+      },
+      {
+        label: "Solvers (fillers)",
+        children: [
+          { label: "Compete to fill best, bound to your min-output" },
+          { label: "Route AMMs / private inventory / net intents" },
+          { label: "Competition pushes surplus to the user" },
+        ],
+      },
+      {
+        label: "UniswapX Dutch auction",
+        children: [
+          { label: "Output starts above market, decays to a floor" },
+          { label: "Cheapest solver fills the instant it's profitable" },
+          { label: "More competition → earlier/higher fill" },
+        ],
+      },
+      {
+        label: "User benefits",
+        children: [
+          { label: "Price improvement" },
+          { label: "Gasless, no failed-tx gas" },
+          { label: "MEV protection built in" },
+          { label: "Cross-chain / multi-step in one signature" },
+        ],
+      },
+      {
+        label: "The catch",
+        children: [
+          { label: "Only as good as the solver set" },
+          { label: "Solver centralization / oligopoly risk" },
+          { label: "Best-execution is hard to verify" },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Check yourself: intents & solvers"
+  questions={[
+    {
+      question: "What is the defining difference between a transaction and an intent?",
+      options: [
+        "A transaction is signed off-chain; an intent is broadcast on-chain",
+        "A transaction specifies *how* (the exact route); an intent specifies *what* (the outcome and constraints)",
+        "A transaction has no deadline; an intent always does",
+        "A transaction is gasless; an intent costs gas",
+      ],
+      correct: 1,
+      explanation: "Imperative recipe vs declarative goal. The transaction dictates the route; the intent states the desired outcome and leaves the route open.",
+    },
+    {
+      question: "Your intent sells 1 ETH via a UniswapX Dutch auction that decays from above market toward a floor. Several solvers are competing. Compared with a world where only ONE solver exists, what happens to your fill?",
+      options: [
+        "It fills later and lower on the curve, so you get less",
+        "It fills earlier and higher on the curve, so you keep more surplus",
+        "It always fills exactly at the floor regardless of competition",
+        "It reverts, because solvers cancel each other out",
+      ],
+      correct: 1,
+      explanation: "Competition makes the cheapest solver pounce sooner — earlier and higher on the decay curve — leaving more of the price improvement with you.",
+    },
+    {
+      question: "Market is 2,000 USDC/ETH. The auction starts the guaranteed output at 2,030 and floors at 1,970; the cheapest solver's all-in cost is ~6 USDC and competition lands the fill near 1,990. Roughly how much edge does the winning solver keep?",
+      options: [
+        "About 30 USDC",
+        "About 4 USDC",
+        "About 20 USDC",
+        "About 1,990 USDC",
+      ],
+      correct: 1,
+      explanation: "The solver sources ~2,000 of value, hands you ~1,990, and pays ~6 in costs — netting roughly 4 USDC. You keep the rest of the surplus.",
+    },
+    {
+      question: "Which statement is TRUE about intents + solvers?",
+      options: [
+        "The user pays gas even when the solver's fill reverts",
+        "The solver pays gas and eats the cost of a reverted fill",
+        "Intents must always execute through a single named AMM pool",
+        "Intents are broadcast to the public mempool exactly like normal swaps",
+      ],
+      correct: 1,
+      explanation: "Because the fill is the solver's transaction, the solver pays gas and absorbs reverts. The user just signs an off-chain message.",
+    },
+    {
+      question: "A friend says 'intents guarantee you the best possible price.' What's the trap in that claim?",
+      options: [
+        "Intents only guarantee your *floor* (min-output); true best-execution depends on a competitive, honest solver set and is hard to verify",
+        "Intents guarantee the best price but only on Tuesdays",
+        "Intents can't set a minimum output at all",
+        "Intents always fill at the market mid-price exactly",
+      ],
+      correct: 0,
+      explanation: "You sign a floor, not an optimum. With a thin or colluding solver pool, a solver can clear your minimum while keeping more surplus — and proving you got the genuine best fill is hard.",
+    },
+  ]}
+/>
+
+A single-order Dutch auction is a beautiful way to squeeze surplus out of competing solvers and hand it to you. But it's still **one order, fought over in isolation**. What if your "sell 1 ETH for USDC" and someone else's "buy 1 ETH with USDC" are sitting in the same batch at the same moment? A one-at-a-time auction can't see that — it'll route both through AMMs and pay fees twice. Next lesson, **CoW Protocol** settles *many* intents **together**, unlocking the **coincidence of wants** (your trade directly offsetting someone else's, no AMM in the middle) and a **uniform clearing price** for everyone in the batch — a kind of surplus a one-shot auction simply can't reach.

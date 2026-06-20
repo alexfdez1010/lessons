@@ -77,6 +77,15 @@ export type { CategorizeProps, CategorizeItem } from '@/components/react/Categor
 export { FillBlank, default as FillBlankDefault } from '@/components/react/FillBlank';
 export type { FillBlankProps } from '@/components/react/FillBlank';
 
+export { BatchAuctionCoW, default as BatchAuctionCoWDefault } from '@/components/react/BatchAuctionCoW';
+export type { BatchAuctionCoWProps } from '@/components/react/BatchAuctionCoW';
+
+export { OfaRefundSplit, default as OfaRefundSplitDefault } from '@/components/react/OfaRefundSplit';
+export type { OfaRefundSplitProps } from '@/components/react/OfaRefundSplit';
+
+export { IntentSolverAuction, default as IntentSolverAuctionDefault } from '@/components/react/IntentSolverAuction';
+export type { IntentSolverAuctionProps } from '@/components/react/IntentSolverAuction';
+
 export { PresentValueDecay, default as PresentValueDecayDefault } from '@/components/react/PresentValueDecay';
 export type { PresentValueDecayProps } from '@/components/react/PresentValueDecay';
 
