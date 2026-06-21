@@ -292,6 +292,22 @@ empty, then implement only the lowest-`order` entry. Inspect the existing workin
 carefully and never discard or overwrite changes you did not create. Work only inside this
 repository.
 
+BEFORE YOU EXIT, self-check these recurring KaTeX/MDX-dollar pitfalls -- they are the cause
+of nearly every validation failure and repair round-trip in this system, and a repair
+round-trip costs a full extra re-validation. Use short read-only scans (grep) over the files
+you wrote and FIX any hit in-tree (these scans are not the forbidden validation/build
+commands):
+- Currency in PROSE or Markdown tables: write an escaped `\$100`. A bare `$` there opens a
+  KaTeX math span and breaks rendering.
+- Currency in JSX island props (e.g. a `Quiz`/`MCQ` `questions` array, a `caption`/`label`):
+  write a BARE `$100`. An escaped `\$` inside a JS attribute string is wrong and fails
+  `check:island-latex`.
+- NEVER put `\$` INSIDE a `$…$`/`$$…$$` math span: it closes the delimiter and leaves a stray
+  `\`, which crashes the MDX/acorn parser in `check:latex`. Keep currency outside the math span.
+- Inside math write `q^*`, not `q^\*` (`\*` is an undefined KaTeX control sequence).
+- LaTeX thousand-separators `{,}` belong ONLY inside `$…$` math; in prose/tables/props write a
+  plain comma (`1,000`), or `{,}` is parsed as a JS expression and crashes the MDX parser.
+
 IMPORTANT -- you are running inside a wrapper that owns ALL validation and publishing:
 - Do NOT run `bun run pre-commit`, `bun run build`, `bun run check`, `og:generate`, any
   type-check, or any other validation/build/long-running command. The wrapper runs full
