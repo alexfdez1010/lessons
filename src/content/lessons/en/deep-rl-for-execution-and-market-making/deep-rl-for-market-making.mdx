@@ -1,0 +1,332 @@
+---
+title: "Deep RL for Market Making"
+description: "Quoting both sides of the book as continuous control — why PPO/SAC fit and DQN doesn't, beating Avellaneda–Stoikov out-of-sample, inventory-skew spread capture, adverse selection, and the market-making reward minefield."
+topic: "en/deep-rl-for-execution-and-market-making"
+order: 5
+minutes: 18
+updated: 2026-06-21
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, AsQuotingSim, InventorySkew, MarketMakingQuoteLadder } from '@/components/react';
+
+Execution gave you a clean mandate: someone hands you an order and a deadline, you slice it cheaply, you go home. Market making rips that mandate up. Nobody tells you what to buy or sell. You stand in the middle of the book quoting a price you'll *buy* at (your bid) and a price you'll *sell* at (your ask), and you get paid the gap between them — the **spread** — every time both sides trade against you. The catch: you don't choose your trades. The *market* chooses them, by hitting whichever quote it likes, and it tends to hit the one that's about to hurt you. You hold inventory you never wanted, you carry directional risk you never asked for, and your whole job is to keep collecting pennies of spread without getting flattened by the dollars of risk those pennies sit on top of.
+
+You already met the analytic version of this fight in the high-frequency market-making course: Avellaneda–Stoikov, reservation prices, inventory skew, adverse selection. This lesson does the same job with a **deep RL agent** — and the punchline up front is that market making is a far nastier RL problem than execution, because the action is two-sided and continuous, the reward is a minefield of perverse incentives, and the benchmark you have to beat (AS) is genuinely good.
+
+<MCQ
+  client:visible
+  pretest
+  question="A market maker quotes a bid of $99.98 and an ask of $100.02 on a stock with a $100.00 mid. Where does the maker's profit come from, in the ideal case?"
+  options={[
+    { text: "From buying at the bid and selling at the ask on roughly balanced two-sided flow — capturing the $0.04 spread per round trip while staying near flat inventory.", correct: true },
+    { text: "From correctly predicting the direction of the mid price and holding inventory until it moves.", },
+    { text: "From the exchange paying a fixed salary for posting quotes, regardless of fills.", },
+    { text: "From always being filled on exactly one side, accumulating a large directional position.", },
+  ]}
+  explanation="A market maker earns the spread by being the counterparty on both sides: buy low at the bid, sell high at the ask, pocket the gap. The ideal is balanced flow that nets to roughly flat inventory. Predicting direction is speculation, not market making; being filled on only one side leaves you with unwanted directional inventory — the thing the maker is trying to avoid."
+/>
+
+## Market making as continuous control
+
+Picture a vending machine that resets its prices every second. It posts what it'll pay for a can (bid) and what it'll charge for one (ask). Customers wander up and either sell it a can or buy one — the machine doesn't get to pick. Its only lever is *where it sets the two prices each second*. Tilt them, widen them, narrow them — that's the entire job. A market maker is that machine, except the cans are shares and the customers occasionally know something the machine doesn't.
+
+Formally, every step the agent emits **two numbers**: a bid offset and an ask offset relative to the mid (equivalently, a **reservation-price skew** plus a **half-spread**). That action lives in a *continuous* 2D space — you can quote 1.3 ticks below mid or 2.7 ticks above, not just a fixed menu. This is the single most important structural fact about market-making RL, and it's why the algorithm choice is forced.
+
+- **DQN struggles.** A Deep Q-Network outputs one Q-value per discrete action. Two continuous knobs means you'd have to chop each into a grid and take the Cartesian product — say 21 bid levels × 21 ask levels = 441 discrete actions, and you've still lost the fine resolution that matters when an edge is a fraction of a tick. Worse, neighbouring quotes have nearly identical value, so the argmax flickers noisily between them.
+- **Policy-gradient / actor–critic fit.** PPO and SAC parameterize a policy that outputs a *continuous* action directly — typically a Gaussian over (skew, half-spread). They optimize the quotes as real numbers, with built-in exploration (the policy's own variance) and stable updates (PPO's clipped objective, SAC's entropy bonus). Continuous action → actor–critic. That's the rule.
+
+The state the agent conditions on is rich: **inventory** $q$, the **mid** price, the current **spread**, recent **volatility**, **order-book imbalance** (more bids than asks resting, or vice versa), **recent fills** (did you just get hit?), and **time** (toward a session close or an inventory-reset point). The reward over a step is the whole P&L story compressed into one number:
+
+$$r_t = \underbrace{\text{spread captured on fills}}_{\text{good}} \; - \; \underbrace{\lambda_{\text{inv}}\, q_t^2}_{\text{inventory risk}} \; - \; \underbrace{\text{adverse-selection loss}}_{\text{getting picked off}} \; - \; \underbrace{\text{fees}}_{} \; + \; \underbrace{\text{rebates}}_{}$$
+
+Every term in that line is a place the agent can be tricked. Hold that thought — the last section is devoted to it.
+
+<MCQ
+  client:visible
+  question="Why is DQN a poor fit for a market-making agent that quotes a continuous (skew, half-spread) action, while PPO or SAC fit naturally?"
+  options={[
+    { text: "DQN must discretize the 2D continuous action into a grid and take an argmax over the product, losing resolution and flickering between near-identical quotes; actor–critic methods output the continuous action directly with built-in exploration.", correct: true },
+    { text: "DQN cannot use a neural network, so it can't represent the order-book state at all.", },
+    { text: "PPO and SAC are value-based methods and value-based methods always beat Q-learning.", },
+    { text: "DQN requires a known transition model and market making has none.", },
+  ]}
+  explanation="The action is two continuous knobs. DQN outputs one Q-value per discrete action, so continuous control forces a coarse grid (e.g. 21×21 = 441 actions) with poor resolution and a noisy argmax over near-identical neighbours. PPO/SAC parameterize a continuous policy (a Gaussian over the action) and optimize the quotes as real numbers — the natural fit for continuous control. PPO/SAC are policy-gradient/actor–critic, not value-based, and none of these methods needs a known transition model."
+/>
+
+### When to use it
+
+Reach for actor–critic market-making RL when your action is genuinely continuous and your state is high-dimensional — multiple book levels, microstructure features, a vol estimate. If you've deliberately collapsed the problem to "wide / medium / tight" three-way quoting on a slow, liquid name, a discrete method (even tabular) can be fine and far easier to debug. The continuous-control machinery earns its complexity only when fractional-tick resolution and many state features actually move your P&L.
+
+## Avellaneda–Stoikov, the baseline to beat
+
+Before you let a neural network anywhere near the book, you write down the answer you're trying to beat. Avellaneda–Stoikov (2008) is that answer. It is the analytic optimum for a market maker who faces a mid that random-walks with constant volatility $σ$, an exponential **fill intensity** (the further your quote sits from the mid, the exponentially less likely it gets hit), and terminal aversion to leftover inventory. In one block:
+
+$$r = s - q\,\gamma\,\sigma^2\,(T - t) \qquad \delta = \gamma\,\sigma^2\,(T - t) + \frac{2}{\gamma}\ln\!\left(1 + \frac{\gamma}{k}\right)$$
+
+The first equation is the **reservation price** $r$: your *personal* risk-adjusted fair value, shoved away from the mid $s$ in proportion to your inventory $q$, your risk aversion $γ$, variance $σ^2$, and time remaining $(T-t)$. Get long ($q>0$) and $r$ drops below the mid — you've quietly decided you'd rather sell. The second is the **optimal half-spread** $δ$: half from inventory risk, half from the log term that trades off fill probability against per-fill profit via the arrival intensity $k$. Your quotes are then $\text{ask} = r + δ/2$ and $\text{bid} = r - δ/2$. Drag the sliders below and watch both quotes slide as a unit while the spread sets their width.
+
+<AsQuotingSim
+  client:visible
+  title="Avellaneda–Stoikov: the analytic optimum your agent must beat"
+  caption="Inventory steers the whole two-sided quote via the reservation price r; risk aversion, volatility, and time set how wide the spread wraps around it. This is the closed form — drag q long and both quotes shade down to bleed off inventory. A deep agent has to match this in AS's own world before it's allowed to claim it beat AS in a harder one."
+/>
+
+Here is the course creed, and it is not optional: **a deep market-making agent that can't beat Avellaneda–Stoikov out-of-sample has earned nothing.** AS is one block of algebra. If your PPO agent, with its GPU-hours and its 400-dimensional state, merely *ties* AS on held-out data, you have built an extremely expensive way to reproduce a 2008 formula. And the sharper version: **in AS's own idealized world — constant vol, exponential intensity, no signal — a correct agent should re-derive AS**, the same way an execution agent re-derives Almgren–Chriss. Failing that recovery isn't a stylistic difference; it's a bug.
+
+<MatchConcepts
+  client:visible
+  question="Match each Avellaneda–Stoikov quantity to what it does."
+  pairs={[
+    { term: "Reservation price r = s − q·γ·σ²·(T−t)", definition: "Your inventory-adjusted fair value; it steers BOTH quotes away from the mid as inventory grows" },
+    { term: "Optimal half-spread δ", definition: "How wide to quote — sized by risk aversion, volatility, time left, and order-arrival intensity" },
+    { term: "Risk aversion γ", definition: "The exchange rate between earning spread and fearing inventory; higher γ skews and widens more" },
+    { term: "Arrival intensity k", definition: "How fill probability decays with distance from the mid; it tunes the log term in the spread" },
+  ]}
+  explanation="The reservation price is the steering wheel (it moves where the two-sided quote sits), the half-spread is the throttle (how wide). γ governs how aggressively you skew and widen for a unit of inventory risk; k governs the fill-probability-vs-profit trade-off in the spread's log term. AS is the closed-form setting of all four — the baseline a deep agent must match before it can claim to beat."
+/>
+
+### When to use it
+
+Use bare AS (no RL) when reality genuinely resembles its assumptions: a single liquid name, roughly constant volatility over your horizon, no exploitable short-term signal, symmetric uninformed flow. It's transparent, instant to compute, and impossible to overfit. Graduate to a learned agent only when those assumptions crack — toxic flow you can detect, regime-dependent volatility, multi-level book dynamics, or asymmetric flow — and even then, keep AS running as the benchmark you report against on every out-of-sample slice.
+
+## Inventory-penalised spread capture — the core trade-off
+
+This is the beating heart of market making, so slow down here. You have one dial that controls everything: **how wide you quote.**
+
+Quote **tight** (bid and ask hugging the mid) and you win the race for fills — flow hits you constantly, spread piles up. But every fill dumps inventory on you, and inventory is directional risk: a pile of long inventory is just a leveraged bet that the price goes up, made by a desk whose entire thesis is "I have no opinion on direction." Quote **wide** and inventory risk plummets — but so do your fills, and a market maker with no fills earns no spread. Tight = more spread, more risk. Wide = less risk, less spread. There is no setting that maximizes both.
+
+The escape hatch is **skew**, the AS reservation-price move made concrete. When you're long, *lower both quotes*: your now-cheap ask gets lifted (someone buys your excess off you) while your now-stingy bid rarely gets hit (you stop accumulating). When you're short, raise both. Skew is a steering wheel that pushes inventory back toward flat without your having to cross the spread and pay up yourself. The chart below shows the *whole* linear relationship — sweep inventory and watch both quotes slide together while the spread (the gap) holds roughly constant.
+
+<InventorySkew
+  client:visible
+  title="Skew steers inventory back to flat"
+  caption="As inventory goes from short to long, the entire two-sided quote slides down: long → both quotes drop so your ask gets lifted and your bid goes quiet, bleeding inventory back toward zero. The gap between bid and ask (the spread) barely changes — skew moves WHERE the quotes sit, the spread sets HOW WIDE."
+/>
+
+### A worked example
+
+Start flat ($q=0$) on a stock with mid \$100.00, quoting a symmetric bid \$99.95 / ask \$100.05 (a \$0.10 spread, so \$0.05 captured each time you're on the right side). Walk through four fills of 100 shares each, and crucially let the mid drift while you carry inventory.
+
+| Step | Event | Fill px | Inventory after | Mid after | Inventory mark-to-market |
+|---|---|---|---|---|---|
+| 1 | Sell 100 @ ask | \$100.05 | −100 | \$100.00 | \$0 |
+| 2 | Buy 100 @ bid | \$99.95 | 0 | \$100.00 | \$0 |
+| 3 | Buy 100 @ bid | \$99.95 | +100 | \$99.90 | −\$10 |
+| 4 | Sell 100 @ ask | \$100.05 | 0 | \$99.90 | \$0 |
+
+Spread captured: steps 1+2 are a clean round trip — you sold at \$100.05 and bought back at \$99.95, banking 100 × \$0.10 = \$10. Steps 3+4 look like another \$10 round trip on paper. But between steps 3 and 4 you were **long 100 shares while the mid fell \$0.10**, a paper loss of 100 × \$0.10 = \$10 on that inventory. Net P&L across the four fills: \$10 (clean round trip) + \$10 (gross spread on the second pair) − \$10 (inventory mark-to-market) = **\$10**, not the \$20 the spread capture alone suggested. The inventory you carried in step 3 quietly ate one whole round trip's worth of profit. That single line — *spread captured minus what your carried inventory did against you* — is the entire game.
+
+<Callout variant="info" title="Spread is the wage; inventory is the risk you take to earn it">
+Read the trade-off as a job. The spread is your hourly wage — guaranteed-ish income for showing up and quoting. Inventory is the unpaid overtime risk: the longer and larger you sit on a position you didn't choose, the more a random price move can erase a whole shift's wages in one tick. A great market maker isn't the one who quotes tightest (that just maximizes the risk they take); it's the one who collects the most spread *per unit of inventory risk carried*. Skew is how you keep that ratio high.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Complete the core market-making trade-off."
+  text="Quoting tighter wins more {{fills|rebates|signals}} and captures more spread, but piles up {{inventory|latency|fees}} — directional risk you never wanted. Quoting wider cuts that risk but starves you of fills. {{Skewing|Widening|Crossing}} the quotes — lowering both when long, raising both when short — steers inventory back toward flat without paying the spread yourself."
+  explanation="Tight quotes win fills (spread income) but accumulate inventory (directional risk). Wide quotes do the reverse. Skew is the steering input: it shifts where the two-sided quote sits to encourage the offsetting trade and discourage piling on more, nudging inventory back to flat for free — distinct from widening (which changes how much you earn per fill) and from crossing the spread (which costs you)."
+/>
+
+## Adverse selection — why getting filled is bad news
+
+Here's the cruelty at the centre of market making: **the fill you wanted is the fill that hurts.** You posted a bid hoping a random seller would hand you cheap shares. Sometimes that's who shows up. But sometimes it's a trader who *knows* the price is about to drop — they sell to you at your bid a heartbeat before the mid falls, and now you're long at a price that's already stale. You got your fill. You also got robbed. That's **adverse selection**: the systematic tendency for informed flow to pick off the quote that's about to be wrong.
+
+The analogy is a used-car lot that buys any car at a posted price. Most days you buy ordinary cars and resell at a markup. But the people most eager to sell *at your posted price* are disproportionately the ones whose cars are secretly lemons — they know something you don't. Quote a fixed buy price and you'll find yourself owning a yard full of lemons. The fix isn't to stop buying; it's to *read the signals* of who's selling and adjust.
+
+For a market maker, the loudest such signal is **order-flow imbalance**: when the resting and incoming volume is lopsided toward one side, that side is more likely informed. A wave of aggressive sells eating the bid is exactly when your bid is about to be the wrong price. A deep agent — unlike vanilla AS, which assumes symmetric uninformed flow — can condition on imbalance and recent-fill features to **widen and skew defensively** when toxicity rises: pull the bid back, fatten the spread, refuse to keep catching the falling knife. The same imbalance feature that warns you also tells you which way to skew. AS's blind spot is precisely this: it has no slot for "this flow looks informed," and that's one of the clearest places a learned agent earns its keep.
+
+<Callout variant="warning" title="A market maker who treats every fill as good news goes broke">
+The naive instinct — "fills are revenue, maximize fills" — is exactly backwards under adverse selection. The fills you capture most easily are the toxic ones: informed traders rush to hit a quote that's about to be wrong, so a tight, static quote gets *preferentially* filled right before it loses. An agent rewarded purely for fill count or gross spread learns to quote tight into toxic flow and bleeds from a thousand "winning" fills. Getting filled is a cost signal as much as a revenue signal; a good agent widens or skews exactly when fills get suspiciously easy.
+</Callout>
+
+<MCQ
+  client:visible
+  allowMultiple
+  question="Select EVERY statement about adverse selection that is correct."
+  options={[
+    { text: "Informed traders preferentially hit the quote that is about to be wrong, so easy fills can be a warning sign rather than pure profit.", correct: true },
+    { text: "Order-flow imbalance is a usable feature for detecting likely informed flow and skewing/widening defensively.", correct: true },
+    { text: "A deep agent can condition on toxicity signals to widen the spread when flow looks informed — something classic Avellaneda–Stoikov, assuming symmetric uninformed flow, does not do.", correct: true },
+    { text: "Adverse selection is eliminated by simply quoting tighter, since tight quotes get more fills.", },
+    { text: "Adverse selection only matters at the end of the trading day and can be ignored intraday.", },
+  ]}
+  explanation="Adverse selection is the systematic edge informed traders have when they pick off a stale quote: the easy fill is often the toxic one. Order-flow imbalance is a workable toxicity proxy, and a learned agent can widen/skew on it — a genuine edge over plain AS, which assumes symmetric uninformed flow. Quoting tighter makes adverse selection WORSE (you get picked off more), and it's an every-trade phenomenon, not an end-of-day one."
+/>
+
+## The reward minefield
+
+Now the centerpiece, and the reason market-making RL is so much harder than execution. In execution the objective is almost unambiguous: finish the order cheaply, with a terminal penalty forcing completion. Market making has **no such anchor**. You're trying to encode "earn spread, but don't take too much inventory risk, and don't get picked off, net of fees" into a single scalar reward — and almost every honest-looking way to write it down hides a perverse incentive the agent will find and exploit with malicious glee. Reward design *is* the job here.
+
+Tour the minefield, because each mine has blown up a real desk's prototype:
+
+- **Reward only realized spread.** "Pay the agent for spread it actually captures on round trips." Sounds clean. The agent discovers the safest way to never realize a loss is to **never fill** — it quotes absurdly wide, sits at zero inventory, takes zero risk, collects zero reward, and a flat-line zero *looks safe* next to any strategy that occasionally dips negative. You've trained a very expensive agent to refuse to make markets.
+- **Reward mark-to-market P&L with no inventory penalty.** "Just reward total P&L including unrealized." Now the agent notices that the fastest way to make P&L go up is to *be right about direction* — so it stops balancing its quotes and starts loading up inventory on whichever way it thinks the mid is headed. Congratulations, you've trained a **directional speculator** wearing a market-maker costume. It'll look brilliant in a trending backtest and detonate in a reversal.
+- **Penalize inventory too hard.** Overcorrect from the last bug by slapping a huge $λ_{\text{inv}}\, q^2$ penalty on any nonzero position. The agent concludes that the only truly safe inventory is *none*, and the only way to guarantee none is to **not quote** — or to quote so wide it never fills. Same dead market as the first mine, reached from the opposite direction.
+- **Ignore adverse selection.** Reward gross spread and inventory control but say nothing about *who* you traded with. The agent quotes tight to rack up fills, gets systematically picked off by informed flow, and **bleeds** — each fill scores positive spread the instant it happens, and the loss only shows up later as the mid moves against the freshly-acquired inventory, by which time the credit assignment is muddy. The agent never connects "tight quote into toxic flow" with "loss," so it never stops.
+
+The thread through all four: a market-making reward must **simultaneously** reward fills (or the agent won't quote), penalize inventory (or it speculates) — but not so hard it goes catatonic — and account for adverse selection (or it bleeds on toxic flow). The $q^2$ inventory penalty has to be *tuned*, not cranked: enough to discourage piling on, not so much that flat-and-silent dominates.
+
+The disciplined tool is **potential-based reward shaping**. Add shaping terms of the form $F(s,s') = \gamma\,\Phi(s') - \Phi(s)$ for some potential $Φ$ (e.g. a smooth function of inventory) — this provably leaves the *optimal policy unchanged* while making the gradient point the right way during learning. It nudges the agent toward flat inventory and away from toxic fills *without* secretly rewriting the objective into "never trade." Crude penalties change what's optimal; potential-based shaping only changes how fast you get there. When you must add an inventory term, prefer the shaped, potential-based version over a raw fixed penalty.
+
+<Categorize
+  client:visible
+  question="Sort each broken market-making reward by the pathological agent it produces."
+  buckets={["Refuses to quote / never fills", "Becomes a directional speculator", "Bleeds on toxic flow"]}
+  items={[
+    { text: "Reward only realized spread, with no incentive to actually fill.", bucket: "Refuses to quote / never fills" },
+    { text: "Penalize any nonzero inventory with an enormous q² term.", bucket: "Refuses to quote / never fills" },
+    { text: "Reward mark-to-market P&L with no inventory penalty at all.", bucket: "Becomes a directional speculator" },
+    { text: "Reward gross spread and inventory control but ignore who you trade with.", bucket: "Bleeds on toxic flow" },
+    { text: "Credit each fill as positive spread instantly, never accounting for the later adverse mid move.", bucket: "Bleeds on toxic flow" },
+  ]}
+  explanation="Reward-only-realized-spread and crank-the-inventory-penalty both make doing nothing the safest play, so the agent quotes too wide to fill. Mark-to-market P&L with no inventory penalty rewards being right about direction, breeding a speculator. Ignoring counterparty toxicity (and crediting fills instantly without the later adverse move) lets the agent quote tight into informed flow and bleed. The cure is a tuned inventory penalty plus adverse-selection awareness, ideally via potential-based shaping that doesn't rewrite the objective."
+/>
+
+The price-ladder below is the picture to keep in your head while reasoning about reward. It's the order book with the maker's *own* bid and ask sitting in it; push the inventory slider and watch both quotes skew (the reward's inventory term made visible), push the half-spread slider and watch the gap fatten (the spread-vs-fill-probability term). Reading it: the column of resting orders is the book, your two highlighted levels are where *you* are exposed, and the distance from the mid is exactly the knob the reward is fighting over — too tight and you fill into everything (including toxic flow), too wide and you never earn.
+
+<MarketMakingQuoteLadder
+  client:visible
+  title="Your quotes inside the live order book"
+  caption="The price ladder is the book; the two highlighted rungs are your own bid and ask. Drag inventory and both rungs skew together (the inventory term steering you back to flat); drag the half-spread and the gap between your rungs widens (trading fill probability for per-fill profit). Tight rungs catch every fill — including the toxic ones the reward must learn to fear; wide rungs are safe but earn nothing."
+/>
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Why does potential-based shaping let you nudge the agent toward flat inventory without turning it into the "never trade" agent from the first mine?</summary>
+
+**Answer.** A raw fixed penalty like a giant $-λ q^2$ *changes the objective itself*: it genuinely makes "hold no inventory" the most rewarding state, so an agent that maximizes reward correctly will discover that not quoting dominates. Potential-based shaping adds terms of the form $γΦ(s') − Φ(s)$, which **telescope** over any trajectory to a constant that depends only on start and end states — so the *ranking of policies by total return is provably unchanged* (Ng, Harada & Russell, 1999). It reshapes the gradient (the agent learns faster that drifting toward flat is good) without moving the optimum. So you get the learning signal toward flat inventory while the true objective — earn spread net of real risk — stays intact, and the catatonic "never trade" policy is not secretly made optimal.
+
+</details>
+</Reveal>
+
+<MCQ
+  client:visible
+  question="Spaced recall: back in the continuous-control section, the action was (skew, half-spread) and the algorithm of choice was actor–critic. Connecting that to the reward minefield, why is the continuous action especially dangerous on a badly-shaped reward?"
+  options={[
+    { text: "A continuous policy can dial the half-spread arbitrarily wide, so a reward that makes inactivity look safe lets the agent slide smoothly to a never-fill quote — there's no discrete floor stopping it.", correct: true },
+    { text: "Continuous actions make DQN's argmax unstable, which corrupts the reward signal directly.", },
+    { text: "Actor–critic methods cannot represent inventory penalties, so the reward is always ignored.", },
+    { text: "Continuous control removes adverse selection, so the reward never needs an adverse-selection term.", },
+  ]}
+  explanation="Because the half-spread is a continuous knob, an agent facing a reward where doing nothing looks safe (reward-only-realized-spread, or an over-cranked inventory penalty) can smoothly widen its quotes toward 'never fills' — there's no discrete granularity forcing it to keep quoting. That's the first mine, reached via the continuous action space from the opening section. The other options misstate the algorithm (actor–critic handles penalties fine) or the world (continuous control doesn't abolish adverse selection)."
+/>
+
+### When to use it
+
+Spend your effort on reward design *before* your effort on architecture — a perfectly-tuned PPO on a broken reward learns the wrong thing flawlessly. Start from the AS objective (it already encodes spread minus inventory risk sensibly), add an explicit adverse-selection / toxicity term only once you have a usable imbalance feature, and prefer potential-based shaping over raw penalties whenever you need to steer behaviour. And always sanity-check: in AS's idealized world the shaped reward should reproduce AS, and out-of-sample the agent must *beat* AS net of fees, or the whole apparatus has earned nothing.
+
+<MindMap
+  client:visible
+  title="Deep RL for market making — the whole map"
+  caption="From two-sided continuous quoting, through the AS baseline and the inventory/adverse-selection trade-offs, to the reward minefield that defines the problem."
+  root={{
+    label: "Deep RL Market Making",
+    children: [
+      {
+        label: "Continuous control",
+        children: [
+          { label: "Action = (skew, half-spread), 2D continuous" },
+          { label: "State = inventory, mid, spread, vol, imbalance, fills, time" },
+          { label: "PPO / SAC fit; DQN must discretize and struggles" },
+        ],
+      },
+      {
+        label: "Baseline to beat: AS",
+        children: [
+          { label: "r = s − q·γ·σ²·(T−t)" },
+          { label: "δ = γσ²(T−t) + (2/γ)·ln(1+γ/k)" },
+          { label: "Re-derive AS in its world; beat it out-of-sample or earn nothing" },
+        ],
+      },
+      {
+        label: "Inventory vs spread",
+        children: [
+          { label: "Tight → more fills, more risk" },
+          { label: "Wide → less risk, fewer fills" },
+          { label: "Skew steers inventory to flat" },
+        ],
+      },
+      {
+        label: "Adverse selection",
+        children: [
+          { label: "Easy fills are often toxic" },
+          { label: "Order-flow imbalance = toxicity signal" },
+          { label: "Widen / skew defensively" },
+        ],
+      },
+      {
+        label: "Reward minefield",
+        children: [
+          { label: "Only realized spread → never fills" },
+          { label: "MtM P&L, no inventory penalty → speculator" },
+          { label: "Inventory penalty too hard → refuses to quote" },
+          { label: "Ignore adverse selection → bleeds on toxic flow" },
+          { label: "Cure: tuned penalty + potential-based shaping" },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Market-making checkpoint"
+  questions={[
+    {
+      question: "An agent quotes a continuous (skew, half-spread). Which algorithm family is the natural fit and why?",
+      options: [
+        { text: "Actor–critic / policy gradient (PPO, SAC) — they parameterize a continuous policy and optimize the quotes as real numbers, with built-in exploration.", correct: true },
+        { text: "DQN — it outputs one Q-value per action, which is ideal for two continuous knobs.", },
+        { text: "Tabular Q-learning — continuous actions are trivially represented in a lookup table.", },
+        { text: "Any value-based method, since value-based methods always dominate policy-gradient ones.", },
+      ],
+      explanation: "Two continuous knobs means a continuous action space. PPO/SAC output a continuous policy (a Gaussian over the action) directly, with exploration baked in. DQN and tabular methods must discretize, losing fractional-tick resolution and producing a noisy argmax over near-identical quotes.",
+    },
+    {
+      question: "What is the course creed about Avellaneda–Stoikov?",
+      options: [
+        { text: "A deep agent that can't beat AS out-of-sample has earned nothing; in AS's own idealized world a correct agent should re-derive AS.", correct: true },
+        { text: "AS is obsolete and any neural network beats it trivially, so it's not worth implementing.", },
+        { text: "AS is unbeatable, so deep RL has no role in market making.", },
+        { text: "AS only applies to execution, not to market making.", },
+      ],
+      explanation: "AS is the analytic optimum under its assumptions and a free, transparent benchmark. Matching it out-of-sample with a giant model is failure; the agent must beat it (net of fees) where reality breaks AS's assumptions, and reproduce it where it doesn't — the same re-derivation sanity check execution agents owe Almgren–Chriss.",
+    },
+    {
+      question: "You started flat, sold 100 @ $100.05, then bought 100 @ $99.95 (a clean round trip), then bought another 100 @ $99.95 while the mid fell from $100.00 to $99.90, then sold 100 @ $100.05. Gross spread capture looked like $20. Why is net P&L only about $10?",
+      options: [
+        { text: "While long 100 shares the mid fell $0.10, a $10 mark-to-market loss on carried inventory that offsets one round trip's gross spread.", correct: true },
+        { text: "Exchange fees consumed exactly $10 of the spread.", },
+        { text: "The second round trip never actually filled, so only $10 was earned.", },
+        { text: "Spread capture is always halved by convention, regardless of inventory.", },
+      ],
+      explanation: "Between the third and fourth fills you carried +100 shares while the mid dropped $0.10, a 100 × $0.10 = $10 mark-to-market loss. Net P&L is spread captured minus what the carried inventory did against you: $20 gross − $10 inventory loss = $10. Carried inventory quietly ate a whole round trip.",
+    },
+    {
+      question: "Under adverse selection, why can a high fill rate be a warning rather than a triumph?",
+      options: [
+        { text: "Informed traders preferentially hit the quote that is about to be wrong, so easy fills are disproportionately toxic and lose money as the mid moves against the new inventory.", correct: true },
+        { text: "High fill rates always trigger exchange penalties that exceed the spread.", },
+        { text: "Fills are irrelevant to P&L; only the mid price matters.", },
+        { text: "A high fill rate proves the quotes are too wide, not too tight.", },
+      ],
+      explanation: "The fills you capture most easily are often from informed traders picking off a stale quote right before it moves. An agent that maximizes fill count quotes tight into toxic flow and bleeds. The defense is reading toxicity (e.g. order-flow imbalance) and widening/skewing — a genuine edge over plain AS, which assumes symmetric uninformed flow.",
+    },
+    {
+      question: "A team rewards their market-making agent with pure mark-to-market P&L and no inventory penalty. What failure should they expect?",
+      options: [
+        { text: "The agent becomes a directional speculator — it stops balancing quotes and loads inventory on its directional view, looking great in trending backtests and blowing up in reversals.", correct: true },
+        { text: "The agent quotes perfectly symmetric spreads forever and never holds inventory.", },
+        { text: "The agent refuses to quote because P&L rewards are too risky.", },
+        { text: "The agent perfectly replicates Avellaneda–Stoikov with no further tuning.", },
+      ],
+      explanation: "With no inventory penalty, the fastest way to grow mark-to-market P&L is to be right about direction, so the agent loads up on its view — a speculator in a market-maker costume. The fix is a tuned inventory penalty (ideally potential-based shaping) so the agent earns spread while staying near flat. Refusing to quote is the OTHER mine (only-realized-spread or an over-cranked penalty).",
+    },
+  ]}
+/>
+
+## Where this goes next
+
+You've now seen market making as a two-sided continuous-control problem: the action is (skew, half-spread), which forces actor–critic methods like PPO and SAC; the benchmark is Avellaneda–Stoikov, which a serious agent must re-derive in its world and beat out-of-sample; the core trade-off is spread capture against inventory risk, steered by skew; the cruelty is adverse selection, where the easy fill is the toxic one; and the whole problem is really a reward-design problem, a minefield where every naive objective breeds a different broken agent.
+
+But every "beats AS out-of-sample" claim in this lesson rests on a simulator — a model of fills, of impact, of who's on the other side. And market-making sims lie even more seductively than execution sims, because they get to invent the *counterparty*. **Lesson 6, "The Sim-to-Real Gap & Honest Evaluation,"** is where we stop trusting the backtest: how a too-friendly fill model or absent adverse selection manufactures fake profits, and how to evaluate a quoting agent honestly enough that "it beat AS" means something live instead of meaning "it learned the bugs in my physics."

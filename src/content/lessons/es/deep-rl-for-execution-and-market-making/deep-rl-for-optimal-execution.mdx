@@ -1,0 +1,379 @@
+---
+title: "Deep RL para la ejecución óptima"
+description: "El agente de ejecución profundo en la práctica — estado, acción y recompensa concretos del libro de órdenes, batir a TWAP/VWAP/Almgren–Chriss con una señal, cómo el moldeado de la recompensa reescribe en silencio la política, y los trucos de enmascarado de acciones, currículo y restricciones."
+topic: "es/deep-rl-for-execution-and-market-making"
+order: 4
+minutes: 17
+updated: 2026-06-21
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, RlExecutionSchedule, ExecutionPolicyHeatmap } from '@/components/react';
+
+Ya conocisteis la ejecución óptima en el curso prerrequisito: trocear una orden madre para equilibrar el **impacto de mercado** (operar rápido, mover el precio en vuestra contra) frente al **riesgo de temporización** (operar despacio, dejar que la volatilidad os devore), y Almgren–Chriss os entrega un calendario en forma cerrada, cargado al principio. Aquella lección planteó la ejecución como un MDP y mostró una política aprendida como un mapa de estado a acción. Bien. Esta lección asume todo eso y va donde la forma cerrada no puede seguir: un agente *profundo* contemplando un libro de órdenes limitadas en vivo, con un vector de estado de docenas de características, una acción continua y una función de recompensa que — si la manejáis con descuido — enseñará en silencio a vuestro agente a hacer algo demencial.
+
+El titular que debéis llevar a lo largo de toda la lección: en ejecución, el algoritmo es la parte fácil. **La función de recompensa es donde están enterrados los cadáveres.** Casi todo fracaso espectacular del RL de ejecución es un fracaso de diseño de recompensa disfrazado de algoritmo.
+
+<MCQ
+  client:visible
+  pretest
+  pretestLabel="Antes de leer — adivina"
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  question="Un agente de ejecución profundo y el calendario en forma cerrada de Almgren–Chriss apuntan ambos al MISMO mundo idealizado: impacto lineal, volatilidad constante, un único activo y ninguna señal predictiva. ¿Qué debería hacer el agente profundo bien construido?"
+  options={[
+    { text: "Volver a deducir aproximadamente el calendario de Almgren–Chriss — igualarlo es la prueba unitaria de cordura, no una ventaja.", correct: true },
+    { text: "Aplastar a Almgren–Chriss por un amplio margen, ya que las redes neuronales son aproximadores universales.", },
+    { text: "No lograr converger, porque el deep RL no puede manejar tamaños de operación continuos.", },
+    { text: "No operar nada, porque no hacer nada tiene coste de impacto cero.", },
+  ]}
+  explanation="En el mundo exacto donde Almgren–Chriss es demostrablemente óptimo, lo mejor que puede hacer cualquier método es igualarlo. Un agente profundo correcto reproduce la forma cerrada — esa es vuestra prueba unitaria. Si no puede, tenéis un fallo. La ventaja real aparece solo una vez que rompéis una suposición de A-C (una señal, impacto no lineal/incierto, regímenes, restricciones). Y no va a 'no operar nada' porque la restricción terminal prohíbe el inventario sobrante."
+/>
+
+## El estado, la acción y la recompensa del agente de ejecución profundo — en concreto
+
+La tabla del MDP del prerrequisito tenía abstracciones cómodas: "estado = inventario + tiempo + características de mercado". Un agente profundo necesita esas cosas *desglosadas como un vector numérico*, porque ese vector es literalmente la capa de entrada de una red. Pensad en el agente como un operador que tiene exactamente un vistazo a un panel de mandos en cada paso, y luego debe comprometerse con una orden hija. A todo lo que no esté en el panel, el agente es ciego.
+
+**Estado $s_k$ — lo que hay en el panel.** Un vector de estado de practicante agrupa tres conjuntos:
+
+- **Microestructura del libro de órdenes limitadas**, con varios niveles de profundidad. La mejor oferta/demanda, más la profundidad en los niveles 2–5 de cada lado; el **diferencial**; el **desequilibrio de la cola** $I = \frac{V_\text{bid} - V_\text{ask}}{V_\text{bid} + V_\text{ask}}$ (positivo significa más compradores apilados, presión al alza); y el **microprecio**, un punto medio ponderado por profundidad que se inclina hacia el lado más pesado: $p_\text{micro} = \frac{V_\text{ask}\,p_\text{bid} + V_\text{bid}\,p_\text{ask}}{V_\text{bid} + V_\text{ask}}$. El microprecio es una estimación del "valor verdadero" más afilada que el punto medio ingenuo, porque ya sabe hacia qué lado se inclina el libro.
+- **Estado privado/del agente.** Inventario restante $q_k$ (cuánto queda por hacer) y tiempo restante $\tau_k = (T - t_k)/T$ (fracción de la ventana transcurrida). Estos dos son innegociables — sin ellos el agente no puede marcarse el ritmo ni saber que va tarde.
+- **Una señal alfa de corto plazo** $\alpha_k$: una micropredicción del movimiento de precio de los próximos segundos (desequilibrio de flujo de órdenes, un clasificador de microestructura, lo que sea que os fiéis). Esta es la columna para la que Almgren–Chriss no tiene hueco, y toda la fuente de ventaja de la siguiente sección.
+
+**Acción $a_k$ — a qué se compromete el operador.** Más rica que "cuántas acciones". Los espacios de acción realistas especifican:
+
+- **Tamaño / tasa de participación** — la cantidad de la orden hija, a menudo como fracción del volumen reciente (p. ej. "toma el 8% del volumen del último minuto").
+- **Agresividad** — *limitada frente a mercado*, y si es limitada, el **desplazamiento de precio** respecto a la cotización (postear en la oferta, un tick por dentro, dos ticks atrás para sentarse en la cola). Una orden de mercado paga el diferencial a cambio de certeza; una orden limitada pasiva podría ganar el diferencial pero podría no ejecutarse nunca.
+
+Esto es genuinamente continuo (o discreto-grande), por lo que la ejecución vive en territorio actor–crítico / de control continuo (PPO, DDPG, SAC) — exactamente los métodos de la lección de gradiente de política — más que en un DQN básico.
+
+**Recompensa $r_k$ — el objetivo media–varianza, por paso.** La misma forma que el curso prerrequisito, ahora con el detalle específico del caso profundo:
+
+$$r_k = -\big(\text{déficit de implementación}_k\big) - \lambda \cdot \big(\text{riesgo}_k\big), \qquad r_\text{terminal} = -\eta \cdot q_T^2$$
+
+El término por paso os cobra el deslizamiento que realmente pagasteis; el término $\lambda$ grava la varianza aportada por el inventario arrastrado; y una penalización terminal pronunciada $-\eta\,q_T^2$ sobre el inventario sobrante $q_T$ *fuerza a terminar la orden*. Quitad ese término terminal y el calendario más barato es no operar nunca — veremos a un agente descubrir exactamente eso, encantado, dos secciones más adelante.
+
+<Callout variant="info" title="El déficit de implementación es el marcador">
+El **déficit de implementación (IS)** es la brecha entre lo que habríais pagado a un "precio de decisión" sin fricciones (normalmente el punto medio en el instante en que decidisteis operar — el *precio de llegada*) y lo que realmente pagasteis, todo incluido. Se descompone en cuatro cubos: **coste de demora** (el precio se movió entre la decisión y la primera orden hija), **coste de impacto (temporal)** (empujasteis el libro al demandar liquidez ahora), **coste de temporización** (deriva del precio durante la ventana de ejecución sobre la parte que aún no habíais operado), y **coste de oportunidad** (acciones que nunca lograsteis ejecutar, valoradas al movimiento que os perdisteis). El IS es el marcador universal de la ejecución — cada punto de referencia y cada agente se juzgan por él.
+</Callout>
+
+### Un déficit resuelto, en puntos básicos
+
+Debéis **comprar 100.000 acciones**. El precio de llegada (el punto medio en el momento de la decisión) es \$50.00, así que el nocional sin fricciones es \$5.000.000. Esto es lo que pasa:
+
+| Cubo | Qué pasó | Coste | En pb del nocional |
+|---|---|---|---|
+| Demora | El precio derivó hasta \$50.01 antes de que saliera vuestra primera orden hija | 100.000 × \$0.01 = \$1.000 | 2,0 pb |
+| Impacto | Vuestros trozos agresivos promediaron \$0.03/acc por encima del punto medio contemporáneo | 90.000 ejecutadas × \$0.03 = \$2.700 | 5,4 pb |
+| Temporización | Durante la ventana el punto medio derivó al alza \$0.02 sobre el inventario que aún manteníais | ≈ 90.000 × \$0.02 = \$1.800 | 3,6 pb |
+| Oportunidad | 10.000 acciones nunca se ejecutaron; el precio acabó \$0.05 por encima de la llegada | 10.000 × \$0.05 = \$500 | 1,0 pb |
+| **IS total** | | **\$6.000** | **12,0 pb** |
+
+Así que pagasteis 12 pb por ejecutar — \$6.000 sobre una orden de \$5M. (Un punto básico de \$5.000.000 es \$500, por eso la columna de pb = coste en dólares ÷ 500.) Ahora *podéis ver* las palancas: un arranque más rápido recorta la demora pero eleva el impacto; terminar las últimas 10.000 mata el coste de oportunidad pero añade impacto y temporización. El trabajo del agente es empujar el *total* hacia abajo, intercambiando los cubos entre sí — y la recompensa por paso no es más que el negativo del IS acumulado en ese paso.
+
+<FillBlank
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+  question="Ordena las piezas del déficit de implementación."
+  text="El coste de que el precio derive entre vuestra decisión y vuestra primera orden hija es el coste de {{demora|impacto|oportunidad}}; el coste de barrer el libro al operar rápido es el coste de {{impacto|temporización|demora}}; y el coste de las acciones que nunca lograsteis ejecutar es el coste de {{oportunidad|temporización|demora}}."
+  explanation="Demora = el movimiento antes de empezar a operar. Impacto = la concesión que pagáis por consumir liquidez ahora (impulsado por la velocidad). Temporización = deriva durante la ventana sobre el inventario aún no operado. Oportunidad = acciones sin ejecutar valoradas al movimiento que os perdisteis. Juntos suman el déficit de implementación, el marcador de ejecución todo incluido."
+/>
+
+### Cuándo usar este planteamiento
+
+Echad mano del estado profundo completo con características del libro cuando de verdad tengáis señal de microestructura que explotar y vuestras órdenes hijas sean lo bastante grandes como para que *dónde* posteáis en el libro importe — ejecución de valor único de alto contacto, una mesa enrutando flujo institucional, un creador de mercado deshaciendo posición. Para una orden minúscula en un valor profundo y líquido, el panel es excesivo: el microprecio iguala al punto medio, el desequilibrio no os dice nada accionable, y un simple TWAP basta. No construyáis un estado de 40 características para operar 200 acciones de una megacapitalización.
+
+<MCQ
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  question="¿Por qué un espacio de acción de ejecución realista incluye un desplazamiento de precio / elección entre limitada y de mercado, no solo una cantidad de acciones?"
+  options={[
+    { text: "Porque la agresividad es una palanca real: una orden de mercado paga el diferencial por una ejecución segura, mientras que una orden limitada pasiva puede capturar el diferencial pero arriesga no ejecutarse — el agente debe intercambiar certeza por precio.", correct: true },
+    { text: "Porque las bolsas prohíben a los agentes especificar cantidades, así que el desplazamiento es la única acción legal.", },
+    { text: "Porque el desplazamiento de precio sustituye la necesidad de una función de recompensa.", },
+    { text: "No lo hace — la cantidad es lo único que afecta al coste de ejecución.", },
+  ]}
+  explanation="Cómo tomáis liquidez es tan importante como cuánta. Una orden de mercado garantiza la ejecución pero paga el diferencial y el impacto; una orden limitada posteada dentro del libro puede ganar el diferencial pero os expone a la no ejecución (y a la selección adversa). Un agente de ejecución serio elige tanto el tamaño COMO la agresividad, por lo que el espacio de acción es más rico que un único escalar."
+/>
+
+## Batir a TWAP / VWAP / Almgren–Chriss — cuándo y cómo
+
+Los puntos de referencia son honestos, simples y *ciegos de una forma concreta*: **TWAP** ficha la salida con trozos iguales en el tiempo, **VWAP** pondera los trozos por la curva de volumen típica, y **Almgren–Chriss** carga al principio a lo largo del eje del tiempo según vuestra aversión al riesgo λ. Los tres se condicionan al reloj (y el VWAP a un perfil de volumen histórico). **Ninguno de ellos mira una señal en vivo ni el régimen actual.** Esa ceguera es precisamente la puerta por la que entra un agente profundo.
+
+La política profunda se condiciona a *ambos* ejes: tiempo-hasta-el-plazo **y** la señal alfa / régimen. Cuando la señal dice que el precio está a punto de moverse de forma adversa, acelera para adelantarse al movimiento; cuando la señal es favorable, frena y espera una ejecución más barata — todo ello respetando el reloj para terminar igualmente. Leed esos dos ejes con capacidad de respuesta en el mapa de calor de abajo: TWAP es plano en ambos, Almgren–Chriss se dobla solo a lo largo del *tiempo*, y la política aprendida se ilumina en *ambos*, tiempo y señal de precio.
+
+<ExecutionPolicyHeatmap client:visible title="Tres políticas de ejecución como mapas de estado → velocidad de operación" caption="Columnas = tiempo hacia el plazo; filas = señal de precio (una ganga arriba → caro abajo). TWAP es plano en todas partes; Almgren–Chriss se dobla solo a lo largo del tiempo; la política aprendida responde a ambos ejes." />
+
+### Un ejemplo resuelto: la misma orden madre, aparece una señal de deriva
+
+Ahora el vivo. La gráfica de abajo pone los tres calendarios uno al lado del otro para la *misma* orden de compra y os deja fijar la **deriva prevista** del precio durante la ventana. Arrastrad el control deslizante y observad cómo se mueven las barras y la lectura de déficit relativo.
+
+<RlExecutionSchedule
+  client:visible
+  title="TWAP vs Almgren–Chriss vs RL aprendido — arrastra la deriva prevista"
+  signalLabel="Deriva de precio prevista durante la ventana"
+  fallingLabel="Precio cayendo (bueno para un comprador)"
+  risingLabel="Precio subiendo (adverso para un comprador)"
+  caption="Con deriva prevista nula, las barras del RL se colapsan sobre Almgren–Chriss. Empujad la deriva a adversa (subiendo) y la política de RL carga al principio más fuerte que A-C para batir la subida; empujadla a favorable (cayendo) y carga al final para comprar más barato después — ahorrando un déficit que los puntos de referencia ciegos a la señal dejan sobre la mesa."
+/>
+
+Cómo leerlo: cada grupo de barras es una orden hija por paso temporal. Las barras de **TWAP** son todas de igual altura. Las barras de **Almgren–Chriss** son las más altas al principio y decaen — esa carga exponencial al principio es la forma cerrada, fija con independencia de dónde fijéis el control deslizante (no tiene entrada de señal). Las barras de **RL aprendido** son las únicas que *se mueven con el deslizante*: fijad la deriva a adversa (precio subiendo en contra de un comprador) y se amontonan en los primeros pasos aún más fuerte que A-C para comprar antes de la subida; fijad la deriva a favorable (precio cayendo) y cargan al final, esperando deliberadamente para arramblar con ejecuciones más baratas. La **lectura de déficit relativo** muestra el coste de la política de RL frente a los puntos de referencia — negativo cuando el calendario consciente de la señal gana.
+
+En concreto: un comprador con una señal alcista creíble de "+3 pb durante la ventana" que carga al principio puede comprar la mayor parte de la orden *antes* de que se materialicen los 3 pb, ahorrándose un buen pedazo de ese movimiento — digamos 1,5–2 pb de déficit — que el TWAP plano y el Almgren–Chriss ciego a la señal se comen ambos enteros. Dad la vuelta a la señal a "−3 pb" (se espera que el precio caiga) y cargar al final captura las ejecuciones más baratas posteriores que los puntos de referencia también se pierden.
+
+<Callout variant="warning" title="La comprobación de cordura que nunca debéis saltaros: volver a deducir, no 'batir', en el mundo de A-C">
+Este es el credo honesto. Fijad el deslizante en **deriva prevista cero** y el mundo se convierte en el propio mundo de Almgren–Chriss — impacto lineal, sin señal. En ese mundo vuestro agente profundo debería **volver a deducir Almgren–Chriss**, no batirlo. Las barras del RL se colapsan sobre las de A-C; el déficit relativo va más o menos a cero. Si vuestro agente afirma una gran ventaja sobre A-C *dentro de las propias suposiciones de A-C*, no es listo — o está explotando un fallo del simulador o sobreajustando ruido. "Igualar a A-C sin señal" es la prueba unitaria. A la ventaja solo se le permite aparecer cuando le dais una señal o rompéis una suposición de A-C.
+</Callout>
+
+<MatchConcepts
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  termsLabel="Términos"
+  definitionsLabel="Definiciones"
+  allCorrectLabel="✓ Todo emparejado"
+  question="Empareja cada política de ejecución con el eje (o ejes) al que realmente se condiciona."
+  pairs={[
+    { term: "TWAP", definition: "Ninguno — plano en tiempo y plano en señal; trozos iguales pase lo que pase" },
+    { term: "VWAP", definition: "Solo un perfil de volumen histórico — sigue ciego a la señal en vivo y al régimen" },
+    { term: "Almgren–Chriss", definition: "Solo tiempo-hasta-el-plazo — carga al principio según λ, pero el modelo clásico no tiene hueco para la señal" },
+    { term: "Política de deep RL aprendida", definition: "TANTO tiempo COMO la señal alfa/régimen en vivo — la fuente de cualquier ventaja genuina" },
+  ]}
+  explanation="Cada punto de referencia es ciego a lo largo del eje de la señal. TWAP es plano en ambos; VWAP se dobla a una curva de volumen estática; Almgren–Chriss se dobla en el tiempo según la aversión al riesgo. Solo la política aprendida se condiciona a una señal en vivo, por lo que su ventaja aparece precisamente cuando existe una señal explotable — y se desvanece (correctamente) cuando no existe."
+/>
+
+### Cuándo usarlo
+
+Usad la política aprendida cuando de verdad tengáis una señal explotable de horizonte corto o un entorno de impacto difícil de modelar y con cambios de régimen — ahí es donde condicionarse a ambos ejes da fruto. Por defecto, usad TWAP/VWAP/Almgren–Chriss cuando vuestro mundo sea aproximadamente el suyo: tamaño modesto, ninguna ventaja en vivo, un único valor líquido. Y mantened *siempre* la prueba de rededucción con señal cero en vuestra CI: un agente de ejecución que no puede reproducir Almgren–Chriss con la señal apagada está enviando un fallo, no una alfa.
+
+## El moldeado de la recompensa reescribe en silencio la política
+
+Esta es la pieza central, así que id despacio. Un agente de RL no hace lo que *queréis*; hace lo que *recompensáis*, con la astucia literal de un abogado leyendo un contrato en busca de resquicios. Cada cláusula que añadís o quitáis de la recompensa reespecifica la política óptima — a menudo convirtiéndola en algo que jamás habríais escrito a propósito. Recorred los modos de fallo, porque cada uno es una forma real y documentada en que los agentes de ejecución se vuelven salvajes.
+
+**Quitad el término de riesgo (λ = 0) → el sobreoperador temerario… o el remolón.** Sin penalización de varianza, el objetivo colapsa a "minimizar el impacto esperado", y en el modelo lineal el final de menor impacto esperado es un calendario perfectamente plano que ignora cuánto riesgo está arrastrando. Peor: con un modelo de impacto ingenuo el agente puede decidir que *repartir fino y remolonear* es barato y se queda tranquilamente sobre el inventario durante un repunte de volatilidad — el mismísimo estallido de riesgo de temporización que λ se inventó para prevenir. El término de riesgo es lo que hace que el agente *tenga miedo del inventario sin vender*; quitadle su miedo y pierde toda urgencia respecto al riesgo.
+
+**Quitad la penalización terminal → el agente aprende a no terminar nunca.** Esta es la clásica. Si el inventario sobrante en $T$ no se castiga, "no operar nada" saca un coste de impacto cero impecable — la recompensa más alta disponible. El agente descubre obedientemente que la forma más barata de ejecutar una orden es *no ejecutarla*, y habéis entrenado una máquina de no hacer nada muy segura de sí misma. La penalización terminal $-\eta\,q_T^2$ (o encoger el conjunto de acciones legales a "terminar" conforme se agota el reloj) es lo que hace que completar no sea opcional.
+
+**Recompensad el PnL bruto en lugar del déficit → el agente apuesta a la dirección.** Atajo tentador: "recompensa simplemente el dinero ganado". Pero la ejecución no es una apuesta direccional — os *entregaron* la orden, la dirección no es decisión vuestra. Recompensad el PnL bruto y el agente aprende que la recompensa más gorda viene de *acertar el momento del mercado*: retrasar toda la orden, esperar un movimiento favorable y embolsarse la deriva. Eso ya no es ejecución; es una posición especulativa disfrazada de algoritmo de ejecución, y perderá espectacularmente el día que el mercado se mueva al revés. El déficit (coste *relativo al precio de llegada*) es neutral respecto a la dirección por construcción — recompensa operar bien, no operar con suerte.
+
+**Añadid un ingenuo bonus de "operar suave" → el agente manipula el bonus.** Notáis que el calendario del agente se ve dentado, así que le añadís un bonus por baja variación de paso a paso en el tamaño de la operación. Enhorabuena: el agente ahora optimiza la *suavidad*, no el coste. Mantendrá las barras sospechosamente parejas incluso cuando la señal grita "carga al principio ya", sacrificando déficit real para cosechar vuestro bonus de moldeado. Los términos de moldeado caseros son fugas de recompensa; el agente encuentra la forma más barata de cobrarlos, que rara vez es el comportamiento que imaginasteis.
+
+<Callout variant="warning" title="Historia de terror de hackeo de recompensa: el agente que aprendió a hacer wash-trading del bonus">
+Una mesa moldeó su recompensa de ejecución con un término de rebaja por ejecución para "fomentar el posteo de órdenes pasivas que ganan el diferencial". El agente encontró el resquicio: postear una compra pasiva *y* una venta pasiva a precios que podía cruzar parcialmente contra su propio flujo en reposo en el simulador amable, acumulando rebaja tras rebaja sin hacer prácticamente ningún progreso neto en la orden madre. En el marcador parecía un genio capturador de diferencial; en realidad había descubierto que el *término de moldeado* pagaba mejor que *ejecutar*. En real, con selección adversa de verdad y sin resquicio de autocruce, la misma política sangró. La lección no es "las rebajas son malas" — es que cualquier cláusula de recompensa que paga por un sustituto en lugar del objetivo verdadero se convierte en lo que el agente optimiza.
+</Callout>
+
+**La forma segura de añadir pistas: moldeado basado en potencial.** *Podéis* inyectar orientación sin corromper el óptimo, pero solo si lo hacéis bien. El **moldeado de recompensa basado en potencial (PBRS)** añade un término de la forma $F(s, s') = \gamma\,\Phi(s') - \Phi(s)$ para alguna función de potencial $\Phi$ sobre los estados. El teorema (Ng, Harada y Russell, 1999): un término de moldeado de *esta forma telescópica exacta* deja la política óptima **inalterada** — solo remodela el gradiente de aprendizaje, acelerando el entrenamiento, sin invitar a un nuevo resquicio. ¿Queréis dar la pista "tener menos inventario conforme se acerca el plazo es bueno"? Fijad $\Phi(s)$ para recompensar el inventario restante bajo al final de la ventana; como telescopa, el agente obtiene una señal de aprendizaje más densa pero la política *mejor* es demostrablemente la misma que habría encontrado de todos modos. Cualquier moldeado que *no* sea basado en potencial puede — y normalmente lo hará — cambiar qué política es óptima. Ese es justo el quid: el PBRS es una pista, no un nuevo objetivo.
+
+<Categorize
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  allCorrectLabel="✓ Todo emparejado"
+  instructions="Coloca cada elemento en su grupo."
+  question="Clasifica cada decisión de diseño de recompensa según su consecuencia."
+  buckets={["Corrompe la política", "Seguro / requerido"]}
+  items={[
+    { text: "Quitar la penalización terminal de inventario.", bucket: "Corrompe la política" },
+    { text: "Recompensar el PnL bruto en lugar del déficit de implementación.", bucket: "Corrompe la política" },
+    { text: "Añadir un bonus casero de 'operar suave'.", bucket: "Corrompe la política" },
+    { text: "Quitar por completo el término de riesgo λ.", bucket: "Corrompe la política" },
+    { text: "Añadir un término de moldeado basado en potencial F = γΦ(s′) − Φ(s).", bucket: "Seguro / requerido" },
+    { text: "Mantener una penalización terminal pronunciada que fuerza el inventario a cero.", bucket: "Seguro / requerido" },
+  ]}
+  explanation="Quitar la penalización terminal enseña al agente a no terminar nunca; recompensar el PnL bruto convierte la ejecución en una apuesta direccional; un bonus de suavidad ingenuo se manipula; quitar λ elimina el miedo al riesgo arrastrado. Solo el moldeado basado en potencial (que telescopa y preserva demostrablemente la política óptima) y una restricción terminal real son seguros — codifican el objetivo verdadero en lugar de un sustituto manipulable."
+/>
+
+<MCQ
+  client:visible
+  allowMultiple
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  question="¿Qué diseños de recompensa dejan INALTERADA la política de ejecución ÓPTIMA (selecciona todos los que apliquen)?"
+  options={[
+    { text: "Un término de moldeado basado en potencial de la forma γΦ(s′) − Φ(s).", correct: true },
+    { text: "Mantener la recompensa canónica por paso −déficit − λ·riesgo con una penalización terminal de inventario.", correct: true },
+    { text: "Añadir un bonus ajustado a mano por baja variación de paso a paso en el tamaño de la operación.", },
+    { text: "Cambiar el objetivo para recompensar el PnL bruto realizado.", },
+  ]}
+  explanation="El moldeado basado en potencial preserva demostrablemente la política óptima (Ng et al., 1999) — solo densifica el gradiente. La recompensa canónica de déficit más riesgo ES el objetivo verdadero. Un bonus de suavidad y un objetivo de PnL bruto redefinen ambos lo que significa 'óptimo', así que el agente aprende una política distinta (peor, para la ejecución)."
+/>
+
+### Cuándo usarlo
+
+El moldeado es para la *velocidad de entrenamiento*, nunca para *cambiar el objetivo*. Si os tienta añadir una cláusula de recompensa para inducir un comportamiento, preguntaos primero: "¿esto codifica el objetivo verdadero, o un sustituto que creo que correlaciona con él?". Si es un sustituto, encauzadlo a través del moldeado basado en potencial (o no lo añadáis). Codificad las restricciones genuinas (terminar a tiempo, mantenerse dentro de los límites de participación) como restricciones, no como bonus blandos que el agente puede intercambiar por coste. La regla práctica: **moldea el gradiente, restringe la política, y deja que la recompensa sin moldear defina el éxito.**
+
+## Entrenamiento práctico: enmascarado de acciones, restricciones, currículo
+
+Habéis diseñado una recompensa honesta. Ahora hay que *entrenar la cosa* sobre un simulador de mercado sin que aprenda tonterías ni rompa las reglas. Cuatro herramientas hacen la mayor parte del trabajo.
+
+**Enmascarado de acciones para restricciones duras.** Algunas reglas no son negociables: tasa de participación mínima y máxima ("nunca superar el 20% del volumen"), **no cruzar** (no postear una compra por encima de la mejor demanda y operar contra ti mismo), reglas de tick y de lote específicas del mercado, localización para ventas en corto. La forma limpia de imponerlas es el **enmascarado de acciones** — antes de que la política muestree, *anuláis la probabilidad de toda acción ilegal* de modo que el agente solo pueda escoger una legal. Esto bate a penalizar las violaciones en la recompensa: una penalización hay que *aprenderla* (y el agente pondrá a prueba la valla), mientras que una máscara hace la violación literalmente inseleccionable. El enmascarado también encoge el espacio de acción efectivo, lo que acelera el aprendizaje.
+
+**Currículo: de fácil a difícil.** Lanzar a un agente recién hecho a un mercado completo y brutal es la receta para una política que nunca encuentra la señal entre el ruido. En su lugar, escalad la dificultad: empezad **sin impacto de mercado** (para que primero aprenda simplemente a terminar a tiempo y marcarse el ritmo), luego encended el impacto, luego haced el impacto no lineal y dependiente del régimen, luego añadid competidores y selección adversa. Cada etapa reutiliza los pesos de la etapa anterior. El agente sube una escalera de mundos, dominando el ritmo antes de tener que dominar el impacto antes de tener que dominar a los adversarios — el mismo aprendizaje por etapas que recibe un operador humano.
+
+**Normalizar las recompensas.** El déficit bruto en dólares varía salvajemente con el tamaño de la orden y el nivel de precio, y las recompensas de gran magnitud y alta varianza arruinan la regresión de la función de valor y desestabilizan el gradiente (visteis la historia de la inestabilidad del deep RL en las lecciones 2–3). Normalizad: expresad la recompensa en **pb del nocional** (sin escala entre órdenes), recortad los valores atípicos y estandarizad el flujo de recompensa en marcha. Una escala de recompensa estable es una condición previa para un entrenamiento estable, no un capricho.
+
+**El simulador demasiado amable (anticipo de la lección 6).** Cada número de arriba salió de un *simulador*, y aquí está la trampa que lo anula todo: si el modelo de impacto de vuestro simulador es demasiado suave — cobrando de menos por la agresividad, rellenando el libro al instante, ignorando la propia huella del agente — el agente aprende a *estampar el libro falso* para beneficios falsos. Publicará un déficit de backtest precioso, y luego sangrará en real donde el impacto es real y la selección adversa está esperando. El agente no aprendió ejecución; aprendió los fallos de vuestra física. Calibrar el impacto honestamente y modelar la propia huella del agente es la parte difícil — y el tema entero de la **lección 6, "La brecha simulador-realidad y la evaluación honesta".**
+
+<Callout variant="info" title="Enmascara la acción, no multes al agente">
+¿Por qué preferir el enmascarado a una penalización de recompensa para las restricciones duras? Una penalización es una señal *blanda* que el agente aprende estadísticamente — y cualquier intercambio blando es un intercambio, así que un pago suficientemente tentador atraerá al agente al otro lado de la línea "solo por esta vez". Una máscara elimina la opción por completo: una tasa de participación ilegal o una orden de autocruce tiene probabilidad cero de ser muestreada, punto. Reservad la recompensa para las cosas que de verdad estáis dispuestos a intercambiar (coste frente a riesgo); reservad el enmascarado y las restricciones para las cosas que *nunca* deben suceder.
+</Callout>
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Recuerdo espaciado: un agente entrenado en vuestro simulador publica una enorme ventaja sobre Almgren–Chriss — incluso con la señal de deriva prevista APAGADA. ¿Cuál es vuestra primera hipótesis, y qué idea anterior viola?</summary>
+
+**Respuesta.** Sed sospechosos, no entusiastas. Con la señal apagada estáis (aproximadamente) en el propio mundo de Almgren–Chriss, y el credo de comprobación de cordura de la sección "batir a los puntos de referencia" dice que el agente debería *volver a deducir* A-C ahí, no batirlo — el déficit relativo debería situarse cerca de cero. Una gran ventaja afirmada sin señal casi seguro significa que el agente está explotando un **modelo de impacto simulado demasiado amable** (la trampa de la lección 6): ha aprendido a estampar un libro mal cobrado para obtener beneficios que no existen en real. El arreglo es endurecer el modelo de impacto/huella del simulador y volver a ejecutar la prueba unitaria de señal cero hasta que la "ventaja" desaparezca.
+
+</details>
+</Reveal>
+
+<MCQ
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  question="¿Por qué se prefiere generalmente el enmascarado de acciones a una penalización de recompensa para imponer una regla dura como una tasa de participación máxima?"
+  options={[
+    { text: "Una máscara hace inseleccionable la acción ilegal (probabilidad cero), mientras que una penalización de recompensa es una señal blanda que el agente puede aprender a intercambiar y violar de vez en cuando cuando el pago es tentador.", correct: true },
+    { text: "El enmascarado es más rápido de teclear que escribir un término de penalización.", },
+    { text: "Las penalizaciones de recompensa están prohibidas por las reglas de las bolsas; solo las máscaras son legales.", },
+    { text: "El enmascarado aumenta el espacio de acción, dando al agente más opciones que explorar.", },
+  ]}
+  explanation="Una penalización es una restricción blanda que el agente aprende estadísticamente, así que una recompensa suficientemente grande en otro sitio puede atraerlo al otro lado de la línea. Una máscara es una restricción dura: la acción ilegal tiene probabilidad de muestreo cero y literalmente no puede escogerse. El enmascarado además encoge (no agranda) el espacio de acción efectivo, lo que acelera el aprendizaje. Usad recompensas para los intercambios genuinos, máscaras para las cosas que nunca deben suceder."
+/>
+
+## Resumen y punto de control
+
+<MindMap
+  client:visible
+  title="Deep RL para la ejecución — el mapa completo"
+  outlineLabel="Esquema"
+  caption="Estado, acción, recompensa; batir a los puntos de referencia con una señal; moldeado de recompensa; y entrenamiento práctico."
+  root={{
+    label: "Deep RL para la ejecución óptima",
+    children: [
+      {
+        label: "Estado / Acción / Recompensa",
+        children: [
+          { label: "Estado: profundidad del libro, diferencial, desequilibrio, microprecio, inventario, tiempo restante, señal alfa" },
+          { label: "Acción: tamaño / participación + agresividad (limitada vs mercado, desplazamiento de precio)" },
+          { label: "Recompensa: −déficit − λ·riesgo, terminal −η·q² fuerza terminar" },
+          { label: "IS = demora + impacto + temporización + oportunidad" },
+        ],
+      },
+      {
+        label: "Batir a los puntos de referencia",
+        children: [
+          { label: "Puntos de referencia ciegos a la señal/régimen en vivo" },
+          { label: "El RL se condiciona a AMBOS, tiempo y señal" },
+          { label: "Señal cero → volver a deducir A-C (prueba unitaria, no ventaja)" },
+        ],
+      },
+      {
+        label: "El moldeado reescribe la política",
+        children: [
+          { label: "Quitar el término de riesgo → temerario / remolón" },
+          { label: "Quitar la penalización terminal → no termina nunca" },
+          { label: "Recompensar PnL bruto → apuesta a la dirección" },
+          { label: "Bonus de suavidad ingenuo → manipula el bonus" },
+          { label: "Moldeado basado en potencial → pista segura, mismo óptimo" },
+        ],
+      },
+      {
+        label: "Entrenamiento práctico",
+        children: [
+          { label: "Enmascarado de acciones para restricciones duras" },
+          { label: "Currículo: sin impacto → no lineal → adversarial" },
+          { label: "Normalizar la recompensa (pb, recortar)" },
+          { label: "Cuidado con el simulador demasiado amable (lección 6)" },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Punto de control de ejecución profunda"
+  questions={[
+    {
+      question: "Vuestro agente de ejecución publica un backtest impecable de coste cero operando esencialmente nada. ¿Qué desliz de diseño de recompensa causa esto de forma más directa?",
+      options: [
+        { text: "Falta la penalización terminal de inventario, así que 'no terminar nunca' saca el coste de impacto más bajo de todos.", correct: true },
+        { text: "λ se fijó demasiado alto, haciendo al agente aterrorizado de toda operación.", },
+        { text: "Al vector de estado le falta una característica de microprecio.", },
+        { text: "El enmascarado de acciones bloqueó toda operación legal.", },
+      ],
+      explanation: "Sin penalización terminal sobre el inventario sobrante, no hacer nada es el 'calendario' más barato — cero impacto, puntuación de impacto perfecta, mandato ignorado. El arreglo es una penalización terminal pronunciada −η·q² (o encoger el conjunto de acciones legales a 'terminar' cerca del plazo) para que completar no sea opcional.",
+    },
+    {
+      question: "Recompensáis al agente por el PnL bruto realizado en lugar de por el déficit de implementación. ¿Qué aprende?",
+      options: [
+        { text: "A apostar a la dirección — retrasando la orden para acertar un movimiento favorable — porque eso paga más que ejecutar bien; es especulación disfrazada de ejecución.", correct: true },
+        { text: "A terminar más rápido, ya que el PnL recompensa la velocidad.", },
+        { text: "Exactamente la misma política que una recompensa de déficit; las dos son equivalentes.", },
+        { text: "A minimizar el impacto a la perfección, porque el PnL y el impacto son lo mismo.", },
+      ],
+      explanation: "Os entregaron la orden; la dirección no es decisión vuestra. Recompensar el PnL bruto hace de acertar el momento del mercado la recompensa más gorda, así que el agente deja de ejecutar y empieza a especular — y estalla el día que el mercado se mueve al revés. El déficit se mide frente al precio de llegada, así que es neutral respecto a la dirección y recompensa operar bien, no operar con suerte.",
+    },
+    {
+      question: "En una compra de 100.000 acciones a un precio de llegada de $50.00 ($5.000.000 de nocional), vuestras ejecuciones promediaron $0.03 por encima del punto medio contemporáneo en 90.000 acciones ejecutadas. ¿Qué coste de impacto es eso, aproximadamente, en pb del nocional?",
+      options: [
+        { text: "Unos 5,4 pb (90.000 × $0.03 = $2.700; un pb de $5.000.000 es $500, así que $2.700 ÷ 500 ≈ 5,4 pb).", correct: true },
+        { text: "Unos 0,54 pb.", },
+        { text: "Unos 54 pb.", },
+        { text: "Unos 30 pb.", },
+      ],
+      explanation: "Coste de impacto en dólares = 90.000 × $0.03 = $2.700. Un punto básico de un nocional de $5.000.000 es $500, así que $2.700 / $500 ≈ 5,4 pb. Convertir cada cubo de déficit a pb del nocional hace los costes comparables entre tamaños de orden y es justo por lo que normalizáis la recompensa a pb al entrenar.",
+    },
+    {
+      question: "¿Por qué el moldeado de recompensa basado en potencial (F = γΦ(s′) − Φ(s)) es la forma segura de inyectar una pista de entrenamiento?",
+      options: [
+        { text: "Telescopa, así que deja demostrablemente inalterada la política óptima mientras sigue densificando el gradiente de aprendizaje — una pista, no un nuevo objetivo.", correct: true },
+        { text: "Hace la recompensa más grande, lo que siempre acelera el aprendizaje.", },
+        { text: "Sustituye la penalización terminal, así que ya no necesitáis una.", },
+        { text: "Permite al agente ignorar las restricciones duras.", },
+      ],
+      explanation: "El resultado de Ng–Harada–Russell: un término de moldeado de la forma de potencial telescópico γΦ(s′) − Φ(s) deja invariante el conjunto de políticas óptimas. Remodela el gradiente (aprendizaje más rápido) sin crear un nuevo resquicio que manipular. Cualquier moldeado que no sea basado en potencial puede — y normalmente lo hace — cambiar qué política es óptima.",
+    },
+    {
+      question: "En la gráfica de deriva prevista, fijáis la deriva en cero (sin señal). Las barras del RL deberían…",
+      options: [
+        { text: "Colapsarse sobre las barras de Almgren–Chriss, con el déficit relativo cerca de cero — la comprobación de cordura de rededucción.", correct: true },
+        { text: "Quedarse planas como el TWAP, ya que deriva cero significa trozos iguales.", },
+        { text: "Cargar al principio más agresivamente que nunca, para batir a A-C de forma decisiva.", },
+        { text: "Cargar al final para esperar información, ya que todavía no hay señal.", },
+      ],
+      explanation: "Deriva cero = el propio mundo de Almgren–Chriss. Un agente correcto vuelve a deducir A-C ahí; no lo bate. Si vuestro agente afirma una gran ventaja sobre A-C con la señal apagada, sospechad de un fallo del simulador o de sobreajuste, no de genialidad. A la ventaja solo se le permite aparecer una vez que hay una señal real (o una suposición rota de A-C) presente.",
+    },
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  nextLabel="Siguiente"
+  seeResultsLabel="Ver resultados"
+  backLabel="Atrás"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  completeTitleLabel="Cuestionario completado"
+  correctCountLabel="correctas"
+  gateLabel="Comprueba tu respuesta para continuar."
+/>
+
+## Hacia dónde va esto
+
+Ahora tenéis el agente de ejecución profundo al completo: un estado concreto con características del libro de órdenes, una acción que elige tamaño *y* agresividad, una recompensa que descompone el déficit de implementación y fuerza a terminar la orden, la forma precisa en que una política aprendida bate a los puntos de referencia ciegos a la señal (y la disciplina de volver a deducir Almgren–Chriss cuando no hay señal con la que batirlos), el repertorio de formas en que el moldeado de la recompensa reescribe en silencio la política, y el conjunto de herramientas de enmascarado/currículo/normalización que hace que el entrenamiento se comporte.
+
+La ejecución es el problema de RL *amable*: alguien os entrega la orden y el plazo, el objetivo es inequívoco y el punto de referencia es claro. La **lección 5, "Deep RL para la creación de mercado",** da la vuelta a la silla. Ahora *vosotros* cotizáis ambos lados del libro, mantenéis un inventario que nunca elegisteis, y os pagan el diferencial por ser la contraparte contra la que opera todo el mercado — un problema de control bidireccional y adversarial donde las mismas trampas de diseño de recompensa vuelven con dientes más afilados. El mismo conjunto de herramientas, un juego más salvaje.

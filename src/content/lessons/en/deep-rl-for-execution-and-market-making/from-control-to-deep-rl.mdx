@@ -1,0 +1,340 @@
+---
+title: "From Tabular Control to Deep Function Approximation"
+description: "Why lookup-table RL collapses on a continuous order book, how a neural network replaces the table, and the analytic baselines — Almgren–Chriss and Avellaneda–Stoikov — every deep agent must beat."
+topic: "en/deep-rl-for-execution-and-market-making"
+order: 1
+minutes: 15
+updated: 2026-06-21
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, RlAgentEnvLoop, MarketImpactCurve } from '@/components/react';
+
+You spent the prerequisite courses learning two halves of one machine. One course taught you to *see* a market — turn raw order-book data into features with a neural network. Another taught you to *decide* under uncertainty — frame a sequential problem as a Markov decision process and solve it with reinforcement learning. Both halves worked beautifully on toy problems. Then you point them at a live order book and the decision half quietly explodes.
+
+The reason is embarrassingly simple. The RL you learned stored its knowledge in a **table** — one cell per (state, action) pair. That works when the world has a few dozen states. An order book has effectively infinite states: continuous prices, continuous spreads, depth at ten levels, your inventory, the seconds left on your clock, three alpha signals. The table you'd need has more cells than there are atoms you'll ever get data points for, and almost every cell is visited exactly zero times. The table doesn't *learn* — it just sits there, mostly empty.
+
+This course is about the fix: replace the table with a function approximator — usually a deep network — that *generalizes* across states instead of memorizing them. That single substitution is the whole definition of **deep RL**, and it reanimates execution and market making as learnable control problems. But it also drags in a swarm of new failure modes the table never had. This lesson sets up the problem, the tools, and the two analytic baselines that will keep us honest for the rest of the course.
+
+<MCQ
+  client:visible
+  pretest
+  question="Tabular RL stores one value per (state, action) cell. Why does that approach fail on a real limit order book before you even start training?"
+  options={[
+    { text: "The state — continuous prices, spreads, multi-level depth, inventory, time-left, signals — is high-dimensional and continuous, so the table has astronomically many cells, almost all visited zero times.", correct: true },
+    { text: "Order books change too fast for any computer to read each tick, so the table can never be filled in time.", },
+    { text: "Tables can only store integers, and prices are decimals, so the values overflow.", },
+    { text: "It works fine — tabular RL is the standard production method for execution at every major desk.", },
+  ]}
+  explanation="The killer is the curse of dimensionality. A continuous, high-dimensional state means the lookup table has an astronomical number of cells, and any realistic dataset touches a vanishing fraction of them. With most cells never visited, the table has nothing to return for the states you actually face live — there's no generalization across nearby states, so the method dies on arrival."
+/>
+
+## Why a lookup table dies on an order book
+
+Picture tabular RL as a giant filing cabinet. Every possible situation gets its own drawer, and inside each drawer is a slip of paper telling you the value of each action you could take there. To learn, you visit a drawer, try an action, see the reward, and update the slip. Brilliant — *if* you have few enough drawers that you can visit each one many times.
+
+Now build the cabinet for an order book. A realistic execution state might track, at minimum, six numbers: the mid-price (continuous), the bid–ask spread (continuous), short-term volatility (continuous), order-book depth (continuous), your remaining inventory (continuous), and time-left on the clock (continuous). Add an alpha signal or two and you're past six. None of these are naturally discrete, so to even *build* a table you must chop each continuous feature into bins.
+
+Here's the arithmetic that ends the conversation. Discretize **6 features into 10 bins each**. The number of states is
+
+$$10 \times 10 \times 10 \times 10 \times 10 \times 10 = 10^{6}.$$
+
+A million states. Now give the agent, say, **20 discrete actions** (trade-rate buckets). The table has $10^6 \times 20 = 2 \times 10^7$ cells. To learn a reliable value for a cell you need to visit it many times — call it 30 visits. That's $6 \times 10^8$ informative experiences required. A few years of *minute-bar* data gives you maybe $10^6$ steps. You're short by **three orders of magnitude** — and that's with a laughably coarse 10-bin grid that throws away most of the price resolution that actually matters. Refine to 100 bins per feature and the state count jumps to $10^{12}$; the data deficit becomes hopeless.
+
+This is the **curse of dimensionality**: the number of table cells grows *exponentially* in the number of features, while your data grows only linearly in time. The cells you visit are a measure-zero sprinkle in an enormous empty space. And the table cannot help you in a cell you've never seen — it has no notion that a state with spread 0.011 should behave like the neighbor at spread 0.012. Every drawer is an island.
+
+<MarketImpactCurve
+  client:visible
+  title="The continuous quantity a table must shatter into bins"
+  caption="Impact cost varies smoothly and nonlinearly with order size — exactly the kind of continuous relationship a lookup table can only crudely staircase. To tabulate this you'd bin the x-axis into buckets and lose the curve; a function approximator just learns the curve. Now imagine six such continuous axes multiplied together."
+/>
+
+<Callout variant="warning" title="Finer bins don't rescue you — they bury you">
+The instinct on seeing a too-coarse table is to add more bins for resolution. That makes it strictly worse. Every extra bin per feature multiplies the cell count by that factor across *all* features, so refining a 6-feature grid from 10 to 100 bins inflates the state space from a million to a trillion. You bought sharper resolution at the cost of even emptier drawers — more cells, the same finite data, fewer visits each. The curse punishes both coarseness (you blur the state) and fineness (you starve the cells). There is no bin size that wins; the table is the wrong data structure.
+</Callout>
+
+<FillBlank
+  client:visible
+  question="Fill in the failure mode of tabular RL on a continuous, high-dimensional state."
+  text="The number of table cells grows {{exponentially|linearly|slowly}} in the number of features while data grows only linearly in time, so almost every cell is visited {{zero|many|three}} times — the curse of dimensionality."
+  explanation="Cells multiply exponentially as you add features (10 bins × 6 features = 10⁶), but a dataset only accumulates experience linearly with the passage of time. The mismatch means the overwhelming majority of cells never get a single visit, so the table can't return a learned value for the states you actually encounter."
+/>
+
+### When to use it
+
+Tabular RL is not useless — it's the right tool when the state really is small and discrete: a 3×3 grid-world, a coarse inventory-only market-making toy with five inventory levels and three actions, a teaching example where you *want* to inspect every cell. The moment a single continuous feature enters and you can't bin it without either blurring the signal or exploding the count, you've left tabular territory. On a production order book you left it before you started.
+
+## Function approximation: the network as the table's replacement
+
+The fix is to stop storing a separate number for every state and instead store a *function* that computes the number on demand. Feed in the state $s$; the function returns the value $V(s)$ — or the action-value $Q(s,a)$, or the action itself $\pi(s)$. The function has a modest number of tunable parameters $\theta$, far fewer than the table had cells, and you fit $\theta$ to the data you actually have. The payoff is **generalization**: because the function is smooth, a state you've never visited gets a sensible answer interpolated from the nearby states you *have* visited. The drawers stop being islands.
+
+Formally, the table $Q(s,a)$ becomes a parameterized $Q_\theta(s,a)$. Two flavours matter:
+
+- **Linear approximation.** $Q_\theta(s,a) = \theta^\top \phi(s,a)$, a weighted sum of hand-designed features $\phi$. Cheap, stable, easy to reason about — but it can only represent relationships you already baked into $\phi$. If impact is nonlinear in size and you didn't hand it a size-squared feature, linear can't find it.
+- **Deep approximation.** $Q_\theta$ (or $\pi_\theta$) is a neural network — stacked nonlinear layers that *learn their own features* from raw-ish state. It can represent the convex impact curve, regime-dependent liquidity, and signal interactions without you specifying the functional form. The price is fragility (more on that all course long).
+
+This is the weld. The **perception** half — turning order-book state into useful features — is exactly what the deep-learning-for-market-data course taught. The **decision** half — choosing actions to maximize long-run reward in an MDP — is exactly what the RL course taught. Bolt the network in as the policy/value function inside the MDP and you have **deep reinforcement learning**: reinforcement learning where the policy and/or value function is represented by a deep neural network function approximator rather than a lookup table. That one sentence is the entire premise of this course.
+
+<RlAgentEnvLoop
+  client:visible
+  title="The same agent–environment loop — now the agent's brain is a network"
+  caption="The RL loop is unchanged: the agent reads a state, its policy picks an action, the market returns a reward and the next state. What changed is the policy π — in deep RL it's a neural network that maps continuous state to action and generalizes across states, not a table that memorizes cells. Flip on Market impact: the agent's own trade pushes the price, the defining twist that makes this control, not prediction."
+/>
+
+<MCQ
+  client:visible
+  question="What is the precise distinction between a linear and a deep function approximator for Q(s, a)?"
+  options={[
+    { text: "Linear computes a weighted sum of hand-designed features and can only represent relationships baked into those features; deep stacks nonlinear layers that learn their own features and can represent nonlinear relationships you didn't specify.", correct: true },
+    { text: "Linear is for execution and deep is for market making; the math is otherwise identical.", },
+    { text: "Linear uses a lookup table internally; deep replaces the table with a bigger table.", },
+    { text: "Deep approximators always beat linear ones, so the distinction never matters in practice.", },
+  ]}
+  explanation="A linear approximator is θᵀφ(s,a): it can only express whatever you encoded in the features φ. A deep network learns its own intermediate features through nonlinear layers, so it can fit relationships (convex impact, signal interactions, regime effects) without you specifying their form. Deep is more expressive but also more fragile — it does not 'always win', which is why the rest of the course is about taming it."
+/>
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">If the network just outputs a number for any state, what stops it from being a fancy lookup table that also memorizes?</summary>
+
+**Answer.** A table has one independent parameter per cell, so changing the value of one state changes *nothing* about its neighbors — there's no pressure to be consistent across nearby states. A network shares its (relatively few) parameters across *all* states at once: nudging $\theta$ to fit one state necessarily moves the prediction for similar states too. That parameter-sharing is what forces generalization — and, with too many parameters or too little regularization, it's also what lets a deep net *overfit* and quietly memorize, which is one of the dangers later lessons attack. Generalization is the feature; memorization is the same mechanism turned against you.
+
+</details>
+</Reveal>
+
+## The two canonical control problems
+
+This course pursues two problems, and it's worth being precise about why both are **control** rather than **prediction**. A prediction problem asks "what will happen?" and your answer doesn't change the world — guess tomorrow's return and the market doesn't care. A control problem asks "what should I *do*?", your action changes the state (you move the price, you accumulate inventory), and that change feeds back into your next decision. Self-affecting, sequential, and therefore an MDP. Both of ours qualify.
+
+**Optimal execution.** You're handed a parent order — "buy a million shares by the close" — and must slice it into child orders over time. Trade fast and you pay **market impact** (you shove the price against yourself); trade slow and you pay **timing risk** (the price wanders while you dawdle). The objective is to minimize **implementation shortfall**: the gap between the price when the decision was made and the average price you actually achieved. You're a liquidity *taker* working off a known quantity against a deadline.
+
+**Market making.** You quote *both* sides of the book — a bid and an ask — and earn the **spread** when someone trades against each. But every fill leaves you holding **inventory** you never chose: buy filled and you're long, sell filled and you're short, and that inventory is exposed to price moves. The objective is to capture spread while keeping inventory near zero. You're a liquidity *provider* with no deadline but an ever-present inventory-risk leash.
+
+| Aspect | Optimal execution | Market making |
+|---|---|---|
+| **Role** | Liquidity taker | Liquidity provider |
+| **State** | Inventory left, time left, price, spread, volatility, signal | Inventory held, spread, volatility, order-flow imbalance, queue position |
+| **Action** | How many shares to trade now (participation rate) | Where to set bid & ask (half-spread, skew) |
+| **Reward** | −(impact) − λ·(risk); terminal penalty for unfinished shares | +captured spread − inventory-risk penalty |
+| **Horizon** | Hard deadline T | Continuous / rolling, no deadline |
+| **Why control** | Your trade moves the price; inventory carries to next step | Your quotes attract fills; inventory carries to next step |
+
+<Categorize
+  client:visible
+  question="Sort each property to the control problem it belongs to."
+  buckets={["Optimal execution", "Market making"]}
+  items={[
+    { text: "You consume liquidity to finish a known quantity by a deadline.", bucket: "Optimal execution" },
+    { text: "You provide liquidity on both sides and earn the spread.", bucket: "Market making" },
+    { text: "The objective is to minimize implementation shortfall.", bucket: "Optimal execution" },
+    { text: "Inventory is a byproduct you never chose and must keep near zero.", bucket: "Market making" },
+    { text: "A terminal penalty forces remaining inventory to zero by time T.", bucket: "Optimal execution" },
+    { text: "You set a bid and an ask and skew them as inventory builds.", bucket: "Market making" },
+  ]}
+  explanation="Execution is taker-side: a known parent order, a deadline, minimize shortfall, finish or eat a terminal penalty. Market making is provider-side: quote both sides, earn the spread, and fight the inventory you accumulate as a side effect — there's no deadline, just the constant tug of inventory risk."
+/>
+
+<Callout variant="info" title="Both are control because the action feeds back">
+The shared signature is feedback. In a prediction problem the world ignores your forecast; in both of these the world *responds* to your action and that response becomes part of your next state. Your execution trade moves the price you'll face next slice. Your market-making quote determines which fills you get and therefore the inventory you carry into the next quote. Self-affecting, sequential decision-making is the definition of an MDP — which is exactly why reinforcement learning is the natural language for both, and why neither can be reduced to a one-shot supervised prediction.
+</Callout>
+
+## The analytic baselines every learned agent must beat
+
+Before you let a deep network anywhere near these problems, you must know the answer the *math* already gives you — because there's a beautiful closed form for each, derived decades before anyone trained a network on a GPU. These are not strawmen. They are tight, near-optimal solutions under their assumptions, and they cost one line of algebra to evaluate.
+
+**Almgren–Chriss (execution, 2000).** Minimize a mean–variance blend of cost:
+
+$$\min_{\{n_k\}} \; \mathbb{E}[\text{cost}] + \lambda \, \mathrm{Var}[\text{cost}],$$
+
+where $\lambda \ge 0$ is your risk aversion. At $\lambda = 0$ you ignore variance and trade a flat, uniform schedule — the spirit of **TWAP**. As $\lambda$ rises, unsold inventory frightens you, so the optimal schedule **front-loads**: the remaining-inventory trajectory becomes an *exponential decay*, steeper for larger $\lambda$. Sweep $\lambda$ and you trace the **efficient frontier of execution** — the lowest achievable variance for each expected cost. The closed form hands you the whole schedule.
+
+**Avellaneda–Stoikov (market making, 2008).** Quote around a **reservation price** that shifts away from the mid as your inventory grows, then post a symmetric optimal half-spread around it. The reservation price is
+
+$$r(s, q, t) = s - q \, \gamma \, \sigma^2 (T - t),$$
+
+where $s$ is the mid, $q$ your inventory, $\gamma$ risk aversion, $\sigma$ volatility, and $T-t$ time remaining. Long inventory ($q>0$) pushes your reservation price *below* the mid, so you quote lower on both sides to encourage selling and discourage buying — that's **inventory skew**. The optimal total spread is
+
+$$\delta^a + \delta^b = \gamma \sigma^2 (T-t) + \frac{2}{\gamma} \ln\!\left(1 + \frac{\gamma}{\kappa}\right),$$
+
+with $\kappa$ the order-flow liquidity parameter. One formula gives you both quotes at any inventory.
+
+These two formulas are the spine of the course's discipline. Here is the creed, and we will repeat it until it's reflex:
+
+> **A deep agent that cannot beat — or at least match — these one-line baselines has earned nothing.** Compare against the baseline, not against doing nothing.
+
+It is trivially easy to build a deep RL agent that "makes money" or "finishes the order." That proves nothing, because *TWAP also finishes the order* and *a fixed spread also makes money*. The only question that matters is whether your expensive, fragile, hard-to-debug network beats the free, robust, one-line formula. If it doesn't, you've spent a month re-deriving Almgren–Chriss the hard way.
+
+<MatchConcepts
+  client:visible
+  question="Match each baseline ingredient to what it does."
+  pairs={[
+    { term: "Almgren–Chriss λ = 0", definition: "Flat uniform schedule — the TWAP limit, no risk aversion" },
+    { term: "Almgren–Chriss λ > 0", definition: "Front-loaded schedule — exponential inventory decay, empties early" },
+    { term: "Avellaneda–Stoikov reservation price", definition: "Mid shifted by inventory: s − qγσ²(T−t), the center of your quotes" },
+    { term: "Avellaneda–Stoikov inventory skew", definition: "Quotes lean to offload inventory when q drifts from zero" },
+    { term: "The course creed", definition: "Beat the one-line baseline, or the deep agent has earned nothing" },
+  ]}
+  explanation="Almgren–Chriss morphs from flat (λ=0, TWAP) to front-loaded exponential decay (λ>0) as risk aversion rises. Avellaneda–Stoikov centers quotes on a reservation price that skews with inventory, then sets an optimal spread. The creed ties them together: every learned agent is graded against these closed forms, never against a do-nothing strawman."
+/>
+
+<Callout variant="warning" title="'Beats buy-and-hold' and 'finished the order' are not wins">
+The most common self-deception in trading RL is grading against a do-nothing baseline. "My execution agent finished the order at a good price!" — so does TWAP, for free, and you must show you beat *it*. "My market maker was profitable in the backtest!" — so is a static fixed-spread quoter, and Avellaneda–Stoikov beats that too. An agent that merely accomplishes the task while losing to the analytic baseline is a strictly worse, more dangerous version of a formula you could have typed in five minutes. Always benchmark against the *best closed form available*, not against zero.
+</Callout>
+
+### When to use it
+
+Reach for the closed form *by default*. If your world genuinely matches its assumptions — modest size, linear impact, a single liquid name, no exploitable signal for execution; constant volatility and Poisson order flow for market making — the baseline is not just a benchmark, it's the production answer. You only graduate to a learned agent once you can point to a specific assumption that reality breaks *and* show the agent exploits that break to beat the baseline. Until then, the formula wins on cost, robustness, and your sanity.
+
+## What deep RL genuinely adds vs the hype
+
+Time for the honest accounting, because the marketing is loud. Point a deep RL agent at the *exact* world a closed form assumes — linear impact, constant volatility, one asset, no signal — and a correctly built agent will essentially **re-derive the closed form**. That's not a triumph; it's a **unit test**. If your execution agent *fails* to recover Almgren–Chriss where Almgren–Chriss is provably optimal, your agent is broken and you found the bug cheaply. Reproducing the known answer is how you earn the right to trust the agent elsewhere.
+
+Deep RL earns its keep precisely where the tidy assumptions crack — which is to say, in reality:
+
+- **Nonlinear or uncertain impact.** Real impact bends (think square-root law), shifts with regime, and you don't know its parameters exactly. A network learns the schedule from data without you having to write the impact model down correctly.
+- **Exploitable signals.** A genuine short-horizon prediction ("price likely ticks up next minute") should speed up a buy and slow a sell. The closed forms have no slot for alpha; deep RL conditions on it natively.
+- **Regime-dependent liquidity.** Spreads widen, depth evaporates, volatility clusters. A policy that reads current conditions and adapts aggression beats any fixed schedule computed at the open.
+- **Messy, non-smooth constraints.** Min/max participation rates, "don't exceed X% of volume," dark-pool routing, discrete lot sizes — constraints closed-form mean–variance can't swallow.
+- **High-dimensional baskets.** Liquidating a correlated basket with cross-impact, or making markets in many names at once, is high-dimensional control with no clean closed form. Home turf.
+
+But every one of those wins comes bundled with a danger, and the rest of the course is a tour of them. The **deadly triad** — function approximation + bootstrapping + off-policy learning, together — can make value estimates diverge (lesson 2). The **sim-to-real gap** means an agent that crushes your simulator may bleed live because the sim mismodeled impact (lesson 6). And the agent can **overfit its own generated data**, learning the quirks of your environment rather than the market. The expressive power that lets deep RL beat the baseline is the same power that lets it fool you spectacularly.
+
+<MCQ
+  client:visible
+  allowMultiple
+  question="In which situations does deep RL genuinely add value over the analytic baseline (rather than merely re-deriving it)? Select all that apply."
+  options={[
+    { text: "Impact is nonlinear and its parameters are uncertain.", correct: true },
+    { text: "You have a reliable short-horizon alpha signal to trade into.", correct: true },
+    { text: "You're liquidating a correlated basket with cross-impact.", correct: true },
+    { text: "The world is exactly linear impact, constant volatility, one asset, no signal.", },
+    { text: "There are hard, non-smooth participation constraints to respect.", correct: true },
+  ]}
+  explanation="The genuine wins all come from breaking a baseline assumption: nonlinear/uncertain impact, an exploitable signal, a high-dimensional correlated basket, or non-smooth constraints. The one false option is the closed form's own home world — there, a good agent should merely re-derive Almgren–Chriss as a sanity check, which is reassuring but not an edge."
+/>
+
+<MCQ
+  client:visible
+  question="Spaced recall — back to the very first idea. Why can't you simply use a finer-grained lookup table to make tabular RL work on the order book, even with a big dataset?"
+  options={[
+    { text: "Finer bins multiply the cell count exponentially across all features, so the state space explodes far faster than any dataset grows — most cells stay unvisited regardless.", correct: true },
+    { text: "Finer bins would work; the only reason people use deep RL is that it's fashionable.", },
+    { text: "Lookup tables can't store more than 10,000 cells due to a hardware limit.", },
+    { text: "Finer bins make the table coarser, which blurs the signal — the opposite of what you want.", },
+  ]}
+  explanation="The curse of dimensionality is multiplicative: each extra bin per feature multiplies the total cell count across every feature, so refining from 10 to 100 bins on six features takes you from 10⁶ to 10¹² cells. Data only grows linearly with time, so it can never catch up — the table stays mostly empty no matter how much history you have. That's why you need a function approximator that generalizes, not a bigger table."
+/>
+
+<MindMap
+  client:visible
+  title="From tabular control to deep RL — the whole map"
+  caption="The bridge: tables die on continuous state, networks generalize, two control problems, two baselines to beat, and the dangers the course will attack."
+  root={{
+    label: "Tabular → Deep RL",
+    children: [
+      {
+        label: "Why tables die",
+        children: [
+          { label: "One cell per (state, action)" },
+          { label: "Continuous, high-dim state" },
+          { label: "Curse of dimensionality: 10^6 cells, ~0 visits" },
+        ],
+      },
+      {
+        label: "Function approximation",
+        children: [
+          { label: "Network maps state → value / action" },
+          { label: "Generalizes across nearby states" },
+          { label: "Linear vs deep approximators" },
+          { label: "Deep RL = network as policy/value" },
+        ],
+      },
+      {
+        label: "Two control problems",
+        children: [
+          { label: "Execution: take liquidity, beat shortfall" },
+          { label: "Market making: provide, capture spread" },
+          { label: "Control, not prediction (action feeds back)" },
+        ],
+      },
+      {
+        label: "Baselines to beat",
+        children: [
+          { label: "Almgren–Chriss: E[cost] + λ Var[cost]" },
+          { label: "Avellaneda–Stoikov: reservation price + spread" },
+          { label: "Creed: beat the baseline, not nothing" },
+        ],
+      },
+      {
+        label: "What deep RL adds",
+        children: [
+          { label: "Nonlinear impact, signals, regimes, baskets" },
+          { label: "Re-derives closed form in its own world" },
+          { label: "Dangers: deadly triad, sim-to-real, overfit" },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Bridge checkpoint"
+  questions={[
+    {
+      question: "Discretizing 6 order-book features into 10 bins each gives roughly how many states, and why is that fatal for tabular RL?",
+      options: [
+        { text: "About 10⁶ states; with 20 actions that's 2×10⁷ cells needing many visits each, but a few years of data gives far fewer informative steps — most cells are never visited.", correct: true },
+        { text: "About 60 states; tabular RL handles that easily, so the approach is fine.", },
+        { text: "About 10⁶ states, but that's fine because each cell only needs to be visited once.", },
+        { text: "Exactly 10 states, one per feature; the problem is unrelated to dimensionality.", },
+      ],
+      explanation: "Six features at 10 bins multiply to 10⁶ states; with an action set you're into tens of millions of cells, each needing repeated visits to learn a reliable value. Realistic datasets are three orders of magnitude too small, so the table is mostly empty — the curse of dimensionality in action.",
+    },
+    {
+      question: "What exactly is 'deep reinforcement learning'?",
+      options: [
+        { text: "Reinforcement learning in which the policy and/or value function is represented by a deep neural network function approximator instead of a lookup table.", correct: true },
+        { text: "Reinforcement learning that runs for a very large number of episodes (it's 'deep' in time).", },
+        { text: "Any neural network trained on financial data, whether or not it makes sequential decisions.", },
+        { text: "Supervised learning of next-price predictions used to place trades.", },
+      ],
+      explanation: "Deep RL welds the perception half (a deep network as function approximator) onto the decision half (the RL/MDP framework). The network replaces the table as the representation of π and/or Q, enabling generalization across a continuous state. It is not just 'a deep net on market data' (that could be pure prediction) nor merely 'many episodes'.",
+    },
+    {
+      question: "Why are optimal execution and market making control problems rather than prediction problems?",
+      options: [
+        { text: "Your action changes the state — you move the price or accumulate inventory — and that change feeds into your next decision, making them sequential, self-affecting MDPs.", correct: true },
+        { text: "Because they require predicting the next price more accurately than a forecaster would.", },
+        { text: "Because they only happen once per day, unlike predictions which happen every tick.", },
+        { text: "There's no difference; control and prediction are the same thing in finance.", },
+      ],
+      explanation: "Prediction is one-shot and the world ignores your forecast. In execution and market making your trade or quote alters the state (price impact, inventory) and that altered state determines your next move — sequential, self-affecting decision-making, i.e. an MDP, i.e. control.",
+    },
+    {
+      question: "Your deep execution agent finishes the parent order at a decent price in the backtest. What's the right way to judge it?",
+      options: [
+        { text: "Compare its implementation shortfall against Almgren–Chriss (and TWAP) on the same data — beating the closed-form baseline is the only meaningful test.", correct: true },
+        { text: "Celebrate, because finishing the order at a decent price is the goal and proves the agent works.", },
+        { text: "Compare it against doing nothing; if it beats not trading, it's a success.", },
+        { text: "Check only that it never violated the deadline; price is secondary.", },
+      ],
+      explanation: "Finishing the order proves nothing — TWAP finishes it too, for free. The creed of the course: grade against the best closed-form baseline, not against doing nothing. If the agent can't beat Almgren–Chriss, it's a fragile, expensive re-derivation of a one-line formula.",
+    },
+    {
+      question: "Point a correctly built deep RL agent at a world that exactly matches Almgren–Chriss's assumptions. What should it do, and what does that tell you?",
+      options: [
+        { text: "It should approximately re-derive the Almgren–Chriss schedule — a reassuring sanity check (unit test), not evidence of an edge.", correct: true },
+        { text: "It should dramatically beat Almgren–Chriss, proving deep RL is strictly superior even in the formula's home world.", },
+        { text: "It should fail to converge, because deep RL can't handle linear impact.", },
+        { text: "It should learn to never trade, since that minimizes impact.", },
+      ],
+      explanation: "Where the closed form is provably optimal, the best any method can do is match it. Recovering Almgren–Chriss is a unit test: pass it and you trust the agent enough to deploy it where assumptions break; fail it and you've found a bug cheaply. Real edges only appear once an assumption (signal, nonlinear impact, constraints, baskets) is violated.",
+    },
+  ]}
+/>
+
+## Where this goes next
+
+You now have the frame the whole course hangs on. Tabular RL dies on a continuous order book because the curse of dimensionality leaves its table astronomically large and almost entirely empty. A deep network replaces the table by *generalizing* across states — that substitution, and only that, is deep RL. Our two targets are control problems, not prediction: **optimal execution** (take liquidity, beat implementation shortfall) and **market making** (provide liquidity, capture the spread, tame inventory). Each has a one-line analytic baseline — **Almgren–Chriss** and **Avellaneda–Stoikov** — and the creed that governs everything ahead: *beat the baseline, not nothing.* Deep RL's genuine value lives where those baselines' assumptions crack; everywhere else it should merely re-derive them.
+
+The catch is that the moment you swap the table for a network, the math stops being polite. **Lesson 2, "Deep Q-Networks & Their Instability on Financial State,"** takes the first deep-RL algorithm — DQN — and shows why naively combining a neural Q-function with bootstrapping and off-policy replay (the *deadly triad*) makes value estimates diverge, and what experience replay and target networks do to drag them back from the brink. The table is gone; now we learn to keep its replacement from blowing up.

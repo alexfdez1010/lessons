@@ -1,0 +1,377 @@
+---
+title: "Deep RL para creación de mercado"
+description: "Cotizar ambos lados del libro como control continuo — por qué PPO/SAC encajan y DQN no, superar a Avellaneda–Stoikov fuera de muestra, captura del diferencial mediante inclinación de inventario, selección adversa y el campo de minas de la recompensa en la creación de mercado."
+topic: "es/deep-rl-for-execution-and-market-making"
+order: 5
+minutes: 18
+updated: 2026-06-21
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, AsQuotingSim, InventorySkew, MarketMakingQuoteLadder } from '@/components/react';
+
+La ejecución os dio un mandato limpio: alguien os entrega una orden y un plazo, la troceáis barato y os vais a casa. La creación de mercado hace trizas ese mandato. Nadie os dice qué comprar o vender. Os plantáis en mitad del libro cotizando un precio al que *compraréis* (vuestra demanda, el bid) y un precio al que *venderéis* (vuestra oferta, el ask), y cobráis el hueco entre ambos — el **diferencial** (spread) — cada vez que ambos lados operan contra vosotros. La pega: no escogéis vuestras operaciones. El *mercado* las escoge, golpeando la cotización que más le guste, y tiende a golpear la que está a punto de haceros daño. Acumuláis un inventario que nunca quisisteis, cargáis con un riesgo direccional que nunca pedisteis, y todo vuestro trabajo es seguir recogiendo céntimos de diferencial sin que os aplaste el dólar de riesgo sobre el que se asientan esos céntimos.
+
+Ya conocisteis la versión analítica de esta pelea en el curso de creación de mercado de alta frecuencia: Avellaneda–Stoikov, precios de reserva, inclinación de inventario, selección adversa. Esta lección hace el mismo trabajo con un **agente de deep RL** — y el remate por adelantado es que la creación de mercado es un problema de RL muchísimo más desagradable que la ejecución, porque la acción es de dos lados y continua, la recompensa es un campo de minas de incentivos perversos, y el punto de referencia que tenéis que superar (AS) es genuinamente bueno.
+
+<MCQ
+  client:visible
+  pretest
+  pretestLabel="Antes de leer — adivina"
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  question="Un creador de mercado cotiza una demanda de $99.98 y una oferta de $100.02 sobre una acción con un punto medio de $100.00. ¿De dónde sale el beneficio del creador, en el caso ideal?"
+  options={[
+    { text: "De comprar en la demanda y vender en la oferta sobre un flujo de dos lados aproximadamente equilibrado — capturando el diferencial de \$0.04 por ida y vuelta mientras se mantiene cerca de inventario plano.", correct: true },
+    { text: "De predecir correctamente la dirección del precio medio y mantener inventario hasta que se mueva.", },
+    { text: "De que la bolsa le paga un salario fijo por publicar cotizaciones, independientemente de las ejecuciones.", },
+    { text: "De que siempre le ejecutan exactamente un lado, acumulando una gran posición direccional.", },
+  ]}
+  explanation="Un creador de mercado gana el diferencial siendo la contraparte de ambos lados: compra barato en la demanda, vende caro en la oferta, se embolsa el hueco. El ideal es un flujo equilibrado que neutea hacia un inventario aproximadamente plano. Predecir la dirección es especulación, no creación de mercado; que solo te ejecuten un lado te deja con inventario direccional no deseado — justo lo que el creador trata de evitar."
+/>
+
+## La creación de mercado como control continuo
+
+Imaginad una máquina expendedora que reinicia sus precios cada segundo. Publica lo que pagará por una lata (demanda) y lo que cobrará por una (oferta). Los clientes se acercan y o bien le venden una lata o bien le compran una — la máquina no puede elegir. Su única palanca es *dónde fija los dos precios cada segundo*. Inclinarlos, ensancharlos, estrecharlos — ese es todo el trabajo. Un creador de mercado es esa máquina, salvo que las latas son acciones y los clientes a veces saben algo que la máquina no.
+
+Formalmente, en cada paso el agente emite **dos números**: un desplazamiento de la demanda y un desplazamiento de la oferta relativos al punto medio (equivalentemente, una **inclinación del precio de reserva** más un **semidiferencial**). Esa acción vive en un espacio 2D *continuo* — podéis cotizar 1.3 ticks por debajo del medio o 2.7 ticks por encima, no solo un menú fijo. Este es el dato estructural más importante del RL de creación de mercado, y es por lo que la elección del algoritmo viene forzada.
+
+- **DQN sufre.** Una Deep Q-Network produce un valor Q por cada acción discreta. Dos mandos continuos significan que tendríais que trocear cada uno en una rejilla y tomar el producto cartesiano — pongamos 21 niveles de demanda × 21 niveles de oferta = 441 acciones discretas, y aun así habríais perdido la resolución fina que importa cuando una ventaja es una fracción de tick. Peor: cotizaciones vecinas tienen un valor casi idéntico, así que el argmax parpadea ruidosamente entre ellas.
+- **El gradiente de política / actor–crítico encaja.** PPO y SAC parametrizan una política que produce una acción *continua* directamente — típicamente una gaussiana sobre (inclinación, semidiferencial). Optimizan las cotizaciones como números reales, con exploración incorporada (la propia varianza de la política) y actualizaciones estables (el objetivo recortado de PPO, el bono de entropía de SAC). Acción continua → actor–crítico. Esa es la regla.
+
+El estado al que se condiciona el agente es rico: **inventario** $q$, el precio **medio**, el **diferencial** actual, la **volatilidad** reciente, el **desequilibrio del libro de órdenes** (más demandas que ofertas en reposo, o viceversa), las **ejecuciones recientes** (¿te acaban de golpear?) y el **tiempo** (hacia un cierre de sesión o un punto de reinicio de inventario). La recompensa de un paso es toda la historia del P&L comprimida en un único número:
+
+$$r_t = \underbrace{\text{diferencial capturado en ejecuciones}}_{\text{bueno}} \; - \; \underbrace{\lambda_{\text{inv}}\, q_t^2}_{\text{riesgo de inventario}} \; - \; \underbrace{\text{pérdida por selección adversa}}_{\text{te dejan tirado}} \; - \; \underbrace{\text{comisiones}}_{} \; + \; \underbrace{\text{rebajas}}_{}$$
+
+Cada término de esa línea es un lugar donde el agente puede ser engañado. Guardad esa idea — la última sección está dedicada a ella.
+
+<MCQ
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  question="¿Por qué DQN encaja mal en un agente de creación de mercado que cotiza una acción continua (inclinación, semidiferencial), mientras que PPO o SAC encajan de forma natural?"
+  options={[
+    { text: "DQN debe discretizar la acción continua 2D en una rejilla y tomar un argmax sobre el producto, perdiendo resolución y parpadeando entre cotizaciones casi idénticas; los métodos actor–crítico producen la acción continua directamente con exploración incorporada.", correct: true },
+    { text: "DQN no puede usar una red neuronal, así que no puede representar en absoluto el estado del libro de órdenes.", },
+    { text: "PPO y SAC son métodos basados en valor, y los métodos basados en valor siempre superan al Q-learning.", },
+    { text: "DQN requiere un modelo de transición conocido y la creación de mercado no tiene ninguno.", },
+  ]}
+  explanation="La acción son dos mandos continuos. DQN produce un valor Q por cada acción discreta, así que el control continuo fuerza una rejilla burda (p. ej. 21×21 = 441 acciones) con poca resolución y un argmax ruidoso sobre vecinas casi idénticas. PPO/SAC parametrizan una política continua (una gaussiana sobre la acción) y optimizan las cotizaciones como números reales — el encaje natural para el control continuo. PPO/SAC son de gradiente de política/actor–crítico, no basados en valor, y ninguno de estos métodos necesita un modelo de transición conocido."
+/>
+
+### Cuándo usarlo
+
+Recurrid al RL actor–crítico de creación de mercado cuando vuestra acción sea genuinamente continua y vuestro estado sea de alta dimensión — múltiples niveles del libro, características de microestructura, una estimación de volatilidad. Si habéis colapsado deliberadamente el problema a una cotización a tres bandas "ancha / media / estrecha" sobre un valor lento y líquido, un método discreto (incluso tabular) puede valer y es muchísimo más fácil de depurar. La maquinaria de control continuo justifica su complejidad solo cuando la resolución de fracción de tick y muchas características de estado mueven de verdad vuestro P&L.
+
+## Avellaneda–Stoikov, el punto de referencia a superar
+
+Antes de dejar que una red neuronal se acerque al libro, escribís la respuesta que tratáis de superar. Avellaneda–Stoikov (2008) es esa respuesta. Es el óptimo analítico para un creador de mercado que se enfrenta a un punto medio que sigue un paseo aleatorio con volatilidad constante $σ$, una **intensidad de ejecución** exponencial (cuanto más lejos del medio se sitúa vuestra cotización, exponencialmente menos probable es que la golpeen) y aversión terminal al inventario sobrante. En un bloque:
+
+$$r = s - q\,\gamma\,\sigma^2\,(T - t) \qquad \delta = \gamma\,\sigma^2\,(T - t) + \frac{2}{\gamma}\ln\!\left(1 + \frac{\gamma}{k}\right)$$
+
+La primera ecuación es el **precio de reserva** $r$: vuestro valor justo *personal* ajustado al riesgo, empujado lejos del medio $s$ en proporción a vuestro inventario $q$, vuestra aversión al riesgo $γ$, la varianza $σ^2$ y el tiempo restante $(T-t)$. Poneos largos ($q>0$) y $r$ cae por debajo del medio — habéis decidido en silencio que preferiríais vender. La segunda es el **semidiferencial óptimo** $δ$: la mitad por riesgo de inventario, la mitad por el término logarítmico que contrapone la probabilidad de ejecución frente al beneficio por ejecución a través de la intensidad de llegada $k$. Vuestras cotizaciones son entonces $\text{oferta} = r + δ/2$ y $\text{demanda} = r - δ/2$. Arrastrad los deslizadores de abajo y mirad cómo ambas cotizaciones se deslizan como una unidad mientras el diferencial fija su anchura.
+
+<AsQuotingSim
+  client:visible
+  title="Avellaneda–Stoikov: el óptimo analítico que vuestro agente debe superar"
+  caption="El inventario dirige toda la cotización de dos lados a través del precio de reserva r; la aversión al riesgo, la volatilidad y el tiempo fijan lo ancho que el diferencial se envuelve a su alrededor. Esta es la forma cerrada — arrastrad q a largo y ambas cotizaciones se sombrean hacia abajo para sangrar el inventario. Un agente profundo tiene que igualar esto en el propio mundo de AS antes de que se le permita afirmar que superó a AS en uno más difícil."
+/>
+
+Aquí está el credo del curso, y no es opcional: **un agente de creación de mercado profundo que no logra superar a Avellaneda–Stoikov fuera de muestra no se ha ganado nada.** AS es un bloque de álgebra. Si vuestro agente PPO, con sus horas de GPU y su estado de 400 dimensiones, simplemente *empata* con AS sobre datos retenidos, habéis construido una manera extremadamente cara de reproducir una fórmula de 2008. Y la versión más afilada: **en el propio mundo idealizado de AS — volatilidad constante, intensidad exponencial, sin señal — un agente correcto debería volver a deducir AS**, igual que un agente de ejecución vuelve a deducir Almgren–Chriss. No lograr esa recuperación no es una diferencia de estilo; es un fallo.
+
+<MatchConcepts
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  termsLabel="Términos"
+  definitionsLabel="Definiciones"
+  allCorrectLabel="✓ Todo emparejado"
+  question="Empareja cada magnitud de Avellaneda–Stoikov con lo que hace."
+  pairs={[
+    { term: "Precio de reserva r = s − q·γ·σ²·(T−t)", definition: "Vuestro valor justo ajustado al inventario; dirige AMBAS cotizaciones lejos del medio conforme crece el inventario" },
+    { term: "Semidiferencial óptimo δ", definition: "Lo ancho que cotizar — dimensionado por la aversión al riesgo, la volatilidad, el tiempo restante y la intensidad de llegada de órdenes" },
+    { term: "Aversión al riesgo γ", definition: "El tipo de cambio entre ganar diferencial y temer el inventario; una γ mayor inclina y ensancha más" },
+    { term: "Intensidad de llegada k", definition: "Cómo decae la probabilidad de ejecución con la distancia al medio; ajusta el término logarítmico del diferencial" },
+  ]}
+  explanation="El precio de reserva es el volante (mueve dónde se sitúa la cotización de dos lados), el semidiferencial es el acelerador (lo ancho). γ gobierna lo agresivamente que inclináis y ensancháis por una unidad de riesgo de inventario; k gobierna el equilibrio probabilidad-de-ejecución-frente-a-beneficio en el término logarítmico del diferencial. AS es la fijación en forma cerrada de los cuatro — el punto de referencia que un agente profundo debe igualar antes de poder afirmar que lo supera."
+/>
+
+### Cuándo usarlo
+
+Usad AS pelado (sin RL) cuando la realidad se parezca de verdad a sus suposiciones: un único valor líquido, volatilidad aproximadamente constante a lo largo de vuestro horizonte, sin señal de corto plazo explotable, flujo no informado y simétrico. Es transparente, instantáneo de calcular e imposible de sobreajustar. Graduaos a un agente aprendido solo cuando esas suposiciones se resquebrajan — flujo tóxico que podáis detectar, volatilidad dependiente del régimen, dinámica del libro multinivel o flujo asimétrico — e incluso entonces, mantened AS funcionando como el punto de referencia contra el que reportáis en cada porción fuera de muestra.
+
+## Captura del diferencial penalizada por inventario — el equilibrio central
+
+Este es el corazón palpitante de la creación de mercado, así que id despacio aquí. Tenéis un único dial que controla todo: **lo ancho que cotizáis.**
+
+Cotizad **estrecho** (demanda y oferta abrazando el medio) y ganáis la carrera por las ejecuciones — el flujo os golpea constantemente, el diferencial se acumula. Pero cada ejecución os descarga inventario encima, y el inventario es riesgo direccional: un montón de inventario largo no es más que una apuesta apalancada a que el precio sube, hecha por una mesa cuya tesis entera es "no tengo opinión sobre la dirección". Cotizad **ancho** y el riesgo de inventario se desploma — pero también vuestras ejecuciones, y un creador de mercado sin ejecuciones no gana diferencial. Estrecho = más diferencial, más riesgo. Ancho = menos riesgo, menos diferencial. No hay ajuste que maximice ambos.
+
+La salida de emergencia es la **inclinación** (skew), el movimiento del precio de reserva de AS hecho concreto. Cuando estáis largos, *bajad ambas cotizaciones*: vuestra oferta ahora barata se levanta (alguien os quita el exceso) mientras vuestra demanda ahora tacaña rara vez se golpea (dejáis de acumular). Cuando estáis cortos, subid ambas. La inclinación es un volante que empuja el inventario de vuelta hacia plano sin que tengáis que cruzar el diferencial y pagar de más vosotros mismos. El gráfico de abajo muestra la relación lineal *entera* — barred el inventario y mirad cómo ambas cotizaciones se deslizan juntas mientras el diferencial (el hueco) se mantiene aproximadamente constante.
+
+<InventorySkew
+  client:visible
+  title="La inclinación dirige el inventario de vuelta a plano"
+  caption="Conforme el inventario pasa de corto a largo, toda la cotización de dos lados se desliza hacia abajo: largo → ambas cotizaciones bajan, así que vuestra oferta se levanta y vuestra demanda se calla, sangrando el inventario de vuelta hacia cero. El hueco entre demanda y oferta (el diferencial) apenas cambia — la inclinación mueve DÓNDE se sitúan las cotizaciones, el diferencial fija LO ANCHAS."
+/>
+
+### Un ejemplo resuelto
+
+Empezad plano ($q=0$) en una acción con medio \$100.00, cotizando una demanda simétrica \$99.95 / oferta \$100.05 (un diferencial de \$0.10, así que \$0.05 capturados cada vez que estáis en el lado correcto). Recorred cuatro ejecuciones de 100 acciones cada una, y, crucialmente, dejad que el medio derive mientras cargáis inventario.
+
+| Paso | Evento | Px ejecución | Inventario después | Medio después | Inventario a precio de mercado |
+|---|---|---|---|---|---|
+| 1 | Vender 100 @ oferta | \$100.05 | −100 | \$100.00 | \$0 |
+| 2 | Comprar 100 @ demanda | \$99.95 | 0 | \$100.00 | \$0 |
+| 3 | Comprar 100 @ demanda | \$99.95 | +100 | \$99.90 | −\$10 |
+| 4 | Vender 100 @ oferta | \$100.05 | 0 | \$99.90 | \$0 |
+
+Diferencial capturado: los pasos 1+2 son una ida y vuelta limpia — vendisteis a \$100.05 y recomprasteis a \$99.95, embolsando 100 × \$0.10 = \$10. Los pasos 3+4 parecen otra ida y vuelta de \$10 sobre el papel. Pero entre los pasos 3 y 4 estabais **largos 100 acciones mientras el medio caía \$0.10**, una pérdida en papel de 100 × \$0.10 = \$10 sobre ese inventario. P&L neto a lo largo de las cuatro ejecuciones: \$10 (ida y vuelta limpia) + \$10 (diferencial bruto del segundo par) − \$10 (inventario a precio de mercado) = **\$10**, no los \$20 que sugería la captura del diferencial por sí sola. El inventario que cargasteis en el paso 3 se comió en silencio el beneficio de una ida y vuelta entera. Esa única línea — *diferencial capturado menos lo que vuestro inventario cargado hizo en vuestra contra* — es el juego entero.
+
+<Callout variant="info" title="El diferencial es el sueldo; el inventario es el riesgo que asumes para ganarlo">
+Leed el equilibrio como un trabajo. El diferencial es vuestro salario por hora — ingresos cuasi garantizados por presentaros y cotizar. El inventario es el riesgo de horas extra no pagadas: cuanto más tiempo y más grande os sentáis sobre una posición que no elegisteis, más puede un movimiento aleatorio de precio borrar el sueldo de un turno entero en un solo tick. Un gran creador de mercado no es el que cotiza más estrecho (eso solo maximiza el riesgo que asume); es el que recoge más diferencial *por unidad de riesgo de inventario cargado*. La inclinación es cómo mantenéis ese ratio alto.
+</Callout>
+
+<FillBlank
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+  question="Completa el equilibrio central de la creación de mercado."
+  text="Cotizar más estrecho gana más {{ejecuciones|rebajas|señales}} y captura más diferencial, pero amontona {{inventario|latencia|comisiones}} — riesgo direccional que nunca quisiste. Cotizar más ancho recorta ese riesgo pero te deja sin ejecuciones. {{Inclinar|Ensanchar|Cruzar}} las cotizaciones — bajar ambas cuando estás largo, subir ambas cuando estás corto — dirige el inventario de vuelta hacia plano sin que pagues tú mismo el diferencial."
+  explanation="Las cotizaciones estrechas ganan ejecuciones (ingreso por diferencial) pero acumulan inventario (riesgo direccional). Las cotizaciones anchas hacen lo contrario. La inclinación es la entrada del volante: desplaza dónde se sitúa la cotización de dos lados para fomentar la operación compensatoria y desalentar el amontonamiento, empujando el inventario de vuelta a plano gratis — distinto de ensanchar (que cambia cuánto ganas por ejecución) y de cruzar el diferencial (que te cuesta)."
+/>
+
+## Selección adversa — por qué que te ejecuten es mala noticia
+
+Aquí está la crueldad en el centro de la creación de mercado: **la ejecución que querías es la ejecución que hace daño.** Publicasteis una demanda esperando que un vendedor aleatorio os entregara acciones baratas. A veces es quien aparece. Pero a veces es un operador que *sabe* que el precio está a punto de caer — os vende a vuestra demanda un latido antes de que el medio caiga, y ahora estáis largos a un precio que ya está rancio. Conseguisteis vuestra ejecución. También os robaron. Eso es la **selección adversa**: la tendencia sistemática del flujo informado a dejar tirada la cotización que está a punto de equivocarse.
+
+La analogía es un desguace de coches que compra cualquier coche a un precio publicado. La mayoría de los días compráis coches normales y los revendéis con margen. Pero los más ansiosos por vender *a vuestro precio publicado* son, desproporcionadamente, aquellos cuyos coches son secretamente cacharros — saben algo que vosotros no. Cotizad un precio de compra fijo y os encontraréis con un patio lleno de cacharros. El arreglo no es dejar de comprar; es *leer las señales* de quién vende y ajustar.
+
+Para un creador de mercado, la señal más estridente de ese tipo es el **desequilibrio del flujo de órdenes**: cuando el volumen en reposo y entrante está desequilibrado hacia un lado, ese lado es más probable que esté informado. Una ola de ventas agresivas comiéndose la demanda es exactamente cuando vuestra demanda está a punto de ser el precio equivocado. Un agente profundo — a diferencia del AS de manual, que asume flujo no informado y simétrico — puede condicionarse al desequilibrio y a las características de ejecuciones recientes para **ensanchar e inclinar defensivamente** cuando sube la toxicidad: retirar la demanda, engordar el diferencial, negarse a seguir cogiendo el cuchillo que cae. La misma característica de desequilibrio que os avisa también os dice hacia dónde inclinar. El punto ciego de AS es precisamente este: no tiene hueco para "este flujo parece informado", y ese es uno de los lugares más claros donde un agente aprendido se gana el pan.
+
+<Callout variant="warning" title="Un creador de mercado que trata cada ejecución como buena noticia se arruina">
+El instinto ingenuo — "las ejecuciones son ingresos, maximiza las ejecuciones" — es exactamente al revés bajo selección adversa. Las ejecuciones que capturáis con más facilidad son las tóxicas: los operadores informados se apresuran a golpear una cotización que está a punto de equivocarse, así que una cotización estrecha y estática se ejecuta *preferentemente* justo antes de perder. Un agente recompensado puramente por el número de ejecuciones o el diferencial bruto aprende a cotizar estrecho contra el flujo tóxico y sangra a través de mil ejecuciones "ganadoras". Que te ejecuten es tanto una señal de coste como una señal de ingreso; un buen agente ensancha o inclina justo cuando las ejecuciones se vuelven sospechosamente fáciles.
+</Callout>
+
+<MCQ
+  client:visible
+  allowMultiple
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  selectAllLabel="Selecciona todas las que correspondan."
+  question="Selecciona TODAS las afirmaciones sobre la selección adversa que sean correctas."
+  options={[
+    { text: "Los operadores informados golpean preferentemente la cotización que está a punto de equivocarse, así que las ejecuciones fáciles pueden ser una señal de alarma en lugar de beneficio puro.", correct: true },
+    { text: "El desequilibrio del flujo de órdenes es una característica utilizable para detectar flujo probablemente informado e inclinar/ensanchar defensivamente.", correct: true },
+    { text: "Un agente profundo puede condicionarse a señales de toxicidad para ensanchar el diferencial cuando el flujo parece informado — algo que el Avellaneda–Stoikov clásico, al asumir flujo no informado y simétrico, no hace.", correct: true },
+    { text: "La selección adversa se elimina simplemente cotizando más estrecho, ya que las cotizaciones estrechas obtienen más ejecuciones.", },
+    { text: "La selección adversa solo importa al final de la jornada de negociación y puede ignorarse durante el día.", },
+  ]}
+  explanation="La selección adversa es la ventaja sistemática que tienen los operadores informados cuando dejan tirada una cotización rancia: la ejecución fácil suele ser la tóxica. El desequilibrio del flujo de órdenes es un proxy de toxicidad utilizable, y un agente aprendido puede ensanchar/inclinar a partir de él — una ventaja genuina sobre el AS pelado, que asume flujo no informado y simétrico. Cotizar más estrecho EMPEORA la selección adversa (te dejan tirado más), y es un fenómeno de cada operación, no de fin de jornada."
+/>
+
+## El campo de minas de la recompensa
+
+Ahora la pieza central, y la razón por la que el RL de creación de mercado es mucho más difícil que el de ejecución. En la ejecución el objetivo es casi inequívoco: terminar la orden barato, con una penalización terminal que fuerza la finalización. La creación de mercado **no tiene tal ancla**. Estáis tratando de codificar "gana diferencial, pero no asumas demasiado riesgo de inventario, y no te dejen tirado, neto de comisiones" en una única recompensa escalar — y casi toda manera de aspecto honesto de escribirla esconde un incentivo perverso que el agente encontrará y explotará con regocijo malicioso. El diseño de la recompensa *es* el trabajo aquí.
+
+Recorred el campo de minas, porque cada mina ha hecho volar el prototipo de una mesa real:
+
+- **Recompensar solo el diferencial realizado.** "Paga al agente por el diferencial que captura de verdad en idas y vueltas." Suena limpio. El agente descubre que la manera más segura de no realizar nunca una pérdida es **no ejecutar nunca** — cotiza absurdamente ancho, se sienta en inventario cero, asume riesgo cero, recoge recompensa cero, y un cero plano *parece seguro* al lado de cualquier estrategia que de vez en cuando se hunde en negativo. Habéis entrenado un agente carísimo para que se niegue a crear mercado.
+- **Recompensar el P&L a precio de mercado sin penalización de inventario.** "Solo recompensa el P&L total, incluyendo el no realizado." Ahora el agente nota que la manera más rápida de hacer que el P&L suba es *acertar la dirección* — así que deja de equilibrar sus cotizaciones y empieza a cargar inventario hacia donde cree que va el medio. Enhorabuena, habéis entrenado a un **especulador direccional** con un disfraz de creador de mercado. Parecerá brillante en un backtest con tendencia y detonará en una reversión.
+- **Penalizar el inventario demasiado fuerte.** Sobrecorregid el fallo anterior estampando una penalización enorme $λ_{\text{inv}}\, q^2$ sobre cualquier posición no nula. El agente concluye que el único inventario verdaderamente seguro es *ninguno*, y la única manera de garantizar ninguno es **no cotizar** — o cotizar tan ancho que nunca se ejecuta. El mismo mercado muerto que la primera mina, alcanzado desde la dirección opuesta.
+- **Ignorar la selección adversa.** Recompensad el diferencial bruto y el control del inventario pero no digáis nada sobre *con quién* operasteis. El agente cotiza estrecho para acumular ejecuciones, lo dejan tirado sistemáticamente con flujo informado y **sangra** — cada ejecución puntúa diferencial positivo en el instante en que ocurre, y la pérdida solo aparece más tarde conforme el medio se mueve contra el inventario recién adquirido, momento en el que la asignación de crédito está enturbiada. El agente nunca conecta "cotización estrecha contra flujo tóxico" con "pérdida", así que nunca para.
+
+El hilo que atraviesa las cuatro: una recompensa de creación de mercado debe **simultáneamente** recompensar las ejecuciones (o el agente no cotizará), penalizar el inventario (o especula) — pero no tan fuerte que se quede catatónico — y tener en cuenta la selección adversa (o sangra con flujo tóxico). La penalización de inventario $q^2$ tiene que estar *ajustada*, no a tope: lo bastante para desalentar el amontonamiento, no tanto que plano-y-callado domine.
+
+La herramienta disciplinada es el **modelado de recompensa basado en potencial** (potential-based reward shaping). Añadid términos de modelado de la forma $F(s,s') = \gamma\,\Phi(s') - \Phi(s)$ para algún potencial $Φ$ (p. ej. una función suave del inventario) — esto deja demostrablemente *la política óptima sin cambios* mientras hace que el gradiente apunte en la dirección correcta durante el aprendizaje. Empuja al agente hacia el inventario plano y lejos de las ejecuciones tóxicas *sin* reescribir en secreto el objetivo a "no operar nunca". Las penalizaciones burdas cambian qué es óptimo; el modelado basado en potencial solo cambia lo rápido que llegáis ahí. Cuando debáis añadir un término de inventario, preferid la versión modelada y basada en potencial frente a una penalización fija en bruto.
+
+<Categorize
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  allCorrectLabel="✓ Todo emparejado"
+  instructions="Coloca cada elemento en su grupo."
+  question="Clasifica cada recompensa de creación de mercado rota según el agente patológico que produce."
+  buckets={["Se niega a cotizar / nunca ejecuta", "Se convierte en especulador direccional", "Sangra con flujo tóxico"]}
+  items={[
+    { text: "Recompensar solo el diferencial realizado, sin incentivo para ejecutar de verdad.", bucket: "Se niega a cotizar / nunca ejecuta" },
+    { text: "Penalizar cualquier inventario no nulo con un término q² enorme.", bucket: "Se niega a cotizar / nunca ejecuta" },
+    { text: "Recompensar el P&L a precio de mercado sin penalización de inventario alguna.", bucket: "Se convierte en especulador direccional" },
+    { text: "Recompensar el diferencial bruto y el control de inventario pero ignorar con quién operas.", bucket: "Sangra con flujo tóxico" },
+    { text: "Acreditar cada ejecución como diferencial positivo al instante, sin tener nunca en cuenta el posterior movimiento adverso del medio.", bucket: "Sangra con flujo tóxico" },
+  ]}
+  explanation="Recompensar-solo-el-diferencial-realizado y subir-a-tope-la-penalización-de-inventario hacen ambos que no hacer nada sea la jugada más segura, así que el agente cotiza demasiado ancho para ejecutar. El P&L a precio de mercado sin penalización de inventario recompensa acertar la dirección, criando un especulador. Ignorar la toxicidad de la contraparte (y acreditar ejecuciones al instante sin el posterior movimiento adverso) deja al agente cotizar estrecho contra flujo informado y sangrar. La cura es una penalización de inventario ajustada más conciencia de la selección adversa, idealmente vía modelado basado en potencial que no reescriba el objetivo."
+/>
+
+La escalera de precios de abajo es la imagen a mantener en la cabeza mientras razonáis sobre la recompensa. Es el libro de órdenes con la *propia* demanda y oferta del creador metidas dentro; empujad el deslizador de inventario y mirad cómo ambas cotizaciones se inclinan (el término de inventario de la recompensa hecho visible), empujad el deslizador del semidiferencial y mirad cómo el hueco engorda (el término diferencial-frente-a-probabilidad-de-ejecución). Cómo leerla: la columna de órdenes en reposo es el libro, vuestros dos niveles resaltados son donde *vosotros* estáis expuestos, y la distancia al medio es exactamente el mando por el que pelea la recompensa — demasiado estrecho y os ejecutáis contra todo (incluyendo flujo tóxico), demasiado ancho y nunca ganáis.
+
+<MarketMakingQuoteLadder
+  client:visible
+  title="Vuestras cotizaciones dentro del libro de órdenes vivo"
+  caption="La escalera de precios es el libro; los dos peldaños resaltados son vuestra propia demanda y oferta. Arrastrad el inventario y ambos peldaños se inclinan juntos (el término de inventario dirigiéndoos de vuelta a plano); arrastrad el semidiferencial y el hueco entre vuestros peldaños se ensancha (cambiando probabilidad de ejecución por beneficio por ejecución). Los peldaños estrechos cogen cada ejecución — incluidas las tóxicas que la recompensa debe aprender a temer; los peldaños anchos son seguros pero no ganan nada."
+/>
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">¿Por qué el modelado basado en potencial te permite empujar al agente hacia el inventario plano sin convertirlo en el agente "no operar nunca" de la primera mina?</summary>
+
+**Respuesta.** Una penalización fija en bruto como un gigantesco $-λ q^2$ *cambia el objetivo en sí*: hace genuinamente que "no mantener inventario" sea el estado más recompensado, así que un agente que maximiza la recompensa correctamente descubrirá que no cotizar domina. El modelado basado en potencial añade términos de la forma $γΦ(s') − Φ(s)$, que **telescopan** sobre cualquier trayectoria hasta una constante que depende solo de los estados inicial y final — así que el *orden de las políticas por retorno total queda demostrablemente sin cambios* (Ng, Harada & Russell, 1999). Remodela el gradiente (el agente aprende más rápido que derivar hacia plano es bueno) sin mover el óptimo. Así obtenéis la señal de aprendizaje hacia el inventario plano mientras el objetivo verdadero — ganar diferencial neto de riesgo real — permanece intacto, y la política catatónica de "no operar nunca" no se vuelve óptima en secreto.
+
+</details>
+</Reveal>
+
+<MCQ
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  question="Recuerdo espaciado: allá en la sección de control continuo, la acción era (inclinación, semidiferencial) y el algoritmo de elección era actor–crítico. Conectando eso con el campo de minas de la recompensa, ¿por qué la acción continua es especialmente peligrosa con una recompensa mal modelada?"
+  options={[
+    { text: "Una política continua puede marcar el semidiferencial arbitrariamente ancho, así que una recompensa que hace que la inactividad parezca segura deja que el agente se deslice suavemente hacia una cotización que nunca ejecuta — no hay un suelo discreto que lo detenga.", correct: true },
+    { text: "Las acciones continuas hacen inestable el argmax de DQN, lo que corrompe la señal de recompensa directamente.", },
+    { text: "Los métodos actor–crítico no pueden representar penalizaciones de inventario, así que la recompensa siempre se ignora.", },
+    { text: "El control continuo elimina la selección adversa, así que la recompensa nunca necesita un término de selección adversa.", },
+  ]}
+  explanation="Como el semidiferencial es un mando continuo, un agente que se enfrenta a una recompensa donde no hacer nada parece seguro (recompensar-solo-el-diferencial-realizado, o una penalización de inventario subida en exceso) puede ensanchar suavemente sus cotizaciones hacia 'nunca ejecuta' — no hay una granularidad discreta que lo fuerce a seguir cotizando. Esa es la primera mina, alcanzada vía el espacio de acción continuo de la sección inicial. Las otras opciones tergiversan el algoritmo (actor–crítico maneja bien las penalizaciones) o el mundo (el control continuo no abole la selección adversa)."
+/>
+
+### Cuándo usarlo
+
+Invertid vuestro esfuerzo en el diseño de la recompensa *antes* que en la arquitectura — un PPO perfectamente ajustado sobre una recompensa rota aprende lo equivocado de forma impecable. Partid del objetivo de AS (ya codifica diferencial menos riesgo de inventario de forma sensata), añadid un término explícito de selección adversa / toxicidad solo una vez que tengáis una característica de desequilibrio utilizable, y preferid el modelado basado en potencial frente a las penalizaciones en bruto siempre que necesitéis dirigir el comportamiento. Y comprobad siempre la cordura: en el mundo idealizado de AS la recompensa modelada debería reproducir AS, y fuera de muestra el agente debe *superar* a AS neto de comisiones, o todo el aparato no se ha ganado nada.
+
+<MindMap
+  client:visible
+  title="Deep RL para creación de mercado — el mapa completo"
+  outlineLabel="Esquema"
+  caption="Desde la cotización continua de dos lados, pasando por el punto de referencia AS y los equilibrios de inventario/selección adversa, hasta el campo de minas de la recompensa que define el problema."
+  root={{
+    label: "Deep RL Creación de Mercado",
+    children: [
+      {
+        label: "Control continuo",
+        children: [
+          { label: "Acción = (inclinación, semidiferencial), 2D continua" },
+          { label: "Estado = inventario, medio, diferencial, vol, desequilibrio, ejecuciones, tiempo" },
+          { label: "PPO / SAC encajan; DQN debe discretizar y sufre" },
+        ],
+      },
+      {
+        label: "Punto de referencia a superar: AS",
+        children: [
+          { label: "r = s − q·γ·σ²·(T−t)" },
+          { label: "δ = γσ²(T−t) + (2/γ)·ln(1+γ/k)" },
+          { label: "Vuelve a deducir AS en su mundo; supéralo fuera de muestra o no ganas nada" },
+        ],
+      },
+      {
+        label: "Inventario vs diferencial",
+        children: [
+          { label: "Estrecho → más ejecuciones, más riesgo" },
+          { label: "Ancho → menos riesgo, menos ejecuciones" },
+          { label: "La inclinación dirige el inventario a plano" },
+        ],
+      },
+      {
+        label: "Selección adversa",
+        children: [
+          { label: "Las ejecuciones fáciles suelen ser tóxicas" },
+          { label: "Desequilibrio del flujo de órdenes = señal de toxicidad" },
+          { label: "Ensanchar / inclinar defensivamente" },
+        ],
+      },
+      {
+        label: "Campo de minas de la recompensa",
+        children: [
+          { label: "Solo diferencial realizado → nunca ejecuta" },
+          { label: "P&L a mercado, sin penalización de inventario → especulador" },
+          { label: "Penalización de inventario demasiado fuerte → se niega a cotizar" },
+          { label: "Ignorar selección adversa → sangra con flujo tóxico" },
+          { label: "Cura: penalización ajustada + modelado basado en potencial" },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Punto de control de creación de mercado"
+  questions={[
+    {
+      question: "Un agente cotiza una acción continua (inclinación, semidiferencial). ¿Qué familia de algoritmos es el encaje natural y por qué?",
+      options: [
+        { text: "Actor–crítico / gradiente de política (PPO, SAC) — parametrizan una política continua y optimizan las cotizaciones como números reales, con exploración incorporada.", correct: true },
+        { text: "DQN — produce un valor Q por acción, lo cual es ideal para dos mandos continuos.", },
+        { text: "Q-learning tabular — las acciones continuas se representan trivialmente en una tabla de consulta.", },
+        { text: "Cualquier método basado en valor, ya que los métodos basados en valor siempre dominan a los de gradiente de política.", },
+      ],
+      explanation: "Dos mandos continuos significan un espacio de acción continuo. PPO/SAC producen una política continua (una gaussiana sobre la acción) directamente, con la exploración incorporada. DQN y los métodos tabulares deben discretizar, perdiendo la resolución de fracción de tick y produciendo un argmax ruidoso sobre cotizaciones casi idénticas.",
+    },
+    {
+      question: "¿Cuál es el credo del curso sobre Avellaneda–Stoikov?",
+      options: [
+        { text: "Un agente profundo que no logra superar a AS fuera de muestra no se ha ganado nada; en el propio mundo idealizado de AS un agente correcto debería volver a deducir AS.", correct: true },
+        { text: "AS está obsoleto y cualquier red neuronal lo supera trivialmente, así que no merece la pena implementarlo.", },
+        { text: "AS es imbatible, así que el deep RL no tiene papel en la creación de mercado.", },
+        { text: "AS solo se aplica a la ejecución, no a la creación de mercado.", },
+      ],
+      explanation: "AS es el óptimo analítico bajo sus suposiciones y un punto de referencia gratuito y transparente. Igualarlo fuera de muestra con un modelo gigantesco es un fracaso; el agente debe superarlo (neto de comisiones) allí donde la realidad rompe las suposiciones de AS, y reproducirlo donde no — la misma comprobación de cordura de re-deducción que los agentes de ejecución deben a Almgren–Chriss.",
+    },
+    {
+      question: "Empezaste plano, vendiste 100 @ \$100.05, luego compraste 100 @ \$99.95 (una ida y vuelta limpia), luego compraste otras 100 @ \$99.95 mientras el medio caía de \$100.00 a \$99.90, luego vendiste 100 @ \$100.05. La captura del diferencial bruto parecía de \$20. ¿Por qué el P&L neto es de solo unos \$10?",
+      options: [
+        { text: "Mientras estabas largo 100 acciones el medio cayó \$0.10, una pérdida a precio de mercado de \$10 sobre el inventario cargado que compensa el diferencial bruto de una ida y vuelta.", correct: true },
+        { text: "Las comisiones de la bolsa consumieron exactamente \$10 del diferencial.", },
+        { text: "La segunda ida y vuelta nunca se ejecutó de verdad, así que solo se ganaron \$10.", },
+        { text: "La captura del diferencial siempre se divide a la mitad por convención, independientemente del inventario.", },
+      ],
+      explanation: "Entre la tercera y la cuarta ejecución cargaste +100 acciones mientras el medio caía \$0.10, una pérdida a precio de mercado de 100 × \$0.10 = \$10. El P&L neto es el diferencial capturado menos lo que el inventario cargado hizo en tu contra: \$20 bruto − \$10 de pérdida de inventario = \$10. El inventario cargado se comió en silencio una ida y vuelta entera.",
+    },
+    {
+      question: "Bajo selección adversa, ¿por qué una tasa de ejecución alta puede ser una advertencia en lugar de un triunfo?",
+      options: [
+        { text: "Los operadores informados golpean preferentemente la cotización que está a punto de equivocarse, así que las ejecuciones fáciles son desproporcionadamente tóxicas y pierden dinero conforme el medio se mueve contra el nuevo inventario.", correct: true },
+        { text: "Las tasas de ejecución altas siempre disparan penalizaciones de la bolsa que superan el diferencial.", },
+        { text: "Las ejecuciones son irrelevantes para el P&L; solo importa el precio medio.", },
+        { text: "Una tasa de ejecución alta demuestra que las cotizaciones son demasiado anchas, no demasiado estrechas.", },
+      ],
+      explanation: "Las ejecuciones que capturas con más facilidad suelen ser de operadores informados que dejan tirada una cotización rancia justo antes de que se mueva. Un agente que maximiza el número de ejecuciones cotiza estrecho contra flujo tóxico y sangra. La defensa es leer la toxicidad (p. ej. el desequilibrio del flujo de órdenes) y ensanchar/inclinar — una ventaja genuina sobre el AS pelado, que asume flujo no informado y simétrico.",
+    },
+    {
+      question: "Un equipo recompensa a su agente de creación de mercado con P&L puro a precio de mercado y sin penalización de inventario. ¿Qué fallo deberían esperar?",
+      options: [
+        { text: "El agente se convierte en un especulador direccional — deja de equilibrar las cotizaciones y carga inventario según su visión direccional, luciendo genial en backtests con tendencia y explotando en las reversiones.", correct: true },
+        { text: "El agente cotiza diferenciales perfectamente simétricos para siempre y nunca mantiene inventario.", },
+        { text: "El agente se niega a cotizar porque las recompensas de P&L son demasiado arriesgadas.", },
+        { text: "El agente replica perfectamente Avellaneda–Stoikov sin más ajuste.", },
+      ],
+      explanation: "Sin penalización de inventario, la manera más rápida de hacer crecer el P&L a precio de mercado es acertar la dirección, así que el agente carga según su visión — un especulador con disfraz de creador de mercado. El arreglo es una penalización de inventario ajustada (idealmente modelado basado en potencial) para que el agente gane diferencial mientras se mantiene cerca de plano. Negarse a cotizar es la OTRA mina (solo-diferencial-realizado o una penalización subida en exceso).",
+    },
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  nextLabel="Siguiente"
+  seeResultsLabel="Ver resultados"
+  backLabel="Atrás"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  completeTitleLabel="Cuestionario completado"
+  correctCountLabel="correctas"
+  gateLabel="Comprueba tu respuesta para continuar."
+/>
+
+## Hacia dónde va esto
+
+Ya habéis visto la creación de mercado como un problema de control continuo de dos lados: la acción es (inclinación, semidiferencial), lo que fuerza métodos actor–crítico como PPO y SAC; el punto de referencia es Avellaneda–Stoikov, que un agente serio debe volver a deducir en su mundo y superar fuera de muestra; el equilibrio central es la captura del diferencial frente al riesgo de inventario, dirigida por la inclinación; la crueldad es la selección adversa, donde la ejecución fácil es la tóxica; y todo el problema es en realidad un problema de diseño de recompensa, un campo de minas donde cada objetivo ingenuo cría un agente roto distinto.
+
+Pero cada afirmación de "supera a AS fuera de muestra" de esta lección se apoya en un simulador — un modelo de ejecuciones, de impacto, de quién está al otro lado. Y los simuladores de creación de mercado mienten aún más seductoramente que los de ejecución, porque pueden inventarse la *contraparte*. La **lección 6, "La brecha simulador-realidad y la evaluación honesta",** es donde dejamos de fiarnos del backtest: cómo un modelo de ejecución demasiado amable o una selección adversa ausente fabrican beneficios falsos, y cómo evaluar un agente de cotización con la honestidad suficiente para que "superó a AS" signifique algo en real en lugar de significar "aprendió los fallos de mi física".

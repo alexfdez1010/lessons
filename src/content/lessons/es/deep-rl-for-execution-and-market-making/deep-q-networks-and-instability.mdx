@@ -1,0 +1,392 @@
+---
+title: "Las Deep Q-Networks y su inestabilidad sobre el estado financiero"
+description: "Las DQN convierten la tabla Q en una red neuronal — y heredan la tríada mortal. Los dos arreglos que la hicieron funcionar, y por qué los mercados ruidosos y no estacionarios la rompen con más saña que Atari."
+topic: "es/deep-rl-for-execution-and-market-making"
+order: 2
+minutes: 17
+updated: 2026-06-21
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, ExecutionPolicyHeatmap } from '@/components/react';
+
+En 2015, un único algoritmo aprendió a jugar a cuarenta y nueve juegos de Atari a partir de píxeles en bruto, batiendo a los humanos en la mayoría de ellos, con un solo conjunto de hiperparámetros y sin trucos específicos de cada juego. Ese algoritmo era la **Deep Q-Network (DQN)**, y desató todo el auge del deep RL. La receta parece casi insultantemente sencilla: coged el Q-learning de toda la vida, que ya conocisteis como una tabla de valores, y sustituid la tabla por una red neuronal. Hecho. Publicad. Recolectad citas.
+
+Salvo que no está hecho, y la razón es justo de lo que trata esta lección. La versión ingenua — "simplemente metemos una red neuronal" — *diverge*. Las estimaciones de valor se disparan hacia el infinito y el agente no aprende nada. La DQN funciona solo gracias a dos arreglos de ingeniería concretos que desactivan una mina estructural en las matemáticas. Esa mina tiene nombre, la **tríada mortal**, y sobre el estado financiero está armada y nerviosa de maneras que Space Invaders nunca conoció. Así que esta lección son en realidad dos historias: cómo se supone que funciona el deep RL basado en valor, y por qué te estalla en la cara en cuanto lo apuntas a un libro de órdenes.
+
+<MCQ
+  client:visible
+  pretest
+  pretestLabel="Antes de leer — adivina"
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  question="El Deep Q-learning ingenuo — sustituir literalmente la tabla Q por una red neuronal y ejecutar la misma actualización — tiende a hacer ¿qué durante el entrenamiento?"
+  options={[
+    { text: "Divergir u oscilar de mala manera: las estimaciones de valor pueden dispararse porque la red persigue un objetivo que se mueve cada vez que la propia red se actualiza.", correct: true },
+    { text: "Converger más rápido que la tabla, porque las redes neuronales son aproximadores universales y la aproximación siempre ayuda.", },
+    { text: "Comportarse de forma idéntica a la tabla, ya que las matemáticas no cambian — la representación nunca importa.", },
+    { text: "Negarse a ejecutarse en absoluto, porque el Q-learning está matemáticamente indefinido para entradas continuas.", },
+  ]}
+  explanation="El cambio ingenuo es célebremente inestable. El objetivo del Q-learning se construye por bootstrapping a partir de la propia estimación actual de la red, así que actualizar la red desplaza el objetivo al que apuntabas. Combina ese objetivo móvil con la aproximación de funciones y los datos fuera de política y las estimaciones pueden divergir. Los dos arreglos de la DQN — la repetición de experiencias y una red objetivo congelada — existen precisamente para domar esto."
+/>
+
+## De la tabla Q a la red Q (DQN)
+
+Empezad por lo que ya sabéis. El Q-learning aprende una **función de valor de acción** $Q(s,a)$: el retorno descontado esperado de tomar la acción $a$ en el estado $s$ y luego actuar de forma óptima para siempre. Todo el edificio descansa sobre la **ecuación de optimalidad de Bellman**, que dice que el valor de un par estado-acción es igual a la recompensa inmediata más el valor descontado de la *mejor* cosa que puedes hacer a continuación:
+
+$$Q^*(s,a) = \mathbb{E}\big[\, r + \gamma \max_{a'} Q^*(s', a') \,\big]$$
+
+El Q-learning tabular convierte esa ecuación de punto fijo en una regla de actualización. Tras observar una transición $(s, a, r, s')$, empujáis vuestra estimación actual hacia el objetivo obtenido por bootstrapping:
+
+$$Q(s,a) \leftarrow Q(s,a) + \alpha \big[\, \underbrace{r + \gamma \max_{a'} Q(s',a')}_{\text{objetivo TD}} - Q(s,a) \,\big]$$
+
+El corchete es el **error de diferencia temporal (TD)**: la brecha entre lo que ahora crees que vale el par y lo que tu estimación por bootstrapping dice que debería valer. La tasa de aprendizaje $\alpha$ controla cómo de grande es el paso que das para cerrarla. Para un mundo pequeño y discreto — unas pocas docenas de estados — una tabla de consulta guarda un número por celda y esto converge a $Q^*$.
+
+Los mercados no os dan unas pocas docenas de estados. El estado de un agente de ejecución o de creación de mercado es un vector de números reales — inventario, tiempo restante, diferencial, posición en la cola, volatilidad, un puñado de características del libro de órdenes y de señal — viviendo en un espacio continuo que nunca podríais enumerar. Una tabla es desesperante: necesitaríais infinitas celdas, y nunca visitaríais la misma dos veces para aprender nada. Así que sustituís la tabla por un **aproximador de funciones**: una red neuronal $Q(s,a;\theta)$ con pesos $\theta$ que *generaliza* entre estados cercanos. La alimentas con un estado, devuelve un valor Q por cada acción discreta. Los estados que nunca ha visto reciben un valor razonable porque la red interpola a partir de los similares que sí ha visto.
+
+El entrenamiento cambia el empujón tabular por el **descenso de gradiente sobre una función de pérdida**. La pérdida es el error TD al cuadrado — vuestra predicción frente al objetivo por bootstrapping:
+
+$$L(\theta) = \big(\, r + \gamma \max_{a'} Q(s',a';\theta) - Q(s,a;\theta) \,\big)^2$$
+
+Derivas $L$ respecto a $\theta$, das un paso de gradiente, repites. La misma lógica TD que la tabla; la actualización de una sola celda de la tabla simplemente se ha convertido en una actualización global de parámetros que desplaza el valor de *cada* estado a la vez. Esa generalización es el superpoder — y, como veréis dentro de dos secciones, el arma cargada.
+
+### Una actualización TD resuelta
+
+Hagámoslo concreto con un paso. Vuestro agente de ejecución está en el estado $s$ (digamos, queda el 60% del trozo, a mitad de camino del plazo) y toma la acción $a$ = "operar el 50% del trozo restante". Supongamos:
+
+- La red predice actualmente $Q(s,a;\theta) = 4.0$ (en unidades de recompensa — coste negado, así que más alto es mejor).
+- Ejecutáis la acción y observáis la recompensa inmediata $r = -1.0$ (pagasteis algo de impacto este paso).
+- Aterrizáis en $s'$, donde las salidas de la red para las siguientes acciones disponibles son $\{2.0,\ 3.0,\ 2.5\}$, así que $\max_{a'} Q(s',a';\theta) = 3.0$.
+- Descuento $\gamma = 0.9$.
+
+El objetivo TD es $r + \gamma \max_{a'} Q(s',a') = -1.0 + 0.9 \times 3.0 = 1.7$. El error TD es $1.7 - 4.0 = -2.3$ — la red era demasiado optimista sobre este par en 2.3. La pérdida al cuadrado es $(-2.3)^2 = 5.29$. Un paso de gradiente sobre $\theta$ empuja $Q(s,a;\theta)$ hacia abajo desde 4.0 hacia 1.7, y — al ser una red compartida — arrastra también un poco hacia abajo los valores de los estados *similares*. Haced esto a través de millones de transiciones y la red converge hacia satisfacer la ecuación de Bellman en todas partes. Ese es el sueño, al menos.
+
+<FillBlank
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+  question="Completa las piezas móviles de la pérdida de la DQN."
+  text="La DQN entrena una red Q(s,a;θ) minimizando el {{error TD|gradiente de política|ventaja}} al cuadrado, la brecha entre su predicción y un objetivo por bootstrapping r + γ máx sobre a′ de Q(s′,a′;θ). Como la red está {{compartida|congelada|tabulada}} entre estados, un paso de gradiente desplaza el valor de muchos estados a la vez — esa generalización es lo que la hace escalar más allá de una tabla de consulta."
+  explanation="La pérdida es el error TD al cuadrado. La única red está compartida por todo el espacio de estados, así que actualizar θ generaliza el cambio a estados similares — la fuente tanto del poder como de la inestabilidad de la DQN."
+/>
+
+## Por qué la DQN ingenua diverge: la tríada mortal
+
+Aquí está el corazón palpitante de la lección. El cambio ingenuo estalla por una interacción de tres ingredientes, bautizada como la **tríada mortal** por Sutton y Barto. Cada uno es inofensivo, incluso deseable, por sí solo. Emparejad dos cualesquiera y normalmente vais bien. Combinad los tres y vuestras estimaciones de valor pueden divergir hacia el infinito — no por un fallo, sino porque las matemáticas pierden de verdad su garantía.
+
+Los tres ingredientes:
+
+1. **Aproximación de funciones.** Representáis $Q$ con un modelo paramétrico (la red neuronal) en lugar de una tabla exacta. Actualizar el valor de un estado se desborda sobre otros, porque comparten pesos. La generalización, la virtud, es también una fuga.
+2. **Bootstrapping.** Vuestro objetivo de actualización se construye a partir de vuestra *propia estimación actual* del valor del siguiente estado — ese término $\max_{a'} Q(s',a')$ — en lugar de a partir de un retorno real, plenamente observado. Aprendéis una conjetura a partir de una conjetura.
+3. **Aprendizaje fuera de política (off-policy).** Aprendéis sobre la política óptima (codiciosa) mientras que los datos sobre los que entrenáis fueron generados por una política de comportamiento *distinta*, exploratoria. La distribución de estados que actualizáis no es la distribución que la política objetivo visitaría de verdad.
+
+<Callout variant="info" title="Por qué dos está bien pero tres es peligroso">
+Eliminad cualquier pata por separado y la estabilidad regresa. El bootstrapping off-policy **tabular** (eliminar la aproximación de funciones) no es más que Q-learning — demostrablemente convergente, sin tríada. **Monte Carlo** con aproximación de funciones off-policy (eliminar el bootstrapping — usar retornos reales como objetivos, no estimaciones) es estable porque el objetivo no depende de los parámetros que estáis actualizando. El bootstrapping con aproximación de funciones **on-policy** como Sarsa (eliminar el off-policy) se comporta mucho mejor porque actualizáis sobre la misma distribución bajo la que actuáis. Es el *trío específico* — un modelo paramétrico, aprendiendo una conjetura a partir de una conjetura, sobre datos de la distribución equivocada — el que elimina la garantía de contracción y deja que los errores se retroalimenten.
+</Callout>
+
+El mecanismo del fallo, de un tirón: el bootstrapping hace que el objetivo dependa de $\theta$. La aproximación de funciones significa que un paso dado para corregir el valor de un estado perturba también el valor del siguiente estado — que es *parte de ese mismísimo objetivo*. Los datos off-policy significan que nada corrige de forma fiable los estados que se están sobrevalorando o infravalorando, porque no los estáis visitando en proporción a lo que importan para la política objetivo. El resultado es un bucle de retroalimentación positiva: una sobreestimación infla el objetivo del bootstrapping, que infla la estimación, que infla el objetivo. Vuelta y vuelta, arriba y a la derecha, hasta que los números son un sinsentido. Esto *no* es lo mismo que el sobreajuste habitual del aprendizaje supervisado — es un problema de dinámica en el propio proceso de entrenamiento, donde las etiquetas hacia las que regresáis las genera el modelo que estáis entrenando.
+
+<MatchConcepts
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  termsLabel="Términos"
+  definitionsLabel="Definiciones"
+  allCorrectLabel="✓ Todo emparejado"
+  question="Empareja cada pata de la tríada mortal con lo que aporta — y con lo que obtienes al eliminarla."
+  pairs={[
+    { term: "Aproximación de funciones", definition: "Los parámetros compartidos generalizan entre estados, así que actualizar un valor se filtra a otros; elimínala (usa una tabla) y vuelves al Q-learning convergente" },
+    { term: "Bootstrapping", definition: "El objetivo se construye a partir de la propia estimación del siguiente estado de la red — una conjetura a partir de una conjetura; elimínalo (usa retornos de Monte Carlo) y el objetivo deja de depender de θ" },
+    { term: "Aprendizaje off-policy", definition: "Aprendes la política codiciosa a partir de datos generados por una exploratoria, así que las actualizaciones golpean la distribución de estados equivocada; elimínalo (ve on-policy, p. ej. Sarsa) y el comportamiento es mucho más dócil" },
+  ]}
+  explanation="Cada pata es individualmente benigna e incluso útil. El riesgo de divergencia es una propiedad emergente de las tres juntas: un modelo paramétrico aprendiendo una conjetura-a-partir-de-una-conjetura sobre datos extraídos de la distribución equivocada pierde la contracción que garantiza la convergencia."
+/>
+
+### Cuándo muerde
+
+La tríada es más peligrosa cuando los objetivos por bootstrapping son ruidosos o cuando las políticas de comportamiento y objetivo divergen bruscamente — ambas cosas describen el trading a la perfección. Los horizontes largos (muchos pasos de bootstrap acumulándose), los factores de descuento $\gamma$ altos cerca de 1 (el futuro pesa mucho, así que los errores del objetivo se propagan lejos), y la reutilización off-policy agresiva de datos rancios disparan todos el riesgo. Tened presente esta lista: cada elemento de ella es *peor* en los mercados que en un videojuego.
+
+<MCQ
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  question="¿Qué combinación es la que amenaza de verdad con divergencia en el RL basado en valor?"
+  options={[
+    { text: "Aproximación de funciones + bootstrapping + aprendizaje off-policy, las tres juntas.", correct: true },
+    { text: "Aproximación de funciones + una tasa de aprendizaje alta, sea cual sea el objetivo.", },
+    { text: "Aprendizaje on-policy + retornos de Monte Carlo + una red pequeña.", },
+    { text: "Cualquier uso de una red neuronal, punto — las redes no pueden representar funciones de valor.", },
+  ]}
+  explanation="La tríada mortal es el trío concreto de aproximación de funciones, bootstrapping y aprendizaje off-policy. Cada par es manejable; el trío completo elimina la garantía de convergencia y deja que las estimaciones de valor se retroalimenten. Una tasa de aprendizaje alta o una red grande pueden agravarlo pero no son la tríada en sí."
+/>
+
+## Los dos arreglos que hicieron funcionar la DQN
+
+La DQN no derogó la tríada mortal — no se puede, no mientras se conservan los tres ingredientes, y la DQN los quiere los tres (es una red neuronal, hace bootstrapping, es off-policy). En su lugar, *sortea por ingeniería* la inestabilidad con dos trucos ya estándar. Cada uno neutraliza una parte distinta del bucle de retroalimentación.
+
+**Arreglo 1 — Repetición de experiencias.** No entrenéis sobre las transiciones en el orden en que ocurren. Guardad cada transición $(s, a, r, s')$ en un búfer grande (el **búfer de repetición**, a menudo un millón de transiciones), y en cada paso de entrenamiento muestread un *minilote aleatorio* de él. Dos beneficios. Primero, **rompe la correlación temporal**: las transiciones consecutivas de cualquier episodio están muy correlacionadas, y entrenar una red sobre un flujo de muestras correlacionadas es como ajustar una regresión a datos que metiste en orden — los gradientes están sesgados y la red olvida el pasado conforme sigue el presente. El muestreo aleatorio descorrelaciona el minilote hacia algo i.i.d., que es lo que el descenso de gradiente asume. Segundo, da **eficiencia de datos**: cada costosa transición se reutiliza muchas veces a través de muchas actualizaciones en lugar de verse una vez y descartarse.
+
+**Arreglo 2 — Red objetivo.** Este ataca directamente al bootstrapping. Mantened *dos* copias de la red: la red en línea $Q(s,a;\theta)$ que estáis entrenando activamente, y una **red objetivo** $Q(s,a;\theta^-)$ que es una instantánea de ella congelada periódicamente. Construid el objetivo del bootstrap con los pesos *congelados*:
+
+$$L(\theta) = \big(\, r + \gamma \max_{a'} Q(s',a';\theta^-) - Q(s,a;\theta) \,\big)^2$$
+
+Cada pocos miles de pasos copiáis $\theta$ en $\theta^-$ (o mezcláis lentamente, $\theta^- \leftarrow \tau\theta + (1-\tau)\theta^-$ para un $\tau$ pequeño — una actualización "suave"). Entre copias, $\theta^-$ es constante, así que el objetivo hacia el que regresáis se queda quieto. Ya no perseguís un objetivo que salta cada vez que actualizáis — estáis ajustando hacia una etiqueta estable durante un rato, y luego la refrescáis. Eso corta el bucle de retroalimentación positiva donde una estimación infla su propio objetivo infla la estimación, porque durante miles de pasos el objetivo simplemente no se mueve con $\theta$.
+
+<Callout variant="info" title="Cada arreglo doma una pata distinta de la tríada">
+Mapéalos sobre la tríada y el diseño encaja. La **repetición de experiencias** ataca el problema de distribución de datos creado por el aprendizaje off-policy y los flujos correlacionados — los minilotes aleatorios aproximan los datos i.i.d. que quiere el descenso de gradiente. La **red objetivo** ataca la pata del bootstrapping — congelar $\theta^-$ impide que el objetivo se mueva junto a la estimación, rompiendo el bucle autorreforzante. Ninguno elimina un ingrediente de la tríada; juntos hacen que el trío inevitable *se comporte* lo bastante bien como para converger en la práctica.
+</Callout>
+
+Dos refinamientos que deberíais conocer por su nombre, porque parchean sesgos reales de la DQN básica:
+
+- **Double DQN.** El operador $\max$ del objetivo es un *sobre*estimador sistemático: con valores Q ruidosos, $\max_{a'} Q(s',a')$ tiende a escoger la acción que tuvo suerte con ruido positivo, así que el objetivo está sesgado al alza. Double DQN desacopla los dos papeles de ese máximo — **selecciona** la siguiente acción con la red en línea ($\arg\max_{a'} Q(s',a';\theta)$) pero **evalúa** esa acción con la red objetivo ($Q(s',\arg\max;\theta^-)$). La misma acción no sería argmax bajo ambas a menos que sea genuinamente buena, así que el sesgo optimista se encoge. En dominios ruidosos (léase: mercados) esto importa mucho.
+- **Dueling DQN.** Divide la cabeza de la red en dos flujos — un **valor de estado** escalar $V(s)$ y una **ventaja** por acción $A(s,a)$ — y luego los recombina en $Q(s,a) = V(s) + (A(s,a) - \text{media}_a A)$. La intuición: en muchos estados *qué* acción escojas apenas importa (el valor lo domina la situación, no la elección), y aprender $V(s)$ una vez es mucho más eficiente que aprender un $Q$ casi idéntico para cada acción. Útil cuando la mayoría de las acciones en un estado son aproximadamente equivalentes — habitual en ejecución, donde la mayoría de las microdecisiones apenas mueven el resultado.
+
+<Categorize
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  allCorrectLabel="✓ Todo emparejado"
+  instructions="Coloca cada elemento en su grupo."
+  question="Clasifica cada técnica de la DQN según el problema que resuelve principalmente."
+  buckets={["Rompe la correlación / reutiliza datos", "Estabiliza el objetivo del bootstrap", "Reduce la sobreestimación del operador máximo"]}
+  items={[
+    { text: "Muestrear minilotes aleatorios de un búfer de repetición grande", bucket: "Rompe la correlación / reutiliza datos" },
+    { text: "Una copia θ⁻ congelada periódicamente usada solo para calcular el objetivo TD", bucket: "Estabiliza el objetivo del bootstrap" },
+    { text: "Seleccionar la siguiente acción con la red en línea pero evaluarla con la red objetivo (Double DQN)", bucket: "Reduce la sobreestimación del operador máximo" },
+    { text: "Almacenar un millón de transiciones para que se entrene sobre cada una muchas veces", bucket: "Rompe la correlación / reutiliza datos" },
+    { text: "Mantener quieta la etiqueta de regresión durante miles de pasos antes de refrescarla", bucket: "Estabiliza el objetivo del bootstrap" },
+  ]}
+  explanation="La repetición ataca la correlación y la eficiencia de datos (el problema off-policy/de flujo). La red objetivo estabiliza el bootstrap congelando la etiqueta. Double DQN apunta específicamente al sesgo optimista del operador máximo separando la selección de la acción de su evaluación."
+/>
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Si la red objetivo solo va por detrás de la red en línea, ¿no ralentiza el aprendizaje? ¿Por qué es un buen intercambio?</summary>
+
+**Respuesta.** Sí — la red objetivo hace deliberadamente que vuestras etiquetas sean *rancias*, y la rancidez normalmente es mala. Pero la alternativa es peor: con un objetivo en vivo estáis haciendo regresión contra una etiqueta que se desplaza en cada paso de gradiente, y esa dinámica de objetivo móvil es exactamente lo que deja que el bucle de retroalimentación de la tríada mortal diverja. Congelar $\theta^-$ cambia un poco de velocidad por mucha estabilidad. Convierte una optimización dura y no estacionaria (perseguirte la cola) en una secuencia de problemas supervisados más fáciles y casi estacionarios (ajusta una etiqueta fija, luego refréscala). En un dominio ruidoso la estabilidad vale mucho más que la capacidad de respuesta perdida — y ajustáis la frecuencia de actualización (o el $\tau$ de la actualización suave) para equilibrar ambas.
+
+</details>
+</Reveal>
+
+## Por qué el estado financiero rompe la DQN con más saña que un videojuego
+
+Todo lo anterior era agnóstico al dominio. Ahora las malas noticias, específicas del trading. Los dos arreglos de la DQN se apoyan en suposiciones que Atari satisface a las mil maravillas y los mercados violan flagrantemente. Cada violación rearma una parte de la tríada que los arreglos se suponía que debían desactivar.
+
+**No estacionariedad.** Atari es un programa fijo: las reglas del Breakout en 2015 son las reglas del Breakout hoy, así que una transición que guardasteis hace una hora sigue siendo una muestra perfectamente válida del mismo entorno. Los mercados *no* son fijos. El proceso generador de datos deriva — los regímenes de volatilidad cambian, la liquidez se seca, el algoritmo de un competidor cambia, aterriza una regulación. Esto destripa la repetición de experiencias en su raíz: **la repetición asume que el búfer es una muestra representativa de una distribución aproximadamente estacionaria.** Cuando el propio MDP se mueve, vuestro millón de transiciones almacenadas es en parte un museo de un mercado que ya no existe. Entrenáis al agente para que sea excelente en el régimen de *ayer*, y la rancidez que era inofensiva en Atari se vuelve activamente engañosa.
+
+**Baja relación señal-ruido.** En Breakout la recompensa es limpia y causal — rompe un ladrillo, consigue puntos, y el valor de un estado es genuinamente aprendible porque el futuro lo determinan en gran medida tus acciones. En los mercados el valor del siguiente estado lo domina el ruido: los movimientos de precio son en su mayoría impredecibles, así que el objetivo por bootstrapping $r + \gamma\max_{a'}Q(s',a')$ es *en su mayoría ruido* con una señal tenue enterrada dentro. Hacer bootstrapping a partir de un objetivo ruidoso es la pata del bootstrapping de la tríada en modo difícil — estáis aprendiendo una conjetura a partir de una conjetura donde la conjetura es 95% estática. El sesgo de sobreestimación del operador máximo (que combate Double DQN) es también *peor* cuanto más ruidosos son vuestros valores Q, porque hay más ruido positivo para que el máximo lo escoja a dedo.
+
+**Observabilidad parcial.** Todo el marco de la DQN asume que el estado $s$ es markoviano — que lo que observas contiene todo lo que necesitas para predecir el futuro. El estado verdadero de un mercado (las intenciones ocultas de todos, el flujo de órdenes latente completo, las noticias pendientes) *no* es observable desde el libro de órdenes. Lo que alimentáis a la red es una proyección ruidosa e incompleta. Eso rompe la suposición markoviana bajo la ecuación de Bellman, así que incluso un $Q$ perfectamente entrenado está ajustando una aproximación a un problema que no es del todo el que estáis resolviendo. (Por eso los agentes de trading reales atornillan recurrencia o características de historia apilada para reconstruir un pseudoestado — un parche parcial, no una cura.)
+
+**Escasez y escala de la recompensa.** Las recompensas de Atari son frecuentes y viven en una escala entera sensata. Las recompensas del trading pueden ser escasas (PyG realizado solo al final de un episodio), tremendamente sesgadas (largos tramos de pequeñas ganancias salpicados por raras grandes pérdidas) y mal escaladas (costes de impacto minúsculos por paso frente a penalizaciones terminales enormes ocasionales). El descenso de gradiente odia eso: la pérdida la dominan unas pocas transiciones atípicas, la escala de valor de la red deriva, y el delicado equilibrio que la red objetivo protegía se vuelve más difícil de sostener.
+
+<Callout variant="warning" title="La repetición de experiencias asume calladamente que el mercado se queda quieto">
+La trampa más infravalorada de la DQN financiera: la repetición de experiencias está *construida sobre* la premisa de que vuestro búfer es una muestra i.i.d. de una distribución estacionaria. Los mercados son no estacionarios, así que un búfer grande se convierte en un lastre — estáis promediando vuestra política sobre una mezcla de regímenes, algunos de ellos extintos. El agente aprende un compromiso borroso que no es óptimo para ningún régimen en particular y es peligroso en el actual. La gente lo disimula con búferes cortos o ponderados por recencia, características de régimen o reentrenamiento frecuente, pero entended la tensión: cuanto más grande y largo vuestro búfer de repetición, más datos de régimen rancio estáis usando para entrenar. El arreglo que hizo funcionar la DQN en Atari en parte *está luchando contra vosotros* en los mercados.
+</Callout>
+
+<MCQ
+  client:visible
+  allowMultiple
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  question="Selecciona cada razón por la que la DQN basada en valor es más difícil de estabilizar sobre datos de mercado que sobre Atari. (Más de una.)"
+  options={[
+    { text: "El entorno es no estacionario, así que las transiciones repetidas pueden ser muestras rancias de un régimen que ya no existe.", correct: true },
+    { text: "La baja relación señal-ruido hace que el objetivo TD por bootstrapping sea en su mayoría ruido, desestabilizando la pata del bootstrapping de la tríada.", correct: true },
+    { text: "El estado verdadero solo es parcialmente observable desde el libro de órdenes, rompiendo la suposición markoviana de la que depende la ecuación de Bellman.", correct: true },
+    { text: "Las redes neuronales no pueden representar entradas de valor continuo, así que las características del libro de órdenes son imposibles de codificar.", },
+    { text: "Las recompensas pueden ser escasas, sesgadas y mal escaladas, así que unas pocas transiciones atípicas dominan la pérdida.", correct: true },
+  ]}
+  explanation="La no estacionariedad, la baja relación señal-ruido, la observabilidad parcial y la escasez/escala de la recompensa hacen todas que el estado financiero sea hostil para la DQN — cada una rearma una parte de la tríada que los arreglos debían domar. La única afirmación falsa es la de que las redes no pueden recibir entradas continuas; manejan las características continuas sin problema (esa es la razón misma por la que sustituimos la tabla)."
+/>
+
+## Acciones discretas: el encaje natural de la DQN y su techo
+
+Un último hecho estructural sobre la DQN, y es la bisagra hacia la siguiente lección. La capa de salida de la DQN es **un valor Q por acción**, y el objetivo usa $\max_{a'}$ sobre esas acciones. Esa matemática solo funciona para un **conjunto de acciones discreto y pequeñito** — necesitáis enumerar cada acción para tomar el máximo. Eso hace que la DQN encaje de forma natural con decisiones gruesas y a trozos, y de forma incómoda con las finas y continuas.
+
+Donde la DQN encaja limpiamente: discretizad la decisión en un puñado de cubos. Para ejecución, "operar el 0% / 25% / 50% / 75% / 100% de este trozo" son cinco acciones limpias — la DQN se las come de desayuno. Para creación de mercado, una pequeña cuadrícula de desfases de cotización ("publica mi oferta 1, 2 o 3 ticks por detrás del medio; igual para la demanda") es un conjunto discreto modesto que la DQN puede manejar. Control grueso, cubos discretos, máximo pequeño — perfecto.
+
+Donde se tensa: la cotización genuinamente continua. La acción real de un creador de mercado es un *número real* — un semidiferencial de, digamos, 1,7 ticks, o un sesgo preciso dependiente del inventario. Para forzar eso dentro de la DQN debéis discretizar, y la discretización os cuesta por ambos lados. Demasiados pocos cubos y no podéis expresar la cotización fina que la política óptima quiere; demasiados y el conjunto de acciones explota, el máximo se vuelve caro, y cada acción se visita demasiado pocas veces para aprenderla bien. La maldición se compone en múltiples dimensiones: cotizar de forma independiente los desfases de oferta *y* demanda a través de una cuadrícula se multiplica en un espacio de acciones combinatorio.
+
+### Una discretización resuelta
+
+Digamos que el semidiferencial óptimo para el estado actual es **1,7 ticks**. Discretizáis el semidiferencial en acciones $\{0, 1, 2, 3, 4\}$ ticks — cinco cubos, separados por un tick. Lo más cercano que la DQN puede cotizar es **2 ticks**, así que estáis 0,3 ticks demasiado anchos en cada ejecución — un recorte permanente y estructural sobre vuestro diferencial capturado que ninguna cantidad de entrenamiento elimina, porque la respuesta correcta literalmente no está en el conjunto de acciones. Estrechad la cuadrícula a resolución de medio tick $\{0, 0.5, 1.0, \ldots, 4.0\}$ y podéis cotizar 1,5 o 2,0 (seguís sin acertar 1,7, ahora por 0,2) — pero habéis duplicado las acciones. Ahora hacedlo también para el lado de la demanda y el espacio conjunto de acciones se eleva al cuadrado. Añadid el sesgo dependiente del inventario como tercera dimensión y el pulcro "toma el máximo sobre las acciones" de la DQN se convierte en una búsqueda sobre una cuadrícula combinatoria, con la mayoría de las celdas hambrientas de datos.
+
+La lección se escribe sola: **las acciones discretas son el hogar de la DQN y su techo.** El control continuo fino quiere un método que dé el número real directamente en lugar de elegir de un menú — que es exactamente lo que hacen los métodos de **gradiente de política y actor–crítico**, y exactamente adonde va la siguiente lección.
+
+<ExecutionPolicyHeatmap
+  client:visible
+  policy="rl"
+  title="Una política Q aprendida como un mapa de estado → acción a lo largo del tiempo y la señal"
+  actionLabel="Acción codiciosa (tasa de operación)"
+  caption="Leed esto como la política codiciosa que induce una DQN convergida: en cada celda escoge la acción discreta con el valor Q más alto. Las columnas marchan hacia el plazo; las filas van de una señal de precio barata (arriba) a una cara (abajo). El preajuste de RL se condiciona a AMBOS ejes — inclinándose hacia las ejecuciones baratas y acelerando hacia el plazo — que es el comportamiento que queréis. El matiz que esta lección machaca: cada celda solo puede mostrar uno de unos pocos cubos DISCRETOS, así que la política está cuantizada. Cambiad a los preajustes TWAP/Almgren ciegos al precio para ver el aspecto de una política que ignora el eje de la señal."
+/>
+
+<MCQ
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  question="El semidiferencial óptimo de un creador de mercado para el estado actual es 1,7 ticks, pero el conjunto de acciones de vuestra DQN es {0,1,2,3,4} ticks. ¿Cuál es la consecuencia, y qué motiva?"
+  options={[
+    { text: "La DQN debe redondear a 2 ticks — un recorte estructural que el entrenamiento no puede arreglar, porque la acción óptima no está en el conjunto — motivando los métodos de acción continua como los gradientes de política.", correct: true },
+    { text: "La DQN interpola suavemente y cotiza exactamente 1,7, porque las redes neuronales dan valores continuos.", },
+    { text: "No pasa nada: redondear a 2 es demostrablemente óptimo, ya que los diferenciales más anchos siempre ganan más.", },
+    { text: "La DQN se cae, porque el operador máximo está indefinido cuando el óptimo está entre acciones.", },
+  ]}
+  explanation="La DQN solo puede elegir de su menú discreto, así que redondea 1,7 a la acción disponible más cercana (2 ticks) y se come un error permanente. Las cuadrículas más finas encogen el error pero hacen explotar el espacio de acciones y dejan cada acción hambrienta de datos. Dar el número real directamente — el enfoque de gradiente de política/actor–crítico de la siguiente lección — es el arreglo limpio."
+/>
+
+### Cuándo usarla
+
+Recurrid a la DQN cuando vuestro espacio de acciones sea **naturalmente discreto y pequeño** y queráis la sencillez y la eficiencia muestral de un método basado en valor: ejecución gruesa (unos pocos cubos de tasa de participación), decisiones de enrutamiento (a qué bolsa) o cambios de régimen discretos. Evitadla — o al menos no la forcéis — cuando la acción sea genuinamente continua y la resolución importe (cotización precisa, cobertura fina), o cuando el espacio de acciones sea de alta dimensión. Y elijáis lo que elijáis, recordad la tríada y los cuatro estresores específicos del mercado de arriba: incluso sobre un conjunto de acciones discreto, un MDP ruidoso y no estacionario pondrá a prueba cada gramo de estabilidad que vuestro búfer de repetición y vuestra red objetivo puedan proporcionar.
+
+<FillBlank
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+  question="Una pregunta de recuerdo espaciado que vuelve a atar el espacio de acciones a la tríada."
+  text="La DQN calcula su objetivo por bootstrapping con un {{máximo|sumatorio|promedio}} sobre un conjunto de acciones discreto y pequeño, lo que os obliga a discretizar las cotizaciones continuas Y — porque ese operador escoge a dedo las estimaciones con ruido positivo — introduce un sesgo de {{sobreestimación|subestimación|redondeo}} que Double DQN se diseñó para reducir."
+  explanation="El objetivo usa máx sobre las acciones, lo que requiere un conjunto de acciones discreto y enumerable y sesga la estimación al alza en dominios ruidosos. Double DQN combate esa sobreestimación seleccionando la acción con la red en línea y evaluándola con la red objetivo."
+/>
+
+<MindMap
+  client:visible
+  title="El deep RL basado en valor — el mapa completo"
+  outlineLabel="Esquema"
+  caption="Construye el mapa: de la tabla Q a la red Q, la tríada que la desestabiliza, los dos arreglos, y por qué los mercados estresan todo ello."
+  root={{
+    label: "Deep Q-Networks",
+    children: [
+      {
+        label: "Tabla Q → red Q",
+        children: [
+          { label: "Optimalidad de Bellman: Q* = E[r + γ máx Q*(s′,a′)]" },
+          { label: "Pérdida = error TD al cuadrado" },
+          { label: "La red generaliza sobre el estado continuo" },
+        ],
+      },
+      {
+        label: "La tríada mortal",
+        children: [
+          { label: "Aproximación de funciones" },
+          { label: "Bootstrapping (conjetura a partir de una conjetura)" },
+          { label: "Aprendizaje off-policy" },
+          { label: "Dos cualesquiera = bien; las tres = riesgo de divergencia" },
+        ],
+      },
+      {
+        label: "Los dos arreglos",
+        children: [
+          { label: "Repetición de experiencias → rompe la correlación, reutiliza datos" },
+          { label: "Red objetivo θ⁻ → congela la etiqueta del bootstrap" },
+          { label: "Double DQN → combate la sobreestimación del máximo" },
+          { label: "Dueling DQN → separa V(s) + A(s,a)" },
+        ],
+      },
+      {
+        label: "Por qué los mercados la rompen",
+        children: [
+          { label: "No estacionariedad → búfer de repetición rancio" },
+          { label: "Baja relación señal-ruido → objetivos ruidosos" },
+          { label: "Observabilidad parcial → no markoviano" },
+          { label: "Recompensas escasas/sesgadas/mal escaladas" },
+        ],
+      },
+      {
+        label: "Acciones discretas",
+        children: [
+          { label: "Encaje natural: cubos gruesos, máximo pequeño" },
+          { label: "Techo: la cotización continua obliga a discretizar" },
+          { label: "→ motiva los gradientes de política (siguiente lección)" },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Punto de control del deep RL basado en valor"
+  questions={[
+    {
+      question: "Dados Q(s,a)=4.0, recompensa r=−1.0, γ=0.9, y el valor de la mejor siguiente acción del siguiente estado máx Q(s′,a′)=3.0, ¿cuáles son el objetivo TD y el error TD?",
+      options: [
+        { text: "Objetivo = −1.0 + 0.9×3.0 = 1.7; error TD = 1.7 − 4.0 = −2.3 (la estimación era demasiado alta).", correct: true },
+        { text: "Objetivo = 3.0; error TD = 3.0 − 4.0 = −1.0 (γ y r se ignoran en el objetivo).", },
+        { text: "Objetivo = 4.0 + 0.9×3.0 = 6.7; error TD = +2.7.", },
+        { text: "Objetivo = −1.0; error TD = −5.0 (el valor del siguiente estado no forma parte del objetivo).", },
+      ],
+      explanation: "El objetivo por bootstrapping es r + γ·máx Q(s′,a′) = −1.0 + 0.9×3.0 = 1.7. El error TD es objetivo − predicción = 1.7 − 4.0 = −2.3, así que un paso de gradiente empuja Q(s,a) hacia abajo, hacia 1.7.",
+    },
+    {
+      question: "La tríada mortal es la combinación peligrosa de ¿qué tres ingredientes?",
+      options: [
+        { text: "Aproximación de funciones, bootstrapping y aprendizaje off-policy.", correct: true },
+        { text: "Una tasa de aprendizaje grande, una red profunda y un búfer de repetición largo.", },
+        { text: "Recompensas escasas, observabilidad parcial y no estacionariedad.", },
+        { text: "Repetición de experiencias, redes objetivo y Double DQN.", },
+      ],
+      explanation: "La tríada es aproximación de funciones + bootstrapping + aprendizaje off-policy. Cada uno por separado es benigno; juntos eliminan la garantía de convergencia. (Los estresores del mercado de la tercera opción empeoran la tríada pero no son la tríada en sí, y la cuarta opción lista los arreglos, no el problema.)",
+    },
+    {
+      question: "¿Qué afirmación mapea correctamente un arreglo de la DQN con la parte de la inestabilidad que aborda?",
+      options: [
+        { text: "La red objetivo congela la etiqueta del bootstrap durante miles de pasos, así que no estás regresando hacia un objetivo que se mueve en cada actualización.", correct: true },
+        { text: "La repetición de experiencias elimina el bootstrapping sustituyendo los objetivos TD por retornos completos de Monte Carlo.", },
+        { text: "La red objetivo rompe la correlación temporal barajando el orden de las transiciones.", },
+        { text: "Double DQN resuelve la no estacionariedad descartando las transiciones rancias del búfer.", },
+      ],
+      explanation: "La red objetivo estabiliza el bootstrap manteniendo θ⁻ fijo entre refrescos. La repetición de experiencias (no la red objetivo) rompe la correlación y reutiliza datos — no cambia el objetivo a Monte Carlo. Double DQN ataca la sobreestimación del operador máximo, no la no estacionariedad.",
+    },
+    {
+      question: "¿Por qué la repetición de experiencias se convierte en un lastre en mercados no estacionarios, cuando en Atari era una ventaja?",
+      options: [
+        { text: "La repetición asume que el búfer es una muestra representativa de una distribución aproximadamente estacionaria; cuando el MDP deriva, el búfer se llena de transiciones rancias de regímenes extintos y el agente aprende un compromiso borroso ya no válido.", correct: true },
+        { text: "La repetición solo funciona con imágenes, así que no puede almacenar características numéricas del libro de órdenes.", },
+        { text: "La repetición fuerza el aprendizaje on-policy, que es ilegal en los mercados regulados.", },
+        { text: "La repetición hace el entrenamiento demasiado rápido, así que el agente se pasa del óptimo y se cae.", },
+      ],
+      explanation: "La repetición de experiencias está construida sobre una suposición de estacionariedad. En un mercado que deriva, un búfer grande promedia sobre una mezcla de regímenes — algunos extintos — así que el agente optimiza para un mercado que ya no existe. La ponderación por recencia, los búferes más cortos, las características de régimen y el reentrenamiento frecuente son mitigaciones parciales.",
+    },
+    {
+      question: "Vuestro semidiferencial óptimo de creación de mercado es 1,7 ticks pero el conjunto de acciones de vuestra DQN es {0,1,2,3,4} ticks. ¿Cuál es la conclusión correcta?",
+      options: [
+        { text: "La DQN debe redondear a la acción disponible más cercana (2 ticks), comiéndose un error estructural que el entrenamiento no puede eliminar; las cuadrículas más finas encogen el error pero hacen explotar el espacio de acciones — motivando los métodos de gradiente de política de acción continua.", correct: true },
+        { text: "La DQN interpola entre 1 y 2 para cotizar exactamente 1,7, así que no hay problema.", },
+        { text: "Deberíais elegir siempre la acción más ancha (4 ticks) porque los diferenciales más anchos dominan estrictamente.", },
+        { text: "El desajuste demuestra que la DQN nunca puede usarse para ejecución, solo para predicción.", },
+      ],
+      explanation: "La DQN elige de un menú discreto, así que redondea 1,7 a 2 y absorbe un recorte permanente. Refinar la cuadrícula intercambia expresividad por un espacio de acciones que estalla y por escasez de datos. La solución limpia es dar la acción continua directamente — la familia de gradiente de política/actor–crítico de la siguiente lección.",
+    },
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  nextLabel="Siguiente"
+  seeResultsLabel="Ver resultados"
+  backLabel="Atrás"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  completeTitleLabel="Cuestionario completado"
+  correctCountLabel="correctas"
+  gateLabel="Comprueba tu respuesta para continuar."
+/>
+
+## Hacia dónde va esto
+
+Ya tenéis la imagen completa basada en valor: la ecuación de optimalidad de Bellman convertida en una actualización TD por bootstrapping, la tabla Q sustituida por un $Q(s,a;\theta)$ generalizador, la tríada mortal que hace divergir el cambio ingenuo, los arreglos de repetición de experiencias y red objetivo que la doman (más Double y Dueling DQN), y las cuatro maneras en que el estado financiero — no estacionariedad, ruido, observabilidad parcial, recompensas feas — rearma las mismísimas inestabilidades que esos arreglos se construyeron para desactivar. La moraleja recurrente: los trucos que conquistaron Atari asumen un mundo estacionario, plenamente observado y de recompensa limpia, y los mercados no son ninguna de esas cosas.
+
+El techo duro en el que terminamos es el espacio de acciones. La DQN piensa en un pequeño menú discreto y toma un máximo sobre él — maravilloso para cubos gruesos, inútil para las cotizaciones y los sesgos de valor real que un creador de mercado necesita de verdad. La **lección 3, "Gradientes de política y actor–crítico para el control continuo",** tira por la borda el pensamiento con forma de tabla de valores por completo: en lugar de puntuar cada acción y tomar el máximo, parametrizáis la *política en sí* y empujáis sus parámetros en la dirección de un retorno mayor — dejando que el agente dé un semidiferencial continuo de 1,7 ticks directamente, sin redondeo, sin cuadrícula explosiva. El mismo MDP, una palanca fundamentalmente distinta.

@@ -1,0 +1,384 @@
+---
+title: "Del control tabular a la aproximación profunda de funciones"
+description: "Por qué el RL de tabla de consulta se derrumba sobre un libro de órdenes continuo, cómo una red neuronal reemplaza a la tabla, y los puntos de referencia analíticos — Almgren–Chriss y Avellaneda–Stoikov — que todo agente profundo debe batir."
+topic: "es/deep-rl-for-execution-and-market-making"
+order: 1
+minutes: 15
+updated: 2026-06-21
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, RlAgentEnvLoop, MarketImpactCurve } from '@/components/react';
+
+Pasasteis los cursos previos aprendiendo dos mitades de una misma máquina. Un curso os enseñó a *ver* un mercado — convertir datos en bruto del libro de órdenes en características con una red neuronal. Otro os enseñó a *decidir* bajo incertidumbre — plantear un problema secuencial como un proceso de decisión de Markov y resolverlo con aprendizaje por refuerzo. Ambas mitades funcionaban de maravilla en problemas de juguete. Luego las apuntáis a un libro de órdenes en vivo y la mitad de la decisión revienta sin hacer ruido.
+
+La razón es vergonzosamente simple. El RL que aprendisteis almacenaba su conocimiento en una **tabla** — una celda por cada par (estado, acción). Eso funciona cuando el mundo tiene unas pocas docenas de estados. Un libro de órdenes tiene efectivamente infinitos estados: precios continuos, diferenciales continuos, profundidad en diez niveles, vuestro inventario, los segundos que quedan en vuestro reloj, tres señales alfa. La tabla que necesitaríais tiene más celdas que átomos para los que jamás conseguiréis puntos de datos, y casi todas las celdas se visitan exactamente cero veces. La tabla no *aprende* — simplemente se queda ahí, en su mayor parte vacía.
+
+Este curso trata de la solución: reemplazar la tabla por un aproximador de funciones — normalmente una red profunda — que *generaliza* entre estados en lugar de memorizarlos. Esa única sustitución es la definición completa del **RL profundo**, y reanima la ejecución y la creación de mercado como problemas de control aprendibles. Pero también arrastra consigo un enjambre de nuevos modos de fallo que la tabla nunca tuvo. Esta lección plantea el problema, las herramientas y los dos puntos de referencia analíticos que nos mantendrán honestos durante el resto del curso.
+
+<MCQ
+  client:visible
+  pretest
+  pretestLabel="Antes de leer — adivina"
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  question="El RL tabular almacena un valor por cada celda (estado, acción). ¿Por qué fracasa ese enfoque en un libro de órdenes real incluso antes de empezar a entrenar?"
+  options={[
+    { text: "El estado — precios continuos, diferenciales, profundidad multinivel, inventario, tiempo restante, señales — es de alta dimensión y continuo, así que la tabla tiene una cantidad astronómica de celdas, casi todas visitadas cero veces.", correct: true },
+    { text: "Los libros de órdenes cambian demasiado rápido para que ningún ordenador lea cada tick, así que la tabla nunca puede llenarse a tiempo.", },
+    { text: "Las tablas solo pueden almacenar enteros, y los precios son decimales, así que los valores se desbordan.", },
+    { text: "Funciona perfectamente — el RL tabular es el método de producción estándar para la ejecución en cualquier mesa importante.", },
+  ]}
+  explanation="El asesino es la maldición de la dimensionalidad. Un estado continuo y de alta dimensión significa que la tabla de consulta tiene un número astronómico de celdas, y cualquier conjunto de datos realista toca una fracción ínfima de ellas. Con la mayoría de las celdas nunca visitadas, la tabla no tiene nada que devolver para los estados que realmente afrontáis en vivo — no hay generalización entre estados cercanos, así que el método muere nada más llegar."
+/>
+
+## Por qué una tabla de consulta muere sobre un libro de órdenes
+
+Imaginad el RL tabular como un archivador gigante. Cada situación posible tiene su propio cajón, y dentro de cada cajón hay una hoja de papel que os dice el valor de cada acción que podríais tomar ahí. Para aprender, visitáis un cajón, probáis una acción, veis la recompensa y actualizáis la hoja. Brillante — *si* tenéis pocos cajones, los suficientes como para visitar cada uno muchas veces.
+
+Ahora construid el archivador para un libro de órdenes. Un estado de ejecución realista podría registrar, como mínimo, seis números: el precio medio (continuo), el diferencial entre compra y venta (continuo), la volatilidad a corto plazo (continua), la profundidad del libro de órdenes (continua), vuestro inventario restante (continuo) y el tiempo restante en el reloj (continuo). Añadid una señal alfa o dos y ya pasáis de seis. Ninguno de estos es naturalmente discreto, así que para siquiera *construir* una tabla debéis trocear cada característica continua en compartimentos.
+
+Aquí está la aritmética que zanja la conversación. Discretizad **6 características en 10 compartimentos cada una**. El número de estados es
+
+$$10 \times 10 \times 10 \times 10 \times 10 \times 10 = 10^{6}.$$
+
+Un millón de estados. Ahora dadle al agente, digamos, **20 acciones discretas** (compartimentos de tasa de operación). La tabla tiene $10^6 \times 20 = 2 \times 10^7$ celdas. Para aprender un valor fiable de una celda necesitáis visitarla muchas veces — pongamos 30 visitas. Eso son $6 \times 10^8$ experiencias informativas requeridas. Unos pocos años de datos de *barras de minuto* os dan quizá $10^6$ pasos. Os quedáis cortos por **tres órdenes de magnitud** — y eso con una rejilla risiblemente burda de 10 compartimentos que tira a la basura la mayor parte de la resolución de precios que de verdad importa. Refinad a 100 compartimentos por característica y el recuento de estados salta a $10^{12}$; el déficit de datos se vuelve desesperado.
+
+Esta es la **maldición de la dimensionalidad**: el número de celdas de la tabla crece *exponencialmente* con el número de características, mientras que vuestros datos crecen solo linealmente en el tiempo. Las celdas que visitáis son un rocío de medida cero en un enorme espacio vacío. Y la tabla no puede ayudaros en una celda que nunca habéis visto — no tiene noción de que un estado con diferencial 0,011 debería comportarse como su vecino con diferencial 0,012. Cada cajón es una isla.
+
+<MarketImpactCurve
+  client:visible
+  title="La magnitud continua que una tabla debe hacer añicos en compartimentos"
+  caption="El coste de impacto varía de forma suave y no lineal con el tamaño de la orden — exactamente el tipo de relación continua que una tabla de consulta solo puede aproximar con escalones burdos. Para tabularla trocearíais el eje x en compartimentos y perderíais la curva; un aproximador de funciones simplemente aprende la curva. Ahora imaginad seis ejes continuos como este multiplicados entre sí."
+/>
+
+<Callout variant="warning" title="Compartimentos más finos no os rescatan — os entierran">
+El instinto al ver una tabla demasiado burda es añadir más compartimentos para ganar resolución. Eso la empeora estrictamente. Cada compartimento extra por característica multiplica el recuento de celdas por ese factor a lo largo de *todas* las características, así que refinar una rejilla de 6 características de 10 a 100 compartimentos infla el espacio de estados de un millón a un billón. Comprasteis una resolución más afilada al coste de cajones aún más vacíos — más celdas, los mismos datos finitos, menos visitas cada una. La maldición castiga tanto la burdeza (emborronáis el estado) como la finura (matáis de hambre las celdas). No hay tamaño de compartimento que gane; la tabla es la estructura de datos equivocada.
+</Callout>
+
+<FillBlank
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+  question="Completa el modo de fallo del RL tabular sobre un estado continuo y de alta dimensión."
+  text="El número de celdas de la tabla crece {{exponencialmente|linealmente|lentamente}} con el número de características mientras que los datos crecen solo linealmente en el tiempo, así que casi todas las celdas se visitan {{cero|muchas|tres}} veces — la maldición de la dimensionalidad."
+  explanation="Las celdas se multiplican exponencialmente conforme añadís características (10 compartimentos × 6 características = 10⁶), pero un conjunto de datos solo acumula experiencia linealmente con el paso del tiempo. El desajuste significa que la abrumadora mayoría de las celdas nunca recibe una sola visita, así que la tabla no puede devolver un valor aprendido para los estados que realmente encontráis."
+/>
+
+### Cuándo usarlo
+
+El RL tabular no es inútil — es la herramienta adecuada cuando el estado realmente es pequeño y discreto: un mundo-rejilla de 3×3, un juguete burdo de creación de mercado solo con inventario con cinco niveles de inventario y tres acciones, un ejemplo didáctico donde *queréis* inspeccionar cada celda. En cuanto entra una sola característica continua y no podéis trocearla sin emborronar la señal o hacer explotar el recuento, habéis abandonado el territorio tabular. En un libro de órdenes de producción lo abandonasteis antes de empezar.
+
+## Aproximación de funciones: la red como reemplazo de la tabla
+
+La solución es dejar de almacenar un número separado para cada estado y en su lugar almacenar una *función* que calcula el número bajo demanda. Introducid el estado $s$; la función devuelve el valor $V(s)$ — o el valor-acción $Q(s,a)$, o la acción misma $\pi(s)$. La función tiene un número modesto de parámetros ajustables $\theta$, muchos menos que celdas tenía la tabla, y ajustáis $\theta$ a los datos que de verdad tenéis. La recompensa es la **generalización**: como la función es suave, un estado que nunca habéis visitado obtiene una respuesta sensata interpolada de los estados cercanos que *sí* habéis visitado. Los cajones dejan de ser islas.
+
+Formalmente, la tabla $Q(s,a)$ se convierte en una $Q_\theta(s,a)$ parametrizada. Dos sabores importan:
+
+- **Aproximación lineal.** $Q_\theta(s,a) = \theta^\top \phi(s,a)$, una suma ponderada de características diseñadas a mano $\phi$. Barata, estable, fácil de razonar — pero solo puede representar relaciones que ya horneasteis en $\phi$. Si el impacto es no lineal en el tamaño y no le disteis una característica de tamaño al cuadrado, la lineal no puede encontrarlo.
+- **Aproximación profunda.** $Q_\theta$ (o $\pi_\theta$) es una red neuronal — capas no lineales apiladas que *aprenden sus propias características* a partir de un estado más o menos en bruto. Puede representar la curva de impacto convexa, la liquidez dependiente del régimen y las interacciones entre señales sin que especifiquéis la forma funcional. El precio es la fragilidad (mucho más sobre esto a lo largo de todo el curso).
+
+Esta es la soldadura. La mitad de la **percepción** — convertir el estado del libro de órdenes en características útiles — es exactamente lo que enseñó el curso de aprendizaje profundo para datos de mercado. La mitad de la **decisión** — elegir acciones para maximizar la recompensa a largo plazo en un MDP — es exactamente lo que enseñó el curso de RL. Atornillad la red como función de política/valor dentro del MDP y tenéis **aprendizaje por refuerzo profundo**: aprendizaje por refuerzo donde la política y/o la función de valor se representan mediante un aproximador de funciones de red neuronal profunda en lugar de una tabla de consulta. Esa única frase es la premisa entera de este curso.
+
+<RlAgentEnvLoop
+  client:visible
+  title="El mismo bucle agente–entorno — ahora el cerebro del agente es una red"
+  caption="El bucle de RL no cambia: el agente lee un estado, su política escoge una acción, el mercado devuelve una recompensa y el siguiente estado. Lo que cambió es la política π — en el RL profundo es una red neuronal que mapea estado continuo a acción y generaliza entre estados, no una tabla que memoriza celdas. Activad el impacto de mercado: la propia operación del agente empuja el precio, el giro definitorio que hace de esto control, no predicción."
+/>
+
+<MCQ
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  question="¿Cuál es la distinción precisa entre un aproximador de funciones lineal y uno profundo para Q(s, a)?"
+  options={[
+    { text: "El lineal calcula una suma ponderada de características diseñadas a mano y solo puede representar relaciones horneadas en esas características; el profundo apila capas no lineales que aprenden sus propias características y puede representar relaciones no lineales que no especificasteis.", correct: true },
+    { text: "El lineal es para ejecución y el profundo para creación de mercado; las matemáticas son por lo demás idénticas.", },
+    { text: "El lineal usa una tabla de consulta internamente; el profundo reemplaza la tabla por una tabla más grande.", },
+    { text: "Los aproximadores profundos siempre baten a los lineales, así que la distinción nunca importa en la práctica.", },
+  ]}
+  explanation="Un aproximador lineal es θᵀφ(s,a): solo puede expresar lo que codificasteis en las características φ. Una red profunda aprende sus propias características intermedias a través de capas no lineales, así que puede ajustar relaciones (impacto convexo, interacciones entre señales, efectos de régimen) sin que especifiquéis su forma. El profundo es más expresivo pero también más frágil — no 'siempre gana', razón por la cual el resto del curso trata de domesticarlo."
+/>
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Si la red simplemente saca un número para cualquier estado, ¿qué impide que sea una elegante tabla de consulta que también memoriza?</summary>
+
+**Respuesta.** Una tabla tiene un parámetro independiente por celda, así que cambiar el valor de un estado no cambia *nada* sobre sus vecinos — no hay presión para ser consistente entre estados cercanos. Una red comparte sus (relativamente pocos) parámetros entre *todos* los estados a la vez: empujar $\theta$ para ajustar un estado necesariamente mueve la predicción para estados similares también. Ese compartir parámetros es lo que fuerza la generalización — y, con demasiados parámetros o muy poca regularización, también es lo que permite a una red profunda *sobreajustar* y memorizar sin hacer ruido, que es uno de los peligros que atacan lecciones posteriores. La generalización es la virtud; la memorización es el mismo mecanismo vuelto en vuestra contra.
+
+</details>
+</Reveal>
+
+## Los dos problemas de control canónicos
+
+Este curso persigue dos problemas, y merece la pena ser precisos sobre por qué ambos son **control** y no **predicción**. Un problema de predicción pregunta "¿qué pasará?" y vuestra respuesta no cambia el mundo — adivinad el rendimiento de mañana y al mercado le da igual. Un problema de control pregunta "¿qué debería *hacer*?", vuestra acción cambia el estado (movéis el precio, acumuláis inventario), y ese cambio realimenta vuestra siguiente decisión. Autoafectante, secuencial y, por tanto, un MDP. Ambos de los nuestros cualifican.
+
+**Ejecución óptima.** Os entregan una orden madre — "compra un millón de acciones para el cierre" — y debéis trocearla en órdenes hijas a lo largo del tiempo. Operad rápido y pagáis **impacto de mercado** (empujáis el precio en vuestra contra); operad despacio y pagáis **riesgo de temporización** (el precio vaga mientras os entretenéis). El objetivo es minimizar el **déficit de implementación**: la brecha entre el precio cuando se tomó la decisión y el precio medio que de verdad conseguisteis. Sois un *demandante* de liquidez trabajando una cantidad conocida contra un plazo.
+
+**Creación de mercado.** Cotizáis *ambos* lados del libro — una compra y una venta — y ganáis el **diferencial** cuando alguien opera contra cada una. Pero cada ejecución os deja con un **inventario** que nunca elegisteis: si se ejecuta la compra estáis largos, si se ejecuta la venta estáis cortos, y ese inventario está expuesto a los movimientos del precio. El objetivo es capturar el diferencial manteniendo el inventario cerca de cero. Sois un *proveedor* de liquidez sin plazo pero con una correa de riesgo de inventario siempre presente.
+
+| Aspecto | Ejecución óptima | Creación de mercado |
+|---|---|---|
+| **Rol** | Demandante de liquidez | Proveedor de liquidez |
+| **Estado** | Inventario restante, tiempo restante, precio, diferencial, volatilidad, señal | Inventario mantenido, diferencial, volatilidad, desequilibrio del flujo de órdenes, posición en la cola |
+| **Acción** | Cuántas acciones operar ahora (tasa de participación) | Dónde fijar compra y venta (medio diferencial, sesgo) |
+| **Recompensa** | −(impacto) − λ·(riesgo); penalización terminal por acciones sin terminar | +diferencial capturado − penalización por riesgo de inventario |
+| **Horizonte** | Plazo duro T | Continuo / rodante, sin plazo |
+| **Por qué control** | Vuestra operación mueve el precio; el inventario se arrastra al siguiente paso | Vuestras cotizaciones atraen ejecuciones; el inventario se arrastra al siguiente paso |
+
+<Categorize
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  allCorrectLabel="✓ Todo emparejado"
+  instructions="Coloca cada elemento en su grupo."
+  question="Clasifica cada propiedad según el problema de control al que pertenece."
+  buckets={["Ejecución óptima", "Creación de mercado"]}
+  items={[
+    { text: "Consumís liquidez para terminar una cantidad conocida antes de un plazo.", bucket: "Ejecución óptima" },
+    { text: "Proporcionáis liquidez en ambos lados y ganáis el diferencial.", bucket: "Creación de mercado" },
+    { text: "El objetivo es minimizar el déficit de implementación.", bucket: "Ejecución óptima" },
+    { text: "El inventario es un subproducto que nunca elegisteis y debéis mantener cerca de cero.", bucket: "Creación de mercado" },
+    { text: "Una penalización terminal fuerza el inventario restante a cero para el tiempo T.", bucket: "Ejecución óptima" },
+    { text: "Fijáis una compra y una venta y las sesgáis conforme se acumula el inventario.", bucket: "Creación de mercado" },
+  ]}
+  explanation="La ejecución es del lado del demandante: una orden madre conocida, un plazo, minimizar el déficit, terminar o tragarse una penalización terminal. La creación de mercado es del lado del proveedor: cotizar ambos lados, ganar el diferencial y luchar contra el inventario que acumuláis como efecto secundario — no hay plazo, solo el constante tirón del riesgo de inventario."
+/>
+
+<Callout variant="info" title="Ambos son control porque la acción realimenta">
+La firma compartida es la realimentación. En un problema de predicción el mundo ignora vuestro pronóstico; en ambos de estos el mundo *responde* a vuestra acción y esa respuesta se convierte en parte de vuestro siguiente estado. Vuestra operación de ejecución mueve el precio que afrontaréis en el siguiente trozo. Vuestra cotización de creación de mercado determina qué ejecuciones obtenéis y, por tanto, el inventario que arrastráis a la siguiente cotización. La toma de decisiones secuencial y autoafectante es la definición de un MDP — que es exactamente por qué el aprendizaje por refuerzo es el lenguaje natural para ambos, y por qué ninguno puede reducirse a una predicción supervisada de un solo disparo.
+</Callout>
+
+## Los puntos de referencia analíticos que todo agente aprendido debe batir
+
+Antes de dejar que una red profunda se acerque siquiera a estos problemas, debéis conocer la respuesta que las *matemáticas* ya os dan — porque hay una preciosa forma cerrada para cada uno, deducida décadas antes de que nadie entrenara una red en una GPU. No son espantapájaros. Son soluciones ajustadas, casi óptimas bajo sus suposiciones, y cuestan una línea de álgebra evaluar.
+
+**Almgren–Chriss (ejecución, 2000).** Minimizad una mezcla media–varianza del coste:
+
+$$\min_{\{n_k\}} \; \mathbb{E}[\text{cost}] + \lambda \, \mathrm{Var}[\text{cost}],$$
+
+donde $\lambda \ge 0$ es vuestra aversión al riesgo. En $\lambda = 0$ ignoráis la varianza y operáis un calendario plano y uniforme — el espíritu del **TWAP**. Conforme sube $\lambda$, el inventario sin vender os asusta, así que el calendario óptimo **carga al principio**: la trayectoria de inventario restante se convierte en una *caída exponencial*, más pronunciada para una $\lambda$ mayor. Barred $\lambda$ y trazáis la **frontera eficiente de ejecución** — la menor varianza alcanzable para cada coste esperado. La forma cerrada os entrega el calendario entero.
+
+**Avellaneda–Stoikov (creación de mercado, 2008).** Cotizad alrededor de un **precio de reserva** que se desplaza alejándose del medio conforme crece vuestro inventario, y luego publicad un medio diferencial óptimo simétrico a su alrededor. El precio de reserva es
+
+$$r(s, q, t) = s - q \, \gamma \, \sigma^2 (T - t),$$
+
+donde $s$ es el medio, $q$ vuestro inventario, $\gamma$ la aversión al riesgo, $\sigma$ la volatilidad y $T-t$ el tiempo restante. Un inventario largo ($q>0$) empuja vuestro precio de reserva *por debajo* del medio, así que cotizáis más bajo en ambos lados para animar a vender y desanimar a comprar — eso es el **sesgo de inventario**. El diferencial total óptimo es
+
+$$\delta^a + \delta^b = \gamma \sigma^2 (T-t) + \frac{2}{\gamma} \ln\!\left(1 + \frac{\gamma}{\kappa}\right),$$
+
+con $\kappa$ el parámetro de liquidez del flujo de órdenes. Una fórmula os da ambas cotizaciones a cualquier inventario.
+
+Estas dos fórmulas son la columna vertebral de la disciplina del curso. Aquí está el credo, y lo repetiremos hasta que sea un reflejo:
+
+> **Un agente profundo que no puede batir — o al menos igualar — estos puntos de referencia de una línea no se ha ganado nada.** Comparad contra el punto de referencia, no contra no hacer nada.
+
+Es trivialmente fácil construir un agente de RL profundo que "gane dinero" o "termine la orden". Eso no prueba nada, porque *el TWAP también termina la orden* y *un diferencial fijo también gana dinero*. La única pregunta que importa es si vuestra red cara, frágil y difícil de depurar bate la fórmula gratuita, robusta y de una línea. Si no lo hace, habéis pasado un mes rededuciendo Almgren–Chriss por el camino difícil.
+
+<MatchConcepts
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  termsLabel="Términos"
+  definitionsLabel="Definiciones"
+  allCorrectLabel="✓ Todo emparejado"
+  question="Empareja cada ingrediente del punto de referencia con lo que hace."
+  pairs={[
+    { term: "Almgren–Chriss λ = 0", definition: "Calendario plano y uniforme — el límite TWAP, sin aversión al riesgo" },
+    { term: "Almgren–Chriss λ > 0", definition: "Calendario cargado al principio — caída exponencial del inventario, se vacía pronto" },
+    { term: "Precio de reserva de Avellaneda–Stoikov", definition: "Medio desplazado por el inventario: s − qγσ²(T−t), el centro de vuestras cotizaciones" },
+    { term: "Sesgo de inventario de Avellaneda–Stoikov", definition: "Las cotizaciones se inclinan para soltar inventario cuando q se aleja de cero" },
+    { term: "El credo del curso", definition: "Bate el punto de referencia de una línea, o el agente profundo no se ha ganado nada" },
+  ]}
+  explanation="Almgren–Chriss se transforma de plano (λ=0, TWAP) a caída exponencial cargada al principio (λ>0) conforme sube la aversión al riesgo. Avellaneda–Stoikov centra las cotizaciones en un precio de reserva que se sesga con el inventario, y luego fija un diferencial óptimo. El credo los ata: todo agente aprendido se califica contra estas formas cerradas, nunca contra un espantapájaros que no hace nada."
+/>
+
+<Callout variant="warning" title="'Bate comprar y mantener' y 'terminó la orden' no son victorias">
+El autoengaño más común en el RL de trading es calificar contra un punto de referencia que no hace nada. "¡Mi agente de ejecución terminó la orden a buen precio!" — también el TWAP, gratis, y debéis demostrar que lo batís *a él*. "¡Mi creador de mercado fue rentable en el backtest!" — también lo es un cotizador de diferencial fijo estático, y Avellaneda–Stoikov también lo bate. Un agente que se limita a cumplir la tarea mientras pierde contra el punto de referencia analítico es una versión estrictamente peor y más peligrosa de una fórmula que podríais haber tecleado en cinco minutos. Comparad siempre contra la *mejor forma cerrada disponible*, no contra cero.
+</Callout>
+
+### Cuándo usarlo
+
+Recurrid a la forma cerrada *por defecto*. Si vuestro mundo de verdad encaja con sus suposiciones — tamaño modesto, impacto lineal, un único valor líquido, ninguna señal explotable para ejecución; volatilidad constante y flujo de órdenes de Poisson para creación de mercado — el punto de referencia no es solo un baremo, es la respuesta de producción. Solo os graduáis a un agente aprendido una vez que podéis señalar una suposición específica que la realidad rompe *y* demostrar que el agente explota esa rotura para batir el punto de referencia. Hasta entonces, la fórmula gana en coste, robustez y vuestra cordura.
+
+## Qué aporta de verdad el RL profundo frente al bombo
+
+Hora de la contabilidad honesta, porque el marketing es ruidoso. Apuntad un agente de RL profundo al mundo *exacto* que asume una forma cerrada — impacto lineal, volatilidad constante, un activo, sin señal — y un agente bien construido esencialmente **rededucirá la forma cerrada**. Eso no es un triunfo; es una **prueba unitaria**. Si vuestro agente de ejecución *no logra* recuperar Almgren–Chriss donde Almgren–Chriss es demostrablemente óptimo, vuestro agente está roto y encontrasteis el fallo de forma barata. Reproducir la respuesta conocida es cómo os ganáis el derecho a confiar en el agente en otros sitios.
+
+El RL profundo se gana el pan precisamente donde las suposiciones pulcras se resquebrajan — es decir, en la realidad:
+
+- **Impacto no lineal o incierto.** El impacto real se dobla (pensad en la ley de la raíz cuadrada), cambia con el régimen, y no conocéis sus parámetros con exactitud. Una red aprende el calendario a partir de los datos sin que tengáis que escribir correctamente el modelo de impacto.
+- **Señales explotables.** Una predicción genuina de horizonte corto ("es probable que el precio suba un tick el próximo minuto") debería acelerar una compra y frenar una venta. Las formas cerradas no tienen hueco para la alfa; el RL profundo se condiciona a ella de forma nativa.
+- **Liquidez dependiente del régimen.** Los diferenciales se ensanchan, la profundidad se evapora, la volatilidad se agrupa. Una política que lee las condiciones actuales y adapta su agresividad bate a cualquier calendario fijo calculado en la apertura.
+- **Restricciones desordenadas y no suaves.** Tasas de participación mínimas y máximas, "no superes el X% del volumen", enrutamiento a dark pools, tamaños de lote discretos — restricciones que la media–varianza en forma cerrada no puede tragar.
+- **Cestas de alta dimensión.** Liquidar una cesta correlacionada con impacto cruzado, o crear mercado en muchos valores a la vez, es control de alta dimensión sin forma cerrada limpia. Terreno propio.
+
+Pero cada una de esas victorias viene empaquetada con un peligro, y el resto del curso es un recorrido por ellos. La **tríada mortal** — aproximación de funciones + bootstrapping + aprendizaje fuera de política, juntos — puede hacer que las estimaciones de valor diverjan (lección 2). La **brecha sim-a-real** significa que un agente que aplasta vuestro simulador puede sangrar en vivo porque el simulador modeló mal el impacto (lección 6). Y el agente puede **sobreajustar sus propios datos generados**, aprendiendo las rarezas de vuestro entorno en lugar del mercado. El poder expresivo que permite al RL profundo batir el punto de referencia es el mismo poder que le permite engañaros espectacularmente.
+
+<MCQ
+  client:visible
+  allowMultiple
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  question="¿En qué situaciones aporta de verdad valor el RL profundo sobre el punto de referencia analítico (en lugar de limitarse a rededucirlo)? Selecciona todas las que apliquen."
+  options={[
+    { text: "El impacto es no lineal y sus parámetros son inciertos.", correct: true },
+    { text: "Tenéis una señal alfa fiable de horizonte corto en la que operar.", correct: true },
+    { text: "Estáis liquidando una cesta correlacionada con impacto cruzado.", correct: true },
+    { text: "El mundo es exactamente impacto lineal, volatilidad constante, un activo, sin señal.", },
+    { text: "Hay restricciones de participación duras y no suaves que respetar.", correct: true },
+  ]}
+  explanation="Las victorias genuinas vienen todas de romper una suposición del punto de referencia: impacto no lineal/incierto, una señal explotable, una cesta correlacionada de alta dimensión o restricciones no suaves. La única opción falsa es el propio terreno de la forma cerrada — ahí, un buen agente debería limitarse a rededucir Almgren–Chriss como comprobación de cordura, lo cual es tranquilizador pero no es una ventaja."
+/>
+
+<MCQ
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  question="Recuerdo espaciado — de vuelta a la primerísima idea. ¿Por qué no podéis simplemente usar una tabla de consulta más fina para hacer funcionar el RL tabular sobre el libro de órdenes, incluso con un gran conjunto de datos?"
+  options={[
+    { text: "Los compartimentos más finos multiplican el recuento de celdas exponencialmente a lo largo de todas las características, así que el espacio de estados explota mucho más rápido de lo que crece cualquier conjunto de datos — la mayoría de las celdas siguen sin visitarse pase lo que pase.", correct: true },
+    { text: "Los compartimentos más finos funcionarían; la única razón por la que la gente usa RL profundo es que está de moda.", },
+    { text: "Las tablas de consulta no pueden almacenar más de 10.000 celdas por un límite de hardware.", },
+    { text: "Los compartimentos más finos hacen la tabla más burda, lo que emborrona la señal — lo contrario de lo que queréis.", },
+  ]}
+  explanation="La maldición de la dimensionalidad es multiplicativa: cada compartimento extra por característica multiplica el recuento total de celdas a lo largo de cada característica, así que refinar de 10 a 100 compartimentos en seis características os lleva de 10⁶ a 10¹² celdas. Los datos solo crecen linealmente con el tiempo, así que nunca pueden alcanzarlas — la tabla se queda mayormente vacía por mucha historia que tengáis. Por eso necesitáis un aproximador de funciones que generalice, no una tabla más grande."
+/>
+
+<MindMap
+  client:visible
+  title="Del control tabular al RL profundo — el mapa completo"
+  outlineLabel="Esquema"
+  caption="El puente: las tablas mueren en el estado continuo, las redes generalizan, dos problemas de control, dos puntos de referencia que batir, y los peligros que el curso atacará."
+  root={{
+    label: "Tabular → RL profundo",
+    children: [
+      {
+        label: "Por qué mueren las tablas",
+        children: [
+          { label: "Una celda por (estado, acción)" },
+          { label: "Estado continuo, de alta dim" },
+          { label: "Maldición de la dimensionalidad: 10^6 celdas, ~0 visitas" },
+        ],
+      },
+      {
+        label: "Aproximación de funciones",
+        children: [
+          { label: "La red mapea estado → valor / acción" },
+          { label: "Generaliza entre estados cercanos" },
+          { label: "Aproximadores lineales vs profundos" },
+          { label: "RL profundo = red como política/valor" },
+        ],
+      },
+      {
+        label: "Dos problemas de control",
+        children: [
+          { label: "Ejecución: demandar liquidez, batir el déficit" },
+          { label: "Creación de mercado: proveer, capturar diferencial" },
+          { label: "Control, no predicción (la acción realimenta)" },
+        ],
+      },
+      {
+        label: "Puntos de referencia que batir",
+        children: [
+          { label: "Almgren–Chriss: E[coste] + λ Var[coste]" },
+          { label: "Avellaneda–Stoikov: precio de reserva + diferencial" },
+          { label: "Credo: bate el punto de referencia, no la nada" },
+        ],
+      },
+      {
+        label: "Qué aporta el RL profundo",
+        children: [
+          { label: "Impacto no lineal, señales, regímenes, cestas" },
+          { label: "Rededuce la forma cerrada en su propio mundo" },
+          { label: "Peligros: tríada mortal, sim-a-real, sobreajuste" },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Punto de control del puente"
+  questions={[
+    {
+      question: "Discretizar 6 características del libro de órdenes en 10 compartimentos cada una da aproximadamente cuántos estados, ¿y por qué es fatal para el RL tabular?",
+      options: [
+        { text: "Unos 10⁶ estados; con 20 acciones eso son 2×10⁷ celdas que necesitan muchas visitas cada una, pero unos pocos años de datos dan muchísimos menos pasos informativos — la mayoría de las celdas nunca se visitan.", correct: true },
+        { text: "Unos 60 estados; el RL tabular maneja eso con facilidad, así que el enfoque está bien.", },
+        { text: "Unos 10⁶ estados, pero eso está bien porque cada celda solo necesita visitarse una vez.", },
+        { text: "Exactamente 10 estados, uno por característica; el problema no tiene que ver con la dimensionalidad.", },
+      ],
+      explanation: "Seis características a 10 compartimentos se multiplican a 10⁶ estados; con un conjunto de acciones estáis en decenas de millones de celdas, cada una necesitando visitas repetidas para aprender un valor fiable. Los conjuntos de datos realistas son tres órdenes de magnitud demasiado pequeños, así que la tabla está mayormente vacía — la maldición de la dimensionalidad en acción.",
+    },
+    {
+      question: "¿Qué es exactamente el 'aprendizaje por refuerzo profundo'?",
+      options: [
+        { text: "Aprendizaje por refuerzo en el que la política y/o la función de valor se representan mediante un aproximador de funciones de red neuronal profunda en lugar de una tabla de consulta.", correct: true },
+        { text: "Aprendizaje por refuerzo que se ejecuta durante un número muy grande de episodios (es 'profundo' en el tiempo).", },
+        { text: "Cualquier red neuronal entrenada con datos financieros, tome o no decisiones secuenciales.", },
+        { text: "Aprendizaje supervisado de predicciones del siguiente precio usado para colocar operaciones.", },
+      ],
+      explanation: "El RL profundo suelda la mitad de la percepción (una red profunda como aproximador de funciones) a la mitad de la decisión (el marco RL/MDP). La red reemplaza a la tabla como representación de π y/o Q, habilitando la generalización a lo largo de un estado continuo. No es solo 'una red profunda sobre datos de mercado' (eso podría ser pura predicción) ni meramente 'muchos episodios'.",
+    },
+    {
+      question: "¿Por qué la ejecución óptima y la creación de mercado son problemas de control en lugar de problemas de predicción?",
+      options: [
+        { text: "Vuestra acción cambia el estado — movéis el precio o acumuláis inventario — y ese cambio realimenta vuestra siguiente decisión, convirtiéndolos en MDP secuenciales y autoafectantes.", correct: true },
+        { text: "Porque requieren predecir el siguiente precio con más exactitud de la que lo haría un pronosticador.", },
+        { text: "Porque solo ocurren una vez al día, a diferencia de las predicciones que ocurren en cada tick.", },
+        { text: "No hay diferencia; control y predicción son lo mismo en finanzas.", },
+      ],
+      explanation: "La predicción es de un solo disparo y el mundo ignora vuestro pronóstico. En la ejecución y la creación de mercado vuestra operación o cotización altera el estado (impacto de precio, inventario) y ese estado alterado determina vuestro siguiente movimiento — toma de decisiones secuencial y autoafectante, es decir, un MDP, es decir, control.",
+    },
+    {
+      question: "Vuestro agente de ejecución profundo termina la orden madre a un precio decente en el backtest. ¿Cuál es la forma correcta de juzgarlo?",
+      options: [
+        { text: "Comparar su déficit de implementación contra Almgren–Chriss (y TWAP) sobre los mismos datos — batir el punto de referencia de forma cerrada es la única prueba significativa.", correct: true },
+        { text: "Celebrar, porque terminar la orden a un precio decente es el objetivo y prueba que el agente funciona.", },
+        { text: "Compararlo contra no hacer nada; si bate el no operar, es un éxito.", },
+        { text: "Comprobar solo que nunca violó el plazo; el precio es secundario.", },
+      ],
+      explanation: "Terminar la orden no prueba nada — el TWAP también la termina, gratis. El credo del curso: calificar contra el mejor punto de referencia de forma cerrada, no contra no hacer nada. Si el agente no puede batir Almgren–Chriss, es una rededucción frágil y cara de una fórmula de una línea.",
+    },
+    {
+      question: "Apuntad un agente de RL profundo bien construido a un mundo que coincide exactamente con las suposiciones de Almgren–Chriss. ¿Qué debería hacer, y qué os dice eso?",
+      options: [
+        { text: "Debería rededucir aproximadamente el calendario de Almgren–Chriss — una comprobación de cordura tranquilizadora (prueba unitaria), no evidencia de una ventaja.", correct: true },
+        { text: "Debería batir drásticamente a Almgren–Chriss, demostrando que el RL profundo es estrictamente superior incluso en el propio terreno de la fórmula.", },
+        { text: "Debería no lograr converger, porque el RL profundo no puede manejar impacto lineal.", },
+        { text: "Debería aprender a no operar nunca, ya que eso minimiza el impacto.", },
+      ],
+      explanation: "Donde la forma cerrada es demostrablemente óptima, lo mejor que puede hacer cualquier método es igualarla. Recuperar Almgren–Chriss es una prueba unitaria: si la pasáis confiáis en el agente lo suficiente como para desplegarlo donde las suposiciones se rompen; si falla, habéis encontrado un fallo de forma barata. Las ventajas reales solo aparecen una vez que se viola una suposición (señal, impacto no lineal, restricciones, cestas).",
+    },
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  nextLabel="Siguiente"
+  seeResultsLabel="Ver resultados"
+  backLabel="Atrás"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  completeTitleLabel="Cuestionario completado"
+  correctCountLabel="correctas"
+  gateLabel="Comprueba tu respuesta para continuar."
+/>
+
+## Hacia dónde va esto
+
+Ya tenéis el marco del que cuelga todo el curso. El RL tabular muere sobre un libro de órdenes continuo porque la maldición de la dimensionalidad deja su tabla astronómicamente grande y casi enteramente vacía. Una red profunda reemplaza la tabla *generalizando* entre estados — esa sustitución, y solo esa, es el RL profundo. Nuestros dos objetivos son problemas de control, no de predicción: **ejecución óptima** (demandar liquidez, batir el déficit de implementación) y **creación de mercado** (proveer liquidez, capturar el diferencial, domar el inventario). Cada uno tiene un punto de referencia analítico de una línea — **Almgren–Chriss** y **Avellaneda–Stoikov** — y el credo que gobierna todo lo que viene: *bate el punto de referencia, no la nada.* El valor genuino del RL profundo vive donde las suposiciones de esos puntos de referencia se resquebrajan; en todos los demás sitios debería limitarse a rededucirlos.
+
+La trampa es que en el momento en que cambiáis la tabla por una red, las matemáticas dejan de ser educadas. La **lección 2, "Redes Q profundas y su inestabilidad sobre el estado financiero",** toma el primer algoritmo de RL profundo — DQN — y muestra por qué combinar ingenuamente una función Q neuronal con bootstrapping y replay fuera de política (la *tríada mortal*) hace que las estimaciones de valor diverjan, y qué hacen la repetición de experiencias y las redes objetivo para arrastrarlas de vuelta del precipicio. La tabla ya no está; ahora aprendemos a evitar que su reemplazo explote.

@@ -805,3 +805,10 @@ export type { CrossChainSettlementTimelineProps } from '@/components/react/Cross
 
 export { BridgeInventoryBalance, default as BridgeInventoryBalanceDefault } from '@/components/react/BridgeInventoryBalance';
 export type { BridgeInventoryBalanceProps } from '@/components/react/BridgeInventoryBalance';
+
+// Deep-RL-for-execution-and-market-making islands
+export { RlExecutionSchedule, default as RlExecutionScheduleDefault } from '@/components/react/RlExecutionSchedule';
+export type { RlExecutionScheduleProps } from '@/components/react/RlExecutionSchedule';
+
+export { MarketMakingQuoteLadder, default as MarketMakingQuoteLadderDefault } from '@/components/react/MarketMakingQuoteLadder';
+export type { MarketMakingQuoteLadderProps } from '@/components/react/MarketMakingQuoteLadder';

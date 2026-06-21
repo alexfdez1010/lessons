@@ -1,0 +1,423 @@
+---
+title: "Gradientes de política y actor–crítico para control continuo"
+description: "Por qué el control en trading pide RL profundo basado en política: REINFORCE y el teorema del gradiente de política, baselines y ventaja para reducir la varianza, actor–crítico, la región de confianza recortada de PPO, y el coste real de la exploración más el RL offline."
+topic: "es/deep-rl-for-execution-and-market-making"
+order: 3
+minutes: 17
+updated: 2026-06-21
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, RlAgentEnvLoop } from '@/components/react';
+
+La lección 2 os dejó con una DQN — una red de valor que puntúa cada acción y opera la de mayor puntuación. Eso funciona de maravilla cuando las acciones son un menú pequeño y ordenado: *comprar mucho*, *comprar poco*, *mantener*. Pero una decisión real de cotización o de dimensionamiento no es un menú. Vuestro medio diferencial es un número continuo. El tamaño de vuestra orden hija es un número continuo. Vuestro desplazamiento de oferta respecto al punto medio es un número continuo. En cuanto la acción se convierte en un mando que podéis girar a cualquier punto de un dial, "tomar el máximo sobre todas las acciones" deja de ser una consulta rápida y se convierte en su propio problema de optimización que tendríais que resolver *dentro de cada una de las decisiones*. Eso es inviable en el reloj del trading.
+
+Así que cambiamos la pregunta. En lugar de aprender *cómo de buena es cada acción* y luego maximizar, aprendemos la **política directamente** — una red que toma el estado y simplemente *emite la acción* (o una distribución sobre acciones). Sin máximo, sin menú, sin optimización interna. Esta familia — los métodos de **gradiente de política** y **actor–crítico** — es lo que mueve esencialmente todo sistema moderno de RL de control continuo, y es el conjunto de herramientas que las lecciones 4 y 5 apuntarán hacia la ejecución y la creación de mercado. Esta lección lo construye desde los cimientos: el gradiente en bruto, por qué es catastróficamente ruidoso en los mercados, y los tres trucos (baselines, críticos, regiones de confianza) que doblegan el ruido.
+
+<MCQ
+  client:visible
+  pretest
+  pretestLabel="Antes de leer — adivina"
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  question="Vuestro agente creador de mercado debe elegir un medio diferencial continuo — cualquier número real entre, digamos, 0,5 y 5 ticks. ¿Por qué resulta incómodo aquí un método de valor estilo DQN clásico?"
+  options={[
+    { text: "Seleccionar una acción requiere maximizar el valor sobre las acciones, y un máximo sobre un rango continuo es su propia optimización que tendríais que resolver en cada paso — no una consulta barata.", correct: true },
+    { text: "La DQN no puede representar un estado con características continuas como el precio o el inventario.", },
+    { text: "Los métodos de valor no pueden usar redes neuronales, así que no pueden manejar datos de mercado en absoluto.", },
+    { text: "Las acciones continuas hacen continua la recompensa, y el RL requiere recompensas discretas.", },
+  ]}
+  explanation="La DQN elige acciones por argmax sobre los valores Q. Con un número finito de acciones discretas eso es un barrido trivial. Con una acción continua (un diferencial o un tamaño con valor real), el argmax se convierte en una optimización anidada en cada decisión — costoso y delicado. Los métodos de política esquivan esto por completo emitiendo la acción directamente. (Los estados continuos no son problema para la DQN; las recompensas pueden ser continuas; las redes son exactamente lo que usa el RL profundo.)"
+/>
+
+## Por qué aprender la política directamente
+
+Imaginad dos formas de decidir dónde comer. La forma **valor**: puntuad cada restaurante del pueblo del 1 al 10, y luego id al más alto. La forma **política**: saltaos las puntuaciones y simplemente aprended el hábito *"cuando es tarde y estoy cansado, voy al sitio de los fideos."* La forma valor necesita que enumeréis y puntuéis cada opción. La forma política mapea la situación directamente a una acción. Cuando las opciones son pocas, puntuar va bien. Cuando las opciones son infinitas — cada diferencial posible, cada tamaño posible — queréis el hábito.
+
+Formalmente, una **política** es $\pi(a \mid s; \theta)$: una función, con parámetros aprendibles $\theta$ (los pesos de una red neuronal), que da la probabilidad de tomar la acción $a$ en el estado $s$. Para un conjunto de acciones *discreto* es un softmax sobre las opciones. Para una acción *continua* es típicamente una **gaussiana** — la red emite una media $\mu(s)$ y una desviación típica $\sigma(s)$, y muestreáis vuestro diferencial o tamaño de $\mathcal{N}(\mu, \sigma^2)$. La media es "lo que creo que debería hacer"; la dispersión $\sigma$ es "cuánto estoy explorando todavía". El entrenamiento empuja $\theta$ para que las buenas acciones reciban más masa de probabilidad.
+
+Esta es exactamente la forma que quiere un agente de cotización o de dimensionamiento. Pedidle un medio diferencial y os entrega un número — y, gratis, una *distribución* sobre números, que es vuestra exploración incorporada y vuestra medida incorporada de confianza. Sin argmax, sin discretizar vuestro diferencial en cubos torpes, sin optimización interna en la ruta crítica.
+
+<MatchConcepts
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  termsLabel="Términos"
+  definitionsLabel="Definiciones"
+  allCorrectLabel="✓ Todo emparejado"
+  question="Empareja cada pieza del cuadro de los métodos de política con lo que es."
+  pairs={[
+    { term: "π(a | s; θ)", definition: "Una política parametrizada: probabilidad de la acción a en el estado s, pesos θ" },
+    { term: "Cabeza de política gaussiana", definition: "Emite una media μ(s) y una desviación σ(s); muestreas de ella una acción continua" },
+    { term: "La desviación σ(s)", definition: "Controla la exploración — una σ más ancha significa que el agente prueba acciones más variadas" },
+    { term: "Cabeza de política softmax", definition: "La versión de acción discreta: una probabilidad sobre un menú finito de opciones" },
+  ]}
+  explanation="Una red de política mapea el estado a una distribución sobre acciones. Para el control continuo (diferenciales, tamaños) esa distribución suele ser gaussiana: la red emite una media y una desviación típica, muestreas de ella, y σ hace las veces de mando de exploración. Las acciones discretas usan en cambio una cabeza softmax. En cualquier caso, no se necesita argmax — la acción sale directamente."
+/>
+
+### Cuándo usarlo
+
+Echad mano de un método de política siempre que la acción sea continua (un desplazamiento de precio, una tasa de participación, un ratio de cobertura, un tamaño en dólares) o cuando queráis genuinamente una política *estocástica* — una estrategia de cotización aleatorizada que sea más difícil de predecir y adelantarse para los adversarios. Quedaos con un método de valor (la DQN y sus amigos) cuando el conjunto de acciones sea pequeño y discreto y mayormente queráis la consulta de "mejor acción" más limpia posible. La mayoría de los agentes de ejecución y creación de mercado en producción son basados en política precisamente por la razón de la acción continua.
+
+## REINFORCE y el teorema del gradiente de política
+
+Aquí está la idea hermosa en el núcleo de todo esto. Queréis maximizar $J(\theta)$, vuestro *retorno esperado* — la recompensa total media que recolecta vuestra política. Os encantaría hacer ascenso de gradiente: empujar $\theta$ en la dirección que eleva $J$. Pero el retorno depende de $\theta$ a través de las acciones que *muestreasteis*, y a través de la respuesta del entorno — ¿cómo derivar a través de una tirada de moneda y de un mercado?
+
+El **teorema del gradiente de política** es el truco que hace que funcione. Dice que el gradiente del retorno esperado tiene una forma limpia y muestreable:
+
+$$\nabla_\theta J(\theta) = \mathbb{E}\big[\, \nabla_\theta \log \pi(a \mid s; \theta) \cdot G \,\big]$$
+
+donde $G$ es el **retorno** — la recompensa total (descontada) desde esta acción en adelante, estimada simplemente desplegando el episodio (Monte Carlo). Miradlo fijamente un segundo, porque la intuición lo es todo. El término $\nabla_\theta \log \pi(a\mid s)$ apunta en la dirección del espacio de $\theta$ que hace la acción $a$ *más probable*. Multiplicadlo por $G$. Si el retorno fue grande y positivo, dais un paso grande *hacia* hacer esa acción más probable. Si el retorno fue negativo, $G$ invierte el signo y os alejáis con un paso, haciéndola menos probable. **Subid la probabilidad de las acciones que llevaron a buenos resultados; bajad las que llevaron a malos resultados.** Eso es REINFORCE, el algoritmo de gradiente de política original (1992, Williams), en una frase.
+
+### Un paso de gradiente resuelto
+
+Mercado de juguete. Estado: el activo parece barato. Vuestra política es un softmax sobre dos acciones, *comprar* y *mantener*, y ahora mismo asigna $\pi(\text{comprar}) = 0.6$, $\pi(\text{mantener}) = 0.4$. Muestreáis — resulta que **compráis**. La operación sale bien: el retorno del episodio es $G = +5$.
+
+REINFORCE actualiza $\theta$ con $\alpha \cdot \nabla_\theta \log \pi(\text{comprar}\mid s) \cdot G$ con, digamos, una tasa de aprendizaje $\alpha = 0.1$. El término $\nabla_\theta \log \pi(\text{comprar})$ es *positivo en la dirección que eleva* $\pi(\text{comprar})$, y $G = +5$ es un multiplicador positivo grueso, así que el paso aumenta con firmeza la probabilidad de comprar cuando el activo parece barato. Tras la actualización podríais ver $\pi(\text{comprar})$ subir de 0,60 a, digamos, 0,63. Muestread *mantener* en su lugar y ganad $G = -3$, y la misma maquinaria habría *bajado* $\pi(\text{mantener})$. Repetid a lo largo de millones de episodios y la masa de probabilidad fluye hacia lo que de verdad paga.
+
+<FillBlank
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+  question="Completa la lógica de actualización de REINFORCE."
+  text="REINFORCE escala el gradiente ∇ log π(a|s) por el retorno {{G|σ|θ}}: cuando el resultado es bueno la probabilidad de esa acción se empuja {{arriba|abajo|plana}}, y cuando el resultado es malo se empuja en el otro sentido. El retorno se estima desplegando el {{episodio|red|gradiente}} entero (Monte Carlo)."
+  explanation="El teorema del gradiente de política multiplica la función de puntuación ∇ log π(a|s) por el retorno de Monte Carlo G. Buen retorno ⇒ sube la probabilidad de esa acción; mal retorno ⇒ la baja. G es la recompensa total realizada de un despliegue de episodio completo — que es exactamente la fuente del problema de varianza de REINFORCE."
+/>
+
+<Callout variant="warning" title="El fallo letal de REINFORCE: varianza catastrófica">
+La señal de crédito en el REINFORCE puro es el *retorno de toda la trayectoria* $G$ — un único número ruidoso que hace de sustituto de "¿fue buena esta acción?". En un videojuego limpio eso es tolerable. En los mercados es brutal: el retorno de cualquier episodio individual es *mayormente ruido*, porque los movimientos de precio empequeñecen la diminuta ventaja de cualquier decisión individual. Una acción perfecta puede ir seguida de un desplome del mercado (un $G$ enormemente negativo) y una acción terrible de un repunte afortunado (un $G$ enormemente positivo). El gradiente entonces *castiga la buena acción y premia la mala* en esa muestra. Con una relación señal-ruido tan baja, la estimación del gradiente tiene una varianza tan alta que el entrenamiento se arrastra, oscila, o nunca converge en absoluto. Domar esta varianza es todo el resto de la lección.
+</Callout>
+
+## Reducción de varianza: baselines y ventaja
+
+El arreglo es casi sospechosamente simple. El problema de REINFORCE es que juzga una acción por su retorno *en bruto* $G$ — pero $G = +5$ no os dice nada a menos que sepáis qué era *normal* para ese estado. Si toda acción desde este estado gana en torno a +5, entonces +5 no es nada destacable y no deberíais acreditar a *esta* acción por ello. Así que restad un **baseline** $b(s)$ — un nivel de referencia para el estado — y actualizad sobre la *diferencia*:
+
+$$\nabla_\theta J(\theta) = \mathbb{E}\big[\, \nabla_\theta \log \pi(a \mid s;\theta) \cdot \big(G - b(s)\big) \,\big]$$
+
+La magia: como $b(s)$ depende solo del estado, no de la acción que elegisteis, restarlo **no sesga el gradiente en absoluto** — es demostrablemente el mismo gradiente esperado. Pero recorta la *varianza*, porque ahora actualizáis sobre "cuánto *mejor que el baseline del estado* fue esto", una señal mucho más estable que el retorno en bruto oscilando con todo el mercado.
+
+¿Cuál es el mejor baseline? La **función de valor** $V(s)$ — el retorno esperado *desde este estado bajo la política actual*, es decir, exactamente "qué es normal aquí". Enchufad $V(s)$ como baseline y el multiplicador $G - V(s)$ se convierte en la célebre **ventaja**:
+
+$$A(s,a) = Q(s,a) - V(s)$$
+
+Leedlo en cristiano: $Q(s,a)$ es el valor de tomar la acción $a$ aquí; $V(s)$ es el valor medio del estado sobre todas las acciones. Su diferencia es *"cuánto mejor que la media fue esta acción concreta"*. Ventaja positiva → acción por encima de la media → subid su probabilidad. Negativa → por debajo de la media → bajadla. La ventaja es la cantidad más importante del RL moderno de gradiente de política, y casi cada algoritmo que conoceréis es alguna forma ingeniosa de estimarla.
+
+En la práctica no tenéis $Q$ y $V$ limpias; estimáis la ventaja a partir de los datos. **GAE** (Estimación Generalizada de la Ventaja) es la receta estándar: en una línea, es un promedio ponderado exponencialmente de **errores TD** multipaso $\delta_t = r_t + \gamma V(s_{t+1}) - V(s_t)$, con un mando $\lambda \in [0,1]$ que intercambia suavemente sesgo por varianza — una $\lambda$ pequeña se apoya en el bootstrap (baja varianza, algo de sesgo), una $\lambda$ grande se apoya en el largo retorno de Monte Carlo (bajo sesgo, más varianza).
+
+### Una ventaja resuelta
+
+Estado: activo barato. El crítico estima el valor del estado en $V(s) = +2$ — de media, pasan cosas decentes desde aquí. Muestreáis *comprar* y el retorno realizado es $G = +5$. Entonces la ventaja es $A = G - V(s) = 5 - 2 = +3$: comprar fue **3 mejor que la media**, así que REINFORCE-con-baseline empuja $\pi(\text{comprar})$ arriba — pero solo por la porción de *sorpresa*, +3, no el +5 entero. Ahora supongamos que en cambio el repunte afortunado dio $G = +5$ para una acción que normalmente es mediocre en un estado donde $V(s) = +6$. La ventaja es $5 - 6 = -1$: aunque el retorno *en bruto* parezca estupendo, la acción *rindió por debajo del estado*, así que su probabilidad se ajusta correctamente **hacia abajo**. Eso es el baseline salvándoos de acreditar a una acción por una suerte que pertenecía al estado.
+
+<MCQ
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  question="Restar un baseline dependiente del estado b(s) del retorno en el gradiente de política, ¿qué efecto tiene?"
+  options={[
+    { text: "Deja el gradiente insesgado (mismo valor esperado) a la vez que reduce su varianza.", correct: true },
+    { text: "Sesga el gradiente hacia los estados de mayor valor pero acelera la convergencia.", },
+    { text: "Cambia a qué política converge el algoritmo, intercambiando optimalidad por estabilidad.", },
+    { text: "Solo ayuda con acciones discretas; para acciones continuas un baseline no hace nada.", },
+  ]}
+  explanation="Como b(s) depende solo del estado y no de la acción muestreada, desaparece de la esperanza — el gradiente se mantiene insesgado. Lo que cambia es la varianza: actualizar sobre (G − b(s)) en lugar de G en bruto da una señal mucho más estable. Usar V(s) como baseline convierte el multiplicador en la ventaja A(s,a)."
+/>
+
+## Actor–crítico: el matrimonio
+
+Ahora combinad las dos redes. El **actor** es vuestra política $\pi(a\mid s;\theta)$ — propone acciones. El **crítico** es una red de valor $V(s; w)$ — puntúa cómo de buenos son los estados, y así suministra el baseline/ventaja que el actor necesita. Se entrenan juntos: el actor actúa, el crítico observa y aprende a predecir retornos, y la estimación del crítico se convierte en la señal de enseñanza de baja varianza para el actor.
+
+La mejora decisiva sobre el REINFORCE puro es la **temporización**. REINFORCE tiene que esperar a que el episodio *termine* para calcular el retorno de Monte Carlo $G$ — solo entonces sabe cómo actualizar. El actor–crítico no espera. Tras *cada paso individual*, el crítico produce una ventaja **bootstrapped** a partir del error TD $\delta_t = r_t + \gamma V(s_{t+1}) - V(s_t)$, y el actor actualiza de inmediato. Obtenéis una señal de crédito en cada paso en lugar de una vez por episodio, una varianza dramáticamente menor (el bootstrap reemplaza el ruidoso retorno completo), y podéis aprender en entornos de larga duración que nunca acaban del todo, como un mercado que está abierto todo el día.
+
+Pensadlo como un aprendiz y un entrenador. El actor (aprendiz) prueba una cotización. El crítico (entrenador) dice al instante "eso estuvo un poco por encima de la media para esta situación" — sin esperar a ver cómo termina el día entero. El aprendiz se ajusta sobre la marcha. **A2C** (Actor–Crítico con Ventaja) es la versión síncrona y limpia de este bucle; **A3C** es la variante asíncrona más antigua que ejecuta muchos actores en paralelo para descorrelacionar su experiencia. El bucle agente–entorno de abajo *es* este bucle — leed la caja del agente como el actor, e imaginad un crítico sentado a su lado puntuando cada recompensa según vuelve.
+
+<RlAgentEnvLoop
+  client:visible
+  title="El bucle actor–crítico: el actor propone, el crítico puntúa, en cada paso"
+  agentLabel="Actor (política π)"
+  envLabel="Mercado"
+  caption="Cada bucle es una decisión. El actor lee el estado y su política emite una acción (una cotización o un tamaño); el mercado devuelve una recompensa y el siguiente estado. En actor–crítico, un crítico V(s) puntúa esa recompensa al instante convirtiéndola en una ventaja — una señal de enseñanza por paso — para que el actor actualice en cada paso en lugar de esperar a que termine el episodio. Activad el impacto de mercado y las propias operaciones del agente empujan el precio en su contra: cada acción exploratoria cuesta dinero real, que es exactamente por qué la exploración on-policy es tan cara en el trading."
+/>
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">¿Por qué el bootstrap por paso del crítico reduce la varianza en comparación con el retorno completo de REINFORCE?</summary>
+
+**Respuesta.** La señal de REINFORCE, el retorno de Monte Carlo $G$, es la *suma de cada recompensa hasta el final del episodio* — así que hereda la aleatoriedad de cada paso futuro, cada movimiento futuro del mercado, todo amontonado en un solo número. El crítico, en cambio, estima la ventaja a partir de un horizonte *corto*: la recompensa inmediata $r_t$ más la propia predicción del crítico $\gamma V(s_{t+1})$ de todo lo posterior. Al reemplazar la larga y ruidosa cola por una predicción aprendida (bootstrapping), recorta la mayor parte del ruido acumulado. El coste es un poco de sesgo — la predicción del crítico es imperfecta — que es precisamente el mando sesgo–varianza que la $\lambda$ de GAE os deja ajustar.
+
+</details>
+</Reveal>
+
+## PPO — el caballo de batalla
+
+El actor–crítico todavía tiene una mina: el **tamaño de paso**. Los gradientes de política son *on-policy* — los datos que recolectasteis fueron generados por la política *actual*, y solo son válidos para una pequeña región a su alrededor. Dad un paso de gradiente demasiado ansioso, y la nueva política puede dar un bandazo lejos de la antigua hacia una región donde todos vuestros datos recolectados son engañosos. La política colapsa, empieza a generar experiencia basura, y se entrena con su propia basura. Una sola mala actualización grande puede arruinar toda la ejecución. Los arreglos tempranos (TRPO, Optimización de Política por Región de Confianza) imponían una restricción dura sobre cuánto podía moverse la política por actualización — correcto, pero pesado, con un paso de optimización con restricciones que es un dolor de implementar.
+
+**PPO** (Optimización de Política Proximal) es la respuesta querida y simplísima que se adueñó del campo. Mantiene cada actualización dentro de una **región de confianza** no mediante una restricción dura sino mediante *recorte (clipping)*. Definid el ratio de probabilidad $r(\theta) = \pi_\theta(a\mid s) / \pi_{\text{old}}(a\mid s)$ — cuánto más (o menos) probable hace la nueva política la acción que de hecho tomasteis, frente a la antigua política que recolectó los datos. PPO maximiza un **objetivo sustituto recortado**:
+
+$$L(\theta) = \mathbb{E}\Big[\, \min\big(r(\theta)\,A,\; \mathrm{clip}(r(\theta),\, 1-\epsilon,\, 1+\epsilon)\,A\big) \,\Big]$$
+
+El recorte (con $\epsilon$ en torno a 0,1–0,2) es la idea entera. Cuando la ventaja $A$ es positiva, queréis subir la probabilidad de esa acción — pero el $\min$ con el término recortado limita cuánto se os *premia* por empujar el ratio más allá de $1+\epsilon$, así que no hay incentivo para dar un salto. Cuando $A$ es negativa queréis bajarla, y el recorte os impide sobrecorregir por debajo de $1-\epsilon$. En cualquier caso, el objetivo se aplana en cuanto la política se ha movido "lo suficiente", vallando suavemente cada actualización dentro de una región de confianza. El resultado: **aprendizaje on-policy estable, simple de implementar y razonablemente eficiente en muestras** — que es por qué PPO es lo primero por defecto a lo que echáis mano en el control de trading, y el algoritmo que las lecciones 4 y 5 asumen por debajo del capó.
+
+<Callout variant="warning" title="On-policy significa que vuestros datos tienen una vida corta">
+PPO y todos los métodos de gradiente de política son *on-policy*: cada lote de experiencia solo es válido para la política que lo produjo. Actualizad la política y esos datos quedan **rancios** — debéis tirarlos y recolectar despliegues frescos. Eso es un impuesto de eficiencia real: no podéis reciclar sin fin un buffer de repetición gigante como hace la DQN. Es también por qué el recorte importa tanto — si una actualización mueve la política demasiado lejos, los datos recién recolectados ni siquiera fueron generados por una política lo bastante cercana como para aprender de ella, y el siguiente lote nace corrupto.
+</Callout>
+
+Más allá de PPO se asienta la familia de **control continuo off-policy**, que compra eficiencia de muestras reutilizando datos antiguos de un buffer de repetición — a costa de una estabilidad más delicada. **DDPG** (Gradiente de Política Determinista) aprende un actor determinista más un crítico Q; **TD3** parchea los fallos de sobrestimación de DDPG con críticos gemelos y actualizaciones retardadas (haciendo eco del arreglo de la Doble-DQN de la lección 2); **SAC** (Actor–Crítico Suave) añade un *bono de entropía* que premia explícitamente mantener la política estocástica, lo que la hace a la vez eficiente en muestras e inusualmente robusta. El intercambio principal: PPO on-policy es estable e indulgente pero hambriento de datos; DDPG/TD3/SAC off-policy son eficientes en muestras pero más quisquillosos de estabilizar.
+
+<Categorize
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  allCorrectLabel="✓ Todo emparejado"
+  instructions="Coloca cada elemento en su grupo."
+  question="Clasifica cada afirmación según la familia de algoritmos que mejor describe."
+  buckets={["On-policy (PPO)", "Off-policy continuo (DDPG/TD3/SAC)"]}
+  items={[
+    { text: "Mantiene las actualizaciones estables mediante un objetivo sustituto de ratio de probabilidad recortado.", bucket: "On-policy (PPO)" },
+    { text: "Reutiliza transiciones antiguas de un buffer de repetición para mayor eficiencia de muestras.", bucket: "Off-policy continuo (DDPG/TD3/SAC)" },
+    { text: "Debe descartar cada lote de despliegues tras actualizar la política.", bucket: "On-policy (PPO)" },
+    { text: "Usa críticos gemelos y actualizaciones retardadas para frenar la sobrestimación del valor.", bucket: "Off-policy continuo (DDPG/TD3/SAC)" },
+    { text: "Añade un bono de entropía que premia explícitamente mantener la política estocástica.", bucket: "Off-policy continuo (DDPG/TD3/SAC)" },
+    { text: "El valor por defecto simple e indulgente con el que arrancan la mayoría de proyectos de control de trading.", bucket: "On-policy (PPO)" },
+  ]}
+  explanation="PPO es on-policy: recorta la actualización en una región de confianza y tira cada lote tras usarlo — estable y simple pero hambriento de datos. La familia DDPG/TD3/SAC es off-policy: recicla un buffer de repetición para eficiencia de muestras, con los críticos gemelos de TD3 arreglando la sobrestimación y el bono de entropía de SAC premiando la exploración — más eficiente pero más difícil de estabilizar."
+/>
+
+<MCQ
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  question="¿Qué problema está diseñado específicamente para prevenir el objetivo sustituto recortado de PPO?"
+  options={[
+    { text: "Una única actualización de política demasiado grande que empuja la política hacia una región donde los datos recolectados ya no son válidos, colapsando el entrenamiento.", correct: true },
+    { text: "Que el crítico sobrestime los valores Q, que PPO arregla con críticos gemelos.", },
+    { text: "Que el buffer de repetición crezca demasiado para caber en memoria.", },
+    { text: "Que la política se vuelva demasiado estocástica, lo que el recorte hace determinista.", },
+  ]}
+  explanation="PPO recorta el ratio de probabilidad para mantener cada actualización dentro de una región de confianza, de modo que ningún paso individual salte la política demasiado lejos de la que reunió los datos — el modo de fallo que arruina los gradientes de política ingenuos. (Los críticos gemelos son el arreglo de sobrestimación de TD3; el tamaño del buffer de repetición es una preocupación off-policy; PPO no fuerza el determinismo.)"
+/>
+
+## Exploración que cuesta dinero real + RL offline
+
+Aquí está la diferencia más profunda entre el RL de trading y los referentes sobre los que nacieron estos algoritmos. En un videojuego, la exploración es *gratis*: lanzad a Mario por un precipicio mil veces para aprender el nivel, y no habéis perdido nada salvo cómputo. En los mercados, **cada acción exploratoria paga dinero real** — cada cotización fuera de distribución que publicáis, cada operación de "a ver qué pasa", cruza un diferencial real, se come un impacto real, y puede mover el precio en vuestra contra (activad el interruptor de impacto en el bucle de arriba para ver cómo una sola operación grava su propia recompensa). La exploración on-policy, donde debéis *actuar en el mercado en vivo para reunir los datos de los que aprendéis*, es por tanto genuina y brutalmente cara. Estáis pagando matrícula en deslizamiento (slippage).
+
+Ese coste reformula todo el problema y motiva el **RL offline (por lotes)**: aprender una política a partir de un *registro fijo de datos históricos* — los millones de operaciones y cotizaciones pasadas de vuestra firma — *sin interactuar jamás con el mercado en vivo durante el entrenamiento*. Sin sangrado exploratorio; minas la experiencia que ya pagasteis. La pega es el **cambio distribucional**: los datos registrados solo cubren los estados-y-acciones que la *antigua* política de comportamiento de hecho visitó, así que si vuestra política aprendida quiere hacer algo que los registros nunca probaron, las estimaciones de valor para esa acción son alucinación pura y confiada. Los métodos de valor off-policy son notorios por *sobre*estimar exactamente estas acciones no vistas y luego perseguirlas hasta el precipicio.
+
+El arreglo es una familia de algoritmos offline **conservadores / regularizados por comportamiento** — CQL (Q-Learning Conservador), BCQ, IQL y parientes — que todos comparten un instinto: *quedarse cerca de lo que los datos respaldan*. Penalizan las estimaciones de valor para acciones fuera de distribución o restringen la política aprendida para que se parezca a la política de registro, intercambiando deliberadamente algo de potencial por la seguridad de no extrapolar hacia lo desconocido. En el trading, donde extrapolar con confianza hacia una acción no vista puede significar una sorpresa muy cara, ese conservadurismo no es timidez — es supervivencia.
+
+<Callout variant="warning" title="La trampa del RL offline: alucinación confiada fuera de distribución">
+El fallo característico del RL offline: el agente encuentra una acción que el registro histórico apenas contiene, la red de valor — nunca corregida por retroalimentación real para esa acción — le asigna un valor gloriosamente alto (y totalmente inventado), y la política se lanza a por ella. El backtest se ve brillante; en vivo, la acción hace algo que el modelo nunca observó en realidad, y la posición sangra. Esto es el cambio distribucional mordiendo, y es *peor* que el sobreajuste ordinario porque el modelo está confiadamente equivocado sobre regiones para las que no tiene datos. Los métodos conservadores existen precisamente para abrochar esto — mantener la política cerca de los datos, desconfiar de lo no observado.
+</Callout>
+
+<MCQ
+  client:visible
+  allowMultiple
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  explanationLabel="Explicación"
+  question="¿Qué afirmaciones sobre el coste de la exploración y el RL offline en el trading son correctas? (Selecciona todas las que apliquen.)"
+  options={[
+    { text: "La exploración on-policy es cara en los mercados porque cada acción exploratoria paga diferencial e impacto reales.", correct: true },
+    { text: "El RL offline aprende de un registro fijo de datos pasados sin interactuar con el mercado en vivo durante el entrenamiento.", correct: true },
+    { text: "El cambio distribucional significa que las estimaciones de valor para acciones que el registro nunca probó pueden estar confiadamente equivocadas.", correct: true },
+    { text: "Los métodos offline conservadores (CQL, IQL, BCQ) se quedan deliberadamente cerca de las acciones que los datos respaldan.", correct: true },
+    { text: "En el trading, la exploración es esencialmente gratis, igual que en un videojuego.", },
+  ]}
+  explanation="Las cuatro primeras son el núcleo de la sección: la exploración en vivo cuesta dinero real, lo que motiva el RL offline/por lotes a partir de datos registrados; el peligro ahí es el cambio distribucional — estimaciones de valor sobreconfiadas para acciones no vistas — del que los métodos conservadores, regularizados por comportamiento (CQL, IQL, BCQ) protegen quedándose cerca de los datos. La exploración decididamente NO es gratis en los mercados — ese es justo el punto."
+/>
+
+### Cuándo usarlo: valor vs política vs actor–crítico
+
+La guía de decisión que ata las tres lecciones de algoritmos de este curso:
+
+| Situación | Echa mano de |
+|---|---|
+| Conjunto de acciones **discreto** pequeño, quieres la consulta de "mejor acción" más limpia | **Método de valor (DQN)** — lección 2 |
+| Acción **continua** (diferencial, tamaño, tasa de participación) o quieres una política estocástica | Método de **política / actor–crítico** |
+| Quieres aprendizaje de baja varianza, por paso, y un valor por defecto on-policy estable | **A2C / PPO** — el caballo de batalla |
+| La eficiencia de muestras importa y puedes cuidar la estabilidad (control continuo, reúso de repetición) | **Off-policy: DDPG / TD3 / SAC** |
+| Debes aprender de un **registro histórico fijo** y no puedes permitirte exploración en vivo | **RL offline: CQL / IQL / BCQ** (ojo con el cambio distribucional) |
+
+La comparación reutilizable que conviene tener en la cabeza, a través de las familias:
+
+| Método | Sesgo | Varianza | Eficiencia de muestras | Estabilidad | Espacio de acción |
+|---|---|---|---|---|---|
+| **REINFORCE** | Insesgado | Muy alta | Pobre (on-policy, retorno MC) | Frágil | Discreto o continuo |
+| **A2C / A3C** | Bajo sesgo (bootstrap) | Menor (baseline del crítico) | Moderada (on-policy) | Moderada | Discreto o continuo |
+| **PPO** | Bajo sesgo | Baja (ventaja + recorte) | Moderada (on-policy) | Alta (región de confianza recortada) | Discreto o continuo |
+| **DDPG / SAC / TD3** | Algo de sesgo (bootstrap off-policy) | Baja | Alta (reúso de repetición) | Menor (quisquilloso de ajustar) | Continuo |
+
+<MatchConcepts
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  termsLabel="Términos"
+  definitionsLabel="Definiciones"
+  allCorrectLabel="✓ Todo emparejado"
+  question="Empareja cada algoritmo con su firma de una línea."
+  pairs={[
+    { term: "REINFORCE", definition: "Gradiente de política puro sobre el retorno de Monte Carlo — insesgado pero de muy alta varianza" },
+    { term: "A2C", definition: "Actor + crítico que da una ventaja bootstrapped por paso — menor varianza" },
+    { term: "PPO", definition: "Un sustituto recortado mantiene cada actualización on-policy dentro de una región de confianza — el valor por defecto estable" },
+    { term: "SAC", definition: "Control continuo off-policy con un bono de entropía — eficiente en muestras y robusto" },
+    { term: "CQL", definition: "RL offline conservador — penaliza las acciones fuera de distribución para sobrevivir al cambio distribucional" },
+  ]}
+  explanation="REINFORCE es la baseline en bruto, de alta varianza. A2C añade un crítico para una señal por paso de menor varianza. PPO valla las actualizaciones con un recorte para la estabilidad — el valor por defecto de cada día. SAC es el caballo de batalla off-policy de control continuo eficiente en muestras con exploración impulsada por entropía. CQL es el método offline que desconfía de las acciones no vistas. Juntos abarcan el espacio sesgo/varianza/eficiencia/estabilidad del que elegiréis en las dos próximas lecciones."
+/>
+
+## Recapitulación y punto de control
+
+Habéis subido la escalera basada en política: desde el *porqué* el control de trading quiere aprender la política directamente (los diferenciales y tamaños continuos rompen el argmax), pasando por REINFORCE y su problema de varianza, hasta el trío de arreglos — baselines/ventaja, el bucle actor–crítico, y la región de confianza recortada de PPO — y finalmente el coste en dinero real de la exploración que os empuja hacia el RL offline. Construid el mapa, y luego haced el punto de control mixto.
+
+<MindMap
+  client:visible
+  title="Gradientes de política y actor–crítico — el mapa completo"
+  caption="Del gradiente de política en bruto a los trucos que matan la varianza, el caballo de batalla on-policy, y el coste de la exploración."
+  outlineLabel="Esquema"
+  root={{
+    label: "RL profundo basado en política",
+    children: [
+      {
+        label: "Por qué política, no valor",
+        children: [
+          { label: "La DQN necesita argmax sobre acciones" },
+          { label: "Diferencial/tamaño continuo rompe el máximo" },
+          { label: "π(a|s;θ): cabeza gaussiana para control continuo" },
+        ],
+      },
+      {
+        label: "REINFORCE",
+        children: [
+          { label: "∇J = E[∇log π(a|s) · G]" },
+          { label: "Sube las acciones con alto retorno" },
+          { label: "Fallo letal: varianza catastrófica" },
+        ],
+      },
+      {
+        label: "Reducción de varianza",
+        children: [
+          { label: "Baseline b(s): insesgado, menos varianza" },
+          { label: "Ventaja A = Q − V" },
+          { label: "GAE: mando sesgo–varianza λ" },
+        ],
+      },
+      {
+        label: "Actor–crítico",
+        children: [
+          { label: "El actor propone, el crítico puntúa" },
+          { label: "Ventaja bootstrapped por paso" },
+          { label: "A2C / A3C" },
+        ],
+      },
+      {
+        label: "PPO (caballo de batalla)",
+        children: [
+          { label: "Sustituto recortado = región de confianza" },
+          { label: "Valor por defecto on-policy estable" },
+          { label: "Primos off-policy: DDPG/TD3/SAC" },
+        ],
+      },
+      {
+        label: "Coste de la exploración",
+        children: [
+          { label: "Cada operación exploratoria paga dinero real" },
+          { label: "RL offline/por lotes desde registros" },
+          { label: "Cambio distribucional → métodos conservadores" },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Punto de control de gradiente de política"
+  questions={[
+    {
+      question: "Un agente creador de mercado debe emitir un medio diferencial continuo. ¿Por qué un método de política encaja de forma más natural que un método de valor clásico?",
+      options: [
+        { text: "La red de política emite la acción (continua) directamente, evitando el argmax-sobre-acciones que un método de valor necesita y que es caro sobre un rango continuo.", correct: true },
+        { text: "Los métodos de valor no pueden representar estados continuos como el inventario y el precio.", },
+        { text: "Los métodos de política no necesitan una señal de recompensa, así que manejan mejor los mercados.", },
+        { text: "Los métodos de valor siempre sobreajustan, mientras que los de política nunca lo hacen.", },
+      ],
+      explanation: "Los métodos de valor seleccionan acciones maximizando Q sobre las acciones — trivial para un menú discreto pequeño, una optimización anidada para un diferencial continuo. Los métodos de política emiten la acción (a menudo como la media y desviación de una gaussiana) directamente, sin argmax. Esa es la ventaja del control continuo.",
+    },
+    {
+      question: "La debilidad central de REINFORCE al aplicarse al trading se describe mejor como…",
+      options: [
+        { text: "Varianza catastrófica: el retorno de todo el episodio es una señal de crédito ruidosa, y en los mercados el retorno es mayormente ruido, así que el gradiente a menudo acredita la suerte y castiga la pericia.", correct: true },
+        { text: "Está sesgado y converge a la política equivocada incluso con datos infinitos.", },
+        { text: "No puede manejar acciones discretas, solo continuas.", },
+        { text: "Requiere un buffer de repetición que los mercados no pueden proporcionar.", },
+      ],
+      explanation: "REINFORCE es insesgado pero de varianza extremadamente alta: escala el gradiente por el retorno completo de Monte Carlo G, que en los mercados está dominado por el ruido del precio. Una gran acción seguida de un desplome se castiga; una mala acción seguida de un repunte se premia. Esa baja relación señal-ruido es contra lo que están construidos los baselines, los críticos y PPO.",
+    },
+    {
+      question: "Restar la función de valor V(s) como baseline convierte el multiplicador del gradiente de política en la ventaja A(s,a) = Q(s,a) − V(s). ¿Qué significa una ventaja positiva, y qué le hace el baseline al gradiente?",
+      options: [
+        { text: "Ventaja positiva significa que la acción lo hizo mejor que la media del estado; usar V(s) como baseline reduce la varianza sin sesgar el gradiente.", correct: true },
+        { text: "Ventaja positiva significa que el estado es valioso; el baseline sesga el gradiente hacia esos estados.", },
+        { text: "Ventaja positiva significa que la acción fue aleatoria; el baseline elimina toda la exploración.", },
+        { text: "Ventaja positiva significa alta recompensa; el baseline duplica la tasa de aprendizaje.", },
+      ],
+      explanation: "A(s,a) mide cuánto mejor que la media fue una acción concreta en ese estado. Como el baseline V(s) depende solo del estado, restarlo deja el gradiente insesgado mientras recorta la varianza — la jugada de reducción de varianza más importante del RL de gradiente de política.",
+    },
+    {
+      question: "Recordando lo anterior: la ventaja clave de temporización del actor–crítico sobre REINFORCE es que…",
+      options: [
+        { text: "El crítico suministra una ventaja bootstrapped en cada paso, así que el actor actualiza de inmediato en lugar de esperar a que termine el episodio.", correct: true },
+        { text: "El actor espera más que REINFORCE para recolectar más episodios antes de actualizar.", },
+        { text: "Elimina la necesidad de cualquier estimación de valor en absoluto.", },
+        { text: "Solo funciona offline, nunca con datos en vivo.", },
+      ],
+      explanation: "REINFORCE debe esperar al retorno completo de Monte Carlo al final del episodio. El crítico del actor–crítico produce una ventaja de error-TD por paso, así que el actor aprende en cada paso con una señal de varianza mucho menor — y puede aprender en entornos de larga duración como un mercado abierto todo el día.",
+    },
+    {
+      question: "El objetivo sustituto recortado de PPO existe principalmente para…",
+      options: [
+        { text: "Mantener cada actualización de política dentro de una región de confianza de modo que un paso demasiado grande no pueda empujar la política hacia una región donde los datos recolectados sean inválidos.", correct: true },
+        { text: "Permitir el reúso infinito de un buffer de repetición antiguo como un método off-policy.", },
+        { text: "Hacer la política determinista para eliminar la exploración.", },
+        { text: "Eliminar la necesidad de un crítico o una estimación de ventaja.", },
+      ],
+      explanation: "Los datos on-policy solo son válidos cerca de la política que los produjo. PPO recorta el ratio de probabilidad de modo que ninguna actualización individual salte demasiado lejos, dando un aprendizaje estable, simple y razonablemente eficiente en muestras — la razón por la que es el caballo de batalla por defecto del control de trading. Sigue usando un crítico/ventaja y no recicla datos como los métodos off-policy.",
+    },
+    {
+      question: "¿Por qué el coste en dinero real de la exploración motiva el RL offline en el trading, y cuál es su peligro central?",
+      options: [
+        { text: "La exploración en vivo paga diferencial e impacto reales, así que aprender de datos registrados es atractivo — pero el cambio distribucional hace que las estimaciones de valor para acciones que el registro nunca probó estén confiadamente equivocadas.", correct: true },
+        { text: "La exploración es gratis, así que el RL offline es solo una comodidad sin contrapartida real.", },
+        { text: "El RL offline elimina todo el sobreajuste porque nunca ve datos nuevos.", },
+        { text: "El RL offline es peligroso solo porque los datos registrados son demasiado pequeños para entrenar.", },
+      ],
+      explanation: "A diferencia de un videojuego, cada operación exploratoria cuesta dinero, así que minar un registro histórico fijo es atractivo. La pega es el cambio distribucional: el registro solo cubre lo que hizo la antigua política, así que una política aprendida que quiere una acción no vista obtiene una estimación de valor alucinada. Los métodos conservadores (CQL, IQL, BCQ) protegen de esto quedándose cerca de lo que los datos respaldan.",
+    },
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Inténtalo de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  nextLabel="Siguiente"
+  seeResultsLabel="Ver resultados"
+  backLabel="Atrás"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  completeTitleLabel="Cuestionario completado"
+  correctCountLabel="correctas"
+  gateLabel="Comprueba tu respuesta para continuar."
+/>
+
+## Hacia dónde va esto
+
+Ahora sostenéis el conjunto completo de herramientas basado en política: aprended $\pi(a\mid s;\theta)$ directamente para que los diferenciales y tamaños continuos salgan directos de la red; domad la varianza de REINFORCE con un baseline y la ventaja; dejad que un crítico alimente al actor con una señal de baja varianza, por paso; vallad cada actualización con el recorte de PPO; y respetad que en los mercados la exploración se paga en deslizamiento real — que es lo que hace que el RL offline y los métodos conservadores importen. Crucialmente, también tenéis la guía de decisión de *cuándo* cada familia es la elección correcta.
+
+La **lección 4, "RL profundo para la ejecución óptima",** apunta esta maquinaria al primer problema real: trocear una orden madre grande para minimizar el implementation shortfall. Veréis por qué un agente PPO o actor–crítico con una acción continua de tasa de participación es el encaje natural, cómo la señal de ventaja se mapea sobre el equilibrio impacto-frente-a-riesgo-de-temporización que conocisteis en el curso prerrequisito, y cómo las preocupaciones por el coste de la exploración de esta lección fuerzan una configuración de entrenamiento honesta, consciente de simuladores y datos offline. Los mismos algoritmos — ahora ganándose el sueldo en un reloj de ejecución en vivo.

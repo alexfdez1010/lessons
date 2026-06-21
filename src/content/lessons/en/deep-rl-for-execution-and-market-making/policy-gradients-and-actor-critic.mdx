@@ -1,0 +1,374 @@
+---
+title: "Policy Gradients & Actor–Critic for Continuous Control"
+description: "Why trading control wants policy-based deep RL: REINFORCE and the policy-gradient theorem, baselines and advantage for variance reduction, actor–critic, PPO's clipped trust region, and the real cost of exploration plus offline RL."
+topic: "en/deep-rl-for-execution-and-market-making"
+order: 3
+minutes: 17
+updated: 2026-06-21
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, RlAgentEnvLoop } from '@/components/react';
+
+Lesson 2 left you with a DQN — a value network that scores every action and trades the one with the highest score. That works beautifully when the actions are a tidy little menu: *buy a lot*, *buy a little*, *hold*. But a real quoting or sizing decision isn't a menu. Your half-spread is a continuous number. Your child-order size is a continuous number. Your bid offset from the mid is a continuous number. The moment the action becomes a knob you can turn anywhere on a dial, "take the max over all actions" stops being a quick lookup and becomes its own optimization problem you'd have to solve *inside every single decision*. That's a non-starter on a trading clock.
+
+So we change the question. Instead of learning *how good is each action* and then maximizing, we learn the **policy directly** — a network that takes the state and just *outputs the action* (or a distribution over actions). No max, no menu, no inner optimization. This family — **policy-gradient** and **actor–critic** methods — is what runs essentially every modern continuous-control RL system, and it's the toolkit lessons 4 and 5 will point at execution and market making. This lesson builds it from the ground up: the raw gradient, why it's catastrophically noisy in markets, and the three tricks (baselines, critics, trust regions) that beat the noise into submission.
+
+<MCQ
+  client:visible
+  pretest
+  question="Your market-making agent must choose a continuous half-spread — any real number between, say, 0.5 and 5 ticks. Why is a vanilla DQN-style value method awkward here?"
+  options={[
+    { text: "Selecting an action requires maximizing the value over actions, and a max over a continuous range is its own optimization you'd have to solve at every step — not a cheap lookup.", correct: true },
+    { text: "DQN cannot represent a state with continuous features like price or inventory.", },
+    { text: "Value methods cannot use neural networks, so they can't handle market data at all.", },
+    { text: "Continuous actions make the reward continuous, and RL requires discrete rewards.", },
+  ]}
+  explanation="DQN picks actions by argmax over Q-values. With finitely many discrete actions that's a trivial scan. With a continuous action (a real-valued spread or size), the argmax becomes a nested optimization at every decision — expensive and fiddly. Policy methods dodge this entirely by outputting the action directly. (Continuous states are fine for DQN; rewards can be continuous; nets are exactly what deep RL uses.)"
+/>
+
+## Why learn the policy directly
+
+Picture two ways to decide where to eat. The **value** way: rate every restaurant in town from 1 to 10, then go to the highest. The **policy** way: skip the ratings and just learn the habit *"when it's late and I'm tired, go to the noodle place."* The value way needs you to enumerate and score every option. The policy way maps the situation straight to an action. When options are few, scoring is fine. When options are infinite — every possible spread, every possible size — you want the habit.
+
+Formally, a **policy** is $\pi(a \mid s; \theta)$: a function, with learnable parameters $\theta$ (the weights of a neural net), that gives the probability of taking action $a$ in state $s$. For a *discrete* action set it's a softmax over the choices. For a *continuous* action it's typically a **Gaussian** — the network outputs a mean $\mu(s)$ and a standard deviation $\sigma(s)$, and you sample your spread or size from $\mathcal{N}(\mu, \sigma^2)$. The mean is "what I think I should do"; the spread $\sigma$ is "how much I'm still exploring." Training nudges $\theta$ so good actions get more probability mass.
+
+This is exactly the shape a quoting or sizing agent wants. Ask it for a half-spread and it hands you a number — and, for free, a *distribution* over numbers, which is your built-in exploration and your built-in measure of confidence. No argmax, no discretizing your spread into clumsy buckets, no inner optimization on the critical path.
+
+<MatchConcepts
+  client:visible
+  question="Match each piece of the policy-method picture to what it is."
+  pairs={[
+    { term: "π(a | s; θ)", definition: "A parametrized policy: probability of action a in state s, weights θ" },
+    { term: "Gaussian policy head", definition: "Outputs a mean μ(s) and std σ(s); you sample a continuous action from it" },
+    { term: "The std σ(s)", definition: "Controls exploration — wider σ means the agent tries more varied actions" },
+    { term: "Softmax policy head", definition: "The discrete-action version: a probability over a finite menu of choices" },
+  ]}
+  explanation="A policy network maps state to a distribution over actions. For continuous control (spreads, sizes) that distribution is usually Gaussian: the net emits a mean and a standard deviation, you sample from it, and σ doubles as the exploration knob. Discrete actions use a softmax head instead. Either way, no argmax is needed — the action comes straight out."
+/>
+
+### When to use it
+
+Reach for a policy method whenever the action is continuous (a price offset, a participation rate, a hedge ratio, a dollar size) or when you genuinely want a *stochastic* policy — a randomized quoting strategy that's harder for adversaries to predict and front-run. Stick with a value method (DQN and friends) when the action set is small and discrete and you mostly want the cleanest possible "best action" lookup. Most execution and market-making agents in production are policy-based for exactly the continuous-action reason.
+
+## REINFORCE and the policy-gradient theorem
+
+Here's the beautiful idea at the core of all of this. You want to maximize $J(\theta)$, your *expected return* — the average total reward your policy collects. You'd love to do gradient ascent: nudge $\theta$ in the direction that raises $J$. But the return depends on $\theta$ through the actions you *sampled*, and through the environment's response — how do you differentiate through a coin flip and a market?
+
+The **policy-gradient theorem** is the trick that makes it work. It says the gradient of expected return has a clean, sampleable form:
+
+$$\nabla_\theta J(\theta) = \mathbb{E}\big[\, \nabla_\theta \log \pi(a \mid s; \theta) \cdot G \,\big]$$
+
+where $G$ is the **return** — the total (discounted) reward from this action onward, estimated by just rolling out the episode (Monte Carlo). Stare at it for a second, because the intuition is everything. The term $\nabla_\theta \log \pi(a\mid s)$ points in the direction of $\theta$-space that makes action $a$ *more probable*. Multiply it by $G$. If the return was big and positive, you take a big step *toward* making that action more likely. If the return was negative, $G$ flips the sign and you step *away*, making it less likely. **Push up the probability of actions that led to good outcomes; push down the ones that led to bad outcomes.** That's REINFORCE, the original (1992, Williams) policy-gradient algorithm, in one sentence.
+
+### A worked gradient step
+
+Toy market. State: the asset looks cheap. Your policy is a softmax over two actions, *buy* and *hold*, and right now it assigns $\pi(\text{buy}) = 0.6$, $\pi(\text{hold}) = 0.4$. You sample — you happen to **buy**. The trade works out: the episode return is $G = +5$.
+
+REINFORCE updates $\theta$ by $\alpha \cdot \nabla_\theta \log \pi(\text{buy}\mid s) \cdot G$ with, say, learning rate $\alpha = 0.1$. The $\nabla_\theta \log \pi(\text{buy})$ term is *positive in the direction that raises* $\pi(\text{buy})$, and $G = +5$ is a fat positive multiplier, so the step firmly increases the probability of buying when the asset looks cheap. After the update you might see $\pi(\text{buy})$ tick up from 0.60 to, say, 0.63. Sample *hold* instead and earn $G = -3$, and the same machinery would have *lowered* $\pi(\text{hold})$. Repeat over millions of episodes and the probability mass flows toward whatever actually pays.
+
+<FillBlank
+  client:visible
+  question="Fill in the REINFORCE update logic."
+  text="REINFORCE scales the gradient ∇ log π(a|s) by the return {{G|σ|θ}}: when the outcome is good the probability of that action is pushed {{up|down|flat}}, and when the outcome is bad it is pushed the other way. The return is estimated by rolling out the whole {{episode|network|gradient}} (Monte Carlo)."
+  explanation="The policy-gradient theorem multiplies the score function ∇ log π(a|s) by the Monte-Carlo return G. Good return ⇒ raise that action's probability; bad return ⇒ lower it. G is the realized total reward from a full episode rollout — which is exactly the source of REINFORCE's variance problem."
+/>
+
+<Callout variant="warning" title="REINFORCE's killer flaw: catastrophic variance">
+The credit signal in plain REINFORCE is the *whole-trajectory return* $G$ — a single noisy number standing in for "was this action good?" In a clean video game that's tolerable. In markets it's brutal: the return of any one episode is *mostly noise*, because price moves dwarf the tiny edge of any single decision. A perfect action can be followed by a market crash (huge negative $G$) and a terrible action by a lucky rally (huge positive $G$). The gradient then *punishes the good action and rewards the bad one* on that sample. With a signal-to-noise ratio this low, the gradient estimate is so high-variance that training crawls, oscillates, or never converges at all. Taming this variance is the entire rest of the lesson.
+</Callout>
+
+## Variance reduction: baselines and advantage
+
+The fix is almost suspiciously simple. The problem with REINFORCE is that it judges an action by its *raw* return $G$ — but $G = +5$ tells you nothing unless you know what was *normal* for that state. If every action from this state earns about +5, then +5 is unremarkable and you shouldn't credit *this* action for it. So subtract off a **baseline** $b(s)$ — a reference level for the state — and update on the *difference*:
+
+$$\nabla_\theta J(\theta) = \mathbb{E}\big[\, \nabla_\theta \log \pi(a \mid s;\theta) \cdot \big(G - b(s)\big) \,\big]$$
+
+The magic: because $b(s)$ depends only on the state, not on the action you chose, subtracting it **does not bias the gradient at all** — it's provably the same expected gradient. But it slashes the *variance*, because now you're updating on "how much *better than the state's baseline* was this," a far more stable signal than the raw return swinging with the whole market.
+
+What's the best baseline? The **value function** $V(s)$ — the expected return *from this state under the current policy*, i.e. exactly "what's normal here." Plug $V(s)$ in as the baseline and the multiplier $G - V(s)$ becomes the celebrated **advantage**:
+
+$$A(s,a) = Q(s,a) - V(s)$$
+
+Read it in plain English: $Q(s,a)$ is the value of taking action $a$ here; $V(s)$ is the average value of the state over all actions. Their difference is *"how much better than average was this particular action?"* Positive advantage → above-average action → raise its probability. Negative → below-average → lower it. The advantage is the single most important quantity in modern policy-gradient RL, and almost every algorithm you'll meet is some clever way of estimating it.
+
+In practice you don't have clean $Q$ and $V$; you estimate the advantage from data. **GAE** (Generalized Advantage Estimation) is the standard recipe: in one line, it's an exponentially-weighted average of multi-step **TD errors** $\delta_t = r_t + \gamma V(s_{t+1}) - V(s_t)$, with a knob $\lambda \in [0,1]$ that smoothly trades bias for variance — small $\lambda$ leans on the bootstrap (low variance, some bias), large $\lambda$ leans on the long Monte-Carlo return (low bias, more variance).
+
+### A worked advantage
+
+State: cheap asset. The critic estimates the state value at $V(s) = +2$ — on average, decent things happen from here. You sample *buy* and the realized return is $G = +5$. Then the advantage is $A = G - V(s) = 5 - 2 = +3$: buying was **3 better than average**, so REINFORCE-with-baseline pushes $\pi(\text{buy})$ up — but only by the *surprise* portion, +3, not the full +5. Now suppose instead the lucky rally gave $G = +5$ for an action that's normally mediocre in a state where $V(s) = +6$. The advantage is $5 - 6 = -1$: even though the *raw* return looks great, the action *underperformed the state*, so its probability is correctly nudged **down**. That's the baseline saving you from crediting an action for luck that belonged to the state.
+
+<MCQ
+  client:visible
+  question="Subtracting a state-dependent baseline b(s) from the return in the policy gradient has which effect?"
+  options={[
+    { text: "It leaves the gradient unbiased (same expected value) while reducing its variance.", correct: true },
+    { text: "It biases the gradient toward higher-value states but speeds up convergence.", },
+    { text: "It changes which policy the algorithm converges to, trading optimality for stability.", },
+    { text: "It only helps for discrete actions; for continuous actions a baseline does nothing.", },
+  ]}
+  explanation="Because b(s) depends only on the state and not on the sampled action, it drops out of the expectation — the gradient stays unbiased. What it changes is the variance: updating on (G − b(s)) instead of raw G gives a much steadier signal. Using V(s) as the baseline turns the multiplier into the advantage A(s,a)."
+/>
+
+## Actor–critic: the marriage
+
+Now combine the two networks. The **actor** is your policy $\pi(a\mid s;\theta)$ — it proposes actions. The **critic** is a value network $V(s; w)$ — it scores how good states are, and so supplies the baseline/advantage the actor needs. They train together: the actor acts, the critic watches and learns to predict returns, and the critic's estimate becomes the low-variance teaching signal for the actor.
+
+The decisive upgrade over plain REINFORCE is **timing**. REINFORCE has to wait until the episode *ends* to compute the Monte-Carlo return $G$ — only then does it know how to update. Actor–critic doesn't wait. After *every single step*, the critic produces a **bootstrapped** advantage from the TD error $\delta_t = r_t + \gamma V(s_{t+1}) - V(s_t)$, and the actor updates immediately. You get a credit signal each step instead of once per episode, dramatically lower variance (the bootstrap replaces the noisy full return), and you can learn in long-running, never-quite-ending environments like a market that's open all day.
+
+Think of it as an apprentice and a coach. The actor (apprentice) tries a quote. The critic (coach) instantly says "that was a bit above average for this situation" — without waiting to see how the whole day ends. The apprentice adjusts on the spot. **A2C** (Advantage Actor–Critic) is the clean synchronous version of this loop; **A3C** is the older asynchronous variant that runs many actors in parallel to decorrelate their experience. The agent–environment loop below *is* this loop — read the agent box as the actor, and imagine a critic sitting beside it scoring every reward as it comes back.
+
+<RlAgentEnvLoop
+  client:visible
+  title="The actor–critic loop: actor proposes, critic scores, every step"
+  agentLabel="Actor (policy π)"
+  envLabel="Market"
+  caption="Each loop is one decision. The actor reads the state and its policy emits an action (a quote or a size); the market returns a reward and the next state. In actor–critic, a critic V(s) scores that reward instantly into an advantage — a per-step teaching signal — so the actor updates every step instead of waiting for the episode to end. Flip on Market impact and the agent's own trades push the price against it: every exploratory action costs real money, which is exactly why on-policy exploration is so expensive in trading."
+/>
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Why does the critic's per-step bootstrap reduce variance compared to REINFORCE's full return?</summary>
+
+**Answer.** REINFORCE's signal, the Monte-Carlo return $G$, is the *sum of every reward to the end of the episode* — so it inherits the randomness of every future step, every future market move, all piled into one number. The critic instead estimates the advantage from a *short* horizon: the immediate reward $r_t$ plus the critic's own prediction $\gamma V(s_{t+1})$ of everything after. By replacing the long, noisy tail with a learned prediction (bootstrapping), it cuts out most of the accumulated noise. The cost is a little bias — the critic's prediction is imperfect — which is precisely the bias–variance dial that GAE's $\lambda$ lets you tune.
+
+</details>
+</Reveal>
+
+## PPO — the workhorse
+
+Actor–critic still has a landmine: **step size**. Policy gradients are *on-policy* — the data you collect was generated by the *current* policy, and it's only valid for a small region around it. Take one over-eager gradient step, and the new policy can lurch far from the old one into a region where all your collected data is misleading. The policy collapses, starts generating garbage experience, and trains on its own garbage. One bad large update can wreck the whole run. Early fixes (TRPO, Trust Region Policy Optimization) enforced a hard constraint on how far the policy could move per update — correct, but heavy, with a constrained-optimization step that's a pain to implement.
+
+**PPO** (Proximal Policy Optimization) is the beloved, dead-simple answer that took over the field. It keeps each update inside a **trust region** not by a hard constraint but by *clipping*. Define the probability ratio $r(\theta) = \pi_\theta(a\mid s) / \pi_{\text{old}}(a\mid s)$ — how much more (or less) likely the new policy makes the action you actually took, versus the old policy that collected the data. PPO maximizes a **clipped surrogate objective**:
+
+$$L(\theta) = \mathbb{E}\Big[\, \min\big(r(\theta)\,A,\; \mathrm{clip}(r(\theta),\, 1-\epsilon,\, 1+\epsilon)\,A\big) \,\Big]$$
+
+The clip (with $\epsilon$ around 0.1–0.2) is the whole idea. When the advantage $A$ is positive, you want to raise that action's probability — but the $\min$ with the clipped term caps how much you're *rewarded* for pushing the ratio past $1+\epsilon$, so there's no incentive to leap. When $A$ is negative you want to lower it, and the clip stops you from over-correcting below $1-\epsilon$. Either way, the objective flattens out once the policy has moved "enough," gently fencing each update inside a trust region. The result: **stable on-policy learning that's simple to implement and reasonably sample-efficient** — which is why PPO is the default first thing you reach for in trading control, and the algorithm lessons 4 and 5 assume under the hood.
+
+<Callout variant="warning" title="On-policy means your data has a short shelf life">
+PPO and all policy-gradient methods are *on-policy*: each batch of experience is only valid for the policy that produced it. Update the policy and that data is **stale** — you must throw it away and collect fresh rollouts. That's a real efficiency tax: you can't endlessly recycle a giant replay buffer the way DQN does. It's also why the clip matters so much — if an update moves the policy too far, the freshly-collected data wasn't even generated by a policy close enough to learn from, and the next batch is born corrupted.
+</Callout>
+
+Beyond PPO sits the **off-policy continuous-control** family, which buys sample efficiency by reusing old data from a replay buffer — at the cost of more delicate stability. **DDPG** (Deterministic Policy Gradient) learns a deterministic actor plus a Q-critic; **TD3** patches DDPG's overestimation bugs with twin critics and delayed updates (echoing the Double-DQN fix from lesson 2); **SAC** (Soft Actor–Critic) adds an *entropy bonus* that explicitly rewards keeping the policy stochastic, which makes it both sample-efficient and unusually robust. The headline trade-off: on-policy PPO is stable and forgiving but data-hungry; off-policy DDPG/TD3/SAC are sample-efficient but fussier to stabilize.
+
+<Categorize
+  client:visible
+  question="Sort each statement into the algorithm family it best describes."
+  buckets={["On-policy (PPO)", "Off-policy continuous (DDPG/TD3/SAC)"]}
+  items={[
+    { text: "Keeps updates stable via a clipped probability-ratio surrogate objective.", bucket: "On-policy (PPO)" },
+    { text: "Reuses old transitions from a replay buffer for higher sample efficiency.", bucket: "Off-policy continuous (DDPG/TD3/SAC)" },
+    { text: "Must discard each batch of rollouts after the policy updates.", bucket: "On-policy (PPO)" },
+    { text: "Uses twin critics and delayed updates to curb value overestimation.", bucket: "Off-policy continuous (DDPG/TD3/SAC)" },
+    { text: "Adds an entropy bonus that explicitly rewards keeping the policy stochastic.", bucket: "Off-policy continuous (DDPG/TD3/SAC)" },
+    { text: "The simple, forgiving default most trading-control projects start with.", bucket: "On-policy (PPO)" },
+  ]}
+  explanation="PPO is on-policy: it clips the update into a trust region and throws away each batch after use — stable and simple but data-hungry. The DDPG/TD3/SAC family is off-policy: it recycles a replay buffer for sample efficiency, with TD3's twin critics fixing overestimation and SAC's entropy bonus rewarding exploration — more efficient but trickier to stabilize."
+/>
+
+<MCQ
+  client:visible
+  question="What problem is PPO's clipped surrogate objective specifically designed to prevent?"
+  options={[
+    { text: "A single over-large policy update that pushes the policy into a region where the collected data is no longer valid, collapsing training.", correct: true },
+    { text: "The critic overestimating Q-values, which PPO fixes with twin critics.", },
+    { text: "The replay buffer growing too large to fit in memory.", },
+    { text: "The policy becoming too stochastic, which the clip makes deterministic.", },
+  ]}
+  explanation="PPO clips the probability ratio to keep each update inside a trust region, so no single step jumps the policy too far from the one that gathered the data — the failure mode that wrecks naive policy gradients. (Twin critics are TD3's overestimation fix; replay-buffer size is an off-policy concern; PPO doesn't force determinism.)"
+/>
+
+## Exploration that costs real money + offline RL
+
+Here's the deepest difference between trading RL and the benchmarks these algorithms were born on. In a video game, exploration is *free*: send Mario off a cliff a thousand times to learn the level, and you've lost nothing but compute. In markets, **every exploratory action pays real money** — every off-distribution quote you post, every "let's see what happens" trade, crosses a real spread, eats real impact, and can move the price against you (flip on the impact toggle in the loop above to watch a single trade tax its own reward). On-policy exploration, where you must *act in the live market to gather the data you learn from*, is therefore genuinely, brutally expensive. You're paying tuition in slippage.
+
+That cost reframes the whole problem and motivates **offline (batch) RL**: learn a policy from a *fixed log of historical data* — your firm's millions of past trades and quotes — *without ever interacting with the live market during training*. No exploratory bleeding; you mine the experience you already paid for. The catch is **distributional shift**: the logged data only covers states-and-actions the *old* behavior policy actually visited, so if your learned policy wants to do something the logs never tried, the value estimates for that action are pure, confident hallucination. Off-policy value methods are notorious for *over*-estimating exactly these unseen actions and then chasing them off a cliff.
+
+The fix is a family of **conservative / behavior-regularized** offline algorithms — CQL (Conservative Q-Learning), BCQ, IQL and kin — that all share one instinct: *stay close to what the data supports.* They penalize value estimates for out-of-distribution actions or constrain the learned policy to resemble the logging policy, deliberately trading away some upside for the safety of not extrapolating into the unknown. In trading, where extrapolating confidently into an unseen action can mean a very expensive surprise, that conservatism isn't timidity — it's survival.
+
+<Callout variant="warning" title="The offline-RL trap: confident hallucination off-distribution">
+Offline RL's signature failure: the agent finds an action the historical log barely contains, the value network — never corrected by real feedback for that action — assigns it a gloriously high (and totally made-up) value, and the policy piles into it. Backtest looks brilliant; live, the action does something the model never actually observed, and the position bleeds. This is distributional shift biting, and it's *worse* than ordinary overfitting because the model is confidently wrong about regions it has no data for. Conservative methods exist precisely to clamp this — keep the policy near the data, distrust the unobserved.
+</Callout>
+
+<MCQ
+  client:visible
+  allowMultiple
+  question="Which statements about exploration cost and offline RL in trading are correct? (Select all that apply.)"
+  options={[
+    { text: "On-policy exploration is expensive in markets because every exploratory action pays real spread and impact.", correct: true },
+    { text: "Offline RL learns from a fixed log of past data without interacting with the live market during training.", correct: true },
+    { text: "Distributional shift means value estimates for actions the log never tried can be confidently wrong.", correct: true },
+    { text: "Conservative offline methods (CQL, IQL, BCQ) deliberately stay close to actions the data supports.", correct: true },
+    { text: "In trading, exploration is essentially free, just like in a video game.", },
+  ]}
+  explanation="The first four are the core of the section: live exploration costs real money, which motivates offline/batch RL from logged data; the danger there is distributional shift — overconfident value estimates for unseen actions — which conservative, behavior-regularized methods (CQL, IQL, BCQ) guard against by staying near the data. Exploration is decidedly NOT free in markets — that's the whole point."
+/>
+
+### When to use it: value vs policy vs actor–critic
+
+The decision guide that ties this course's three algorithm lessons together:
+
+| Situation | Reach for |
+|---|---|
+| Small **discrete** action set, want the cleanest "best action" lookup | **Value method (DQN)** — lesson 2 |
+| **Continuous** action (spread, size, participation rate) or you want a stochastic policy | **Policy / actor–critic** method |
+| You want low-variance, per-step learning and a stable on-policy default | **A2C / PPO** — the workhorse |
+| Sample efficiency matters and you can babysit stability (continuous control, replay reuse) | **Off-policy: DDPG / TD3 / SAC** |
+| You must learn from a **fixed historical log** and can't afford live exploration | **Offline RL: CQL / IQL / BCQ** (mind distributional shift) |
+
+The reusable comparison to keep in your head, across the families:
+
+| Method | Bias | Variance | Sample efficiency | Stability | Action space |
+|---|---|---|---|---|---|
+| **REINFORCE** | Unbiased | Very high | Poor (on-policy, MC return) | Fragile | Discrete or continuous |
+| **A2C / A3C** | Low bias (bootstrap) | Lower (critic baseline) | Moderate (on-policy) | Moderate | Discrete or continuous |
+| **PPO** | Low bias | Low (advantage + clip) | Moderate (on-policy) | High (clipped trust region) | Discrete or continuous |
+| **DDPG / SAC / TD3** | Some bias (off-policy bootstrap) | Low | High (replay reuse) | Lower (fussy to tune) | Continuous |
+
+<MatchConcepts
+  client:visible
+  question="Match each algorithm to its one-line signature."
+  pairs={[
+    { term: "REINFORCE", definition: "Pure policy gradient on the Monte-Carlo return — unbiased but very high variance" },
+    { term: "A2C", definition: "Actor + critic giving a per-step bootstrapped advantage — lower variance" },
+    { term: "PPO", definition: "Clipped surrogate keeps each on-policy update inside a trust region — the stable default" },
+    { term: "SAC", definition: "Off-policy continuous control with an entropy bonus — sample-efficient and robust" },
+    { term: "CQL", definition: "Conservative offline RL — penalizes out-of-distribution actions to survive distributional shift" },
+  ]}
+  explanation="REINFORCE is the raw, high-variance baseline. A2C adds a critic for a lower-variance per-step signal. PPO fences updates with a clip for stability — the everyday default. SAC is the sample-efficient off-policy continuous workhorse with entropy-driven exploration. CQL is the offline method that distrusts unseen actions. Together they span the bias/variance/efficiency/stability space you'll choose from in the next two lessons."
+/>
+
+## Recap and checkpoint
+
+You've climbed the policy-based ladder: from *why* trading control wants to learn the policy directly (continuous spreads and sizes break the argmax), through REINFORCE and its variance problem, to the trio of fixes — baselines/advantage, the actor–critic loop, and PPO's clipped trust region — and finally the real-money cost of exploration that pushes you toward offline RL. Build the map, then run the mixed checkpoint.
+
+<MindMap
+  client:visible
+  title="Policy gradients & actor–critic — the whole map"
+  caption="From the raw policy gradient to the variance-killing tricks, the on-policy workhorse, and the cost of exploration."
+  root={{
+    label: "Policy-Based Deep RL",
+    children: [
+      {
+        label: "Why policy, not value",
+        children: [
+          { label: "DQN needs argmax over actions" },
+          { label: "Continuous spread/size breaks the max" },
+          { label: "π(a|s;θ): Gaussian head for continuous control" },
+        ],
+      },
+      {
+        label: "REINFORCE",
+        children: [
+          { label: "∇J = E[∇log π(a|s) · G]" },
+          { label: "Push up actions with high return" },
+          { label: "Killer flaw: catastrophic variance" },
+        ],
+      },
+      {
+        label: "Variance reduction",
+        children: [
+          { label: "Baseline b(s): unbiased, less variance" },
+          { label: "Advantage A = Q − V" },
+          { label: "GAE: bias–variance dial λ" },
+        ],
+      },
+      {
+        label: "Actor–critic",
+        children: [
+          { label: "Actor proposes, critic scores" },
+          { label: "Per-step bootstrapped advantage" },
+          { label: "A2C / A3C" },
+        ],
+      },
+      {
+        label: "PPO (workhorse)",
+        children: [
+          { label: "Clipped surrogate = trust region" },
+          { label: "Stable on-policy default" },
+          { label: "Off-policy cousins: DDPG/TD3/SAC" },
+        ],
+      },
+      {
+        label: "Cost of exploration",
+        children: [
+          { label: "Every exploratory trade pays real money" },
+          { label: "Offline/batch RL from logs" },
+          { label: "Distributional shift → conservative methods" },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Policy-gradient checkpoint"
+  questions={[
+    {
+      question: "A market-making agent must output a continuous half-spread. Why is a policy method a more natural fit than a vanilla value method?",
+      options: [
+        { text: "The policy network outputs the (continuous) action directly, avoiding the argmax-over-actions that a value method needs and that is expensive over a continuous range.", correct: true },
+        { text: "Value methods cannot represent continuous states like inventory and price.", },
+        { text: "Policy methods don't need a reward signal, so they handle markets better.", },
+        { text: "Value methods always overfit, while policy methods never do.", },
+      ],
+      explanation: "Value methods select actions by maximizing Q over actions — trivial for a small discrete menu, a nested optimization for a continuous spread. Policy methods emit the action (often as a Gaussian's mean and std) directly, no argmax required. That's the continuous-control advantage.",
+    },
+    {
+      question: "REINFORCE's central weakness when applied to trading is best described as…",
+      options: [
+        { text: "Catastrophic variance: the whole-episode return is a noisy credit signal, and in markets return is mostly noise, so the gradient often credits luck and punishes skill.", correct: true },
+        { text: "It is biased and converges to the wrong policy even with infinite data.", },
+        { text: "It cannot handle discrete actions, only continuous ones.", },
+        { text: "It requires a replay buffer that markets cannot provide.", },
+      ],
+      explanation: "REINFORCE is unbiased but extremely high-variance: it scales the gradient by the full Monte-Carlo return G, which in markets is dominated by price noise. A great action followed by a crash gets punished; a bad action followed by a rally gets rewarded. That low signal-to-noise is what baselines, critics, and PPO are all built to fight.",
+    },
+    {
+      question: "Subtracting the value function V(s) as a baseline turns the policy-gradient multiplier into the advantage A(s,a) = Q(s,a) − V(s). What does a positive advantage mean, and what does the baseline do to the gradient?",
+      options: [
+        { text: "Positive advantage means the action did better than the state's average; using V(s) as a baseline reduces variance without biasing the gradient.", correct: true },
+        { text: "Positive advantage means the state is valuable; the baseline biases the gradient toward those states.", },
+        { text: "Positive advantage means the action was random; the baseline removes all exploration.", },
+        { text: "Positive advantage means high reward; the baseline doubles the learning rate.", },
+      ],
+      explanation: "A(s,a) measures how much better than average a specific action was in that state. Because the baseline V(s) depends only on the state, subtracting it leaves the gradient unbiased while cutting variance — the single most important variance-reduction move in policy-gradient RL.",
+    },
+    {
+      question: "Recall from earlier: actor–critic's key timing advantage over REINFORCE is that…",
+      options: [
+        { text: "The critic supplies a bootstrapped advantage every step, so the actor updates immediately instead of waiting for the episode to end.", correct: true },
+        { text: "The actor waits longer than REINFORCE to collect more episodes before updating.", },
+        { text: "It removes the need for any value estimate at all.", },
+        { text: "It only works offline, never on live data.", },
+      ],
+      explanation: "REINFORCE must wait for the full Monte-Carlo return at episode end. Actor–critic's critic produces a per-step TD-error advantage, so the actor learns each step with a far lower-variance signal — and can learn in long-running environments like an all-day market.",
+    },
+    {
+      question: "PPO's clipped surrogate objective exists primarily to…",
+      options: [
+        { text: "Keep each policy update inside a trust region so one over-large step can't push the policy into a region where the collected data is invalid.", correct: true },
+        { text: "Allow infinite reuse of an old replay buffer like an off-policy method.", },
+        { text: "Make the policy deterministic to remove exploration.", },
+        { text: "Eliminate the need for a critic or advantage estimate.", },
+      ],
+      explanation: "On-policy data is only valid near the policy that produced it. PPO clips the probability ratio so no single update jumps too far, giving stable, simple, reasonably sample-efficient learning — the reason it's the default workhorse for trading control. It still uses a critic/advantage and does not recycle data like off-policy methods.",
+    },
+    {
+      question: "Why does the real-money cost of exploration motivate offline RL in trading, and what is its central danger?",
+      options: [
+        { text: "Live exploration pays real spread and impact, so learning from logged data is attractive — but distributional shift makes value estimates for actions the log never tried confidently wrong.", correct: true },
+        { text: "Exploration is free, so offline RL is just a convenience with no real downside.", },
+        { text: "Offline RL eliminates all overfitting because it never sees new data.", },
+        { text: "Offline RL is dangerous only because logged data is too small to train on.", },
+      ],
+      explanation: "Unlike a video game, every exploratory trade costs money, so mining a fixed historical log is appealing. The catch is distributional shift: the log only covers what the old policy did, so a learned policy that wants an unseen action gets a hallucinated value estimate. Conservative methods (CQL, IQL, BCQ) guard against this by staying close to what the data supports.",
+    },
+  ]}
+/>
+
+## Where this goes next
+
+You now hold the full policy-based toolkit: learn $\pi(a\mid s;\theta)$ directly so continuous spreads and sizes come straight out of the network; tame REINFORCE's variance with a baseline and the advantage; let a critic feed the actor a low-variance, per-step signal; fence each update with PPO's clip; and respect that in markets, exploration is paid for in real slippage — which is what makes offline RL and conservative methods matter. Crucially, you also have the decision guide for *when* each family is the right call.
+
+**Lesson 4, "Deep RL for Optimal Execution,"** points this machinery at the first real problem: slicing a large parent order to minimize implementation shortfall. You'll see why a PPO or actor–critic agent with a continuous participation-rate action is the natural fit, how the advantage signal maps onto the impact-versus-timing-risk trade-off you met in the prerequisite course, and how the exploration-cost worries from this lesson force an honest, simulator-and-offline-data-aware training setup. Same algorithms — now earning their keep on a live execution clock.

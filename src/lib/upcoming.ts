@@ -68,25 +68,6 @@ export interface UpcomingCourse {
  */
 export const upcomingCourses: UpcomingCourse[] = [
   {
-    slug: 'deep-rl-for-execution-and-market-making',
-    icon: '🤖',
-    difficulty: 'expert',
-    order: 14,
-    accent: 'brand',
-    title: {
-      en: 'Deep RL for Execution & Market Making',
-      es: 'Deep RL para Ejecución y Creación de Mercado',
-    },
-    description: {
-      en: 'Where deep learning meets reinforcement learning on the order book: deep policy/value networks for optimal execution and market making, the sim-to-real gap, reward shaping, and why a learned agent so often loses to a simple baseline.',
-      es: 'Donde el deep learning se cruza con el aprendizaje por refuerzo sobre el libro de órdenes: redes profundas de política/valor para ejecución óptima y creación de mercado, la brecha sim-a-real, el diseño de recompensas y por qué un agente aprendido pierde tan a menudo frente a una referencia simple.',
-    },
-    dependencies: ['reinforcement-learning-for-trading', 'deep-learning-for-market-data', 'high-frequency-market-making'],
-    tags: ['quantitative-finance'],
-    buildNotes:
-      'Fuse the RL-for-trading course with the new deep-learning-for-market-data course, pointed at the two canonical control problems: optimal execution (beat Almgren-Chriss/TWAP/VWAP) and market making (Avellaneda-Stoikov as the analytic baseline). Deep function approximation for RL: DQN and its instability on financial state, policy-gradient/REINFORCE, actor-critic (A2C/PPO), and continuous-action control for quoting. The state (LOB features, inventory, time-left), action (child-order size/aggression or bid/ask skew), and reward (implementation shortfall, spread capture minus inventory penalty) design — and how reward shaping silently changes the learned policy. The sim-to-real gap: market impact models, non-stationarity, and why backtested RL agents overfit the simulator. Honest evaluation: compare against Almgren-Chriss and A-S baselines, not against doing nothing. Carry forward the deflated-Sharpe and overfitting discipline. Islands: rl-execution-schedule + market-making-quote-ladder.',
-  },
-  {
     slug: 'generative-models-for-synthetic-market-data',
     icon: '🌀',
     difficulty: 'expert',

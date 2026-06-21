@@ -1,0 +1,344 @@
+---
+title: "Deep Q-Networks & Their Instability on Financial State"
+description: "DQN turns the Q-table into a neural net — and inherits the deadly triad. The two fixes that made it work, and why noisy, non-stationary markets break it harder than Atari."
+topic: "en/deep-rl-for-execution-and-market-making"
+order: 2
+minutes: 17
+updated: 2026-06-21
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, ExecutionPolicyHeatmap } from '@/components/react';
+
+In 2015, a single algorithm learned to play forty-nine Atari games from raw pixels, beating humans on most of them, using one set of hyperparameters and no game-specific tricks. That algorithm was the **Deep Q-Network (DQN)**, and it kicked off the whole deep-RL boom. The recipe looks almost insultingly simple: take ordinary Q-learning, which you already met as a table of values, and replace the table with a neural network. Done. Publish. Collect citations.
+
+Except it is not done, and the reason is the whole point of this lesson. The naive version — "just swap in a neural net" — *diverges*. Value estimates spiral off to infinity and the agent learns nothing. DQN works only because of two specific engineering fixes that defuse a structural landmine in the math. That landmine has a name, the **deadly triad**, and on financial state it is armed and twitchy in ways Space Invaders never was. So this lesson is really two stories: how value-based deep RL is supposed to work, and why it keeps blowing up in your face the moment you point it at an order book.
+
+<MCQ
+  client:visible
+  pretest
+  question="Naive Deep Q-learning — literally swapping the Q-table for a neural network and running the same update — tends to do what during training?"
+  options={[
+    { text: "Diverge or oscillate badly: value estimates can blow up because the network chases a target that moves every time the network itself updates.", correct: true },
+    { text: "Converge faster than the table, because neural networks are universal approximators and approximation always helps.", },
+    { text: "Behave identically to the table, since the math is unchanged — the representation never matters.", },
+    { text: "Refuse to run at all, because Q-learning is mathematically undefined for continuous inputs.", },
+  ]}
+  explanation="The naive swap is famously unstable. Q-learning's target is bootstrapped from the network's own current estimate, so updating the network shifts the target you were aiming at. Combine that moving target with function approximation and off-policy data and estimates can diverge. DQN's two fixes — experience replay and a frozen target network — exist precisely to tame this."
+/>
+
+## From Q-table to Q-network (DQN)
+
+Start with what you already know. Q-learning learns an **action-value function** $Q(s,a)$: the expected discounted return from taking action $a$ in state $s$ and then acting optimally forever after. The whole edifice rests on the **Bellman optimality equation**, which says the value of a state-action pair equals the immediate reward plus the discounted value of the *best* thing you can do next:
+
+$$Q^*(s,a) = \mathbb{E}\big[\, r + \gamma \max_{a'} Q^*(s', a') \,\big]$$
+
+Tabular Q-learning turns that fixed-point equation into an update rule. After observing a transition $(s, a, r, s')$, you nudge your current estimate toward the bootstrapped target:
+
+$$Q(s,a) \leftarrow Q(s,a) + \alpha \big[\, \underbrace{r + \gamma \max_{a'} Q(s',a')}_{\text{TD target}} - Q(s,a) \,\big]$$
+
+The bracket is the **temporal-difference (TD) error**: the gap between what you now think the pair is worth and what your bootstrapped estimate says it should be worth. The learning rate $\alpha$ controls how big a step you take to close it. For a small, discrete world — a few dozen states — a lookup table holds one number per cell and this converges to $Q^*$.
+
+Markets do not give you a few dozen states. The state of an execution or market-making agent is a vector of real numbers — inventory, time remaining, spread, queue position, volatility, a fistful of order-book and signal features — living in a continuous space you could never enumerate. A table is hopeless: you would need infinitely many cells, and you'd never visit the same one twice to learn anything. So you replace the table with a **function approximator**: a neural network $Q(s,a;\theta)$ with weights $\theta$ that *generalizes* across nearby states. Feed it a state, it outputs one Q-value per discrete action. States it has never seen get a sensible value because the network interpolates from similar ones it has.
+
+Training swaps the tabular nudge for **gradient descent on a loss**. The loss is the squared TD error — your prediction versus the bootstrapped target:
+
+$$L(\theta) = \big(\, r + \gamma \max_{a'} Q(s',a';\theta) - Q(s,a;\theta) \,\big)^2$$
+
+You differentiate $L$ with respect to $\theta$, take a gradient step, repeat. Same TD logic as the table; the table's single-cell update has just become a global parameter update that shifts the value of *every* state at once. That generalization is the superpower — and, as you'll see in two sections, the loaded gun.
+
+### A worked TD update
+
+Make it concrete with one step. Your execution agent is in state $s$ (say, 60% of the slice left, halfway to the deadline) and takes action $a$ = "trade 50% of the remaining slice." Suppose:
+
+- The network currently predicts $Q(s,a;\theta) = 4.0$ (in reward units — negated cost, so higher is better).
+- You execute the action and observe immediate reward $r = -1.0$ (you paid some impact this step).
+- You land in $s'$, where the network's outputs for the available next actions are $\{2.0,\ 3.0,\ 2.5\}$, so $\max_{a'} Q(s',a';\theta) = 3.0$.
+- Discount $\gamma = 0.9$.
+
+The TD target is $r + \gamma \max_{a'} Q(s',a') = -1.0 + 0.9 \times 3.0 = 1.7$. The TD error is $1.7 - 4.0 = -2.3$ — the network was too optimistic about this pair by 2.3. The squared loss is $(-2.3)^2 = 5.29$. A gradient step on $\theta$ pushes $Q(s,a;\theta)$ down from 4.0 toward 1.7, and — because it's a shared network — drags the values of *similar* states down a little too. Do this across millions of transitions and the network converges toward satisfying Bellman's equation everywhere. That's the dream, anyway.
+
+<FillBlank
+  client:visible
+  question="Fill in the moving parts of the DQN loss."
+  text="DQN trains a network Q(s,a;θ) by minimizing the squared {{TD error|policy gradient|advantage}}, the gap between its prediction and a bootstrapped target r + γ max over a′ of Q(s′,a′;θ). Because the network is {{shared|frozen|tabular}} across states, one gradient step shifts the value of many states at once — that generalization is what makes it scale beyond a lookup table."
+  explanation="The loss is the squared TD error. The single network is shared across the whole state space, so updating θ generalizes the change to similar states — the source of both DQN's power and its instability."
+/>
+
+## Why naive DQN diverges: the deadly triad
+
+Here is the lesson's beating heart. The naive swap blows up because of an interaction of three ingredients, christened the **deadly triad** by Sutton and Barto. Each is harmless, even desirable, on its own. Pair any two and you're usually fine. Combine all three and your value estimates can diverge to infinity — not because of a bug, but because the math genuinely loses its guarantee.
+
+The three ingredients:
+
+1. **Function approximation.** You represent $Q$ with a parametric model (the neural net) instead of an exact table. Updating one state's value spills over onto others, because they share weights. Generalization, the feature, is also leakage.
+2. **Bootstrapping.** Your update target is built from your *own current estimate* of the next state's value — that $\max_{a'} Q(s',a')$ term — rather than from a real, fully-observed return. You learn a guess from a guess.
+3. **Off-policy learning.** You learn about the optimal (greedy) policy while the data you train on was generated by a *different*, exploratory behaviour policy. The distribution of states you update on is not the distribution the target policy would actually visit.
+
+<Callout variant="info" title="Why two is fine but three is dangerous">
+Drop any single leg and stability returns. **Tabular** off-policy bootstrapping (drop function approximation) is just Q-learning — provably convergent, no triad. **Monte Carlo** with function approximation off-policy (drop bootstrapping — use real returns as targets, not estimates) is stable because the target doesn't depend on the parameters you're updating. **On-policy** function-approximation bootstrapping like Sarsa (drop off-policy) is far better behaved because you update on the same distribution you act under. It's the *specific trio* — a parametric model, learning a guess from a guess, on data from the wrong distribution — that removes the contraction guarantee and lets errors feed back on themselves.
+</Callout>
+
+The failure mechanism, in one breath: bootstrapping makes the target depend on $\theta$. Function approximation means a step taken to fix one state's value perturbs the next state's value too — which is *part of that very target*. Off-policy data means nothing reliably corrects the states that are getting over- or under-valued, because you're not visiting them in proportion to how much they matter to the target policy. The result is a positive feedback loop: an over-estimate inflates the bootstrap target, which inflates the estimate, which inflates the target. Round and round, up and to the right, until the numbers are nonsense. This is *not* the same as ordinary supervised-learning overfitting — it's a dynamics problem in the training process itself, where the labels you regress toward are generated by the model you're training.
+
+<MatchConcepts
+  client:visible
+  question="Match each leg of the deadly triad to what it contributes — and what dropping it gives you."
+  pairs={[
+    { term: "Function approximation", definition: "Shared parameters generalize across states, so updating one value leaks onto others; drop it (use a table) and you're back to convergent Q-learning" },
+    { term: "Bootstrapping", definition: "The target is built from the network's own next-state estimate — a guess from a guess; drop it (use Monte Carlo returns) and the target no longer depends on θ" },
+    { term: "Off-policy learning", definition: "You learn the greedy policy from data generated by an exploratory one, so updates hit the wrong state distribution; drop it (go on-policy, e.g. Sarsa) and behaviour is far tamer" },
+  ]}
+  explanation="Each leg is individually benign and even useful. The divergence risk is an emergent property of all three together: a parametric model learning a guess-from-a-guess on data drawn from the wrong distribution loses the contraction that guarantees convergence."
+/>
+
+### When it bites
+
+The triad is most dangerous when bootstrapped targets are noisy or when the behaviour and target policies diverge sharply — both of which describe trading to a tee. Long horizons (many bootstrap steps compounding), high discount factors $\gamma$ near 1 (the future weighs heavily, so target errors propagate far), and aggressive off-policy reuse of stale data all crank up the risk. Keep this list in mind: every item on it is *worse* in markets than in a video game.
+
+<MCQ
+  client:visible
+  question="Which combination is the one that genuinely threatens divergence in value-based RL?"
+  options={[
+    { text: "Function approximation + bootstrapping + off-policy learning, all three together.", correct: true },
+    { text: "Function approximation + a high learning rate, regardless of the target.", },
+    { text: "On-policy learning + Monte Carlo returns + a small network.", },
+    { text: "Any use of a neural network, full stop — networks cannot represent value functions.", },
+  ]}
+  explanation="The deadly triad is the specific trio of function approximation, bootstrapping, and off-policy learning. Each pair is manageable; the full trio removes the convergence guarantee and lets value estimates feed back on themselves. A high learning rate or a big network can aggravate it but is not itself the triad."
+/>
+
+## The two fixes that made DQN work
+
+DQN didn't repeal the deadly triad — you can't, not while keeping all three ingredients, and DQN wants all three (it's a neural net, it bootstraps, it's off-policy). Instead it *engineers around* the instability with two now-standard tricks. Each one neutralizes a different part of the feedback loop.
+
+**Fix 1 — Experience replay.** Don't train on transitions in the order they happen. Store every transition $(s, a, r, s')$ in a large buffer (the **replay buffer**, often a million transitions), and each training step sample a *random minibatch* from it. Two benefits. First, it **breaks temporal correlation**: consecutive transitions in any episode are highly correlated, and training a network on a stream of correlated samples is like fitting a regression to data you fed in sorted order — the gradients are biased and the network forgets the past as it tracks the present. Random sampling de-correlates the minibatch back toward i.i.d., which is what gradient descent assumes. Second, it gives **data efficiency**: each expensive transition gets reused many times across many updates instead of being seen once and discarded.
+
+**Fix 2 — Target network.** This one strikes directly at bootstrapping. Keep *two* copies of the network: the online network $Q(s,a;\theta)$ you're actively training, and a **target network** $Q(s,a;\theta^-)$ that is a periodically-frozen snapshot of it. Build the bootstrap target with the *frozen* weights:
+
+$$L(\theta) = \big(\, r + \gamma \max_{a'} Q(s',a';\theta^-) - Q(s,a;\theta) \,\big)^2$$
+
+Every few thousand steps you copy $\theta$ into $\theta^-$ (or blend slowly, $\theta^- \leftarrow \tau\theta + (1-\tau)\theta^-$ for small $\tau$ — a "soft" update). Between copies, $\theta^-$ is constant, so the target you regress toward holds still. You are no longer chasing a target that jumps every time you update — you're fitting toward a stable label for a while, then refreshing it. That cuts the positive-feedback loop where an estimate inflates its own target inflates the estimate, because for thousands of steps the target simply does not move with $\theta$.
+
+<Callout variant="info" title="Each fix tames a different leg of the triad">
+Map them onto the triad and the design clicks. **Experience replay** attacks the data-distribution problem created by off-policy learning and correlated streams — random minibatches approximate the i.i.d. data gradient descent wants. **The target network** attacks the bootstrapping leg — freezing $\theta^-$ stops the target from co-moving with the estimate, breaking the self-reinforcing loop. Neither removes a triad ingredient; together they make the unavoidable trio *behave* well enough to converge in practice.
+</Callout>
+
+Two refinements you should know by name, because they patch real biases in vanilla DQN:
+
+- **Double DQN.** The $\max$ operator in the target is a systematic *over*-estimator: with noisy Q-values, $\max_{a'} Q(s',a')$ tends to pick whichever action got lucky with positive noise, so the target is biased high. Double DQN decouples the two roles of that max — it **selects** the next action with the online network ($\arg\max_{a'} Q(s',a';\theta)$) but **evaluates** that action with the target network ($Q(s',\arg\max;\theta^-)$). Same action wouldn't be argmax under both unless it's genuinely good, so the optimistic bias shrinks. In noisy domains (read: markets) this matters a lot.
+- **Dueling DQN.** Split the network's head into two streams — a scalar **state value** $V(s)$ and a per-action **advantage** $A(s,a)$ — then recombine them into $Q(s,a) = V(s) + (A(s,a) - \text{mean}_a A)$. The intuition: in many states *which* action you pick barely matters (the value is dominated by the situation, not the choice), and learning $V(s)$ once is far more efficient than learning a near-identical $Q$ for every action. Helpful when most actions in a state are roughly equivalent — common in execution, where most micro-decisions hardly move the outcome.
+
+<Categorize
+  client:visible
+  question="Sort each DQN technique by the problem it primarily solves."
+  buckets={["Breaks correlation / reuses data", "Stabilizes the bootstrap target", "Reduces max-operator overestimation"]}
+  items={[
+    { text: "Sampling random minibatches from a large replay buffer", bucket: "Breaks correlation / reuses data" },
+    { text: "A periodically-frozen copy θ⁻ used only to compute the TD target", bucket: "Stabilizes the bootstrap target" },
+    { text: "Selecting the next action with the online net but evaluating it with the target net (Double DQN)", bucket: "Reduces max-operator overestimation" },
+    { text: "Storing a million transitions so each one is trained on many times", bucket: "Breaks correlation / reuses data" },
+    { text: "Holding the regression label still for thousands of steps before refreshing it", bucket: "Stabilizes the bootstrap target" },
+  ]}
+  explanation="Replay attacks correlation and data efficiency (the off-policy/stream problem). The target network stabilizes the bootstrap by freezing the label. Double DQN specifically targets the max-operator's optimistic bias by splitting action selection from action evaluation."
+/>
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">If the target network just lags the online network, doesn't it slow learning down? Why is that a good trade?</summary>
+
+**Answer.** Yes — the target network deliberately makes your labels *stale*, and staleness is normally bad. But the alternative is worse: with a live target you are doing regression against a label that shifts every gradient step, and that moving-target dynamic is exactly what lets the deadly triad's feedback loop diverge. Freezing $\theta^-$ trades a little speed for a lot of stability. It converts a hard, non-stationary optimization (chasing your own tail) into a sequence of easier, near-stationary supervised problems (fit a fixed label, then refresh it). In a noisy domain the stability is worth far more than the lost responsiveness — and you tune the update frequency (or soft-update $\tau$) to balance the two.
+
+</details>
+</Reveal>
+
+## Why financial state breaks DQN harder than a video game
+
+Everything above was domain-agnostic. Now the bad news, specific to trading. DQN's two fixes lean on assumptions that Atari satisfies beautifully and markets violate flagrantly. Each violation re-arms a part of the triad the fixes were supposed to defuse.
+
+**Non-stationarity.** Atari is a fixed program: the rules of Breakout in 2015 are the rules of Breakout today, so a transition you stored an hour ago is still a perfectly valid sample of the same environment. Markets are *not* fixed. The data-generating process drifts — volatility regimes shift, liquidity dries up, a competitor's algo changes, a regulation lands. This guts experience replay at its root: **replay assumes the buffer is a representative sample of a roughly stationary distribution.** When the MDP itself moves, your million stored transitions are partly a museum of a market that no longer exists. You train the agent to be excellent at *yesterday's* regime, and the staleness that was harmless in Atari becomes actively misleading.
+
+**Low signal-to-noise.** In Breakout the reward is clean and causal — break a brick, get points, and the value of a state is genuinely learnable because the future is largely determined by your actions. In markets the next-state value is dominated by noise: price moves are mostly unpredictable, so the bootstrapped target $r + \gamma\max_{a'}Q(s',a')$ is *mostly noise* with a faint signal buried inside. Bootstrapping off a noisy target is the triad's bootstrapping leg on hard mode — you're learning a guess from a guess where the guess is 95% static. The max operator's overestimation bias (which Double DQN fights) is also *worse* the noisier your Q-values are, because there's more positive noise for the max to cherry-pick.
+
+**Partial observability.** DQN's whole framework assumes the state $s$ is Markov — that what you observe contains everything you need to predict the future. The true state of a market (everyone's hidden intentions, the full latent order flow, pending news) is *not* observable from the order book. What you feed the network is a noisy, incomplete projection. That breaks the Markov assumption underneath the Bellman equation, so even a perfectly trained $Q$ is fitting an approximation to a problem that isn't quite the one you're solving. (This is why real trading agents bolt on recurrence or stacked-history features to reconstruct a pseudo-state — a partial patch, not a cure.)
+
+**Reward sparsity and scale.** Atari rewards are frequent and live on a sane integer scale. Trading rewards can be sparse (P&L realized only at the end of an episode), wildly skewed (long stretches of small gains punctuated by rare large losses), and badly scaled (tiny per-step impact costs versus occasional huge terminal penalties). Gradient descent hates that: the loss is dominated by a few outlier transitions, the network's value scale drifts, and the careful balance the target network was protecting gets harder to hold.
+
+<Callout variant="warning" title="Experience replay quietly assumes the market stands still">
+The most under-appreciated trap in financial DQN: experience replay is *built on* the premise that your buffer is an i.i.d. sample from a stationary distribution. Markets are non-stationary, so a large buffer becomes a liability — you're averaging your policy over a mixture of regimes, some of them extinct. The agent learns a blurry compromise that's optimal for no regime in particular and dangerous in the current one. People paper over this with short or recency-weighted buffers, regime features, or frequent retraining, but understand the tension: the bigger and longer your replay buffer, the more stale-regime data you're training on. The fix that made DQN work in Atari is partly *fighting you* in markets.
+</Callout>
+
+<MCQ
+  client:visible
+  allowMultiple
+  question="Select every reason value-based DQN is harder to stabilize on market data than on Atari. (More than one.)"
+  options={[
+    { text: "The environment is non-stationary, so replayed transitions can be stale samples of a regime that no longer exists.", correct: true },
+    { text: "Low signal-to-noise makes the bootstrapped TD target mostly noise, destabilizing the bootstrapping leg of the triad.", correct: true },
+    { text: "The true state is only partially observable from the order book, breaking the Markov assumption the Bellman equation relies on.", correct: true },
+    { text: "Neural networks cannot represent continuous-valued inputs, so order-book features are impossible to encode.", },
+    { text: "Rewards can be sparse, skewed, and badly scaled, so a few outlier transitions dominate the loss.", correct: true },
+  ]}
+  explanation="Non-stationarity, low signal-to-noise, partial observability, and reward sparsity/scale all make financial state hostile to DQN — each re-arms a part of the triad the fixes were meant to tame. The one false statement is the claim that networks can't take continuous inputs; they handle continuous features fine (that's the whole reason we replaced the table)."
+/>
+
+## Discrete actions: DQN's natural fit and its ceiling
+
+One last structural fact about DQN, and it's the hinge to the next lesson. DQN's output layer is **one Q-value per action**, and the target uses $\max_{a'}$ over those actions. That math only works for a **discrete, smallish action set** — you need to enumerate every action to take the max. That makes DQN a natural fit for coarse, chunky decisions, and an awkward fit for fine continuous ones.
+
+Where DQN fits cleanly: discretize the decision into a handful of buckets. For execution, "trade 0% / 25% / 50% / 75% / 100% of this slice" is five clean actions — DQN eats that for breakfast. For market making, a small grid of quote offsets ("post my bid 1, 2, or 3 ticks behind mid; same for the ask") is a modest discrete set DQN can handle. Coarse control, discrete buckets, small max — perfect.
+
+Where it strains: genuinely continuous quoting. A market maker's real action is a *real number* — a half-spread of, say, 1.7 ticks, or a precise inventory-dependent skew. To force that into DQN you must discretize, and discretization costs you on both ends. Too few buckets and you can't express the fine quote the optimal policy wants; too many and the action set explodes, the max becomes expensive, and each action is visited too rarely to learn well. The curse compounds in multiple dimensions: independently quoting bid *and* ask offsets across a grid multiplies into a combinatorial action space.
+
+### A worked discretization
+
+Say the optimal half-spread for the current state is **1.7 ticks**. You discretize the half-spread into actions $\{0, 1, 2, 3, 4\}$ ticks — five buckets, one tick apart. The closest DQN can quote is **2 ticks**, so you're 0.3 ticks too wide on every fill — a permanent, structural haircut on your captured spread that no amount of training removes, because the right answer literally isn't in the action set. Tighten the grid to half-tick resolution $\{0, 0.5, 1.0, \ldots, 4.0\}$ and you can quote 1.5 or 2.0 (still missing 1.7, now by 0.2) — but you've doubled the actions. Now do it for the ask side too and the joint action space squares. Add inventory-dependent skew as a third dimension and DQN's tidy "take the max over actions" turns into a search over a combinatorial grid, with most cells starved of data.
+
+The lesson writes itself: **discrete actions are DQN's home and its ceiling.** Fine continuous control wants a method that outputs the real number directly instead of choosing from a menu — which is exactly what **policy-gradient and actor–critic** methods do, and exactly where the next lesson goes.
+
+<ExecutionPolicyHeatmap
+  client:visible
+  policy="rl"
+  title="A learned Q-policy as a state → action map over time and signal"
+  actionLabel="Greedy action (trade rate)"
+  caption="Read this as the greedy policy a converged DQN induces: in each cell it picks the discrete action with the highest Q-value. Columns march toward the deadline; rows run from a cheap price signal (top) to an expensive one (bottom). The RL preset conditions on BOTH axes — leaning into cheap prints and ramping into the deadline — which is the behaviour you want. The catch this lesson hammers: every cell can only show one of a few DISCRETE buckets, so the policy is quantized. Switch to the price-blind TWAP/Almgren presets to see what a policy that ignores the signal axis looks like."
+/>
+
+<MCQ
+  client:visible
+  question="A market maker's optimal half-spread for the current state is 1.7 ticks, but your DQN's action set is {0,1,2,3,4} ticks. What is the consequence, and what does it motivate?"
+  options={[
+    { text: "DQN must round to 2 ticks — a structural haircut training can't fix, because the optimal action isn't in the set — motivating continuous-action methods like policy gradients.", correct: true },
+    { text: "DQN smoothly interpolates and quotes exactly 1.7, because neural networks output continuous values.", },
+    { text: "It's fine: rounding to 2 is provably optimal, since wider spreads always earn more.", },
+    { text: "DQN crashes, because the max operator is undefined when the optimum lies between actions.", },
+  ]}
+  explanation="DQN can only choose from its discrete menu, so it rounds 1.7 to the nearest available action (2 ticks) and eats a permanent error. Finer grids shrink the error but explode the action space and starve each action of data. Outputting the real number directly — the policy-gradient/actor–critic approach in the next lesson — is the clean fix."
+/>
+
+### When to use it
+
+Reach for DQN when your action space is **naturally discrete and small** and you want the simplicity and sample-efficiency of a value-based method: coarse execution (a few participation-rate buckets), routing decisions (which venue), or discrete regime switches. Avoid it — or at least don't force it — when the action is genuinely continuous and resolution matters (precise quoting, fine hedging), or when the action space is high-dimensional. And whatever you choose, remember the triad and the four market-specific stressors above: even on a discrete action set, a noisy non-stationary MDP will test every gram of stability your replay buffer and target network can provide.
+
+<FillBlank
+  client:visible
+  question="One spaced-recall question tying the action space back to the triad."
+  text="DQN computes its bootstrapped target with a {{max|sum|mean}} over a small discrete action set, which both forces you to discretize continuous quotes AND — because that operator cherry-picks positively-noisy estimates — introduces an {{overestimation|underestimation|rounding}} bias that Double DQN was designed to reduce."
+  explanation="The target uses max over actions, which requires a discrete enumerable action set and biases the estimate high in noisy domains. Double DQN fights that overestimation by selecting the action with the online network and evaluating it with the target network."
+/>
+
+<MindMap
+  client:visible
+  title="Value-based deep RL — the whole map"
+  caption="Build the map: from the Q-table to the Q-network, the triad that destabilizes it, the two fixes, and why markets stress all of it."
+  root={{
+    label: "Deep Q-Networks",
+    children: [
+      {
+        label: "Q-table → Q-network",
+        children: [
+          { label: "Bellman optimality: Q* = E[r + γ max Q*(s′,a′)]" },
+          { label: "Loss = squared TD error" },
+          { label: "Net generalizes across continuous state" },
+        ],
+      },
+      {
+        label: "The deadly triad",
+        children: [
+          { label: "Function approximation" },
+          { label: "Bootstrapping (guess from a guess)" },
+          { label: "Off-policy learning" },
+          { label: "Any two = fine; all three = divergence risk" },
+        ],
+      },
+      {
+        label: "The two fixes",
+        children: [
+          { label: "Experience replay → breaks correlation, reuses data" },
+          { label: "Target network θ⁻ → freezes the bootstrap label" },
+          { label: "Double DQN → fights max overestimation" },
+          { label: "Dueling DQN → split V(s) + A(s,a)" },
+        ],
+      },
+      {
+        label: "Why markets break it",
+        children: [
+          { label: "Non-stationarity → stale replay buffer" },
+          { label: "Low signal-to-noise → noisy targets" },
+          { label: "Partial observability → not Markov" },
+          { label: "Sparse/skewed/badly-scaled rewards" },
+        ],
+      },
+      {
+        label: "Discrete actions",
+        children: [
+          { label: "Natural fit: coarse buckets, small max" },
+          { label: "Ceiling: continuous quoting forces discretization" },
+          { label: "→ motivates policy gradients (next lesson)" },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Value-based deep RL checkpoint"
+  questions={[
+    {
+      question: "Given Q(s,a)=4.0, reward r=−1.0, γ=0.9, and the next state's best next-action value max Q(s′,a′)=3.0, what is the TD target and the TD error?",
+      options: [
+        { text: "Target = −1.0 + 0.9×3.0 = 1.7; TD error = 1.7 − 4.0 = −2.3 (the estimate was too high).", correct: true },
+        { text: "Target = 3.0; TD error = 3.0 − 4.0 = −1.0 (γ and r are ignored in the target).", },
+        { text: "Target = 4.0 + 0.9×3.0 = 6.7; TD error = +2.7.", },
+        { text: "Target = −1.0; TD error = −5.0 (the next-state value is not part of the target).", },
+      ],
+      explanation: "The bootstrapped target is r + γ·max Q(s′,a′) = −1.0 + 0.9×3.0 = 1.7. The TD error is target − prediction = 1.7 − 4.0 = −2.3, so a gradient step pushes Q(s,a) down toward 1.7.",
+    },
+    {
+      question: "The deadly triad is the dangerous combination of which three ingredients?",
+      options: [
+        { text: "Function approximation, bootstrapping, and off-policy learning.", correct: true },
+        { text: "A large learning rate, a deep network, and a long replay buffer.", },
+        { text: "Sparse rewards, partial observability, and non-stationarity.", },
+        { text: "Experience replay, target networks, and Double DQN.", },
+      ],
+      explanation: "The triad is function approximation + bootstrapping + off-policy learning. Each alone is benign; together they remove the convergence guarantee. (The market stressors in option three make the triad worse but aren't the triad itself, and option four lists the fixes, not the problem.)",
+    },
+    {
+      question: "Which statement correctly maps a DQN fix to the part of the instability it addresses?",
+      options: [
+        { text: "The target network freezes the bootstrap label for thousands of steps, so you aren't regressing toward a target that moves every update.", correct: true },
+        { text: "Experience replay eliminates bootstrapping by replacing TD targets with full Monte Carlo returns.", },
+        { text: "The target network breaks temporal correlation by shuffling the order of transitions.", },
+        { text: "Double DQN solves non-stationarity by discarding stale transitions from the buffer.", },
+      ],
+      explanation: "The target network stabilizes the bootstrap by holding θ⁻ fixed between refreshes. Experience replay (not the target net) breaks correlation and reuses data — it does not change the target to Monte Carlo. Double DQN tackles max-operator overestimation, not non-stationarity.",
+    },
+    {
+      question: "Why does experience replay become a liability in non-stationary markets, the way it was an asset in Atari?",
+      options: [
+        { text: "Replay assumes the buffer is a representative sample of a roughly stationary distribution; when the MDP drifts, the buffer fills with stale, extinct-regime transitions and the agent learns a blurry, no-longer-valid compromise.", correct: true },
+        { text: "Replay only works with images, so it cannot store numeric order-book features.", },
+        { text: "Replay forces on-policy learning, which is illegal in regulated markets.", },
+        { text: "Replay makes training too fast, so the agent overshoots the optimum and crashes.", },
+      ],
+      explanation: "Experience replay is built on a stationarity assumption. In a drifting market a large buffer averages over a mixture of regimes — some extinct — so the agent optimizes for a market that no longer exists. Recency-weighting, shorter buffers, regime features, and frequent retraining are partial mitigations.",
+    },
+    {
+      question: "Your optimal market-making half-spread is 1.7 ticks but your DQN action set is {0,1,2,3,4} ticks. What's the right takeaway?",
+      options: [
+        { text: "DQN must round to the nearest available action (2 ticks), eating a structural error training can't remove; finer grids shrink the error but explode the action space — motivating continuous-action policy-gradient methods.", correct: true },
+        { text: "DQN interpolates between 1 and 2 to quote exactly 1.7, so there's no problem.", },
+        { text: "You should always pick the widest action (4 ticks) because wider spreads strictly dominate.", },
+        { text: "The mismatch proves DQN can never be used for execution, only for forecasting.", },
+      ],
+      explanation: "DQN chooses from a discrete menu, so it rounds 1.7 up to 2 and absorbs a permanent haircut. Refining the grid trades expressiveness against a blowing-up action space and data starvation. The clean solution is to output the continuous action directly — the policy-gradient/actor–critic family in the next lesson.",
+    },
+  ]}
+/>
+
+## Where this goes next
+
+You now have the full value-based picture: the Bellman optimality equation turned into a bootstrapped TD update, the Q-table swapped for a generalizing $Q(s,a;\theta)$, the deadly triad that makes the naive swap diverge, the experience-replay and target-network fixes that tame it (plus Double and Dueling DQN), and the four ways financial state — non-stationarity, noise, partial observability, ugly rewards — re-arms the very instabilities those fixes were built to defuse. The recurring punchline: the tricks that conquered Atari assume a stationary, fully-observed, clean-reward world, and markets are none of those things.
+
+The hard ceiling we ended on is the action space. DQN thinks in a small discrete menu and takes a max over it — wonderful for coarse buckets, hopeless for the real-valued quotes and skews a market maker actually needs. **Lesson 3, "Policy Gradients & Actor–Critic for Continuous Control,"** throws out the value-table-shaped thinking entirely: instead of scoring every action and taking the max, you parameterize the *policy itself* and nudge its parameters in the direction of higher return — letting the agent output a continuous half-spread of 1.7 ticks directly, no rounding, no exploding grid. Same MDP, a fundamentally different lever.

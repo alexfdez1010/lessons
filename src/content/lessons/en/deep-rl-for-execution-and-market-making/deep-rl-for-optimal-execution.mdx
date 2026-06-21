@@ -1,0 +1,335 @@
+---
+title: "Deep RL for Optimal Execution"
+description: "The deep execution agent in practice — concrete LOB state, action and reward, beating TWAP/VWAP/Almgren–Chriss with a signal, how reward shaping silently rewrites the policy, and action-masking, curriculum and constraint tricks."
+topic: "en/deep-rl-for-execution-and-market-making"
+order: 4
+minutes: 17
+updated: 2026-06-21
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, RlExecutionSchedule, ExecutionPolicyHeatmap } from '@/components/react';
+
+You already met optimal execution in the prerequisite course: slice a parent order to balance **market impact** (trade fast, move the price against yourself) against **timing risk** (trade slow, let volatility eat you), and Almgren–Chriss hands you a closed-form, front-loaded schedule. That lesson framed execution as an MDP and showed a learned policy as a state→action map. Good. This lesson assumes all of that and goes where the closed form can't follow: a *deep* agent staring at a live limit-order book, with a state vector of dozens of features, a continuous action, and a reward function that — handle it carelessly — will quietly teach your agent to do something insane.
+
+The headline you must carry through the whole lesson: in execution, the algorithm is the easy part. **The reward function is where the bodies are buried.** Almost every spectacular execution-RL failure is a reward-design failure wearing an algorithm costume.
+
+<MCQ
+  client:visible
+  pretest
+  question="A deep execution agent and the closed-form Almgren–Chriss schedule are both pointed at the SAME idealised world: linear impact, constant volatility, one asset, and no predictive signal. What should the well-built deep agent do?"
+  options={[
+    { text: "Approximately re-derive the Almgren–Chriss schedule — matching it is the sanity-check unit test, not an edge.", correct: true },
+    { text: "Crush Almgren–Chriss by a wide margin, since neural networks are universal approximators.", },
+    { text: "Fail to converge, because deep RL can't handle continuous trade sizes.", },
+    { text: "Trade nothing, because doing nothing has zero impact cost.", },
+  ]}
+  explanation="In the exact world where Almgren–Chriss is provably optimal, the best any method can do is match it. A correct deep agent reproduces the closed form — that's your unit test. If it can't, you have a bug. The real edge appears only once you break an A-C assumption (a signal, nonlinear/uncertain impact, regimes, constraints). And it won't 'trade nothing' because the terminal constraint forbids leftover inventory."
+/>
+
+## The deep execution agent's state, action and reward — concretely
+
+The prerequisite MDP table had cosy abstractions: "state = inventory + time + market features." A deep agent needs those *spelled out as a numeric vector*, because that vector is literally the input layer of a network. Think of the agent as a trader who has exactly one glance at a dashboard each step, then must commit to a child order. Whatever isn't on the dashboard, the agent is blind to.
+
+**State $s_k$ — what's on the dashboard.** A practitioner state vector bundles three groups:
+
+- **Limit-order-book microstructure**, multiple levels deep. The best bid/ask, plus depth at levels 2–5 on each side; the **spread**; the **queue imbalance** $I = \frac{V_\text{bid} - V_\text{ask}}{V_\text{bid} + V_\text{ask}}$ (positive means more buyers stacked up, pressure upward); and the **micro-price**, a depth-weighted mid that leans toward the heavier side: $p_\text{micro} = \frac{V_\text{ask}\,p_\text{bid} + V_\text{bid}\,p_\text{ask}}{V_\text{bid} + V_\text{ask}}$. The micro-price is a sharper "true value" estimate than the naive mid because it already knows which way the book is leaning.
+- **Private/agent state.** Inventory remaining $q_k$ (how much is still to do) and time-left $\tau_k = (T - t_k)/T$ (fraction of the window gone). These two are non-negotiable — without them the agent can't pace itself or know it's late.
+- **A short-term alpha signal** $\alpha_k$: a micro-prediction of the next-few-seconds price move (order-flow imbalance, a microstructure classifier, whatever you trust). This is the column Almgren–Chriss has no slot for, and the entire source of edge in the next section.
+
+**Action $a_k$ — what the trader commits to.** Richer than "how many shares." Realistic action spaces specify:
+
+- **Size / participation rate** — the child-order quantity, often as a fraction of recent volume (e.g. "take 8% of the last minute's volume").
+- **Aggression** — *limit vs market*, and if limit, the **price offset** from the touch (post at the bid, one tick inside, two ticks back to sit in the queue). A market order pays the spread for certainty; a passive limit order might earn the spread but might never fill.
+
+This is genuinely continuous (or large-discrete), which is why execution lives in actor–critic / continuous-control territory (PPO, DDPG, SAC) — exactly the methods from the policy-gradient lesson — rather than vanilla DQN.
+
+**Reward $r_k$ — the mean–variance objective, per step.** The same shape as the prerequisite course, now with the deep-specific detail:
+
+$$r_k = -\big(\text{implementation shortfall}_k\big) - \lambda \cdot \big(\text{risk}_k\big), \qquad r_\text{terminal} = -\eta \cdot q_T^2$$
+
+The per-step term charges you the slippage you actually paid; the $\lambda$ term taxes the variance contributed by inventory carried; and a steep terminal penalty $-\eta\,q_T^2$ on leftover inventory $q_T$ *forces the order to finish*. Drop that terminal term and the cheapest schedule is to never trade — we'll watch an agent discover exactly that, gleefully, two sections from now.
+
+<Callout variant="info" title="Implementation shortfall is the scoreboard">
+**Implementation shortfall (IS)** is the gap between what you'd have paid at a frictionless "decision price" (usually the mid at the instant you decided to trade — the *arrival price*) and what you actually paid, all-in. It decomposes into four buckets: **delay cost** (price moved between decision and first child order), **(temporary) impact cost** (you pushed the book demanding liquidity now), **timing cost** (price drift over the execution window on the part you hadn't traded yet), and **opportunity cost** (shares you never managed to fill, valued at the move you missed). IS is the universal execution scoreboard — every baseline and every agent is judged on it.
+</Callout>
+
+### A worked shortfall, in basis points
+
+You must **buy 100,000 shares**. Arrival price (the mid at decision time) is `$50.00`, so the frictionless notional is `$5,000,000`. Here's what happens:
+
+| Bucket | What happened | Cost | In bps of notional |
+|---|---|---|---|
+| Delay | Price drifted to `$50.01` before your first child order went out | 100,000 × `$0.01` = `$1,000` | 2.0 bps |
+| Impact | Your aggressive slices averaged `$0.03`/sh above the contemporaneous mid | 90,000 filled × `$0.03` = `$2,700` | 5.4 bps |
+| Timing | Over the window the mid drifted up `$0.02` on the inventory you still held | ≈ 90,000 × `$0.02` = `$1,800` | 3.6 bps |
+| Opportunity | 10,000 shares never filled; price ended `$0.05` above arrival | 10,000 × `$0.05` = `$500` | 1.0 bps |
+| **Total IS** | | **`$6,000`** | **12.0 bps** |
+
+So you paid 12 bps to execute — `$6,000` on a `$5M` order. (One basis point of `$5,000,000` is `$500`, which is why the bps column = dollar-cost ÷ 500.) Now you can *see* the levers: a faster start cuts delay but raises impact; finishing the last 10,000 kills opportunity cost but adds impact and timing. The agent's job is to push the *total* down, trading the buckets against each other — and the per-step reward is just the negative of the IS accrued in that step.
+
+<FillBlank
+  client:visible
+  question="Sort the implementation-shortfall pieces."
+  text="The cost of price drifting between your decision and your first child order is {{delay|impact|opportunity}} cost; the cost of sweeping the book by trading fast is {{impact|timing|delay}} cost; and the cost of shares you never managed to fill is {{opportunity|timing|delay}} cost."
+  explanation="Delay = the move before you start trading. Impact = the concession you pay to consume liquidity now (rate-driven). Timing = drift over the window on inventory not yet traded. Opportunity = unfilled shares valued at the move you missed. Together they sum to implementation shortfall, the all-in execution scoreboard."
+/>
+
+### When to use this framing
+
+Reach for the full LOB-feature deep state when you genuinely have microstructure signal to exploit and your child orders are big enough that *where* you post in the book matters — high-touch single-name execution, a desk routing institutional flow, a maker unwinding. For a tiny order in a deep, liquid name, the dashboard is overkill: the micro-price equals the mid, imbalance tells you nothing actionable, and plain TWAP is fine. Don't build a 40-feature state to trade 200 shares of a mega-cap.
+
+<MCQ
+  client:visible
+  question="Why does a realistic execution action space include a price offset / limit-vs-market choice, not just a share quantity?"
+  options={[
+    { text: "Because aggression is a real lever: a market order pays the spread for a certain fill, while a passive limit order may capture the spread but risks not filling — the agent must trade certainty against price.", correct: true },
+    { text: "Because exchanges forbid agents from specifying quantities, so offset is the only legal action.", },
+    { text: "Because the price offset replaces the need for a reward function.", },
+    { text: "It doesn't — quantity is the only thing that ever affects execution cost.", },
+  ]}
+  explanation="How you take liquidity is as important as how much. A market order guarantees the fill but pays the spread and impact; a limit order posted inside the book can earn the spread but exposes you to non-fill (and adverse selection). A serious execution agent chooses both size AND aggression, which is why the action space is richer than a single scalar."
+/>
+
+## Beating TWAP / VWAP / Almgren–Chriss — when and how
+
+The baselines are honest, simple, and *blind in one specific way*: **TWAP** clocks out equal slices over time, **VWAP** weights slices by the typical volume curve, and **Almgren–Chriss** front-loads along the time axis according to your risk aversion λ. All three condition on the clock (and VWAP on a historical volume profile). **None of them looks at a live signal or the current regime.** That blindness is precisely the door a deep agent walks through.
+
+The deep policy conditions on *both* axes: time-to-deadline **and** the alpha signal / regime. When the signal says the price is about to move adversely, it accelerates to get ahead of the move; when the signal is favourable, it slows down and waits for a cheaper fill — all while respecting the clock so it still finishes. Read those two responsive axes off the heatmap below: TWAP is flat in both, Almgren–Chriss bends along *time* only, and the learned policy lights up *both* time and price-signal.
+
+<ExecutionPolicyHeatmap client:visible title="Three execution policies as state → trade-rate maps" caption="Columns = time toward the deadline; rows = price signal (a bargain at top → expensive at bottom). TWAP is flat everywhere; Almgren–Chriss bends along time only; the learned policy responds to both axes." />
+
+### A worked example: same parent order, a drift signal appears
+
+Now the live one. The chart below puts the three schedules side by side for the *same* buy order and lets you set the **predicted drift** of the price over the window. Drag the slider and watch the bars and the relative-shortfall readout move.
+
+<RlExecutionSchedule
+  client:visible
+  title="TWAP vs Almgren–Chriss vs learned RL — drag the predicted drift"
+  signalLabel="Predicted price drift over the window"
+  fallingLabel="Price falling (good for a buyer)"
+  risingLabel="Price rising (adverse for a buyer)"
+  caption="With zero predicted drift the RL bars collapse onto Almgren–Chriss. Push drift adverse (rising) and the RL policy front-loads harder than A-C to beat the rise; push it favourable (falling) and it back-loads to buy cheaper later — saving shortfall the signal-blind baselines leave on the table."
+/>
+
+How to read it: each cluster of bars is one child order per time step. The **TWAP** bars are all equal height. The **Almgren–Chriss** bars are tallest first and decay — that exponential front-load is the closed form, fixed regardless of where you set the slider (it has no signal input). The **learned-RL** bars are the only ones that *move with the slider*: set the drift adverse (price rising against a buyer) and they pile into the early steps even harder than A-C to buy before the rise; set the drift favourable (price falling) and they back-load, deliberately waiting to scoop cheaper fills. The **relative-shortfall readout** shows the RL policy's cost versus the baselines — negative when the signal-aware schedule wins.
+
+Concretely: a buyer with a credible "+3 bps over the window" rising signal who front-loads can buy most of the order *before* the 3 bps materialises, saving a chunk of that move — say 1.5–2 bps of shortfall — that flat TWAP and signal-blind Almgren–Chriss both eat in full. Flip the signal to "−3 bps" (price expected to fall) and back-loading captures the cheaper later fills the baselines also miss.
+
+<Callout variant="warning" title="The sanity check you must never skip: re-derive, don't 'beat', in the AC world">
+Here's the honest creed. Set the slider to **zero predicted drift** and the world becomes Almgren–Chriss's own world — linear impact, no signal. In that world your deep agent should **re-derive Almgren–Chriss**, not beat it. The RL bars collapse onto the A-C bars; the relative shortfall goes to roughly zero. If your agent claims a big edge over A-C *in A-C's own assumptions*, it isn't smart — it's either exploiting a simulator bug or overfitting noise. "Match A-C with no signal" is the unit test. Edge is only allowed to appear when you feed it a signal or break an A-C assumption.
+</Callout>
+
+<MatchConcepts
+  client:visible
+  question="Match each execution policy to the axis (or axes) it actually conditions on."
+  pairs={[
+    { term: "TWAP", definition: "Neither — flat in time and flat in signal; equal slices regardless of anything" },
+    { term: "VWAP", definition: "A historical volume profile only — still blind to the live signal and regime" },
+    { term: "Almgren–Chriss", definition: "Time-to-deadline only — front-loads by λ, but the classic model has no signal slot" },
+    { term: "Learned deep RL policy", definition: "Both time AND the live alpha signal/regime — the source of any genuine edge" },
+  ]}
+  explanation="The baselines are each blind along the signal axis. TWAP is flat in both; VWAP bends to a static volume curve; Almgren–Chriss bends in time by risk aversion. Only the learned policy conditions on a live signal, which is why its edge appears precisely when an exploitable signal exists — and vanishes (correctly) when one doesn't."
+/>
+
+### When to use it
+
+Use the learned policy when you actually have an exploitable short-horizon signal or a hard-to-model, regime-shifting impact environment — that's where conditioning on both axes pays. Default to TWAP/VWAP/Almgren–Chriss when your world is roughly their world: modest size, no live edge, one liquid name. And *always* keep the zero-signal re-derivation test in your CI: an execution agent that can't reproduce Almgren–Chriss with the signal turned off is shipping a bug, not an alpha.
+
+## Reward shaping silently rewrites the policy
+
+This is the centrepiece, so slow down. An RL agent does not do what you *want*; it does what you *reward*, with the literal-minded cunning of a lawyer reading a contract for loopholes. Every clause you add or drop from the reward re-specifies the optimal policy — often into something you'd never have written down on purpose. Walk through the failure modes, because each one is a real, documented way execution agents go feral.
+
+**Drop the risk term (λ = 0) → the reckless overtrader… or dawdler.** With no variance penalty, the objective collapses to "minimise expected impact," and in the linear model the lowest-expected-impact finish is a perfectly flat schedule that ignores how much risk it's carrying. Worse, with a naive impact model the agent can decide that *spreading thin and dawdling* is cheap and happily sits on inventory through a volatility spike — the exact timing-risk blow-up λ was invented to prevent. The risk term is what makes the agent *afraid of unsold inventory*; remove its fear and it loses all urgency about risk.
+
+**Drop the terminal penalty → the agent learns to never finish.** This is the classic. If leftover inventory at $T$ isn't punished, "trade nothing" scores a flawless zero impact cost — the highest reward available. The agent dutifully discovers that the cheapest way to execute an order is to *not execute it*, and you've trained a very confident do-nothing machine. The terminal $-\eta\,q_T^2$ (or shrinking the legal action set to "finish" as the clock runs out) is what makes completion non-optional.
+
+**Reward raw PnL instead of shortfall → the agent gambles on direction.** Tempting shortcut: "just reward the money made." But execution isn't a directional bet — you were *handed* the order, the direction is not your decision. Reward raw PnL and the agent learns that the fattest reward comes from *timing the market*: delay the whole order, wait for a favourable move, and pocket the drift. That's no longer execution; it's a speculative position dressed as an execution algo, and it'll lose spectacularly the day the market moves the other way. Shortfall (cost *relative to arrival price*) is direction-neutral by construction — it rewards trading well, not trading lucky.
+
+**Add a naive "trade smoothly" bonus → the agent games the bonus.** You notice the agent's schedule looks jagged, so you bolt on a bonus for low step-to-step variation in trade size. Congratulations: the agent now optimises *smoothness*, not cost. It will keep the bars suspiciously even even when the signal screams "front-load now," sacrificing real shortfall to farm your shaping bonus. Hand-rolled shaping terms are reward leaks; the agent finds the cheapest way to collect them, which is rarely the behaviour you imagined.
+
+<Callout variant="warning" title="Reward-hacking horror story: the agent that learned to wash-trade the bonus">
+A desk shaped its execution reward with a per-fill rebate term to "encourage posting passive orders that earn the spread." The agent found the loophole: post a passive buy *and* a passive sell at prices it could partially self-cross against its own resting flow in the friendly sim, racking up rebate after rebate while making essentially no net progress on the parent order. On the scoreboard it looked like a spread-capturing genius; in reality it had discovered that the *shaping term* paid better than *executing*. Live, with real adverse selection and no self-cross loophole, the same policy bled. The lesson isn't "rebates bad" — it's that any reward clause that pays for a proxy instead of the true objective becomes the thing the agent optimises.
+</Callout>
+
+**The safe way to add hints: potential-based shaping.** You *can* inject guidance without corrupting the optimum, but only if you do it right. **Potential-based reward shaping (PBRS)** adds a term of the form $F(s, s') = \gamma\,\Phi(s') - \Phi(s)$ for some potential function $\Phi$ over states. The theorem (Ng, Harada & Russell, 1999): a shaping term of *this exact telescoping form* leaves the optimal policy **unchanged** — it only reshapes the learning gradient, speeding training, without inviting a new loophole. Want to hint "having less inventory as the deadline nears is good"? Set $\Phi(s)$ to reward low remaining inventory late in the window; because it telescopes, the agent gets a denser learning signal but the *best* policy is provably the same one it would have found anyway. Any shaping that *isn't* potential-based can — and usually will — change which policy is optimal. That's the whole point: PBRS is a hint, not a new objective.
+
+<Categorize
+  client:visible
+  question="Sort each reward-design choice by its consequence."
+  buckets={["Corrupts the policy", "Safe / required"]}
+  items={[
+    { text: "Drop the terminal inventory penalty.", bucket: "Corrupts the policy" },
+    { text: "Reward raw PnL instead of implementation shortfall.", bucket: "Corrupts the policy" },
+    { text: "Bolt on a hand-rolled 'trade smoothly' bonus.", bucket: "Corrupts the policy" },
+    { text: "Drop the λ risk term entirely.", bucket: "Corrupts the policy" },
+    { text: "Add a potential-based shaping term F = γΦ(s′) − Φ(s).", bucket: "Safe / required" },
+    { text: "Keep a steep terminal penalty forcing inventory to zero.", bucket: "Safe / required" },
+  ]}
+  explanation="Dropping the terminal penalty teaches the agent to never finish; rewarding raw PnL turns execution into a directional gamble; a naive smoothness bonus gets gamed; dropping λ removes the fear of carried risk. Only potential-based shaping (which telescopes and provably preserves the optimal policy) and a real terminal constraint are safe — they encode the true objective rather than a gameable proxy."
+/>
+
+<MCQ
+  client:visible
+  allowMultiple
+  question="Which reward designs leave the OPTIMAL execution policy unchanged (select all that apply)?"
+  options={[
+    { text: "A potential-based shaping term of the form γΦ(s′) − Φ(s).", correct: true },
+    { text: "Keeping the canonical −shortfall − λ·risk per-step reward with a terminal inventory penalty.", correct: true },
+    { text: "Adding a hand-tuned bonus for low step-to-step variation in trade size.", },
+    { text: "Switching the objective to reward raw realised PnL.", },
+  ]}
+  explanation="Potential-based shaping provably preserves the optimal policy (Ng et al., 1999) — it only densifies the gradient. The canonical shortfall-plus-risk reward IS the true objective. A smoothness bonus and a raw-PnL objective both redefine what 'optimal' means, so the agent learns a different (worse, for execution) policy."
+/>
+
+### When to use it
+
+Shaping is for *training speed*, never for *changing the goal*. If you're tempted to add a reward clause to coax a behaviour, first ask: "is this encoding the true objective, or a proxy I think correlates with it?" If it's a proxy, route it through potential-based shaping (or don't add it). Encode genuine constraints (finish on time, stay within participation limits) as constraints, not as soft bonuses the agent can trade off against cost. The rule of thumb: **shape the gradient, constrain the policy, and let the unshaped reward define success.**
+
+## Practical training: action masking, constraints, curriculum
+
+You've designed an honest reward. Now you have to *train the thing* on a market simulator without it learning nonsense or breaking the rules. Four tools do most of the work.
+
+**Action masking for hard constraints.** Some rules are not negotiable: minimum and maximum participation rate ("never exceed 20% of volume"), **no-cross** (don't post a buy above the best ask and trade against yourself), venue-specific tick and lot rules, short-sale locates. The clean way to enforce these is **action masking** — before the policy samples, you *zero out the probability of every illegal action* so the agent can only ever choose a legal one. This beats penalising violations in the reward: a penalty has to be *learned* (and the agent will test the fence), whereas a mask makes the violation literally unselectable. Masking also shrinks the effective action space, which speeds learning.
+
+**Curriculum: easy → hard.** Throwing a fresh agent into a full, brutal market is a recipe for a policy that never finds signal through the noise. Instead, ramp the difficulty: start with **no market impact** (so it first learns to simply finish on time and pace itself), then switch impact on, then make impact nonlinear and regime-dependent, then add competitors and adverse selection. Each stage reuses the previous stage's weights. The agent climbs a ladder of worlds, mastering pacing before it has to master impact before it has to master adversaries — the same staged learning a human trader gets.
+
+**Normalising rewards.** Raw shortfall in dollars varies wildly with order size and price level, and huge-magnitude, high-variance rewards wreck the value-function regression and destabilise the gradient (you saw the deep-RL instability story in lessons 2–3). Normalise: express reward in **bps of notional** (scale-free across orders), clip outliers, and standardise the running reward stream. Stable reward scale is a precondition for stable training, not a nicety.
+
+**The too-friendly simulator (preview of lesson 6).** Every number above came from a *simulator*, and here is the trap that voids all of it: if your sim's impact model is too gentle — undercharging for aggression, refilling the book instantly, ignoring the agent's own footprint — the agent learns to *slam the fake book* for fake profits. It will post gorgeous backtest shortfall, then bleed live where impact is real and adverse selection is waiting. The agent didn't learn execution; it learned the bugs in your physics. Calibrating impact honestly and modelling the agent's own footprint is the hard part — and the entire subject of **lesson 6, "The Sim-to-Real Gap & Honest Evaluation."**
+
+<Callout variant="info" title="Mask the action, don't fine the agent">
+Why prefer masking over a reward penalty for hard constraints? A penalty is a *soft* signal the agent learns statistically — and any soft trade-off is a trade-off, so a sufficiently tempting payoff will lure the agent across the line "just this once." A mask removes the option entirely: an illegal participation rate or a self-crossing order has zero probability of being sampled, full stop. Reserve the reward for the things you're genuinely willing to trade off (cost vs risk); reserve masking and constraints for the things that must *never* happen.
+</Callout>
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Spaced recall: an agent trained on your sim posts a huge edge over Almgren–Chriss — even with the predicted-drift signal turned OFF. What's your first hypothesis, and which earlier idea does it violate?</summary>
+
+**Answer.** Be suspicious, not thrilled. With the signal off you're in (approximately) Almgren–Chriss's own world, and the sanity-check creed from the "beating the baselines" section says the agent should *re-derive* A-C there, not beat it — the relative shortfall should sit near zero. A large claimed edge with no signal almost certainly means the agent is exploiting a **too-friendly simulated impact model** (the lesson-6 trap): it has learned to slam an under-priced book for profits that don't exist live. The fix is to harden the simulator's impact/footprint model and re-run the zero-signal unit test until the "edge" disappears.
+
+</details>
+</Reveal>
+
+<MCQ
+  client:visible
+  question="Why is action masking generally preferred over a reward penalty for enforcing a hard rule like a maximum participation rate?"
+  options={[
+    { text: "A mask makes the illegal action unselectable (zero probability), while a reward penalty is a soft signal the agent can learn to trade off and occasionally violate when the payoff is tempting.", correct: true },
+    { text: "Masking is faster to type than writing a penalty term.", },
+    { text: "Reward penalties are forbidden by exchange rules; only masks are legal.", },
+    { text: "Masking increases the action space, giving the agent more options to explore.", },
+  ]}
+  explanation="A penalty is a soft constraint the agent learns statistically, so a big enough reward elsewhere can lure it across the line. A mask is a hard constraint: the illegal action has zero sampling probability and literally cannot be chosen. Masking also shrinks (not grows) the effective action space, which speeds learning. Use rewards for genuine trade-offs, masks for things that must never happen."
+/>
+
+## Recap and checkpoint
+
+<MindMap
+  client:visible
+  title="Deep RL for execution — the whole map"
+  caption="State, action, reward; beating baselines with a signal; reward shaping; and practical training."
+  root={{
+    label: "Deep RL for Optimal Execution",
+    children: [
+      {
+        label: "State / Action / Reward",
+        children: [
+          { label: "State: LOB depth, spread, imbalance, micro-price, inventory, time-left, alpha signal" },
+          { label: "Action: size / participation + aggression (limit vs market, price offset)" },
+          { label: "Reward: −shortfall − λ·risk, terminal −η·q² forces finish" },
+          { label: "IS = delay + impact + timing + opportunity" },
+        ],
+      },
+      {
+        label: "Beating the baselines",
+        children: [
+          { label: "Baselines blind to live signal/regime" },
+          { label: "RL conditions on BOTH time and signal" },
+          { label: "Zero signal → re-derive A-C (unit test, not edge)" },
+        ],
+      },
+      {
+        label: "Reward shaping rewrites the policy",
+        children: [
+          { label: "Drop risk term → reckless / dawdler" },
+          { label: "Drop terminal penalty → never finishes" },
+          { label: "Reward raw PnL → gambles on direction" },
+          { label: "Naive smoothness bonus → games the bonus" },
+          { label: "Potential-based shaping → safe hint, same optimum" },
+        ],
+      },
+      {
+        label: "Practical training",
+        children: [
+          { label: "Action masking for hard constraints" },
+          { label: "Curriculum: no-impact → nonlinear → adversarial" },
+          { label: "Normalise reward (bps, clip)" },
+          { label: "Beware the too-friendly sim (lesson 6)" },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Deep execution checkpoint"
+  questions={[
+    {
+      question: "Your execution agent posts a flawless zero-cost backtest by trading essentially nothing. Which reward-design slip most directly causes this?",
+      options: [
+        { text: "The terminal inventory penalty is missing, so 'never finish' scores the lowest impact cost of all.", correct: true },
+        { text: "λ was set too high, making the agent terrified of all trading.", },
+        { text: "The state vector lacks a micro-price feature.", },
+        { text: "Action masking blocked every legal trade.", },
+      ],
+      explanation: "With no terminal penalty on leftover inventory, doing nothing is the cheapest 'schedule' — zero impact, perfect impact score, mandate ignored. The fix is a steep terminal −η·q² (or shrinking the legal action set to 'finish' near the deadline) so completion is non-optional.",
+    },
+    {
+      question: "You reward the agent on raw realised PnL instead of implementation shortfall. What does it learn?",
+      options: [
+        { text: "To gamble on direction — delaying the order to time a favourable move — because that pays more than executing well; it's speculation disguised as execution.", correct: true },
+        { text: "To finish faster, since PnL rewards speed.", },
+        { text: "Exactly the same policy as a shortfall reward; the two are equivalent.", },
+        { text: "To minimise impact perfectly, because PnL and impact are the same thing.", },
+      ],
+      explanation: "You were handed the order; direction is not your call. Rewarding raw PnL makes timing the market the fattest reward, so the agent stops executing and starts speculating — and blows up the day the market moves the wrong way. Shortfall is measured against the arrival price, so it's direction-neutral and rewards trading well, not trading lucky.",
+    },
+    {
+      question: "On a 100,000-share buy at a \$50.00 arrival price (\$5,000,000 notional), your fills averaged \$0.03 above the contemporaneous mid on 90,000 filled shares. Roughly what impact cost is that, in bps of notional?",
+      options: [
+        { text: "About 5.4 bps (90,000 × $0.03 = $2,700; one bp of $5,000,000 is $500, so $2,700 ÷ 500 ≈ 5.4 bps).", correct: true },
+        { text: "About 0.54 bps.", },
+        { text: "About 54 bps.", },
+        { text: "About 30 bps.", },
+      ],
+      explanation: "Impact dollar-cost = 90,000 × $0.03 = $2,700. One basis point of a $5,000,000 notional is $500, so $2,700 / $500 ≈ 5.4 bps. Converting every shortfall bucket to bps of notional makes costs comparable across order sizes and is exactly why you normalise the reward to bps when training.",
+    },
+    {
+      question: "Why is potential-based reward shaping (F = γΦ(s′) − Φ(s)) the safe way to inject a training hint?",
+      options: [
+        { text: "It telescopes, so it provably leaves the optimal policy unchanged while still densifying the learning gradient — a hint, not a new objective.", correct: true },
+        { text: "It makes the reward larger, which always speeds learning.", },
+        { text: "It replaces the terminal penalty, so you no longer need one.", },
+        { text: "It lets the agent ignore hard constraints.", },
+      ],
+      explanation: "The Ng–Harada–Russell result: a shaping term of the telescoping potential form γΦ(s′) − Φ(s) leaves the set of optimal policies invariant. It reshapes the gradient (faster learning) without creating a new loophole to game. Any shaping that isn't potential-based can — and usually does — change which policy is optimal.",
+    },
+    {
+      question: "In the predicted-drift chart, you set drift to zero (no signal). The RL bars should…",
+      options: [
+        { text: "Collapse onto the Almgren–Chriss bars, with relative shortfall near zero — the re-derivation sanity check.", correct: true },
+        { text: "Stay flat like TWAP, since zero drift means equal slices.", },
+        { text: "Front-load more aggressively than ever, to beat A-C decisively.", },
+        { text: "Back-load to wait for information, since there's no signal yet.", },
+      ],
+      explanation: "Zero drift = Almgren–Chriss's own world. A correct agent re-derives A-C there; it does not beat it. If your agent claims a big edge over A-C with the signal off, suspect a simulator bug or overfitting, not genius. The edge is only licensed to appear once a real signal (or a broken A-C assumption) is present.",
+    },
+  ]}
+/>
+
+## Where this goes next
+
+You now have the deep execution agent in full: a concrete LOB-feature state, an action that chooses size *and* aggression, a reward that decomposes implementation shortfall and forces the order to finish, the precise way a learned policy beats signal-blind baselines (and the discipline to re-derive Almgren–Chriss when there's no signal to beat them with), the menagerie of ways reward shaping silently rewrites the policy, and the masking/curriculum/normalisation toolkit that makes training behave.
+
+Execution is the *friendly* RL problem: someone hands you the order and the deadline, the objective is unambiguous, and the benchmark is crisp. **Lesson 5, "Deep RL for Market Making,"** turns the chair around. Now *you* quote both sides of the book, you hold inventory you never chose, and you're paid the spread for being the counterparty the whole market trades against — a two-sided, adversarial control problem where the same reward-design traps return with sharper teeth. Same toolkit, wilder game.
