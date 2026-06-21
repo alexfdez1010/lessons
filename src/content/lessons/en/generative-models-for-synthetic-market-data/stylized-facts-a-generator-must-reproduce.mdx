@@ -1,0 +1,426 @@
+---
+title: "The Stylized Facts a Generator Must Reproduce"
+description: "The non-negotiable checklist every synthetic-data generator is graded against: fat tails, volatility clustering, slow absolute-return autocorrelation, the leverage effect, aggregational Gaussianity and gain/loss asymmetry — and why a Gaussian random walk flunks almost all of them."
+topic: "en/generative-models-for-synthetic-market-data"
+order: 2
+minutes: 16
+updated: 2026-06-21
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, StylizedFactsChecklist, ReturnDistribution, TsAcfPlot } from '@/components/react';
+
+Suppose you build a synthetic-data generator, point it at a decade of S&P 500 returns, and it dutifully learns that the **mean daily return is about 0.03%** and the **daily standard deviation is about 1%**. You let it spit out a fresh decade of "market" returns that match those two numbers exactly. Congratulations — you have produced *garbage that no trader would recognise as a market*.
+
+Why? Because the mean and the variance are only the first two moments of a distribution, and **markets live in the higher moments and in the time structure**. A series can have the right average and the right wobble while having no crashes, no calm-then-storm rhythm, no memory, and a perfectly symmetric up/down profile. It would price options wrong, size risk wrong, and backtest strategies into a fantasy. A real market is not "random noise with the right volume knob" — it has a fingerprint.
+
+That fingerprint is a short list of **stylized facts**: empirical regularities that show up in *every* liquid market — equities, FX, commodities, crypto — across decades and across continents, no matter the asset. They were catalogued by Mandelbrot, Fama, Cont and others, and they are remarkably universal. For us they are not trivia: **they are the rubric.** Every generator you meet later in this course — the classical Geometric Brownian Motion of lesson 3, and the GANs, VAEs and diffusion models of lessons 4–6 — gets graded against exactly this checklist. So learn the rubric before you meet the contestants.
+
+<StylizedFactsChecklist client:visible caption="The six canonical stylized facts. Toggle each to see what a real market shows versus what a plain Gaussian random walk (GBM) produces — green means GBM reproduces the fact, red means it flunks." />
+
+Notice the scoreboard: a plain Gaussian random walk passes essentially **one** of the six, and even that one only by accident. Hold that thought — we'll return to the full scorecard at the end. First, one section per fact, each with the test you'd actually run to grade a generator on it.
+
+## Fat tails (excess kurtosis)
+
+<MCQ
+  client:visible
+  pretest
+  question="A daily return distribution has the same mean and variance as a normal distribution, but extreme days (large gains and large losses) happen far more often than the bell curve predicts. What does this imply about its kurtosis?"
+  options={[
+    { text: "Kurtosis is greater than 3 (positive excess kurtosis)", correct: true },
+    { text: "Kurtosis is less than 3 (negative excess kurtosis)" },
+    { text: "Kurtosis is exactly 3, since the variance matches" },
+    { text: "Kurtosis is undefined whenever the mean is non-zero" },
+  ]}
+  explanation="Fatter tails put more probability mass far from the mean, which raises the fourth moment. A normal distribution has kurtosis 3 (excess 0); fat-tailed returns sit above that."
+/>
+
+**Analogy.** A normal distribution is a cautious airline that promises a delay "almost never." Real markets are an airline that promises the same — and then strands you on the tarmac twice a year. The *average* delay can match the brochure while the *catastrophes* are wildly more frequent.
+
+**Definition.** Kurtosis is the standardized fourth moment, $\kappa = \mathbb{E}\!\left[\left(\frac{r-\mu}{\sigma}\right)^4\right]$. A normal distribution has $\kappa = 3$, so analysts quote **excess kurtosis** $\kappa - 3$ (zero for a Gaussian). Daily equity returns routinely show **excess kurtosis of 5 to 30** — the tails are not a little heavy, they are heavy.
+
+**Worked example — the 25,000-year storm.** Under a normal model with daily $\sigma = 1\%$, a $-5\sigma$ day means a $-5\%$ move. The probability of a $5\sigma$ event in a Gaussian is about $2.87 \times 10^{-7}$. So the expected wait between such days is
+
+$$\frac{1}{2.87 \times 10^{-7}} \approx 3{,}480{,}000 \text{ days} \approx 13{,}800 \text{ years (one tail)},$$
+
+and roughly **25,000 years** if you only care about the down tail at that exact threshold across the calendar. Yet markets deliver $\pm 5\sigma$ days every **few years** — October 1987 was a $-20\sigma$+ event under the Gaussian, which the normal model rates at "once per many times the age of the universe." When your model says "geological epoch" and reality says "Tuesday," your tails are too thin.
+
+<ReturnDistribution client:visible caption="Real daily returns (histogram) against the best-fit normal with the same mean and variance. Same centre, same width — but the real distribution is taller in the middle and crucially fatter in the tails. That overhang in the tails is the excess kurtosis." />
+
+<Callout variant="warning">
+**Pitfall: matching variance ≠ matching risk.** A generator can nail the standard deviation and still mis-state tail risk by orders of magnitude, because variance is dominated by typical days while crash risk lives in the tail. If you grade a generator only on volatility, a thin-tailed model sails through — and then blows up your VaR and your option prices on the first quiet-looking quarter.
+</Callout>
+
+### When to use it
+
+To **test** a generator for fat tails: compute the sample excess kurtosis of its returns and compare it to the real series (real should be well above 0; a Gaussian generator sits near 0). Better, compare the **empirical tail quantiles** — e.g. the 0.1% worst day — or fit a generalized Pareto / power-law to the tail and check the tail index. A QQ-plot of synthetic vs. real returns makes thin tails jump out: the points bend away from the diagonal at the extremes.
+
+<MCQ
+  client:visible
+  question="A synthetic series has excess kurtosis 0.1. Real comparable returns show excess kurtosis 9. What's the verdict?"
+  options={[
+    { text: "The generator under-produces extreme moves — its tails are far too thin", correct: true },
+    { text: "The generator is fine; kurtosis near 0 means it's well-calibrated" },
+    { text: "The generator over-produces extreme moves" },
+    { text: "Nothing — kurtosis can't be compared across series" },
+  ]}
+  explanation="Excess kurtosis near 0 is Gaussian-thin. Against a real value of 9, the synthetic series almost never produces the crashes the market actually delivers."
+/>
+
+## Volatility clustering
+
+<MCQ
+  client:visible
+  pretest
+  question="In real markets, which statement about return autocorrelation is typically TRUE?"
+  options={[
+    { text: "Raw returns are nearly uncorrelated, but squared (or absolute) returns are positively autocorrelated", correct: true },
+    { text: "Both raw returns and squared returns are strongly positively autocorrelated" },
+    { text: "Raw returns are strongly autocorrelated, squared returns are not" },
+    { text: "Neither raw returns nor squared returns show any autocorrelation" },
+  ]}
+  explanation="If raw returns were predictable, you'd arbitrage them away — so they're ~uncorrelated. But the SIZE of moves clusters: a big day predicts another big day, which shows up as positive autocorrelation in squared/absolute returns."
+/>
+
+**Analogy.** Earthquakes don't arrive on a metronome — they come in swarms. One big tremor and the ground keeps shaking with aftershocks for days, then it goes quiet for a long stretch. Volatility is exactly that: storms cluster, calm clusters.
+
+**Definition.** Big moves tend to follow big moves and small moves follow small moves, *regardless of sign*. Formally: the autocorrelation of **raw returns** $r_t$ is approximately zero at all lags (markets are roughly unpredictable in direction), but the autocorrelation of **squared or absolute returns** is significantly **positive** for many lags:
+
+$$\rho_{|r|}(k) = \operatorname{Corr}\!\left(|r_t|,\, |r_{t-k}|\right) > 0 \quad\text{for } k \ge 1.$$
+
+This is precisely the regularity that **GARCH** (from *Time-Series Finance*) was built to capture: today's variance depends on yesterday's squared shock and yesterday's variance, so shocks persist.
+
+**Worked example — an ACF table.** Compute autocorrelations at lags 1, 5 and 10 for a real daily series:
+
+| Lag $k$ | ACF of raw returns $r_t$ | ACF of squared returns $r_t^2$ |
+|---|---|---|
+| 1 | -0.02 | 0.22 |
+| 5 | 0.01 | 0.15 |
+| 10 | 0.00 | 0.11 |
+
+The raw column hovers around 0 (no directional predictability). The squared column is clearly positive and only fades slowly — that gap *is* volatility clustering. A series whose squared-return ACF is also ~0 has no clustering: its big days are sprinkled at random instead of bunching into storms.
+
+<Callout variant="warning">
+**Pitfall: an i.i.d. shuffle destroys clustering but preserves the histogram.** If you take a real return series and randomly **shuffle** the days, the histogram (and thus the kurtosis) is *unchanged*, but every storm is scattered — the squared-return ACF collapses to zero. A generator that draws returns i.i.d. from the real fat-tailed distribution has fat tails *and* zero clustering. Matching the one-day distribution says nothing about time structure.
+</Callout>
+
+### When to use it
+
+To **test** for clustering: plot the ACF of $r_t$ and of $r_t^2$ (or $|r_t|$) side by side, with confidence bands. Real and good-generator series show a flat raw ACF and a clearly positive squared ACF. Quantitatively, run a **Ljung–Box test on squared returns** (or an ARCH-LM test): a small p-value confirms clustering. Run it on both the real and synthetic series and compare.
+
+<FillBlank
+  client:visible
+  text="Volatility clustering shows up as positive autocorrelation in {{squared|raw|signed}} returns, while {{raw|squared|absolute}} returns stay roughly uncorrelated."
+/>
+
+## Slow decay of absolute-return autocorrelation (long memory)
+
+<MCQ
+  client:visible
+  pretest
+  question="Volatility clustering says squared-return ACF is positive. The 'long memory' fact adds a sharper claim about HOW that ACF behaves across lags. What is it?"
+  options={[
+    { text: "It decays very slowly — close to a power law — staying positive out to dozens or hundreds of lags", correct: true },
+    { text: "It decays exponentially fast, hitting zero within 2–3 lags" },
+    { text: "It oscillates between positive and negative at each successive lag" },
+    { text: "It is constant at every lag, never decaying at all" },
+  ]}
+  explanation="Long memory is the slow, near-power-law decay: |return| autocorrelation is still visibly positive at lag 20, 50, even 100. That hyperbolic decay is much slower than the exponential decay a simple model would give."
+/>
+
+**Analogy.** A struck church bell doesn't go silent the instant the next pew is empty; it *rings on*, the hum fading over a long, slow tail. Market volatility rings like that bell — its echo in absolute returns persists far longer than any short-memory model expects.
+
+**Definition.** Beyond merely being positive, the autocorrelation of absolute (and squared) returns **decays slowly with lag** — empirically close to a power law, $\rho_{|r|}(k) \sim k^{-\gamma}$ with a small $\gamma$ (often $0.2$–$0.4$), rather than the fast geometric decay $\rho(k) \sim \phi^{k}$ of a short-memory process. This is the **long-memory** or **long-range dependence** of volatility: the past influences the present over very long horizons.
+
+**Worked example — raw vs. absolute ACF across lags.** Contrast the two series at increasing lags:
+
+| Lag $k$ | ACF of raw returns | ACF of $\lvert r_t \rvert$ |
+|---|---|---|
+| 1 | -0.02 | 0.30 |
+| 5 | 0.01 | 0.26 |
+| 20 | 0.00 | 0.20 |
+| 50 | -0.01 | 0.14 |
+
+The raw-return ACF is statistical noise around zero at every lag — flat from the start. The absolute-return ACF starts at 0.30 and is *still about 0.20 at lag 20* and 0.14 at lag 50. A short-memory (geometric) decay from 0.30 with $\phi = 0.8$ would already be down to $0.30 \times 0.8^{20} \approx 0.0035$ by lag 20 — effectively gone. Reality stays loud; that persistence is the long memory.
+
+<TsAcfPlot client:visible caption="Autocorrelation by lag. The raw-return ACF (light) drops inside the confidence band immediately and stays there. The absolute-return ACF (dark) stays well above the band for many lags, fading slowly — the signature near-power-law decay of volatility's long memory." />
+
+<Callout variant="warning">
+**Pitfall: a single-lag check can't see long memory.** A generator might match the lag-1 squared-return ACF perfectly (so it "has clustering") yet have an ACF that collapses to zero by lag 5. It passes a naive clustering test and still fails long memory. Always inspect the **whole decay profile**, not one lag — slow decay is a statement about the *shape* of the curve.
+</Callout>
+
+### When to use it
+
+To **test** for long memory: plot $\rho_{|r|}(k)$ out to large lags (50–100) on a **log–log** scale; a roughly straight line of small slope signals power-law decay. Estimate the long-memory exponent directly — e.g. the **Hurst exponent** $H$ of absolute returns (real volatility gives $H > 0.5$), via R/S analysis or a GPH/log-periodogram estimator. Compare the synthetic series' exponent and full ACF curve to the real one.
+
+<MCQ
+  client:visible
+  question="A generator's |return| ACF is 0.28 at lag 1 but 0.01 by lag 5, while the real series is still 0.20 at lag 20. Which fact does the generator FAIL, even though it shows clustering?"
+  options={[
+    { text: "Slow decay / long memory — its volatility echo dies far too fast", correct: true },
+    { text: "Fat tails" },
+    { text: "Aggregational Gaussianity" },
+    { text: "Gain/loss asymmetry" },
+  ]}
+  explanation="It has short-range clustering (positive lag-1) but the ACF collapses by lag 5. Real volatility persists to lag 20+. The missing fact is the slow, long-memory decay."
+/>
+
+## The leverage effect
+
+<MCQ
+  client:visible
+  pretest
+  question="Empirically, after which kind of day does equity volatility tend to rise MORE?"
+  options={[
+    { text: "After a large price DROP — volatility responds asymmetrically to negative returns", correct: true },
+    { text: "After a large price RISE of the same magnitude" },
+    { text: "Equally after up and down moves of the same size" },
+    { text: "Volatility falls after any large move, up or down" },
+  ]}
+  explanation="The leverage effect: a down move of size x raises future volatility more than an up move of size x. Returns and future volatility are negatively correlated — fear spikes vol more than greed does."
+/>
+
+**Analogy.** Good news lifts a stock the way a calm tide rises — smoothly. Bad news drops it the way a fire alarm clears a building: shoving, shouting, chaos. The *panic* on the way down stirs far more turbulence than the cheer on the way up.
+
+**Definition.** Volatility tends to increase **more** following price declines than following price increases of equal magnitude — there is a **negative correlation between current returns and future volatility**, $\operatorname{Corr}(r_t,\, \sigma_{t+1}) < 0$. Classically attributed to financial leverage (a price drop raises the firm's debt-to-equity ratio, making equity riskier), hence the name — though the effect is larger than leverage alone explains.
+
+**Worked example — post-up vs. post-down realized vol.** Split days by the sign of the prior day's return and measure the next day's realized volatility (annualized):
+
+| Prior day | Next-day realized vol |
+|---|---|
+| Up day ($r_{t-1} > 0$) | 14% |
+| Down day ($r_{t-1} < 0$) | 21% |
+
+Same-sized shocks, very different aftermath: a down day is followed by volatility about $21/14 \approx 1.5\times$ higher than after an up day. A symmetric model (GARCH, GBM) would give roughly equal numbers in both rows; the gap is the leverage effect. Asymmetric models like **EGARCH** or **GJR-GARCH** were invented precisely to capture this.
+
+<Callout variant="warning">
+**Pitfall: symmetric models are blind to it.** Plain GARCH and GBM both treat $+x$ and $-x$ shocks identically — they *cannot* produce a leverage effect, no matter how you tune them, because their volatility update depends on $r^2$, which throws away the sign. If your generator's volatility doesn't know the difference between a crash and a melt-up, it will mis-price the volatility skew that options markets quote every day.
+</Callout>
+
+### When to use it
+
+To **test** for the leverage effect: estimate the **cross-correlation** $\operatorname{Corr}(r_t,\, |r_{t+k}|)$ or $\operatorname{Corr}(r_t,\, r_{t+k}^2)$ for $k \ge 1$ — real markets give significantly *negative* values, a generator without the effect gives ~0. Or simply bin next-day realized vol by the sign of today's return (as in the table) and check for a gap. In option language, the effect shows up as a **negative volatility skew**.
+
+<Categorize
+  client:visible
+  buckets={["Captures the leverage effect", "Symmetric (cannot capture it)"]}
+  items={[
+    { text: "EGARCH", bucket: "Captures the leverage effect" },
+    { text: "GJR-GARCH", bucket: "Captures the leverage effect" },
+    { text: "Plain GARCH(1,1)", bucket: "Symmetric (cannot capture it)" },
+    { text: "Geometric Brownian Motion", bucket: "Symmetric (cannot capture it)" },
+  ]}
+/>
+
+## Aggregational Gaussianity
+
+<MCQ
+  client:visible
+  pretest
+  question="As you sum daily returns into weekly, then monthly, then quarterly returns, what happens to the excess kurtosis of the resulting distribution?"
+  options={[
+    { text: "It falls toward 0 — the distribution looks progressively more normal", correct: true },
+    { text: "It grows without bound — longer-horizon returns are ever fatter-tailed" },
+    { text: "It stays exactly constant at every horizon" },
+    { text: "It flips sign, becoming negative at long horizons" },
+  ]}
+  explanation="Aggregational Gaussianity: as returns are summed over longer windows, the distribution converges toward a normal (a Central-Limit-Theorem-like effect), so excess kurtosis shrinks toward 0. Fat tails are mostly a high-frequency phenomenon."
+/>
+
+**Analogy.** Up close, a coastline is jagged with violent cliffs and inlets. Zoom out to a map of the whole continent and the wild detail smooths into a gentle curve. Aggregate returns over longer windows and the fat-tailed jaggedness of daily moves smooths toward the tidy bell curve.
+
+**Definition.** As the sampling interval lengthens — daily → weekly → monthly — the distribution of returns **approaches a normal distribution**, and the excess kurtosis **decays toward 0**. This is a Central-Limit-Theorem-flavoured effect: a monthly return is a sum of ~21 daily returns, and sums of (weakly dependent) shocks drift toward Gaussian. Crucially, **this is the one fact a Gaussian random walk trivially "passes"** — because it was Gaussian at every horizon to begin with.
+
+**Worked example — kurtosis falling with horizon.** Take a daily series with **excess kurtosis 8**. If daily returns were independent, summing $n$ of them divides excess kurtosis by $n$: a 21-day month gives $8 / 21 \approx 0.38$. Real returns aren't fully independent (volatility clustering slows the convergence), so monthly excess kurtosis lands a bit higher — empirically around **1** — but the direction is unmistakable:
+
+| Horizon | Typical excess kurtosis |
+|---|---|
+| Daily | 8 |
+| Weekly | 3 |
+| Monthly | ≈ 1 |
+
+From 8 to about 1 as you zoom out — the tails deflate. A generator that's Gaussian everywhere matches the *monthly* shape fine; the test is whether it *also* has the fat *daily* tails it's supposed to converge *from*.
+
+<Callout variant="warning">
+**Pitfall: passing this one proves nothing.** Because a Gaussian random walk is normal at *every* horizon, it "passes" aggregational Gaussianity automatically — but for the wrong reason. It never had fat daily tails to lose. So a generator that matches only the monthly distribution can be hiding a completely wrong daily distribution. Always grade at the **high frequency**, where the fat tails live, not just the aggregated horizon.
+</Callout>
+
+### When to use it
+
+To **test** for aggregational Gaussianity: compute excess kurtosis (and run a normality test such as Jarque–Bera) at **several horizons** — daily, weekly, monthly — and confirm the value **trends downward** toward 0 as the window grows. A good generator reproduces the *whole curve*: fat at daily, near-normal at monthly. Matching one horizon is not enough; it's the **shape of the convergence** that must agree.
+
+<MCQ
+  client:visible
+  question="Which statement about a plain Gaussian random walk is correct?"
+  options={[
+    { text: "It passes aggregational Gaussianity trivially, because it is normal at every horizon to begin with", correct: true },
+    { text: "It fails aggregational Gaussianity because its daily returns are too fat-tailed" },
+    { text: "It passes because it correctly converges from fat daily tails to normal monthly returns" },
+    { text: "It fails because its monthly returns are non-normal" },
+  ]}
+  explanation="A Gaussian walk is normal at all horizons, so it 'passes' aggregational Gaussianity — but only because it never had the fat daily tails it was supposed to converge from. It's a pass for the wrong reason."
+/>
+
+## Gain/loss asymmetry
+
+<MCQ
+  client:visible
+  pretest
+  question="Comparing how an index typically reaches a +20% gain versus a -20% loss, which pattern matches real markets?"
+  options={[
+    { text: "Losses arrive faster and more sharply; gains accumulate more slowly", correct: true },
+    { text: "Gains arrive faster; losses grind out slowly" },
+    { text: "Gains and losses are perfectly symmetric in speed and shape" },
+    { text: "Both reach their target in exactly the same number of days, always" },
+  ]}
+  explanation="Markets 'take the stairs up and the elevator down': run-ups grind slowly, crashes are abrupt. This shows up as left-skew in returns and as drawdowns reaching a given magnitude faster than equal-sized run-ups."
+/>
+
+**Analogy.** The market climbs the stairs and rides the elevator down. Gains are a patient hike — one step at a time over weeks. Losses are a trapdoor: a cliff that opens in days. Symmetric in size, wildly asymmetric in *speed and shape*.
+
+**Definition.** Large **drawdowns** tend to be **sharper and faster** than run-ups of equal magnitude, producing **negative skewness** in the return distribution, $\operatorname{skew}(r) < 0$. Equivalently (the "gain/loss asymmetry" of Johansen–Sornette): the typical waiting time to reach a given **negative** cumulative return is **shorter** than the waiting time to reach the same **positive** return.
+
+**Worked example — time to ±20%.** Track how long an index typically takes to move a cumulative 20% from a starting point:
+
+| Target | Typical time to reach it |
+|---|---|
+| +20% (run-up) | ≈ 90 trading days |
+| -20% (drawdown) | ≈ 35 trading days |
+
+Same 20% magnitude, but the drop gets there in roughly **a third of the time**. That speed asymmetry leaves a fingerprint of **negative skew** (here, say, $\operatorname{skew} \approx -0.6$ on daily returns): the left tail is longer and more abrupt than the right.
+
+<Callout variant="warning">
+**Pitfall: skew and tails are different audits.** A distribution can be perfectly **symmetric** (zero skew) and still be **fat-tailed** — the Student-$t$ is the textbook example. So a generator can ace fat tails and *still* flunk gain/loss asymmetry, because symmetric heavy tails put equal mass on huge gains and huge losses. You must test skew **separately** from kurtosis; passing one says nothing about the other.
+</Callout>
+
+### When to use it
+
+To **test** for gain/loss asymmetry: compute the **sample skewness** of returns (real equities give a small negative value) and compare to the generator's. More directly, measure the **first-passage time** distribution to $+\theta$ versus $-\theta$ for a threshold $\theta$ (e.g. 20%) and check that the down-side hits sooner. Drawdown statistics — maximum drawdown, drawdown duration — are the practitioner's version of the same audit.
+
+<Reveal summary="Quick check: a generator has excess kurtosis 9 (matching reality) but skewness exactly 0. Which fact does it still fail?">
+
+It fails **gain/loss asymmetry**. Fat tails (kurtosis) and skew are independent audits: a symmetric fat-tailed distribution like a Student-$t$ has zero skew, so its big gains and big losses are equally abrupt. Real markets fall faster than they rise — that left-skew is missing here.
+
+</Reveal>
+
+## The whole scorecard
+
+Now total it up. Line the six facts against a **plain Gaussian random walk** — the lesson-3 baseline (GBM with constant volatility) — and the grade is brutal:
+
+| Stylized fact | Gaussian random walk |
+|---|---|
+| Fat tails | **Fail** — shocks are normal, tails are thin by construction |
+| Volatility clustering | **Fail** — i.i.d. shocks, constant variance, no memory of past size |
+| Slow decay / long memory | **Fail** — no clustering means no long-memory decay to have |
+| Leverage effect | **Fail** — symmetric in shock sign; $+x$ and $-x$ behave identically |
+| Aggregational Gaussianity | **"Pass"** — but trivially, because it's normal at every horizon already |
+| Gain/loss asymmetry | **Fail** — symmetric distribution, zero skew, stairs-down equals stairs-up |
+
+**One out of six, and the one it passes it passes for the wrong reason.** A Gaussian random walk is not a market — it's the *null hypothesis* a market is defined against. This is exactly why lesson 3's classical models (GBM, and the patched-up jump-diffusion / stochastic-vol families that try to bolt some facts back on) are judged against this table, and why the learned generators of lessons 4–6 (GANs, VAEs, diffusion) live or die on the *same* six rows. When someone shows you a shiny new synthetic-data model, you now know the six questions to ask before you believe a word of it.
+
+<MCQ
+  client:visible
+  allowMultiple
+  question="Which stylized facts does a plain Gaussian random walk genuinely fail to reproduce? (Select all that apply.)"
+  options={[
+    { text: "Fat tails — its shocks are normal, so extremes are far too rare", correct: true },
+    { text: "Volatility clustering — its shocks are i.i.d. with constant variance", correct: true },
+    { text: "The leverage effect — it treats up and down shocks symmetrically", correct: true },
+    { text: "Aggregational Gaussianity — the distribution looks more normal at longer horizons" },
+  ]}
+  explanation="The walk fails fat tails, clustering, long memory, leverage and gain/loss asymmetry. The only box it ticks is aggregational Gaussianity — and only because it was Gaussian at every horizon to begin with, which is a free pass, not a feature."
+/>
+
+## Recap
+
+Stylized facts are the **universal fingerprint of liquid markets** — empirical regularities every asset class shares, sitting in the higher moments and the time structure that mean and variance ignore. The big six: **fat tails** (excess kurtosis 5–30, crashes far more frequent than Gaussian), **volatility clustering** (positive squared-return ACF while raw-return ACF ≈ 0), **slow decay / long memory** (absolute-return ACF fading like a power law, still positive at lag 20+), the **leverage effect** (volatility rises more after drops — negative return/future-vol correlation), **aggregational Gaussianity** (tails deflate toward normal as you sum over longer horizons), and **gain/loss asymmetry** (negative skew — markets fall faster than they rise). Each comes with a concrete test — kurtosis and QQ-plots, Ljung–Box on squared returns, log–log ACF and Hurst exponents, return/future-vol cross-correlation, kurtosis-vs-horizon curves, and skew / first-passage times. A plain Gaussian random walk flunks five and a half of the six. **This table is the rubric every generator in this course will be graded against — memorize it.**
+
+<MindMap
+  client:visible
+  caption="The six stylized facts and the statistic you test each one with."
+  root={{
+    label: "Stylized facts",
+    children: [
+      {
+        label: "Fat tails",
+        children: [{ label: "Test: excess kurtosis 5–30; QQ-plot; tail index" }],
+      },
+      {
+        label: "Volatility clustering",
+        children: [{ label: "Test: ACF(r²)>0 while ACF(r)≈0; Ljung–Box / ARCH-LM" }],
+      },
+      {
+        label: "Long memory (slow decay)",
+        children: [{ label: "Test: |r| ACF ~ power law to lag 20+; Hurst H>0.5" }],
+      },
+      {
+        label: "Leverage effect",
+        children: [{ label: "Test: Corr(rₜ, σₜ₊₁)<0; post-down vs post-up vol; vol skew" }],
+      },
+      {
+        label: "Aggregational Gaussianity",
+        children: [{ label: "Test: excess kurtosis → 0 as horizon grows; Jarque–Bera" }],
+      },
+      {
+        label: "Gain/loss asymmetry",
+        children: [{ label: "Test: negative skew; first-passage time to -θ < +θ" }],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Grade the generator: stylized-facts exam"
+  questions={[
+    {
+      question: "A normal model with daily σ = 1% rates a -5% day as a roughly once-in-25,000-years event. Real markets deliver ±5σ days every few years. Which stylized fact does this gap demonstrate, and what statistic captures it?",
+      options: [
+        { text: "Fat tails — measured by positive excess kurtosis (real returns: 5–30, Gaussian: 0)", correct: true },
+        { text: "Volatility clustering — measured by the ACF of squared returns" },
+        { text: "Aggregational Gaussianity — measured by kurtosis falling with horizon" },
+        { text: "The leverage effect — measured by return/future-vol correlation" },
+      ],
+      explanation: "Extreme moves arriving far more often than the bell curve allows is the definition of fat tails, quantified by excess kurtosis well above the Gaussian value of 0.",
+    },
+    {
+      question: "Which statement about a plain Gaussian random walk is TRUE?",
+      options: [
+        { text: "It passes aggregational Gaussianity, but only trivially — it's already normal at every horizon, so it never had fat daily tails to converge from", correct: true },
+        { text: "It passes volatility clustering because its variance is constant" },
+        { text: "It captures the leverage effect because squared shocks persist" },
+        { text: "It reproduces gain/loss asymmetry through its negative skew" },
+      ],
+      explanation: "A Gaussian walk is normal at all horizons, so it 'passes' aggregational Gaussianity for the wrong reason. It fails the other five facts outright — its shocks are i.i.d., symmetric, and thin-tailed.",
+    },
+    {
+      question: "A teammate says: 'My generator matches the real daily return histogram exactly — same fat tails, same skew. So it has volatility clustering too.' What's the trap?",
+      options: [
+        { text: "The one-day histogram says nothing about time structure; i.i.d. draws from the right fat-tailed distribution have zero clustering", correct: true },
+        { text: "Matching the histogram automatically guarantees clustering, so the teammate is right" },
+        { text: "Clustering is impossible to test, so the claim can't be evaluated" },
+        { text: "A matched histogram means the generator must also fail fat tails" },
+      ],
+      explanation: "Shuffling a real series leaves the histogram (and kurtosis) unchanged but destroys clustering. The squared-return ACF is a separate, time-based test the histogram can't see.",
+    },
+    {
+      question: "Two generators both show clustering (positive lag-1 squared-return ACF). Generator A's |return| ACF is back near 0 by lag 5; Generator B's is still ~0.20 at lag 20, matching real data. Which fact distinguishes them?",
+      options: [
+        { text: "Slow decay / long memory — only B reproduces the near-power-law persistence of volatility", correct: true },
+        { text: "Fat tails — only B has positive excess kurtosis" },
+        { text: "The leverage effect — only B has asymmetric volatility" },
+        { text: "Gain/loss asymmetry — only B is left-skewed" },
+      ],
+      explanation: "Both have short-range clustering, but only B's volatility ACF decays slowly enough to match real long memory. A's collapse by lag 5 fails the slow-decay fact.",
+    },
+    {
+      question: "An equity index drops 20% in about 35 trading days but takes about 90 trading days to rise 20%. Which stylized fact does this directly evidence, and what sign of skewness accompanies it?",
+      options: [
+        { text: "Gain/loss asymmetry — accompanied by negative skewness (losses are faster and sharper than gains)", correct: true },
+        { text: "Fat tails — accompanied by positive excess kurtosis" },
+        { text: "Aggregational Gaussianity — accompanied by zero skewness at long horizons" },
+        { text: "Volatility clustering — accompanied by positive raw-return autocorrelation" },
+      ],
+      explanation: "Drawdowns reaching a magnitude faster than equal-sized run-ups is gain/loss asymmetry, which leaves negative skew in the return distribution — the market falls faster than it rises.",
+    },
+  ]}
+/>

@@ -1,0 +1,390 @@
+---
+title: "Evaluating Synthetic Data Without Fooling Yourself"
+description: "The hardest lesson: distributional and dependence tests, the discriminative and predictive (train-on-synthetic/test-on-real) scores, the memorization and nearest-neighbour tests that catch a copying generator, and the leakage minefield where a generator trained on your full history inflates every backtest it touches."
+topic: "en/generative-models-for-synthetic-market-data"
+order: 7
+minutes: 18
+updated: 2026-06-21
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, SyntheticVsRealPaths, ReturnDistribution, TsAcfPlot } from '@/components/react';
+
+We have spent six lessons learning to *make* fake market data — classical baselines, GANs, VAEs, diffusion. This lesson is the one the whole course has been quietly pointing at, and it is the hard one: **a generator is only ever as trustworthy as your ability to evaluate it.** You can build the most elegant diffusion sampler in the building, but if you cannot prove its output is both *realistic* and *honest*, it is a liability, not an asset. Making the data is the fun part. Judging it is the part that keeps you out of trouble.
+
+Here is the punchline, stated bluntly so it sticks: **the single easiest way to "win" every realism test is to memorize the training set.** A generator that simply replays the paths it was trained on will have flawless tails, perfect autocorrelations, a discriminator that can't tell real from fake — a gold star on every distributional report card. And it is also the *most dangerous* failure mode, because memorized data is the past photocopied back at you. Drop that into a backtest and you are no longer simulating the future; you are leaking it. Your Sharpe ratio will look spectacular, right up until real money meets real markets.
+
+So evaluation is **a gauntlet, not a number.** No single test certifies a generator. You run a battery — marginals and dependence, a discriminator, a use-oriented predictive score, an explicit memorization probe, and a leakage audit — precisely *because each test has a blind spot that the next one is designed to cover.* Skip any rung of the ladder and the memorizer walks straight through the gap. Let's build the ladder.
+
+## Distributional & dependence tests
+
+<MCQ
+  client:visible
+  pretest
+  question="A synthetic generator reproduces the real data's return histogram almost perfectly. What has it definitely demonstrated?"
+  options={[
+    { text: "That its marginal distribution matches — nothing about dependence over time", correct: true },
+    { text: "That it is not memorizing the training set" },
+    { text: "That a downstream model trained on it will generalize" },
+    { text: "That it captures volatility clustering" },
+  ]}
+  explanation="Matching the histogram is a statement about the marginal (one-point) distribution only. It says nothing about how returns relate across time, and certainly nothing about whether the generator copied its way to that histogram."
+/>
+
+**Analogy.** Imagine grading a forger. The first thing you check is whether each individual brushstroke looks like the master's — the *colours*, the *texture*, the *weight* of the line. That's the marginal distribution. But a master is also recognizable by how strokes *relate*: rhythm, recurring motifs, the way a dark passage follows a bright one. That's the dependence structure. A forger who nails the colours but botches the rhythm is still a forger.
+
+**Definition.** Distributional tests ask whether the synthetic data's *marginal* statistics match the real ones; dependence tests ask whether its *relationships across time* match. Concretely, you re-run the **stylized-facts rubric from lesson 2** on the synthetic series and compare, fact by fact:
+
+- **Fat tails** — tail index and excess kurtosis (real returns are leptokurtic, kurtosis far above 3).
+- **No linear return autocorrelation** — the ACF of raw returns should die almost immediately.
+- **Volatility clustering** — the ACF of *absolute* (or squared) returns should decay slowly, over many lags.
+- **Leverage effect** — negative correlation between today's return and tomorrow's volatility.
+
+The instruments are standard: **QQ-plots** for visual tail comparison, the **Kolmogorov–Smirnov** and **Anderson–Darling** distances to quantify how far apart two distributions are (Anderson–Darling weights the tails more heavily, which is exactly where finance lives), and side-by-side **ACF curves** for the dependence facts.
+
+<ReturnDistribution client:visible caption="The marginal test made visual: a Gaussian fit (thin) badly misses the fat tails and sharp peak of real daily returns. A good generator's histogram should overlay the real one — including those tails." />
+
+**Worked example.** You sample 5,000 synthetic daily returns and tabulate against the real series:
+
+| Statistic | Real | Synthetic A | Synthetic B |
+|---|---|---|---|
+| Excess kurtosis | 6.1 | 5.8 | 0.3 |
+| Tail index (Hill) | 3.4 | 3.3 | 8.0 |
+| ACF(returns), lag 1 | 0.01 | 0.00 | 0.02 |
+| ACF(\|returns\|), lag 10 | 0.18 | 0.16 | 0.01 |
+| KS distance | 0.00 | 0.03 | 0.21 |
+
+Synthetic A tracks every fact — fat tails (kurtosis 5.8, tail index 3.3), no return autocorrelation, persistent volatility clustering (ACF of absolute returns still 0.16 at lag 10). **Synthetic B is a near-Gaussian impostor**: kurtosis 0.3, tail index 8.0 (far too thin), and absolute-return ACF that vanishes — no volatility clustering at all. The KS distance of 0.21 confirms B's marginal is way off. B fails; A passes this rung.
+
+<TsAcfPlot client:visible caption="The dependence test made visual: raw returns (top) show almost no autocorrelation, while absolute returns (bottom) stay positive for many lags — the volatility-clustering signature a generator must reproduce." />
+
+<Callout variant="warning">
+**Passing every distributional and dependence test is necessary but emphatically NOT sufficient.** A generator that memorizes the training set reproduces every one of these statistics *perfectly* — its tails, ACFs, and leverage correlation are exact, because they ARE the real data. So a clean stylized-facts report is the price of admission, not a certificate of health. The memorizer is invisible at this rung.
+</Callout>
+
+### When to use it
+
+Always, and first. This is the cheap, fast smoke test: if a generator can't even match the marginals and the volatility-clustering ACF, you stop here and fix it before spending effort on anything downstream. It rules *out* bad generators; it can never rule *in* a good one.
+
+<FillBlank
+  client:visible
+  text="The ACF of raw returns dies almost immediately, but the ACF of {{absolute|signed|cumulative}} returns decays slowly — that slow decay is the signature of volatility clustering a generator must reproduce."
+/>
+
+## The discriminative score (can a classifier tell them apart?)
+
+<MCQ
+  client:visible
+  pretest
+  question="You train a classifier to separate real from synthetic samples and it achieves an AUC of 0.51. What does that mean?"
+  options={[
+    { text: "The fake is essentially indistinguishable from real — a good sign", correct: true },
+    { text: "The classifier is broken" },
+    { text: "Half the synthetic samples are memorized" },
+    { text: "The synthetic data is useless for training" },
+  ]}
+  explanation="AUC near 0.5 means the best classifier you could train does no better than a coin flip at telling real from fake — the synthetic distribution sits right on top of the real one. That's exactly what you want from a realism standpoint."
+/>
+
+**Analogy.** Hire the sharpest art authenticator in the world and hand them a stack of paintings, half genuine, half forged, with the labels hidden. If the expert's guesses are no better than a coin flip, the forgeries are *indistinguishable*. If the expert nails every fake, the forgeries have a tell. The discriminative score automates that expert.
+
+**Definition.** Train a binary classifier (gradient-boosted trees, a small net — whatever is strong) to predict the label "real" vs. "synthetic" on a mixed, held-out set. Report its **AUC** (area under the ROC curve):
+
+- **AUC ≈ 0.5** → the classifier can't beat chance. The synthetic and real distributions overlap. *Good.*
+- **AUC ≈ 1.0** → the classifier separates them perfectly. The fake has an obvious tell — wrong tails, a giveaway artifact, the wrong dependence. *Bad.*
+
+This is strictly stronger than the marginal tests, because a powerful classifier can exploit *joint* and *higher-order* structure a handful of summary statistics miss.
+
+**Worked example.** Three candidate generators, same real data:
+
+| Generator | Discriminator AUC | Read |
+|---|---|---|
+| Blurry VAE | 0.94 | Classifier nearly always wins → obvious tell (over-smoothed paths) |
+| Decent GAN | 0.62 | Some separability → partial realism, room to improve |
+| Tuned diffusion | 0.52 | Near coin-flip → distributions overlap well |
+
+The diffusion model is winning the *realism* contest. But note the trap waiting in the next callout.
+
+<Callout variant="warning">
+**A memorizing generator ALSO scores AUC ≈ 0.5.** If the synthetic samples are copies of real training rows, they are drawn from *exactly* the real distribution, so no classifier can separate them — the discriminator is perfectly fooled. Once again the memorizer hides. The discriminative score is necessary-not-sufficient for the same reason the stylized facts were: realism and honesty are different questions, and this test only measures realism.
+</Callout>
+
+### When to use it
+
+After the stylized facts pass, as your headline *realism* metric — it's the single number that best summarizes "does the fake look real, accounting for joint structure." Track it while tuning a generator. Just never let a 0.5 lull you into thinking you're done; you've cleared realism, not memorization.
+
+## The predictive score (Train on Synthetic, Test on Real)
+
+<MCQ
+  client:visible
+  pretest
+  question="What is the point of synthetic market data for most quant teams?"
+  options={[
+    { text: "To augment training so a downstream model generalizes better to real data", correct: true },
+    { text: "To replace real data entirely in production" },
+    { text: "To make backtests look better" },
+    { text: "To compress the dataset" },
+  ]}
+  explanation="The whole reason to generate data is usually downstream usefulness — more training material, stress scenarios, privacy-preserving sharing. So the test that matters most asks: does training on it actually help on REAL data?"
+/>
+
+**Analogy.** A flight simulator is only worth the hangar space if pilots who train in it fly real planes well. Nobody cares how photoreal the simulator's clouds are if graduates crash the actual 737. **Train-on-Synthetic, Test-on-Real (TSTR)** is the simulator-graduation test for data.
+
+**Definition.** TSTR: train your downstream model (a return predictor, a classifier, a strategy) **entirely on synthetic data**, then evaluate it on a **real held-out** set you never generated from. Compare against **TRTR** — Train-on-Real, Test-on-Real, the same downstream model trained on real data. If the synthetic data carries the signal the model needs, then:
+
+$$\text{TSTR} \approx \text{TRTR}$$
+
+A small TSTR–TRTR gap means the synthetic data is *useful* — it can stand in for, or augment, real data. A large gap means the generator dropped the signal (often because it smoothed away the very structure the downstream task depends on).
+
+**Worked example.** Same downstream classifier, three training regimes, evaluated on the *same* real test set:
+
+| Training data | Test-on-real accuracy | Test-on-real Sharpe |
+|---|---|---|
+| Real (TRTR — the benchmark) | 0.61 | 1.05 |
+| Synthetic A (TSTR) | 0.59 | 0.98 |
+| Synthetic B (TSTR) | 0.52 | 0.41 |
+
+Synthetic A nearly matches the real benchmark (accuracy 0.59 vs 0.61; Sharpe 0.98 vs 1.05) — it preserved the predictive signal and is genuinely useful for augmentation. Synthetic B collapses to near-chance accuracy and a feeble Sharpe — realistic-looking marginals, but the *signal* is gone. This is the test where a "pretty but useless" generator finally gets caught.
+
+<Callout variant="warning">
+**A high TSTR score is great news — but a memorizing generator can score high here too, for the wrong reason.** If it copied real training rows, a model trained on them can still generalize... and you've learned nothing about generation, while quietly setting yourself up for leakage (next section). TSTR measures usefulness, not originality. Run it *alongside* the memorization test, never instead of it.
+</Callout>
+
+### When to use it
+
+Whenever the goal is augmentation, privacy-preserving sharing, or stress-testing — i.e. almost always. TSTR is the most *use-oriented* test in the gauntlet: it speaks directly to "will this data help my actual task?" rather than "does it look pretty?" Make it your acceptance criterion for shipping a generator into a training pipeline.
+
+<MatchConcepts
+  client:visible
+  question="Match each test to the question it answers"
+  pairs={[
+    { term: "Stylized-facts comparison", definition: "Do the marginals and dependence (tails, ACFs, leverage) match the real data?" },
+    { term: "Discriminative score (AUC)", definition: "Can the strongest classifier tell real from synthetic apart?" },
+    { term: "TSTR vs TRTR", definition: "Does a model trained on synthetic data still perform on REAL held-out data?" },
+  ]}
+/>
+
+## The memorization & nearest-neighbour test — the one that catches a copier
+
+<MCQ
+  client:visible
+  pretest
+  question="Every realism test (stylized facts, discriminator AUC ≈ 0.5, even TSTR) can be passed by a generator that simply memorized the training set. What property must a dedicated test measure to catch it?"
+  options={[
+    { text: "How close each synthetic sample sits to its nearest real TRAINING sample", correct: true },
+    { text: "The kurtosis of the synthetic returns" },
+    { text: "The discriminator's AUC at higher resolution" },
+    { text: "The number of synthetic samples generated" },
+  ]}
+  explanation="Memorization is a statement about distance to the training set, so you have to measure that distance directly. No marginal or distributional statistic can see it, because the memorizer's marginals are exact by construction."
+/>
+
+**Analogy.** A student who *understands* the material writes new sentences that are correct. A student who *plagiarizes* writes sentences that are word-for-word identical to the source — and a plagiarism checker doesn't grade quality, it measures **how close each sentence is to something in the source library.** That's the nearest-neighbour test, applied to data.
+
+**Definition.** For each synthetic sample, find its **nearest neighbour in the training set** (smallest distance under a sensible metric on returns/paths) and record that distance. Then compare two distributions of distances:
+
+- **Synthetic → train** nearest-neighbour distances, and
+- a **baseline**: **holdout → train** distances (real samples the generator never saw, measured to the same training set).
+
+If the synthetic-to-train distances are **far smaller** than the holdout-to-train distances, the generator is sitting on top of its training data — it's **copying**, not generating. A healthy generator produces synthetic-to-train distances *comparable to* holdout-to-train distances: novel, but drawn from the same neighbourhood.
+
+This is the rung that catches what every previous test misses. Drag the slider below and watch it happen.
+
+<SyntheticVsRealPaths client:visible caption="Drag 'Generator memorization' from Novel toward Copying. At the novel end the synthetic paths (accent) share the real paths' statistics but stay visibly distinct, and the nearest-neighbour distance is healthy. As you push toward Copying, the synthetic paths collapse onto the nearest real path and the nearest-neighbour distance crashes toward zero — the exact signal that flags a memorizing generator." />
+
+Walk through it deliberately: at the **Novel** end the verdict is healthy — distinct paths, comfortable nearest-neighbour distance, safe to train on. Slide toward **Copying** and the synthetic curves snap onto real training paths while the **distance readout plummets**. That collapse-to-zero is *the* number you compute in production. Everything to the left of "Copying" is a generator you can trust; everything sliding toward zero distance is a backtest about to lie to you.
+
+**Worked example.** You compute median nearest-neighbour distances (smaller = closer to training data):
+
+| Distance measured | Median | Read |
+|---|---|---|
+| Holdout → train (baseline) | 1.00 | What "novel but same distribution" looks like |
+| Generator A: synthetic → train | 0.97 | ≈ baseline → genuinely novel ✓ |
+| Generator B: synthetic → train | 0.06 | ≪ baseline → memorizing / copying ✗ |
+
+Generator A's synthetic samples are about as far from the training set as *unseen real data* is — exactly right. Generator B's samples are practically glued to training rows (0.06 vs a 1.00 baseline). B is a photocopier wearing a generator costume, and only this test exposed it.
+
+<Callout variant="warning">
+**The memorization test is the safety interlock for everything else.** A generator can ace the stylized facts, score AUC 0.5, and post a strong TSTR — and still be a memorizer, because all three of those are *consistent with copying*. The nearest-neighbour test is the only rung that distinguishes "learned the distribution" from "stored the data." If synthetic-to-train distances collapse below the holdout-to-train baseline, **reject the generator no matter how good its other scores look** — because copying is the on-ramp to leakage.
+</Callout>
+
+### When to use it
+
+On every generator, every time, before it is allowed near a backtest or a training set. It's cheap (a nearest-neighbour search) and it is the *only* defence against the failure mode that all the realism metrics are blind to. Treat a passing memorization test as a precondition for trusting any of the other scores.
+
+## The leakage minefield
+
+<MCQ
+  client:visible
+  pretest
+  question="You fit a generator on your ENTIRE price history, then use its synthetic paths to backtest a strategy on 2018. Why is the resulting Sharpe untrustworthy?"
+  options={[
+    { text: "The generator saw post-2018 data, so its synthetic paths can encode the future relative to the backtest window", correct: true },
+    { text: "Synthetic data always has lower variance" },
+    { text: "Backtests require real data by law" },
+    { text: "The generator's AUC was never measured" },
+  ]}
+  explanation="A generator trained on the full history has absorbed information that is 'future' relative to any earlier backtest window. The synthetic paths it emits can carry that future, and training-on-synthetic / testing-on-real then leaks it straight into your performance numbers."
+/>
+
+This is the warning the whole course has been circling, now made concrete. Recall the creed from *Deep Learning for Market Data*: **leakage is the silent Sharpe-inflator**, and a generator is a brand-new, sneaky way to commit it.
+
+**Analogy.** Imagine a "history teacher" who has read tomorrow's newspaper, then sets you a quiz about yesterday. Their questions will subtly steer you toward what *actually* happened next — and you'll ace the quiz, learning nothing about whether you could have predicted it in real time. A generator fit on your **full history** is that teacher. It has seen data that is *future* relative to any earlier backtest window, and the synthetic paths it produces can quietly encode that future.
+
+**Definition.** Generator leakage is the contamination that occurs when a generator is fit on data that overlaps or post-dates the evaluation window, so its synthetic output carries information the strategy could not have known in real time. Run train-on-synthetic / test-on-real on those paths and the leaked future **inflates your Sharpe** — exactly the way fitting features on the test set does, but harder to spot because the synthetic data *looks* clean and the memorization may be diffuse rather than literal.
+
+**The fixes — and they are non-negotiable:**
+
+1. **Fit the generator ONLY on the training window.** Never let it touch the test period. The generator is part of your model, so it must obey the same temporal wall every other component does.
+2. **Nest generation inside purged, embargoed cross-validation.** Re-fit (or refuse to use) the generator *within each fold*, purging samples whose information overlaps the test fold and embargoing a buffer after it — the same purged/embargoed CV from *Deep Learning for Market Data*. A generator fit once on everything and reused across folds defeats the entire scheme.
+3. **Deflate for the generator search.** Every generator architecture, seed, and hyper-parameter you tried is a *trial*. Searching across many generators and keeping the best inflates Sharpe by multiple testing — so apply the **deflated-Sharpe** correction for the number of generator trials, just as you would for strategy trials.
+
+<ReturnDistribution client:visible caption="Leakage doesn't change how the synthetic returns LOOK — the distribution can be flawless. That's what makes it dangerous: the contamination lives in WHEN the generator saw the data, not in the shape of its output." />
+
+<Callout variant="warning">
+**A generator trained on your full history has, by definition, seen the future relative to any earlier backtest — and synthetic paths can smuggle that future into your results.** This is the most dangerous failure in the entire course because it is *invisible to every realism test*: the data looks perfect, the discriminator is fooled, the marginals match. The only protection is process: fit generators inside the training window only, nest them in purged/embargoed CV, and deflate for the generator search. **If you remember one sentence from this course, make it this one.**
+</Callout>
+
+### When to use it
+
+This isn't a test you run once; it's a discipline you build into the *pipeline*. Audit for leakage every time a generator feeds a backtest or a model-selection loop — i.e. continuously. The memorization test catches *literal* copying; the leakage audit catches the subtler temporal contamination that survives even when nearest-neighbour distances look fine.
+
+## The evaluation checklist
+
+No single test suffices — that has been the drumbeat of every section. Each rung covers a blind spot in the one before it, so you run them **in order** and a generator must clear *all* of them:
+
+| # | Rung | Question it answers | What it catches | Blind to |
+|---|---|---|---|---|
+| 1 | Stylized facts | Do marginals & dependence match? | Wrong tails, no vol-clustering | Memorization, leakage |
+| 2 | Discriminative AUC | Can a classifier separate real from fake? | Joint-structure tells, artifacts | Memorization, leakage |
+| 3 | Predictive (TSTR vs TRTR) | Is the synthetic data *useful* on real data? | Dropped signal, "pretty but useless" | Memorization, leakage |
+| 4 | Memorization / nearest-neighbour | Is the generator copying the training set? | A photocopier generator | Subtle temporal leakage |
+| 5 | Leakage audit | Did the generator see the future? | Inflated Sharpe from contamination | (the discipline that backstops all the rest) |
+
+Notice the pattern: rungs 1–3 are all blind to memorization, which is why rung 4 exists; and rungs 1–4 can all be passed by a generator that nonetheless leaks, which is why rung 5 is a *process*, not a metric. **Skip a rung and the failure it was meant to catch walks straight through.**
+
+<MCQ
+  client:visible
+  allowMultiple
+  question="A generator that has secretly memorized its training set will quietly PASS which of these tests? (Select all that apply.)"
+  options={[
+    { text: "The stylized-facts / distributional comparison", correct: true },
+    { text: "The discriminative classifier AUC near 0.5", correct: true },
+    { text: "The TSTR predictive score on the same memorized data", correct: true },
+    { text: "The nearest-neighbour distance test against the training set" },
+  ]}
+  explanation="A photocopier reproduces the marginals, fools the discriminator, and can even look useful on TSTR — it sails through rungs 1–3. The one test built to catch it is the nearest-neighbour distance, which collapses toward zero exactly because the synthetic samples sit on top of training points."
+/>
+
+<Categorize
+  client:visible
+  question="Sort each finding into the rung of the gauntlet that would surface it."
+  buckets={["Realism tests (stylized facts / AUC)", "Memorization & nearest-neighbour", "Leakage audit"]}
+  items={[
+    { text: "Synthetic returns have kurtosis 0.3 vs real 6.1", bucket: "Realism tests (stylized facts / AUC)" },
+    { text: "A classifier separates real from fake at AUC 0.95", bucket: "Realism tests (stylized facts / AUC)" },
+    { text: "Synthetic-to-train distances are 0.06 vs a 1.00 holdout baseline", bucket: "Memorization & nearest-neighbour" },
+    { text: "Each synthetic path sits on top of a real training path", bucket: "Memorization & nearest-neighbour" },
+    { text: "The generator was fit on the full history, including the backtest window", bucket: "Leakage audit" },
+    { text: "Sharpe is inflated and the generator search was never deflated", bucket: "Leakage audit" },
+  ]}
+/>
+
+## Recap
+
+Evaluating synthetic market data is harder than generating it, and the reason is a single adversary: **a generator that memorizes the training set passes every realism test while leaking the future into your backtests.** So you don't trust a number — you run a gauntlet. Start with the **stylized-facts** comparison (marginals, tails, the ACFs of returns and absolute returns, leverage) to confirm the data *looks* real; add the **discriminative score** so a strong classifier can't find a tell (AUC near 0.5 is the target); add the **predictive TSTR-vs-TRTR** test so you know the data is actually *useful* on real held-out data. Then — crucially — run the **memorization / nearest-neighbour** test, the only rung that distinguishes "learned the distribution" from "stored the data": if synthetic-to-train distances collapse below the holdout-to-train baseline, reject the generator. Finally, treat **leakage** as a process discipline: fit generators on the training window only, nest them inside purged and embargoed CV, and deflate for the generator search. Each rung patches a blind spot in the last. Pass all five, in order, and you have a generator you can actually believe.
+
+<MindMap
+  client:visible
+  eyebrow="The evaluation gauntlet"
+  root={{
+    label: "Evaluating synthetic data",
+    children: [
+      {
+        label: "Realism — does it look real?",
+        children: [
+          { label: "Stylized facts — tails, ACF of returns and absolute returns, leverage" },
+          { label: "Discriminative AUC — classifier near 0.5 means indistinguishable" },
+        ],
+      },
+      {
+        label: "Usefulness — TSTR vs TRTR",
+        children: [
+          { label: "Train on synthetic, test on real" },
+          { label: "Small gap to train-on-real means useful for augmentation" },
+        ],
+      },
+      {
+        label: "Honesty — is it copying?",
+        children: [
+          { label: "Nearest-neighbour distance to the training set" },
+          { label: "Synthetic-to-train far below holdout-to-train means memorizing" },
+        ],
+      },
+      {
+        label: "Leakage audit — did it see the future?",
+        children: [
+          { label: "Fit generator on the training window only" },
+          { label: "Nest inside purged and embargoed CV" },
+          { label: "Deflate for the generator search" },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="The evaluation gauntlet — final check"
+  questions={[
+    {
+      question: "Your discriminator achieves AUC 0.50 separating real from synthetic. Which conclusion is justified?",
+      options: [
+        { text: "The synthetic distribution overlaps the real one — but this is also consistent with a generator that memorized the training set", correct: true },
+        { text: "The generator is definitely not memorizing" },
+        { text: "The synthetic data is guaranteed useful for downstream training" },
+        { text: "The generator has the wrong tails" },
+      ],
+      explanation: "AUC 0.50 means indistinguishable distributions, which is good for realism — but a memorizer scores 0.50 too, because copies ARE drawn from the real distribution. Necessary, not sufficient.",
+    },
+    {
+      question: "Which statement about the evaluation gauntlet is TRUE?",
+      options: [
+        { text: "No single test suffices; each rung is designed to cover a blind spot in the others", correct: true },
+        { text: "A high TSTR score alone certifies a generator as safe" },
+        { text: "Passing the stylized-facts test rules out memorization" },
+        { text: "The discriminative score detects leakage" },
+      ],
+      explanation: "The whole point is layering: realism tests miss memorization, the memorization test misses subtle leakage, and the leakage audit backstops everything. One number is never enough.",
+    },
+    {
+      question: "A generator passes the stylized facts, scores AUC 0.51, and posts a strong TSTR. What is the trap?",
+      options: [
+        { text: "All three are consistent with a generator that simply memorized the training set — only the nearest-neighbour test can rule that out", correct: true },
+        { text: "It means the generator is overfit to the test set's tails" },
+        { text: "Strong TSTR means the data is too smooth" },
+        { text: "AUC 0.51 is too high to trust" },
+      ],
+      explanation: "Memorization reproduces marginals exactly, fools the discriminator, and can even support a useful downstream model — so it sails through rungs 1–3. You must measure synthetic-to-train distance to catch it.",
+    },
+    {
+      question: "You fit a generator on your full price history, then backtest a 2018 strategy on its synthetic paths and get a dazzling Sharpe. What most likely happened?",
+      options: [
+        { text: "The generator absorbed post-2018 information, its synthetic paths encoded that future, and train-on-synthetic/test-on-real leaked it into the Sharpe", correct: true },
+        { text: "Synthetic data simply has higher Sharpe than real data" },
+        { text: "The backtest window was too long" },
+        { text: "The discriminator AUC was too low" },
+      ],
+      explanation: "A generator fit on the full history has seen data that is future relative to 2018. Synthetic paths can carry that future; the leak inflates Sharpe. Fix it by fitting only on the training window, nesting in purged/embargoed CV, and deflating for the generator search.",
+    },
+    {
+      question: "How does the predictive (TSTR) test differ in purpose from the discriminative (AUC) test?",
+      options: [
+        { text: "TSTR measures whether the data is USEFUL on real tasks; the discriminative score measures whether the data LOOKS real to a classifier", correct: true },
+        { text: "They measure the same thing with different math" },
+        { text: "TSTR detects memorization while AUC detects leakage" },
+        { text: "AUC measures usefulness and TSTR measures realism" },
+      ],
+      explanation: "The discriminative score is a realism metric (can a classifier tell fake from real?). TSTR is a use-oriented metric (does training on the synthetic data transfer to real held-out data?). A generator can be realistic yet useless, or — via memorization — useful yet untrustworthy, which is why you run both alongside the memorization test.",
+    },
+  ]}
+/>

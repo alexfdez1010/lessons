@@ -1,0 +1,414 @@
+---
+title: "Modelos de difusión y basados en score para trayectorias de precios"
+description: "El paradigma ruido-luego-eliminación-de-ruido que conquistó la generación de imágenes, adaptado a los retornos: el proceso de corrupción hacia delante, el denoiser inverso aprendido, el ajuste por score y la pregunta honesta de si el estado del arte en fotografías se gana el sueldo con unos pocos miles de retornos ruidosos."
+topic: "es/generative-models-for-synthetic-market-data"
+order: 6
+minutes: 17
+updated: 2026-06-21
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, ReturnDistribution, TsAcfPlot } from '@/components/react';
+
+Aquí va la idea que se comió la visión por ordenador y luego fue a por todo lo demás: en lugar de intentar *dibujar* una muestra realista de un único trazo heroico — la jugada de la GAN, todo o nada, propensa al colapso de modos y a la inestabilidad de entrenamiento a las 3 de la madrugada — enseñas a un modelo a hacer primero algo casi insultantemente fácil. Coges datos reales, los **destruyes** lentamente removiendo ruido gaussiano hasta que no queda más que estática, y registras cada paso de la demolición. Esa parte es trivial; cualquiera sabe añadir ruido. La magia está en que luego entrenas una red para ejecutar la demolición *al revés* — para mirar algo ligeramente ruidoso y adivinar qué aspecto tenía un escalón más limpio. Encadena suficientes de esos diminutos pasos de limpieza y podrás partir de **ruido puro** y recorrerlo, paso paciente a paso, todo el camino de vuelta hasta una muestra realista nuevecita que el modelo nunca ha visto.
+
+Eso es un modelo de difusión. Es el motor que hay detrás de los generadores de imágenes de los que has oído hablar, y sobre el papel es la respuesta al cliffhanger de las dos últimas lecciones. La GAN (lección 4) te daba muestras *nítidas y de alta fidelidad* pero era una diva temperamental que colapsaba sobre unos pocos modos y te peleaba todo el rato. El VAE (lección 5) era un ciudadano tranquilo, *estable y estructurado* que sí podías entrenar de verdad — pero sus muestras salían *borrosas*, la media probabilística de todo lo que podría haber sido. La propuesta de la difusión es que no tienes que elegir: entrena tan establemente como un VAE (no es más que un problema de regresión, predecir-el-ruido, sin pelea adversarial a navaja) **y** genera tan nítidamente como una GAN, cubriendo además los modos mejor que cualquiera de las dos. La pega — y siempre hay una pega — es que muestrea *despacio*, machacando docenas o cientos de pasos de eliminación de ruido por cada trayectoria, y tiene aún más hambre de datos que sus predecesores.
+
+Así que en esta lección haremos dos cosas a la vez. Construiremos la máquina con honestidad — proceso hacia delante, denoiser inverso, la visión basada en score que lo unifica, y el condicionamiento — y seguiremos haciendo la pregunta central e incómoda del curso: esta tecnología se ganó la corona con **diez millones de fotos de gatos casi estacionarias**. Tú tienes unos pocos miles de retornos no estacionarios y de poca señal. ¿De verdad se gana el sueldo el estado del arte en fotografías aquí, o estamos haciendo culto al cargamento de una victoria en un benchmark que nunca llega al P&L?
+
+## El proceso hacia delante (de añadir ruido)
+
+<MCQ
+  client:visible
+  pretest
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="En un modelo de difusión, ¿qué es el 'proceso hacia delante'?"
+  options={[
+    { text: "Un procedimiento fijo, sin aprendizaje, que añade gradualmente ruido gaussiano a datos reales a lo largo de muchos pasos hasta convertirlos en ruido puro.", correct: true },
+    { text: "Una red neuronal que aprende a generar nuevas muestras a partir de ruido." },
+    { text: "La función de pérdida que minimiza el denoiser." },
+    { text: "Un discriminador adversarial que puntúa lo realista que es una trayectoria." }
+  ]}
+  explanation="El proceso hacia delante (o de 'difusión') es la mitad fácil y sin parámetros: simplemente sigues removiendo ruido gaussiano según un calendario fijo hasta que los datos son indistinguibles de la estática. Aquí no ocurre ningún aprendizaje — es la demolición que luego enseñarás a una red a revertir."
+/>
+
+**Analogía.** Deja caer una única gota de tinta en un vaso de agua quieta. Al principio es una mancha nítida y estructurada — podrías señalarla. Un segundo después es una nube tenue; un minuto después todo el vaso es uniformemente, aburridamente gris y nunca adivinarías dónde cayó la gota. *Difundir la tinta hacia delante no cuesta esfuerzo* — la física lo hace gratis, y en la práctica es irreversible. Pero imagina que te pidieran pasar la película al revés: reensamblar ese gris uniforme de vuelta en la gota nítida original. Ese problema inverso es asombrosamente difícil — y aprender a hacerlo es todo el juego.
+
+**Definición.** El proceso hacia delante toma un punto de datos real $x_0$ (aquí, una trayectoria de retornos o una ventana de retornos) y produce una secuencia $x_1, x_2, \dots, x_T$ mezclando repetidamente ruido gaussiano según un calendario fijo de coeficientes $\alpha_t$:
+
+$$
+x_t = \sqrt{\alpha_t}\, x_{t-1} + \sqrt{1-\alpha_t}\,\epsilon, \qquad \epsilon \sim \mathcal{N}(0, I).
+$$
+
+Cada paso encoge la señal superviviente por $\sqrt{\alpha_t}$ e inyecta ruido nuevo de varianza $1-\alpha_t$, de modo que para el paso $T$ esencialmente toda la estructura ha desaparecido y $x_T \approx \mathcal{N}(0, I)$ — pura estática. Una conveniencia preciosa: como cada paso es solo escalado-más-gaussiano, puedes saltar directamente a cualquier paso en **forma cerrada** sin simular los intermedios. Escribiendo $\bar\alpha_t = \prod_{s=1}^{t}\alpha_s$,
+
+$$
+x_t = \sqrt{\bar\alpha_t}\, x_0 + \sqrt{1-\bar\alpha_t}\,\epsilon.
+$$
+
+Esto debería resultarte familiar de *Finanzas de Monte-Carlo*: esa recursión es una ecuación diferencial estocástica discretizada, y en el límite continuo el proceso hacia delante **es** una SDE de difusión — un movimiento browniano que lentamente ahoga la señal. Ya sabes simular ruido browniano; la difusión simplemente lo ejecuta como una corrupción controlada con un calendario conocido.
+
+**Ejemplo resuelto.** Sea $x_0 = 1.0$ (un valor de retorno normalizado) y usa un calendario suave $\alpha_1 = \alpha_2 = 0.9$. Supón que las extracciones de ruido salen $\epsilon_1 = 0.5$ y $\epsilon_2 = -1.2$.
+
+- Paso 1: $x_1 = \sqrt{0.9}\cdot 1.0 + \sqrt{0.1}\cdot 0.5 \approx 0.949 + 0.158 = 1.107$. Todavía reconociblemente "en torno a 1" — la mayor parte de la señal sobrevive.
+- Paso 2: $x_2 = \sqrt{0.9}\cdot 1.107 + \sqrt{0.1}\cdot(-1.2) \approx 1.050 - 0.379 = 0.671$. El valor original se desvanece; el ruido toma el control.
+
+Comprueba la forma cerrada: $\bar\alpha_2 = 0.9 \times 0.9 = 0.81$, así que el *coeficiente de señal superviviente* es $\sqrt{0.81} = 0.9$. Tras solo dos pasos, $x_0$ aporta $0.9 \times 1.0 = 0.9$ a la media — sigue iterando y ese coeficiente marcha hacia cero. Para cuando $\bar\alpha_t \approx 0$, el punto de datos es indistinguible de una extracción normal estándar. Esa es la demolición, completa.
+
+<Callout variant="warning">
+**Trampa: pensar que el proceso hacia delante necesita entrenamiento o ajuste para "encajar con los datos".** No lo necesita — es deliberadamente tonto. El proceso hacia delante es un calendario *fijo* que eliges de antemano; nunca mira la estructura de los datos y tiene cero parámetros aprendibles. Toda la inteligencia vive en el modelo **inverso**. Un error de novato habitual es sobreingeniar el calendario de ruido esperando que capture colas anchas o agrupamiento de volatilidad — no puede y no debe. Su único trabajo es borrar de forma fiable la señal para que el denoiser tenga un objetivo limpio contra el que aprender.
+</Callout>
+
+### Cuándo usarlo
+
+El proceso hacia delante no es algo que "uses" en inferencia — nunca lo ejecutas para generar. Lo ejecutas solo durante el **entrenamiento**, como el mecanismo barato que fabrica pares (entrada ruidosa, ruido conocido) para que el denoiser aprenda de ellos. Su verdadero valor es conceptual: convierte el problema imposible "modela la distribución completa de los retornos" en el problema trivial de plantear "dado algo ruidoso, predice el ruido" — en todos los niveles de corrupción a la vez.
+
+<FillBlank
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+  question="Completa la naturaleza del proceso hacia delante."
+  text="El proceso hacia delante es un calendario {{fijo|aprendido|adversarial|solo-estocástico}} que añade ruido gaussiano hasta que los datos se convierten en pura estática — no tiene parámetros aprendibles, así que toda la inteligencia del modelo vive en revertirlo."
+  explanation="El proceso hacia delante (de añadir ruido) es fijo y sin parámetros: eliges el calendario de ruido de antemano. Solo se aprende el denoiser inverso."
+/>
+
+## El proceso inverso (de eliminación de ruido)
+
+<MCQ
+  client:visible
+  pretest
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="En el momento de la generación, ¿cómo produce una nueva muestra un modelo de difusión entrenado?"
+  options={[
+    { text: "Parte de ruido gaussiano puro y elimina ruido de forma iterativa, usando la red para quitar un poco de ruido estimado en cada uno de muchos pasos hasta que emerge una muestra limpia.", correct: true },
+    { text: "Ejecuta el proceso hacia delante de añadir ruido una vez y lee el resultado." },
+    { text: "Muestrea un único vector latente y lo decodifica en una sola pasada hacia delante." },
+    { text: "Elige la trayectoria real de entrenamiento más cercana y le añade jitter." }
+  ]}
+  explanation="El muestreo revierte la corrupción. Empiezas en x_T ~ N(0,I) — ruido puro — y aplicas el denoiser aprendido repetidamente, empujando en cada paso la muestra hacia la variedad de datos, hasta alcanzar un x_0 limpio. La respuesta de la 'única pasada hacia delante' describe un decodificador VAE, no la difusión."
+/>
+
+**Analogía.** Un escultor maestro no talla una estatua de un solo golpe. Mira un bloque tosco, quita un *poco* de lo que obviamente no es la estatua, da un paso atrás, vuelve a mirar, quita un poco más. Cada pasada es una decisión modesta y de bajo riesgo; la obra maestra emerge de la *acumulación* de pequeñas correcciones. El denoiser de difusión es ese escultor, y el bloque de mármol es una pantalla de ruido puro. Nunca tiene que clavar la trayectoria entera de golpe — solo tiene que responder a la pregunta fácil "¿qué ruido tengo delante ahora mismo?" unas cuantas centenas de veces seguidas.
+
+**Definición.** Entrenamos una única red $\epsilon_\theta(x_t, t)$ para mirar una entrada ruidosa $x_t$ y su nivel de corrupción $t$, y **predecir el ruido $\epsilon$** que se añadió. Gracias a la forma cerrada $x_t = \sqrt{\bar\alpha_t}\,x_0 + \sqrt{1-\bar\alpha_t}\,\epsilon$, generar un ejemplo de entrenamiento es gratis: elige un $x_0$ real, elige un paso aleatorio $t$, extrae un ruido $\epsilon$, construye $x_t$ y pide a la red que recupere $\epsilon$. La pérdida es un error cuadrático medio liso — sin adversario, sin acto de equilibrismo:
+
+$$
+\mathcal{L} = \mathbb{E}_{x_0, t, \epsilon}\, \big\lVert \epsilon - \epsilon_\theta(x_t, t)\big\rVert^2.
+$$
+
+Esa simplicidad del MSE es *toda la razón por la que la difusión es estable* — no es más que regresión, lo más bien portado que hay en el deep learning. Para **muestrear**, parte de $x_T \sim \mathcal{N}(0, I)$ y da pasos hacia atrás: en cada $t$, predice el ruido, resta la cantidad implícita para estimar un $x_{t-1}$ un poco más limpio, vuelve a añadir un toque de aleatoriedad nueva (para que muestrees en lugar de colapsar en una sola respuesta), y repite hasta $x_0$.
+
+**Recorrido conceptual resuelto de un paso de eliminación de ruido.** Digamos que estás en el paso $t$ sosteniendo una trayectoria ruidosa $x_t$ que es, visualmente, "sobre todo estática con una tenue tendencia asomando".
+
+1. Pasa $(x_t, t)$ a la red. Devuelve $\epsilon_\theta$ — su mejor conjetura del ruido que contamina esta trayectoria *a este nivel de corrupción*.
+2. Reordenando la forma cerrada hacia delante se obtiene una estimación de la trayectoria limpia: $\hat{x}_0 = \big(x_t - \sqrt{1-\bar\alpha_t}\,\epsilon_\theta\big)/\sqrt{\bar\alpha_t}$. Esto es el modelo "imaginando" la muestra acabada — al principio, $\hat{x}_0$ es una conjetura borrosa; cerca del final es nítida.
+3. No saltes hasta $\hat{x}_0$ de golpe — esa sería la jugada de una sola pasada, demasiado confiada. En su lugar da un *pequeño* paso hacia ella para obtener la media de $x_{t-1}$, y luego añade un poco de ruido gaussiano de vuelta para que estés extrayendo de una distribución, no de un punto.
+4. Ahora estás en $x_{t-1}$: marginalmente más limpia. Repite. Tras todos los $T$ pasos, la tenue tendencia se ha resuelto en una trayectoria de retornos nítida y realista.
+
+La razón por la que la salida es nítida (a diferencia de la decodificación borrosa de un solo disparo de un VAE) es exactamente este *refinamiento iterativo*: cientos de pequeños pasos correctivos permiten al modelo comprometerse con detalles finos que nunca se atrevería a producir en una sola pasada.
+
+<Callout variant="warning">
+**Trampa: olvidar que el muestreo es caro — una trayectoria cuesta muchas pasadas hacia delante.** Un VAE o una GAN escupen una muestra en una *única* evaluación de la red. Un modelo de difusión corriente necesita una pasada hacia delante *por cada paso de eliminación de ruido* — a menudo de 50 a 1.000 de ellos — para producir **una** trayectoria. Genera un libro de Monte-Carlo de 100.000 trayectorias de escenario y ese factor muerde fuerte: puedes estar haciendo decenas de millones de evaluaciones de la red. Los muestreadores rápidos (DDIM, destilación) recortan el número de pasos, pero "nítido como una GAN, estable como un VAE" siempre viene grapado a "y notablemente más lento de muestrear". Presupuéstalo antes de prometer escenarios de la noche a la mañana a un equipo de riesgos.
+</Callout>
+
+### Cuándo usarlo
+
+Echa mano del enfoque del denoiser — predecir-el-ruido, muestrear-por-refinamiento — siempre que la estabilidad de entrenamiento sea el cuello de botella y puedas permitirte una generación lenta. Si tu GAN no para de colapsar o tu VAE no para de emborronar y tienes *suficientes* datos, el proceso inverso de difusión es la alternativa estable y de alta fidelidad. Sáltatelo cuando necesites generar cantidades enormes de trayectorias con un presupuesto de latencia ajustado y un generador más barato ya supere tu listón de fidelidad.
+
+<Reveal client:visible summary="¿Por qué es el objetivo de entrenamiento de la difusión mucho más estable que el de una GAN?">
+Porque **no es un juego**. Una GAN entrena dos redes una contra otra; la pérdida es un blanco móvil y el equilibrio es frágil, que es de donde vienen el colapso de modos y la oscilación. La pérdida de la difusión es un *objetivo de regresión fijo* — predecir el ruido conocido $\epsilon$ — minimizado por aprendizaje supervisado corriente. No hay adversario que equilibrar, así que el entrenamiento simplemente... desciende, como hace siempre una regresión bien planteada. El precio de esa calma se paga en el momento del *muestreo* (muchos pasos), no en el del entrenamiento.
+</Reveal>
+
+## La visión basada en score
+
+<MCQ
+  client:visible
+  pretest
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="En la visión basada en score de la difusión, ¿qué aprende el modelo?"
+  options={[
+    { text: "El score — el gradiente de la log-densidad, ∇ₓ log p(x), que apunta hacia regiones de mayor densidad de datos.", correct: true },
+    { text: "La probabilidad exacta p(x) de cada muestra como un número normalizado." },
+    { text: "Una tabla de búsqueda discreta que mapea vectores de ruido a trayectorias reales." },
+    { text: "La matriz de covarianzas de los retornos y nada más." }
+  ]}
+  explanation="Los modelos basados en score aprenden el SCORE: ∇ₓ log p(x), un campo vectorial que apunta hacia regiones de mayor densidad (más realistas). Crucialmente, nunca necesitas la densidad normalizada p(x) en sí — solo su gradiente — lo que esquiva la constante de normalización intratable."
+/>
+
+**Analogía.** Imagina el espacio de todas las trayectorias de retornos posibles como un paisaje donde las trayectorias realistas se asientan en valles profundos y las absurdas (una acción que triplica cada día durante un mes) se posan en crestas altas y solitarias. El **score** es la dirección local cuesta abajo — un campo de gravedad que, estés donde estés, apunta hacia el valle de plausibilidad más cercano. No necesitas un mapa de la altitud de todo el terreno; solo necesitas saber, a tus pies, *hacia dónde es cuesta abajo*. Suelta una canica (una muestra de ruido) en cualquier sitio y deja que esta gravedad tire de ella, con un poco de jitter para que explore, y rueda hasta un valle — una muestra realista.
+
+**Definición.** El **score** de una distribución es $\nabla_x \log p(x)$: el gradiente, respecto a los datos mismos, de la log-densidad. Es un vector en cada punto del espacio de datos que apunta hacia mayor probabilidad. La parte elegante: estimarlo nunca requiere la densidad normalizada $p(x)$ — la constante de normalización intratable se cancela en el gradiente del logaritmo. Una vez que tienes un score aprendido $s_\theta(x) \approx \nabla_x \log p(x)$, generas mediante **dinámica de Langevin**: parte de ruido y da pasos repetidos en la dirección del score más una pizca de ruido aleatorio,
+
+$$
+x \leftarrow x + \tfrac{\eta}{2}\, s_\theta(x) + \sqrt{\eta}\, z, \qquad z \sim \mathcal{N}(0, I),
+$$
+
+que demostrablemente se asienta en muestras de $p(x)$. Para que esto funcione en todos los niveles de ruido, Song y Ermon aprenden el score de versiones *cada vez más ruidosas* de los datos — y ese es **exactamente el mismo modelo** que el denoiser. La predicción de ruido $\epsilon_\theta$ de Ho et al. y el score $s_\theta$ están relacionados por un sencillo reescalado: $s_\theta(x_t, t) \approx -\,\epsilon_\theta(x_t, t)/\sqrt{1-\bar\alpha_t}$. Predecir el ruido *es* estimar el score, salvo una constante conocida. Dos vocabularios, una máquina.
+
+**Ejemplo resuelto.** Supón que la distribución verdadera de los datos es una gaussiana sencilla centrada en $\mu = 0.05$ (un diminuto retorno medio positivo) con varianza $\sigma^2$. Su score tiene una forma cerrada limpia: $\nabla_x \log p(x) = -(x - \mu)/\sigma^2$. Ponte en $x = 0.30$ — un retorno diario implausiblemente grande, muy lejos en la cresta. Con $\sigma^2 = 0.01$, el score es $-(0.30 - 0.05)/0.01 = -25$: un vector fuerte que apunta *de vuelta hacia* el grueso de la distribución. Ponte en cambio justo en la media, $x = 0.05$: el score es $0$ — ya estás en el valle, no hace falta empuje. La dinámica de Langevin simplemente sigue estas flechas cuesta abajo, y cuanto más te desvías hacia territorio implausible, más fuerte te arrastra de vuelta el campo.
+
+<Callout variant="warning">
+**Trampa: pensar que el score te da una probabilidad que puedas citar.** $\nabla_x \log p(x)$ te dice la *dirección* hacia mayor densidad, no el valor de la densidad — no puedes leer "esta trayectoria tiene probabilidad 0,002" de un modelo de score, y desde luego no puedes comparar las verosimilitudes de dos trayectorias sin maquinaria adicional. Para las finanzas esto importa: la gente quiere *ordenar* la plausibilidad de los escenarios, y un modelo de score en crudo no te dará una verosimilitud calibrada para eso. No prometas una probabilidad que el modelo nunca aprendió a producir.
+</Callout>
+
+### Cuándo usarlo
+
+La visión de score es la que hay que invocar cuando quieres la *teoría* — es lo que conecta la difusión con las SDE (la formulación en tiempo continuo que conociste en *Finanzas de Monte-Carlo*), explica por qué el modelo generaliza en lugar de memorizar, y unifica una docena de variantes de muestreador. En la práctica, *implementarás* la forma de predicción de ruido (es una pérdida más limpia), pero razonarás sobre *por qué funciona* en el lenguaje basado en score. Úsala siempre que alguien pregunte "pero ¿qué está estimando en realidad la red?" — la respuesta honesta es un campo de gravedad sobre el espacio de datos.
+
+<MatchConcepts
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Une cada concepto con su definición."
+  pairs={[
+    { term: "Score ∇ₓ log p(x)", definition: "Un campo vectorial que apunta hacia mayor densidad de datos — la dirección 'cuesta abajo' hacia muestras realistas." },
+    { term: "Dinámica de Langevin", definition: "Muestrear dando pasos repetidos a lo largo del score más una pizca de ruido, hasta asentarte en la distribución de datos." },
+    { term: "Predicción de ruido εθ(xₜ, t)", definition: "El objetivo de entrenamiento de DDPM — equivalente al score salvo un reescalado conocido, así que es el mismo modelo con otra ropa." },
+    { term: "Constante de normalización", definition: "El término intratable de p(x) que convenientemente se cancela al tomar el gradiente del logaritmo, por lo que el score es aprendible siquiera." }
+  ]}
+/>
+
+## Condicionamiento y la comparación con GAN/VAE
+
+<MCQ
+  client:visible
+  pretest
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="Quieres un modelo de difusión que, bajo demanda, genere trayectorias de retornos para un régimen de volatilidad ESPECÍFICO (digamos, una crisis de alta volatilidad). ¿Cuál es la herramienta correcta?"
+  options={[
+    { text: "Difusión condicional — pasa al denoiser una etiqueta de régimen/volatilidad/activo (o usa guía) para que dirija la generación hacia esa condición.", correct: true },
+    { text: "Reentrenar desde cero un modelo incondicional separado para cada régimen y esperar que sean comparables." },
+    { text: "Añadir más ruido durante el proceso hacia delante solo para los regímenes de alta volatilidad." },
+    { text: "Volver a una GAN, ya que la difusión no se puede condicionar." }
+  ]}
+  explanation="La difusión condicional pasa el atributo deseado (una etiqueta de régimen, una volatilidad objetivo, un id de activo) al denoiser, de modo que el mismo modelo puede dirigirse para producir trayectorias que encajen con esa condición. Las técnicas de guía afinan aún más la dirección. No hace falta un zoo de modelos separados."
+/>
+
+**Analogía.** Un generador incondicional es una gramola en modo aleatorio — dale al play y obtienes *alguna* canción realista, pero no eliges. Un generador *condicional* es la misma gramola con un dial de género: gíralo a "crisis" y te toca una trayectoria de alta volatilidad, colas anchas y mucho agrupamiento; gíralo a "lento alcista en calma" y te sirve una deriva de baja volatilidad. La misma máquina, el mismo entrenamiento; solo le dijiste de qué estante extraer.
+
+**Definición.** La **difusión condicional** amplía el denoiser con una condición $c$ — una etiqueta de régimen, una volatilidad objetivo, un identificador de activo, un estado macro — de modo que aprende $\epsilon_\theta(x_t, t, c)$ y genera muestras consistentes con $c$. La **guía** (con clasificador o sin clasificador) marca entonces *con cuánta fuerza* se adhiere el modelo a la condición, cambiando un poco de diversidad por muestras más nítidas sobre la condición. Esto es exactamente lo que hace atractiva la difusión para la *generación de escenarios* (lección 1): puedes pedir el régimen que necesitas en lugar de esperar a que el modo aleatorio te lo entregue. Ahora enfrenta la difusión a sus dos predecesores:
+
+| Propiedad | GAN (lección 4) | VAE (lección 5) | Difusión (esta lección) |
+|---|---|---|---|
+| **Estabilidad de entrenamiento** | Baja — adversarial, oscila, difícil de ajustar | Alta — un único objetivo estable | Alta — regresión MSE lisa, sin adversario |
+| **Fidelidad de la muestra** | Alta — nítida, crujiente | Menor — borrosa (promediada) | Alta — nítida vía refinamiento iterativo |
+| **Cobertura de modos** | Pobre — propensa al colapso de modos | Buena — pero emborronada | **La mejor** — cubre modos, pocos perdidos |
+| **Estructura latente** | Implícita, difícil de interpretar | Explícita, suave, interpretable | Implícita (el calendario de ruido), menos navegable directamente |
+| **Velocidad de muestreo** | Rápida — una pasada hacia delante | Rápida — una pasada hacia delante | **Lenta** — muchos pasos de eliminación de ruido |
+| **Hambre de datos** | Alta | Moderada | **La mayor** — la más hambrienta de datos de las tres |
+
+La fila destacada para las finanzas es la **cobertura de modos**. Una GAN que colapsa podría generar mil variaciones de la misma trayectoria alcista en calma y, calladamente, *no producir nunca* un crash — catastrófico si estás haciendo pruebas de estrés. La fortaleza de la difusión es que tiende a cubrir los modos, incluidos los raros y aterradores de las colas — precisamente los regímenes que de verdad le importan a un equipo de riesgos.
+
+**Ejemplo resuelto.** Estás construyendo un generador de escenarios de estrés a lo largo de tres regímenes: calma, transición, crisis. Con una GAN propensa al colapso de modos, podrías entrenarla y descubrir — solo después de un mal mes — que las trayectorias de "crisis" esencialmente nunca aparecen en su salida: al discriminador le resultó más fácil vigilar las abundantes trayectorias de calma, así que el generador abandonó calladamente el modo raro. Un modelo de difusión condicional, en cambio, te deja *solicitar* `c = crisis` y, como la arquitectura no penaliza cubrir modos raros, devuelve trayectorias genuinas de alta volatilidad y colas anchas bajo demanda. Lo pagas en tiempo de muestreo — generar 10.000 trayectorias de crisis a 100 pasos cada una es un millón de pasadas hacia delante — pero de verdad *obtienes el crash que pediste*.
+
+<Callout variant="warning">
+**Trampa: suponer que el condicionamiento conjura regímenes que los datos nunca contuvieron.** El condicionamiento te deja *dirigir* hacia regímenes que el modelo **aprendió**; no te deja invocar regímenes que los datos de entrenamiento nunca mostraron. Pídele a un modelo condicional una "estanflación de los años 70" que nunca vio y te entregará su mejor *interpolación* de regímenes cercanos con una etiqueta de estanflación puesta — no una estanflación fiel. Este es el mismo techo de la lección 1: un generador aprendido solo puede reorganizar e interpolar la información de su conjunto de entrenamiento. La mejor cobertura de modos de la difusión te ayuda a no *perder* los modos observados; no puede inventar los no observados.
+</Callout>
+
+### Cuándo usarlo
+
+Echa mano de la **difusión condicional** cuando necesites generación de escenarios *dirigible* a lo largo de regímenes o activos y la cobertura de modos importe más que la velocidad de muestreo — libros de estrés multiactivo, aumento condicionado por régimen, "dame 500 trayectorias que se parezcan al Q4 de 2018". Quédate con una **GAN** cuando dominen la velocidad de muestreo y la nitidez y puedas vigilar el colapso de modos; quédate con un **VAE** cuando quieras un *espacio latente interpretable y navegable* (interpolando suavemente entre regímenes) y puedas tolerar el desenfoque. Las tres no están clasificadas — son herramientas con distintos filos cortantes.
+
+<Categorize
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Coloca cada elemento en su grupo."
+  question="Clasifica cada propiedad bajo el modelo generativo que mejor la caracteriza."
+  buckets={["GAN", "VAE", "Difusión"]}
+  items={[
+    { text: "Entrenamiento adversarial que oscila y es propenso al colapso de modos", bucket: "GAN" },
+    { text: "Espacio latente explícito y suave por el que puedes interpolar", bucket: "VAE" },
+    { text: "La mejor cobertura de modos pero el muestreo más lento", bucket: "Difusión" },
+    { text: "Muestras nítidas de una sola pasada hacia delante, si puedes domar la inestabilidad", bucket: "GAN" },
+    { text: "Estable de entrenar pero produce muestras borrosas y promediadas", bucket: "VAE" },
+    { text: "Entrenamiento MSE estable Y muestras nítidas, a costa de muchos pasos de eliminación de ruido", bucket: "Difusión" }
+  ]}
+  explanation="GAN: nítida pero inestable y con colapso de modos. VAE: estable y estructurado pero borroso. Difusión: entrenamiento estable más muestras nítidas que cubren modos — pero lenta de muestrear y la más hambrienta de datos."
+/>
+
+## ¿Se gana el sueldo con los retornos?
+
+<MCQ
+  client:visible
+  pretest
+  allowMultiple
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="Los modelos de difusión dominan la generación de imágenes. ¿Por qué podría ese dominio NO transferirse a los retornos financieros? (Selecciona todas las que correspondan.)"
+  options={[
+    { text: "Las finanzas tienen conjuntos de datos diminutos y no estacionarios, mientras que las victorias de la difusión vienen de corpus de imágenes enormes y casi estacionarios.", correct: true },
+    { text: "Los retornos tienen baja relación señal-ruido, así que 'generación de alta fidelidad' puede significar reproducir fielmente el ruido.", correct: true },
+    { text: "El muestreo lento y de muchos pasos de la difusión es caro cuando necesitas cantidades enormes de trayectorias de Monte-Carlo.", correct: true },
+    { text: "Los modelos de difusión no pueden representar ruido gaussiano, que domina los retornos." }
+  ]}
+  explanation="Los tres primeros son obstáculos reales: escasez de datos y no estacionariedad, bajo SNR (la fidelidad al ruido no es una virtud) y muestreo caro. El cuarto es falso — el ruido gaussiano es literalmente el punto final del proceso hacia delante; representarlo no es ningún problema."
+/>
+
+**Analogía.** Un Fórmula 1 es la cima de la ingeniería automovilística — en un circuito liso, seco y construido a propósito. Déjalo en un camino de granja embarrado y lleno de baches y es *peor* que un tractor: demasiado bajo, demasiado rígido, demasiado especializado para un terreno para el que nunca se construyó. La difusión es el Fórmula 1. Los conjuntos de datos de imágenes son el circuito: enormes, limpios, casi estacionarios, alta señal. Los retornos financieros son el camino de granja embarrado: unos pocos miles de observaciones ruidosas, no estacionarias y de poca señal. La ingeniería que gana la carrera puede perder en la granja.
+
+**La contabilidad honesta.** Quita la fanfarria y pesa la difusión contra las dos varas de medir del curso — la **rúbrica de hechos estilizados** (lección 2) y las **líneas base clásicas baratas** (lección 3):
+
+- **La escasez de datos muerde más fuerte aquí.** La difusión es el *más hambriento de datos* de los tres generadores profundos, y las finanzas son el dominio *más hambriento de datos*. Diez millones de fotos de gatos frente a unos pocos miles de retornos no es una brecha pequeña — es la diferencia entre el régimen donde la difusión brilla y el régimen donde sobreajusta. El problema de la historia única (lección 1) no desaparece por haber usado un modelo más sofisticado; *empeora*.
+- **La no estacionariedad rompe el supuesto central.** Las distribuciones de imágenes apenas se desplazan — un gato parecía un gato en 2010 y parece uno ahora. Los mercados *cambian de régimen*: la distribución sobre la que entrenaste no es la que verás desplegada. Un modelo que ajusta sin fallos la distribución de la década pasada puede equivocarse con confianza sobre la del año que viene.
+- **El bajo SNR convierte la "fidelidad" en un lastre.** En imágenes, la alta fidelidad significa detalle nítido y correcto. En retornos, la mayor parte de la varianza *es ruido* — así que un generador de alta fidelidad puede reproducir fielmente el ruido y llamarlo hecho estilizado. Más nítido no es automáticamente mejor cuando lo que estás afilando es sobre todo aleatoriedad.
+- **El muestreo lento choca con el apetito de Monte-Carlo.** El trabajo de riesgos y escenarios quiere *cientos de miles* de trayectorias. El muestreo de difusión de muchos pasos hace eso caro precisamente en el caso de uso (lección 1) donde más quieres volumen de trayectorias.
+
+Así que lo calificas como todo lo demás. ¿Reproduce la salida de difusión los hechos estilizados — colas anchas, agrupamiento de volatilidad, el efecto apalancamiento, la gaussianidad por agregación? Mira la distribución y la autocorrelación de los retornos *al cuadrado*, y compara no contra "parece plausible" sino contra una línea base ajustada de cambio de régimen o de bootstrap por bloques de la lección 3:
+
+<ReturnDistribution client:visible caption="El listón que un generador de difusión debe superar es la FORMA de la distribución real de retornos — un pico afilado y colas anchas, no una gaussiana ordenada. Un modelo que produce la curva más ancha y bien portada ha capturado la volatilidad pero ha perdido el riesgo de cola que de verdad te hace daño. Califica contra la rúbrica de hechos estilizados, no contra las vibras." />
+
+<TsAcfPlot client:visible caption="El agrupamiento de volatilidad es la prueba decisiva: los retornos reales muestran autocorrelación que decae lentamente en sus valores al CUADRADO (la calma sigue a la calma, el caos sigue al caos), como el decaimiento geométrico que se muestra aquí — mientras que los retornos en crudo parecen ruido blanco dentro de la banda. Un modelo de difusión que clava la distribución marginal pero produce retornos al cuadrado de ruido blanco ha fallado el hecho estilizado más importante." />
+
+**Cuándo se gana de verdad el sueldo la difusión** — y a veces lo hace — es la banda estrecha donde sus fortalezas específicas se alinean con una necesidad real: **condicionamiento rico** (escenarios multirégimen dirigibles que no puedes especificar a mano), generación **multiactivo / de alta dimensión** donde la estructura conjunta a lo largo de muchas series es demasiado enredada para un bootstrap, y cualquier escenario donde la **cobertura de modos** sea todo el quid (no debes perder calladamente el modo de crash). Ahí, "estable + nítido + cubre modos" puede ganar al instrumental clásico. Donde es sobre todo **fanfarria** es el caso común: un único activo, unos pocos años de retornos diarios, un objetivo de hechos estilizados que un modelo de cambio de régimen ya alcanza con el 1% del cómputo y cero riesgo de fuga. Si la difusión no *gana a la línea base en la rúbrica*, no se ha ganado nada salvo una factura de nube más grande.
+
+<Callout variant="warning">
+**El veredicto del escéptico — las victorias en benchmarks no son P&L.** La corona de la difusión en el dominio de las imágenes se ganó con datos enormes, casi estacionarios y de alto SNR — lo opuesto exacto de los retornos financieros. Un modelo de difusión puede sacar una preciosa puntuación de fidelidad estilo FID sobre retornos sintéticos y aun así no enseñar a una estrategia *nada que pueda operar*, porque reproducir fielmente unos pocos miles de observaciones ruidosas y no estacionarias reproduce sobre todo el ruido y la fuga. Siempre: (1) califica contra la rúbrica de hechos estilizados, no contra el atractivo a ojo; (2) gana a una línea base clásica ajustada o no te molestes; (3) ejecuta las comprobaciones de memorización de la lección 7 — la alta fidelidad de la difusión la hace *más* capaz de cuasi-copiar, no menos. El estado del arte en fotografías es aquí una hipótesis, nunca una garantía.
+</Callout>
+
+### Cuándo usarlo
+
+Usa la difusión con retornos cuando — y esencialmente solo cuando — tengas una necesidad genuina de **condicionamiento rico** o una estructura conjunta **multiactivo y de alta dimensión** que capturar, puedas permitirte un muestreo lento, tengas suficientes datos para alimentar al más hambriento de los generadores, y hayas *demostrado* en la rúbrica de hechos estilizados que gana a la línea base barata. Si no, baja por la escalera por defecto: un simulador de cambio de régimen o un bootstrap por bloques es más rápido, auditable, resistente a fugas y a menudo igual de bueno en las métricas que se traducen en P&L. La sofisticación es un coste a justificar, no un premio a ganar.
+
+<FillBlank
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+  question="Completa el punto central del escéptico."
+  text="El dominio de la difusión en imágenes vino de datos enormes, casi estacionarios y de alta señal — así que con retornos diminutos, no estacionarios y de poca señal sus victorias en benchmarks rara vez se transfieren a {{P&L|fidelidad|curtosis|latencia}} salvo que también gane a una línea base clásica barata en la rúbrica de hechos estilizados."
+  explanation="Una bonita puntuación de fidelidad no es ventaja operable. El quid es si los datos sintéticos mejoran decisiones reales (P&L) — algo que un modelo de alta fidelidad sobre ruido puede no lograr incluso encabezando un benchmark."
+/>
+
+## Recapitulación
+
+Un modelo de difusión genera **revirtiendo una corrupción**. El **proceso hacia delante** es un calendario fijo y sin aprendizaje que remueve ruido gaussiano en datos reales hasta que $x_T \approx \mathcal{N}(0, I)$ — y gracias a una forma cerrada, puedes saltar a cualquier nivel de ruido al instante; es una SDE de difusión discretizada, la maquinaria browniana de *Finanzas de Monte-Carlo* ejecutada como demolición controlada. El **proceso inverso** es la mitad aprendida: una red $\epsilon_\theta(x_t, t)$ entrenada por MSE liso para predecir el ruido, y luego ejecutada iterativamente desde pura estática de vuelta a una trayectoria limpia — estable de entrenar (sin adversario) y nítida de muestrear (cientos de pequeños refinamientos), pero *lenta*. La **visión basada en score** dice que el mismo modelo está en realidad estimando $\nabla_x \log p(x)$, un campo de gravedad hacia datos realistas que recorres mediante dinámica de Langevin — predecir ruido y estimar el score son una máquina en dos idiomas. El **condicionamiento** la hace dirigible para la generación de escenarios, y contra sus predecesores la difusión es la rara combinación de *estable como un VAE* y *nítida como una GAN*, con la **mejor cobertura de modos** — al precio de un muestreo lento y la mayor hambre de datos. Y el credo del curso sigue mandando: la difusión ganó su corona con diez millones de imágenes casi estacionarias y de alta señal, mientras que las finanzas te entregan unos pocos miles de retornos no estacionarios y de poca señal — así que califícala con la **rúbrica de hechos estilizados**, haz que **gane a la línea base clásica barata**, ejecuta las **comprobaciones de memorización** (lección 7) y solo corónala cuando se gane el sueldo en las métricas que tocan el P&L. El estado del arte en fotografías es aquí una hipótesis, no un veredicto.
+
+<MindMap
+  client:visible
+  title="Modelos de difusión y basados en score para trayectorias de precios"
+  caption="Una corrupción hacia delante fija, un denoiser inverso aprendido, la visión unificadora de score, condicionamiento dirigible — todo pesado contra el duro test de realidad de las finanzas."
+  root={{
+    label: 'Modelos de difusión',
+    children: [
+      {
+        label: 'Proceso hacia delante (de añadir ruido)',
+        children: [
+          { label: 'Calendario de ruido gaussiano fijo, sin aprendizaje' },
+          { label: 'Forma cerrada: salta a cualquier paso al instante' },
+          { label: 'Una SDE de difusión discretizada (movimiento browniano)' }
+        ]
+      },
+      {
+        label: 'Proceso inverso (de eliminación de ruido)',
+        children: [
+          { label: 'Aprende εθ(xₜ, t): predice el ruido añadido' },
+          { label: 'Pérdida MSE lisa — estable, sin adversario' },
+          { label: 'Muestrea por refinamiento iterativo desde ruido puro' },
+          { label: 'Nítido pero LENTO (muchos pasos)' }
+        ]
+      },
+      {
+        label: 'Visión basada en score',
+        children: [
+          { label: 'Aprende el score ∇ₓ log p(x): un campo de gravedad' },
+          { label: 'Muestrea vía dinámica de Langevin' },
+          { label: 'Predicción de ruido = score, salvo reescalado' }
+        ]
+      },
+      {
+        label: 'Condicionamiento y comparación',
+        children: [
+          { label: 'Difusión condicional: dirige por régimen / vol / activo' },
+          { label: 'GAN: nítida, inestable, colapso de modos' },
+          { label: 'VAE: estable, borroso, latente estructurado' },
+          { label: 'Difusión: estable Y nítida, mejor cobertura de modos' }
+        ]
+      },
+      {
+        label: 'Test de realidad de las finanzas',
+        children: [
+          { label: 'Datos diminutos, no estacionarios, bajo SNR vs. corpus de imágenes enormes' },
+          { label: 'El generador más hambriento de datos se topa con el dominio más hambriento de datos' },
+          { label: 'Califica en la rúbrica de hechos estilizados; gana a la línea base barata' },
+          { label: 'Fidelidad en benchmark ≠ P&L operable' }
+        ]
+      }
+    ]
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Modelos de difusión y basados en score — repaso mixto"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  nextLabel="Siguiente pregunta"
+  backLabel="Atrás"
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  seeResultsLabel="Ver resultados"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  gateLabel="Comprueba tu respuesta para continuar."
+  questions={[
+    {
+      question: "¿Qué afirmación sobre el proceso hacia delante es VERDADERA?",
+      options: [
+        { text: "Es fijo y sin parámetros: un calendario de ruido elegido que borra la señal, con todo el aprendizaje reservado al modelo inverso.", correct: true },
+        { text: "Es una red neuronal entrenada para añadir ruido de forma consciente de los datos." },
+        { text: "Se ejecuta en el momento del muestreo para generar nuevas trayectorias a partir de ruido." },
+        { text: "Aprende el score ∇ₓ log p(x) en cada nivel de corrupción." }
+      ],
+      explanation: "Cuál-es-verdadera: el proceso hacia delante (de añadir ruido) no tiene parámetros aprendibles — es un calendario fijo. La generación y todo el aprendizaje ocurren en el denoiser inverso; el score es lo que el modelo inverso estima implícitamente."
+    },
+    {
+      question: "Un equipo reemplaza su GAN inestable por un modelo de difusión y el entrenamiento deja de oscilar al instante. ¿Qué CAUSÓ la nueva estabilidad?",
+      options: [
+        { text: "El objetivo de la difusión es una regresión MSE lisa (predecir el ruido conocido), así que no hay juego adversarial que equilibrar — el aprendizaje supervisado bien planteado simplemente desciende.", correct: true },
+        { text: "La difusión usa menos parámetros, así que no puede sobreajustar ni oscilar." },
+        { text: "La difusión muestrea más rápido, lo que estabiliza los gradientes." },
+        { text: "La difusión no tiene función de pérdida, así que no hay nada que oscile." }
+      ],
+      explanation: "Causa→efecto: la inestabilidad de la GAN viene del juego adversarial min-max. La difusión lo reemplaza por un objetivo de regresión fijo (predecir ε), eliminando la dinámica de blanco móvil — esa es la fuente de la estabilidad. Muestrea más lento, no más rápido, y desde luego tiene una pérdida."
+    },
+    {
+      question: "Debes generar escenarios de estrés y en absoluto puedes permitirte perder calladamente el régimen de 'crash'. Comparando GAN, VAE y difusión, ¿cuál encaja mejor y por qué?",
+      options: [
+        { text: "Difusión — tiende a tener la mejor cobertura de modos, así que es la menos propensa a perder el modo de crash raro que una GAN con colapso de modos podría abandonar.", correct: true },
+        { text: "GAN — su nitidez garantiza que captura todos los modos, incluidos los crashes." },
+        { text: "VAE — su desenfoque asegura que todos los modos, incluidos los crashes, se representan nítidamente." },
+        { text: "Las tres son idénticas en cobertura de modos, así que elige la más rápida." }
+      ],
+      explanation: "Comparación: la cobertura de modos es la fortaleza destacada de la difusión. Una GAN puede colapsar y, calladamente, no producir nunca el modo de crash; un VAE cubre los modos pero los emborrona. Para 'no pierdas el régimen raro y aterrador', la difusión es la más segura de las tres."
+    },
+    {
+      question: "Un proveedor reporta que su modelo de difusión logra una puntuación de fidelidad de estado del arte sobre retornos sintéticos y lo vende como obviamente superior. ¿Dónde está la trampa?",
+      options: [
+        { text: "Una puntuación de fidelidad alta sobre unos pocos miles de retornos ruidosos y no estacionarios puede significar reproducir fielmente el ruido y la fuga — no es P&L operable, y puede que solo señale cuasi-memorización, así que debe ganar a una línea base barata en la rúbrica de hechos estilizados y pasar primero las comprobaciones de memorización.", correct: true },
+        { text: "No hay trampa; una puntuación de fidelidad de primera demuestra que los datos sintéticos mejorarán cualquier estrategia." },
+        { text: "La trampa es que las puntuaciones de fidelidad no se pueden calcular sobre retornos en absoluto." },
+        { text: "La trampa es que la difusión no puede representar colas anchas, así que la puntuación debe ser falsa." }
+      ],
+      explanation: "Detecta-la-trampa: fidelidad en benchmark ≠ P&L. Con datos de bajo SNR, no estacionarios y escasos, la alta fidelidad puede reproducir ruido o cuasi-copiar el conjunto de entrenamiento. Califica en la rúbrica de hechos estilizados, gana a la línea base clásica y ejecuta las comprobaciones de memorización de la lección 7 antes de creerte el discurso."
+    },
+    {
+      question: "Necesitas 200.000 trayectorias de Monte-Carlo de la noche a la mañana para un informe de riesgos, sobre un único activo líquido con unos pocos años de datos diarios, y un simulador de cambio de régimen ajustado ya reproduce los hechos estilizados. ¿Deberías meter un modelo de difusión de 500 pasos?",
+      options: [
+        { text: "No — el muestreo de difusión de muchos pasos hace que 200.000 trayectorias sean muy caras, los datos son demasiado escasos para alimentar al generador más hambriento, y la línea base ya supera la rúbrica; la difusión no se ha ganado el sueldo aquí.", correct: true },
+        { text: "Sí — la difusión es estado del arte, así que debe ganar a la línea base sin importar el tamaño de los datos ni el coste." },
+        { text: "Sí — la difusión muestrea más rápido que un modelo de cambio de régimen, así que cumplirá el plazo de la noche a la mañana con más facilidad." },
+        { text: "Sí — un único activo es exactamente donde más brillan la cobertura de modos y el condicionamiento de la difusión." }
+      ],
+      explanation: "Escenario: este es el caso donde la difusión es sobre todo fanfarria — único activo, datos escasos, muestreo lento de muchos pasos, y una línea base barata y resistente a fugas que ya pasa la rúbrica. La verdadera ventaja de la difusión (condicionamiento rico, estructuras conjuntas multiactivo, cobertura de modos) no hace falta; baja por la escalera por defecto."
+    }
+  ]}
+/>

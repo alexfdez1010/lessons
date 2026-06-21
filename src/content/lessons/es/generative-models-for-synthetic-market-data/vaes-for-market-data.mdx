@@ -1,0 +1,588 @@
+---
+title: "Autocodificadores variacionales para datos de mercado"
+description: "Codifica una ventana de precios a un espacio latente suave y decodifícala de vuelta: el compromiso reconstrucción-frente-a-KL, por qué un latente continuo te compra interpolación y mandos de escenario, el truco de reparametrización — y por qué los VAE tienden a difuminar precisamente las colas anchas que más necesitas."
+topic: "es/generative-models-for-synthetic-market-data"
+order: 5
+minutes: 16
+updated: 2026-06-21
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, ReturnDistribution } from '@/components/react';
+
+El GAN de la lección anterior era un peleón: nítido, rápido y propenso a lanzar
+el mismo puñetazo una y otra vez (colapso de modos). El **autocodificador
+variacional** (VAE) es el hermano más tranquilo. En lugar de un generador y un
+crítico trabados en combate, un VAE tiene dos mitades que cooperan: un
+**codificador** que comprime una ventana de precios hasta un diminuto **código
+latente**, y un **decodificador** que intenta reconstruir la ventana a partir de
+ese código. Entrénalos juntos y la red aprende un resumen compacto y reutilizable
+de "qué aspecto tiene una ventana de precios plausible".
+
+El ingrediente extra ingenioso — la parte *variacional* — es que el VAE no se
+limita a aprender un código, sino que aprende un **espacio de códigos suave y
+muestreable**. Fuerza a ese espacio latente a parecer una nube ordenada con forma
+de campana, de modo que puedes meter la mano, sacar un código completamente nuevo
+que nunca has visto, decodificarlo y obtener una trayectoria *novedosa* pero
+plausible. Eso es lo que convierte a un humilde compresor en un modelo generativo:
+entran códigos nuevos, salen datos de mercado nuevos.
+
+El contraste con los GAN recorre toda esta lección. Los VAE son **estables** (sin
+tira y afloja adversario que equilibrar), te entregan un **latente interpretable**
+que puedes interpolar y dirigir, y casi nunca colapsan a un único modo. Pero lo
+pagan: sus muestras tienden a salir **blandas y demasiado suavizadas** — y "suave"
+es exactamente la palabra equivocada cuando todo el trabajo consiste en reproducir
+las **colas anchas** que hacen peligrosos a los mercados. Ten presente esa tensión;
+la última sección es donde muerde.
+
+## De autocodificadores a autocodificadores variacionales
+
+<MCQ
+  client:visible
+  pretest
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="Un autocodificador corriente (no variacional) se entrena solo para reconstruir sus entradas. ¿Por qué es un mal *generador* de datos nuevos?"
+  options={[
+    { text: "Su espacio latente está lleno de 'agujeros' — regiones a las que ningún punto de entrenamiento se mapeó — así que un código extraído al azar decodifica a basura.", correct: true },
+    { text: "No tiene decodificador, así que no hay nada que convierta un código de vuelta en una muestra." },
+    { text: "Solo puede producir una de las ventanas exactas de entrenamiento, nunca algo nuevo." },
+    { text: "No puede comprimir, así que el código latente tiene el mismo tamaño que la entrada." },
+  ]}
+  explanation="Un autocodificador corriente optimiza solo la reconstrucción. Nada le dice que llene el espacio latente de forma uniforme, así que los puntos codificados se apelotonan y los huecos entre ellos no significan nada. Muestrea un código al azar de un hueco y el decodificador produce ruido. Un VAE arregla exactamente esto."
+/>
+
+Un **autocodificador corriente** es una máquina de comprimir-y-reconstruir. El
+codificador mapea una entrada $x$ (digamos, una ventana de 60 días de retornos
+logarítmicos) a un código de baja dimensión $z$; el decodificador mapea $z$ de
+vuelta a una reconstrucción $\hat{x}$. Lo entrenas para que $\hat{x} \approx x$.
+Aprende una compresión estupenda — pero no aprende *nada* sobre la forma del
+espacio latente. Los puntos codificados aterrizan dondequiera que los ponga la
+minimización del error de reconstrucción, dejando vastas regiones vacías entre
+medias. Muestrea un código al azar y casi con seguridad has aterrizado en un
+agujero, y el decodificador te entrega un sinsentido.
+
+**Analogía.** Piensa en el espacio latente como un **archivador**. Un
+autocodificador corriente es un archivador llenado por alguien con prisa: cada
+documento está archivado *en algún sitio*, y puede recuperar cualquiera que haya
+visto, pero los cajones tienen enormes huecos vacíos y ningún sistema. Pide "el
+archivo a medio camino entre estos dos" y sacas un espacio vacío. Un VAE es el
+archivador de un organizador obsesivo: los archivos están repartidos **de forma
+uniforme y continua**, cada sitio en el que metes la mano contiene algo sensato, y
+los sitios vecinos contienen cosas *parecidas*.
+
+El VAE consigue esto con dos cambios:
+
+1. El codificador no produce un único punto sino una **distribución** por
+   dimensión latente — una media $\mu$ y una (log-)varianza $\sigma^2$. Así que $x$
+   se mapea a $q(z \mid x) = \mathcal{N}(\mu, \sigma^2)$, una pequeña bola difusa
+   en lugar de un punto preciso.
+2. Un **regularizador** atrae cada una de esas bolas hacia una distribución a
+   priori normal estándar compartida $\mathcal{N}(0, I)$. Esto empaqueta las bolas
+   juntas para teselar el espacio sin agujeros, de modo que *toda* la región cerca
+   del origen pasa a ser muestreable.
+
+En el momento de la generación ignoras por completo el codificador: extrae
+$z \sim \mathcal{N}(0, I)$, pásalo por el decodificador, y sale una ventana de
+precios fresca y plausible.
+
+<Callout variant="warning">
+Un VAE **no** es simplemente "un autocodificador con ruido añadido". El movimiento
+definitorio es el regularizador KL que da forma al latente convirtiéndolo en una
+distribución conocida y muestreable. Quita ese término y vuelves a un
+autocodificador corriente con un latente agujereado — reconstruirá bien y
+*generará* como un generador de números aleatorios con mala leche.
+</Callout>
+
+### Cuándo usarlo
+
+Recurre al enfoque de autocodificador siempre que quieras a la vez un **compresor**
+(una representación compacta de ventanas de mercado para modelos posteriores) *y*
+un **generador** a partir de la misma red. Si solo necesitas reconstruir o quitar
+ruido — nunca muestrear datos nuevos — un autocodificador corriente es más ligero.
+En el momento en que necesitas *extraer trayectorias novedosas*, necesitas la
+maquinaria variacional.
+
+<FillBlank
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+  question="Completa la idea central del codificador del VAE."
+  text="El codificador de un VAE produce una {{distribución|punto único|latente agujereado|reconstrucción}} por dimensión latente — en concreto una media y una varianza — en lugar de un único código determinista, y un regularizador la atrae hacia la distribución a priori {{N(0, I)|los datos de entrenamiento|el decodificador|una rejilla uniforme}}."
+/>
+
+## El ELBO: reconstrucción frente a KL
+
+<MCQ
+  client:visible
+  pretest
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="La pérdida de un VAE tiene dos términos que tiran en direcciones distintas. ¿Qué premia el término KL?"
+  options={[
+    { text: "Mantener la posterior q(z|x) del codificador cerca de la distribución a priori normal estándar.", correct: true },
+    { text: "Hacer que la reconstrucción coincida con la entrada lo más exactamente posible." },
+    { text: "Maximizar la varianza de la salida del decodificador." },
+    { text: "Forzar que el código latente tenga la mayor dimensión posible." },
+  ]}
+  explanation="El término KL mide cuánto se aleja la posterior del codificador de la a priori N(0, I) y penaliza la distancia. Es el término de 'mantén ordenado el archivador', compensado contra la fidelidad de reconstrucción."
+/>
+
+Un VAE se entrena maximizando la **cota inferior de la evidencia** (ELBO), o de
+forma equivalente minimizando su negativa. Para una sola entrada $x$ la pérdida es:
+
+$$
+\mathcal{L}(x) = \underbrace{-\,\mathbb{E}_{q(z \mid x)}\!\left[\log p(x \mid z)\right]}_{\text{reconstrucción}} \;+\; \beta \,\underbrace{D_{\mathrm{KL}}\!\big(q(z \mid x)\,\Vert\,p(z)\big)}_{\text{regularizador}}
+$$
+
+Dos fuerzas, tirando en sentidos opuestos:
+
+- La **reconstrucción** quiere que $\hat{x}$ coincida con $x$ — codificaría con
+  gusto cada ventana a su propio código privado y remoto si eso diera una
+  reconstrucción más nítida.
+- La **KL** quiere que cada posterior $q(z \mid x)$ se sitúe cerca de la a priori
+  $p(z) = \mathcal{N}(0, I)$ — colapsaría con gusto cada entrada al mismo código
+  insulso en el origen si eso minimizara la divergencia.
+
+El coeficiente $\beta$ es el **mando** entre ambas ($\beta = 1$ recupera el VAE
+original; el caso general es el **$\beta$-VAE**). Observa los extremos:
+
+| $\beta$ | Qué favorece la pérdida | Espacio latente | Muestras |
+|---|---|---|---|
+| $\beta \to 0$ | Solo reconstrucción | Agujereado — vuelta a un autocodificador corriente | Nítidas con los datos de entrenamiento, basura desde códigos al azar |
+| $\beta = 1$ | Equilibrado | Suave, muestreable | Plausibles pero un poco blandas |
+| $\beta$ grande | Domina la KL | Extremadamente ordenado, pero ignorado | **Colapso de la posterior**: el decodificador produce la media difusa |
+
+**Ejemplo resuelto.** Supón que con $\beta = 1$ tu VAE reconstruye una ventana con
+un error cuadrático medio de $0.018$ y una KL de $12.4$ nats, pérdida total
+$\approx 0.018 + 12.4$. Sube $\beta$ a $8$. El optimizador encuentra ahora más
+barato **encoger la KL**: empuja cada posterior hacia $\mathcal{N}(0, I)$, el
+latente deja de llevar información sobre $x$, y el decodificador — sin recibir
+señal útil — recurre a emitir la ventana *media* para cada entrada. El error de
+reconstrucción se dispara (digamos a $0.061$) pero la pérdida total baja porque el
+término KL se desplomó. Ese estado degenerado es el **colapso de la posterior**, y
+su síntoma sobre el papel es el difuminado: cada muestra parece un borrón
+descolorido y de reversión a la media.
+
+<Callout variant="warning">
+El colapso de la posterior es el modo de fallo del VAE que refleja el colapso de
+modos del GAN — pero tiene otro aspecto. El colapso del GAN te da **muestras
+nítidas sin variedad**; el colapso del VAE te da **muestras variadas solo de
+nombre, todas medias difusas**. Si las salidas de tu VAE parecen todas la misma
+línea ondulándose suavemente, sospecha que $\beta$ es demasiado alto (o que tu
+decodificador es demasiado débil para explotar el latente).
+</Callout>
+
+### Cuándo usarlo
+
+Trata $\beta$ como un dial que *ajustas al trabajo*. Empujar $\beta$ por encima de
+1 compra un latente más **desenredado y controlable** (bueno para los mandos de
+escenario de abajo) a costa de la fidelidad. Tirar de él hacia 0 compra
+reconstrucciones más nítidas a costa de la muestreabilidad. Para datos de mercado,
+donde ya peleas contra el difuminado, rara vez quieres un $\beta$ grande salvo que
+necesites específicamente ejes latentes limpios y dirigibles.
+
+<MatchConcepts
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Une cada concepto con su definición."
+  pairs={[
+    { term: "Término de reconstrucción", definition: "Premia que la salida decodificada coincida con la ventana de entrada original." },
+    { term: "Término KL", definition: "Penaliza que la posterior del codificador se aleje de la a priori N(0, I)." },
+    { term: "β → 0", definition: "Colapsa el modelo a un autocodificador corriente con un latente agujereado y no muestreable." },
+    { term: "β grande", definition: "Desencadena el colapso de la posterior — el latente se ignora y el decodificador emite una media difusa." },
+  ]}
+/>
+
+## El truco de reparametrización
+
+<MCQ
+  client:visible
+  pretest
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="El codificador muestrea z de q(z|x) antes de decodificar. ¿Por qué es ese paso de muestreo un problema para entrenar por descenso de gradiente?"
+  options={[
+    { text: "No puedes retropropagar gradientes a través de una operación de muestreo aleatorio — no es una función diferenciable de μ y σ.", correct: true },
+    { text: "El muestreo es demasiado lento para ejecutarlo dentro de un bucle de entrenamiento." },
+    { text: "Las muestras siempre son cero, así que nunca fluye ningún gradiente." },
+    { text: "El muestreo aleatorio viola la regla de la cadena de la probabilidad." },
+  ]}
+  explanation="Extraer z ~ N(μ, σ²) es un nodo estocástico. Los gradientes de la pérdida respecto a μ y σ no pueden fluir hacia atrás *a través* de una operación cruda de 'extrae un número aleatorio', porque esa operación no es una función determinista y diferenciable de sus parámetros."
+/>
+
+Aquí está la pega. El entrenamiento necesita gradientes de la pérdida respecto a
+las salidas $\mu$ y $\sigma$ del codificador. Pero entre el codificador y la
+pérdida se interpone una **extracción aleatoria**
+$z \sim \mathcal{N}(\mu, \sigma^2)$, y no puedes retropropagar a través de "tirar
+un dado". La aleatoriedad bloquea el gradiente.
+
+**El truco** consiste en apartar la aleatoriedad *de en medio*. En lugar de
+muestrear $z$ directamente, muestrea una variable de ruido fija y sin parámetros
+$\epsilon \sim \mathcal{N}(0, I)$ y construye $z$ de forma determinista a partir de
+ella:
+
+$$
+z = \mu + \sigma \odot \epsilon, \qquad \epsilon \sim \mathcal{N}(0, I)
+$$
+
+donde $\odot$ es la multiplicación elemento a elemento. Ahora $z$ es una **función
+diferenciable** de $\mu$ y $\sigma$ — lo único aleatorio, $\epsilon$, es una
+entrada externa que no lleva ningún gradiente ni parámetros aprendibles. La
+estocasticidad ha quedado empujada fuera del grafo de cómputo.
+
+**Analogía.** No puedes derivar "girar una ruleta". Pero *sí* puedes derivar "toma
+un giro aleatorio fijo $\epsilon$, luego estíralo por $\sigma$ y desplázalo por
+$\mu$". El casino sigue inyectando aleatoriedad — simplemente has movido tus mandos
+ajustables ($\mu$, $\sigma$) a donde el cálculo puede alcanzarlos.
+
+**Ejemplo resuelto.** Toma una dimensión latente. La regla de la cadena fluye ahora
+limpiamente, porque $z = \mu + \sigma \epsilon$:
+
+$$
+\frac{\partial z}{\partial \mu} = 1, \qquad \frac{\partial z}{\partial \sigma} = \epsilon
+$$
+
+Así que si el gradiente aguas arriba de la pérdida en $z$ es
+$g = \partial \mathcal{L} / \partial z$, entonces
+$\partial \mathcal{L} / \partial \mu = g \cdot 1 = g$ y
+$\partial \mathcal{L} / \partial \sigma = g \cdot \epsilon$. En concreto, con un
+$\epsilon = 0.7$ muestreado y un $g = -0.4$ aguas arriba, la media del codificador
+recibe gradiente $-0.4$ y su desviación típica recibe
+$-0.4 \times 0.7 = -0.28$. Ambos son finitos, ambos son utilizables — el
+entrenamiento avanza.
+
+<Callout variant="warning">
+Olvida la reparametrización y muestrea $z$ directamente dentro del grafo y tu VAE
+simplemente **no aprenderá el codificador**: los gradientes a $\mu$ y $\sigma$ son
+o bien cero o bien indefinidos, así que las cabezas de varianza del codificador
+deambulan sin rumbo. Esto no es un detalle de optimización — es el único truco que
+hace al VAE entrenable de extremo a extremo en primer lugar.
+</Callout>
+
+### Cuándo usarlo
+
+Siempre, para un VAE de latente gaussiano — no es opcional. La misma idea
+generaliza: cada vez que un modelo debe **diferenciar a través de un paso de
+muestreo**, busca una reescritura del tipo "muestrea ruido fijo, luego transforma
+de forma determinista" (la misma lógica impulsa el calendario de ruido que
+conocerás en la lección de difusión).
+
+<FillBlank
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+  question="Completa el truco de reparametrización."
+  text="El truco de reparametrización escribe el latente como z = {{μ + σ ⊙ ε|μ × ε|σ + μ ⊙ ε|solo ε}}, con ε extraído de {{N(0, I)|q(z|x)|la a priori sobre x|una rejilla uniforme}}, lo que mueve la aleatoriedad {{fuera|dentro|encima|debajo}} del camino del gradiente para que μ y σ sean entrenables."
+/>
+
+## Un latente suave compra mandos de escenario
+
+<MCQ
+  client:visible
+  pretest
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="Como el espacio latente de un VAE es continuo y está organizado, puedes hacer algo que un autocodificador corriente no puede hacer de forma fiable. ¿Qué?"
+  options={[
+    { text: "Interpolar entre dos ventanas codificadas y decodificar regímenes de mercado *intermedios* plausibles por el camino.", correct: true },
+    { text: "Garantizar que el decodificador reproduce cada ventana de entrenamiento exactamente." },
+    { text: "Entrenar sin ninguna función de pérdida." },
+    { text: "Eliminar la necesidad de un decodificador." },
+  ]}
+  explanation="Un latente suave y sin agujeros significa que los caminos *entre* puntos también son significativos. Camina del código de una ventana en calma al código de una ventana turbulenta y cada paso decodifica a un régimen intermedio plausible — la base de la interpolación y de los mandos de escenario dirigibles."
+/>
+
+Un latente agujereado no sirve para nada más que para los puntos que memorizó. Un
+latente **suave** es un patio de recreo. Como cada código cercano decodifica a algo
+sensato y *parecido*, el espacio adquiere una geometría útil — y esa geometría es
+lo que convierte a un VAE en un **generador de escenarios** (recuerda los usos de
+datos sintéticos de la lección 1: pruebas de estrés, aumento de datos, compartición
+respetuosa con la privacidad).
+
+**Dos movimientos que el latente suave te da gratis:**
+
+- **Interpolación.** Codifica una ventana en calma al código $z_{\text{calm}}$ y
+  una turbulenta a $z_{\text{turb}}$, luego decodifica la mezcla en línea recta
+  $z(t) = (1 - t)\, z_{\text{calm}} + t\, z_{\text{turb}}$ con $t$ barriendo de 0 a
+  1. Cada $z(t)$ decodificado es una ventana plausible *entre* los dos regímenes —
+  mercados más calmados que la tormenta pero más agitados que la calma chicha. Las
+  interpolaciones de un autocodificador corriente pasan por agujeros y decodifican
+  a papilla.
+- **Direcciones latentes como diales.** Si un eje concreto del latente correlaciona
+  con la volatilidad realizada, *sumar* un múltiplo de esa dirección a un código
+  sube o baja la turbulencia dejando otras características más o menos intactas — un
+  **mando de "subir la vol"** listo para usar en escenarios de estrés.
+
+**Ejemplo resuelto (conceptual).** Quieres una trayectoria de estrés que sea "este
+trimestre, pero un 50% más áspera". Codifica el trimestre a $z_0$. Encuentra la
+dirección de volatilidad $v$ (p. ej. el eje latente a lo largo del cual las
+ventanas decodificadas se vuelven más agitadas). Decodifica $z_0 + 0.5\,v$. Sale el
+*mismo régimen general* — misma deriva, misma forma áspera — pero con bandazos
+intradía visiblemente más anchos, listo para alimentar un motor de riesgo. Generaste
+un escenario contrafactual *dirigiendo*, no remuestreando desde cero. Esa
+controlabilidad es algo que el latente enredado de un GAN tiene dificultades para
+ofrecer.
+
+<Callout variant="warning">
+La suavidad **no** garantiza que los ejes latentes sean diales limpios e
+independientes — eso es el *desenredo*, y normalmente tienes que pelear por él
+(subiendo $\beta$, arquitecturas especiales). De fábrica, la "dirección de
+volatilidad" puede estar enredada con la deriva o la tendencia, así que empujar tu
+mando de vol puede arrastrar calladamente otras propiedades. Valida que un mando
+hace solo lo que crees antes de confiar en él en una prueba de estrés.
+</Callout>
+
+### Cuándo usarlo
+
+Apóyate en la interpolación y la dirección latentes cuando necesites **escenarios
+controlados e interpretables** — "muéstrame la trayectoria entre estos dos
+regímenes", "dame una variante de alta vol de la semana pasada". Para realismo crudo
+sin requisito de dirección, la geometría latente es un bonus, no el objetivo. Es más
+valiosa para las **pruebas de estrés y la generación de hipótesis**, donde te importa
+*cómo* difiere una muestra de una de referencia.
+
+<Categorize
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Coloca cada elemento en su grupo."
+  question="Clasifica cada elemento como fortaleza o debilidad del VAE."
+  buckets={["Fortaleza del VAE", "Debilidad del VAE"]}
+  items={[
+    { text: "Entrenamiento estable sin equilibrismo adversario", bucket: "Fortaleza del VAE" },
+    { text: "Latente suave que puedes interpolar entre regímenes", bucket: "Fortaleza del VAE" },
+    { text: "Direcciones dirigibles para mandos de escenarios de estrés", bucket: "Fortaleza del VAE" },
+    { text: "Rara vez sufre el colapso de modos al estilo GAN", bucket: "Fortaleza del VAE" },
+    { text: "Las muestras salen blandas y demasiado suavizadas", bucket: "Debilidad del VAE" },
+    { text: "Subproduce los movimientos extremos de cola", bucket: "Debilidad del VAE" },
+    { text: "Puede sufrir colapso de la posterior si β es demasiado alto", bucket: "Debilidad del VAE" },
+  ]}
+/>
+
+## Por qué los VAE difuminan las colas anchas
+
+<MCQ
+  client:visible
+  pretest
+  allowMultiple
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="Los VAE son célebres por producir muestras de mercado demasiado suavizadas. ¿Qué factores empujan a un VAE hacia el difuminado y las colas finas? (Selecciona todas las que correspondan.)"
+  options={[
+    { text: "Una verosimilitud gaussiana del decodificador, que premia predecir la media condicional y trata las grandes desviaciones como atípicos costosos.", correct: true },
+    { text: "El promediado sobre la posterior latente, que difumina las características nítidas hacia la media.", correct: true },
+    { text: "El término KL que atrae las posteriores hacia N(0, I), desincentivando los códigos raros y lejanos que decodificarían a extremos.", correct: true },
+    { text: "El truco de reparametrización, que elimina las colas de la entrada por construcción." },
+  ]}
+  explanation="Los tres primeros son culpables reales: una verosimilitud gaussiana es un objetivo que busca la media y de colas finas; integrar sobre la posterior promedia y borra la nitidez; y la regularización KL desincentiva los códigos extremos que decodifican a movimientos extremos. El truco de reparametrización es solo un mecanismo de gradiente — no toca las colas."
+/>
+
+Ahora la pega que hace de los VAE un *valor por defecto arriesgado* para datos de
+mercado. Todo lo que hace a un VAE estable y ordenado también lo hace **regresar
+hacia la media** — y "la media" es precisamente donde *no* está el peligro.
+
+Conspiran tres fuerzas:
+
+1. **Verosimilitud gaussiana.** El decodificador estándar maximiza una
+   log-verosimilitud gaussiana, lo que equivale a minimizar el error cuadrático. El
+   error cuadrático se **minimiza prediciendo la media condicional**, y castiga las
+   grandes desviaciones brutalmente — así que el modelo aprende a *evitar* las
+   salidas extremas. Las distribuciones reales de retornos son leptocúrticas (las
+   colas anchas de la lección 2); un objetivo gaussiano trata esas colas como
+   errores caros que hay que suavizar.
+2. **Promediado sobre la posterior.** La salida decodificada integra de hecho sobre
+   la bola latente difusa $q(z \mid x)$. Promediar es un filtro paso bajo: los picos
+   nítidos y los cambios bruscos de régimen quedan difuminados hacia algo más suave.
+3. **Presión KL hacia la a priori.** Los códigos latentes lejanos que decodificarían
+   a auténticos cracks son *exactamente* los que el término KL desincentiva — se
+   sitúan en las faldas de baja densidad de $\mathcal{N}(0, I)$. Empuja todo hacia
+   el centro y empujas los extremos fuera de la mesa.
+
+Evaluado contra la **rúbrica de hechos estilizados** de la lección 2, un VAE
+estándar saca unas notas mixtas:
+
+| Hecho estilizado | VAE estándar |
+|---|---|
+| Colas pesadas/anchas (exceso de curtosis) | **Débil** — las colas salen demasiado finas; los movimientos extremos se subproducen |
+| Agrupamiento de volatilidad | **Débil–moderado** — los agrupamientos nítidos quedan difuminados por el promediado |
+| Autocorrelación de retornos despreciable | Normalmente bien |
+| Marginal aproximadamente simétrica y de media casi nula | **Buena** — el grueso de la distribución se captura bien |
+| Estabilidad de las muestras / sin colapso | **Buena** — mucho más fiable de entrenar que un GAN |
+
+En una línea: un VAE clava el **centro de la distribución** y suspende los
+**bordes** — lo contrario de lo que necesita un modelo de riesgo, donde los bordes
+*son* el producto.
+
+<Callout variant="warning">
+Esta es la debilidad de titular, así que interiorízala: un VAE estándar te entregará
+retornos sintéticos cuyas **colas son demasiado finas y cuyos peores días son
+demasiado mansos**. Mételos en un motor de Valor en Riesgo o de estrés y
+**subestimarás sistemáticamente el riesgo** — el error más caro del manual. Si tienes
+que usar un VAE para trabajo sensible a las colas, debes contraatacar explícitamente:
+una verosimilitud del decodificador de colas más pesadas (Student-$t$ en lugar de
+gaussiana), un $\beta$ más bajo, un decodificador autorregresivo o una corrección de
+colas a posteriori. De fábrica, la calma de un VAE es una *mentira sobre las colas*.
+</Callout>
+
+La imagen de abajo muestra la firma reveladora: la distribución de retornos
+sintéticos de un VAE queda demasiado estrecha y demasiado fina en las alas
+comparada con la cosa real de colas anchas — el difuminado hecho visible.
+
+<ReturnDistribution
+  client:visible
+  caption="Los retornos sintéticos demasiado suavizados de un VAE (alas finas y ligeras) frente a una distribución de retornos real, de colas anchas: el grueso coincide, pero los extremos que más importan para el riesgo faltan."
+/>
+
+### Cuándo usarlo
+
+Usa un VAE cuando la **estabilidad, un latente controlable y un *grueso* fiel de la
+distribución** importen más que clavar los extremos — bocetos exploratorios de
+escenarios, aumento de datos para el caso común, aprendizaje de representaciones.
+**Evita** un VAE estándar como tu único motor para trabajo de **riesgo de cola**
+(VaR, estrés, agrupamiento extremo) sin arreglos explícitos de colas. Cuando las
+colas nítidas son innegociables, un GAN (más nítido, lección 4) o un modelo de
+difusión (lección 6) suele ser el mejor punto de partida.
+
+## Recapitulación
+
+Un autocodificador variacional empareja un **codificador** que comprime una ventana
+de precios en una distribución sobre un código latente con un **decodificador** que
+reconstruye la ventana — y el giro *variacional* fuerza ese latente hacia una nube
+suave y muestreable con forma de $\mathcal{N}(0, I)$, de modo que los códigos nuevos
+decodifican a trayectorias novedosas. El entrenamiento minimiza el **ELBO**: un
+término de reconstrucción frente a un término **KL** ponderado por $\beta$, donde
+$\beta \to 0$ degenera en un autocodificador corriente agujereado y un $\beta$ grande
+desencadena el **colapso de la posterior**. El **truco de reparametrización**
+($z = \mu + \sigma \odot \epsilon$) empuja la aleatoriedad fuera del camino del
+gradiente para que el codificador sea entrenable en absoluto. La recompensa es un
+**latente suave** que puedes interpolar y dirigir para escenarios y pruebas de
+estrés — mucho más estable e interpretable que un GAN. El precio es el **difuminado**:
+una verosimilitud gaussiana, el promediado de la posterior y la presión KL empujan
+todos el modelo hacia la media, así que **subproduce las colas anchas** de las que
+vive y muere el trabajo de riesgo. Estable y fiel en el centro; blando y peligroso
+en los bordes.
+
+<MindMap
+  client:visible
+  root={{
+    label: "Autocodificadores variacionales para datos de mercado",
+    children: [
+      {
+        label: "Arquitectura",
+        children: [
+          { label: "Codificador → distribución (μ, σ) por dim latente" },
+          { label: "Decodificador → reconstruye la ventana desde un código z" },
+          { label: "Muestrea z ~ N(0, I) → decodifica → trayectoria novedosa" },
+        ],
+      },
+      {
+        label: "Pérdida ELBO",
+        children: [
+          { label: "Reconstrucción: decodificado ≈ entrada" },
+          { label: "β · KL: la posterior se queda cerca de N(0, I)" },
+          { label: "β → 0: autocodificador corriente agujereado" },
+          { label: "β grande: colapso de la posterior → media difusa" },
+        ],
+      },
+      {
+        label: "Truco de reparametrización",
+        children: [
+          { label: "z = μ + σ ⊙ ε, ε ~ N(0, I)" },
+          { label: "Aleatoriedad movida fuera del camino del gradiente" },
+          { label: "Hace entrenables μ, σ — el codificador" },
+        ],
+      },
+      {
+        label: "Mandos de escenario latentes",
+        children: [
+          { label: "Interpola regímenes en calma ↔ turbulentos" },
+          { label: "Dirige una dirección latente para regular la volatilidad" },
+          { label: "Pruebas de estrés y generación de hipótesis" },
+        ],
+      },
+      {
+        label: "Debilidad: colas difuminadas",
+        children: [
+          { label: "La verosimilitud gaussiana busca la media" },
+          { label: "El promediado de la posterior difumina características nítidas" },
+          { label: "La presión KL desincentiva los códigos extremos" },
+          { label: "Subestima las colas anchas → arriesgado para VaR/estrés" },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="VAE para datos de mercado: la imagen completa"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  nextLabel="Siguiente pregunta"
+  backLabel="Atrás"
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  seeResultsLabel="Ver resultados"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  gateLabel="Comprueba tu respuesta para continuar."
+  questions={[
+    {
+      question: "¿Qué afirmación sobre un VAE frente a un GAN es VERDADERA?",
+      options: [
+        { text: "El VAE entrena de forma más estable y da un latente más suave e interpretable, pero sus muestras tienden a ser más difusas.", correct: true },
+        { text: "El VAE es más propenso al colapso de modos que un GAN." },
+        { text: "El VAE no tiene decodificador, mientras que el GAN sí." },
+        { text: "El VAE produce colas más nítidas que un GAN por diseño." },
+      ],
+      explanation: "Los VAE cambian la nitidez del GAN por estabilidad y un latente organizado y dirigible. El coste es el sobresuavizado — el GAN tiende a hacer muestras más nítidas (aunque menos variadas).",
+    },
+    {
+      question: "Aumentas β de 1 a un valor grande y ves que tus muestras se convierten en ondulaciones difusas casi idénticas. ¿Qué pasó?",
+      options: [
+        { text: "Colapso de la posterior: el término KL dominó, el latente dejó de llevar información y el decodificador recurrió a la ventana media.", correct: true },
+        { text: "Colapso de modos: el discriminador venció al generador." },
+        { text: "El truco de reparametrización dejó de funcionar, así que los gradientes se anularon." },
+        { text: "El espacio latente se volvió agujereado, como un autocodificador corriente." },
+      ],
+      explanation: "Un β grande hace más barato encoger la KL que reconstruir, así que las posteriores colapsan a la a priori, el latente se ignora y el decodificador produce una media insulsa. Un latente agujereado es el extremo *opuesto* (β → 0).",
+    },
+    {
+      question: "Un colega entrena un VAE estándar sobre retornos de renta variable y mete su salida sintética directamente en un motor de Valor en Riesgo. ¿Cuál es la trampa?",
+      options: [
+        { text: "El VAE subproduce los movimientos extremos, así que sus colas finas harán que el VaR subestime el riesgo real.", correct: true },
+        { text: "El VAE sobreproduce los movimientos extremos, así que el VaR será demasiado conservador." },
+        { text: "El VAE solo puede producir los retornos exactos de entrenamiento, así que el VaR no significa nada." },
+        { text: "El VaR no puede calcularse en absoluto a partir de datos sintéticos." },
+      ],
+      explanation: "Una verosimilitud gaussiana, el promediado de la posterior y la presión KL adelgazan todos las colas. Medidas de riesgo sensibles a las colas como el VaR serán entonces optimistas — exactamente la dirección equivocada. Arréglalo con un decodificador de colas más pesadas, un β más bajo o corrección de colas.",
+    },
+    {
+      question: "¿Por qué hace el truco de reparametrización entrenable a un VAE, cuando muestrear z directamente no lo hace?",
+      options: [
+        { text: "Escribir z = μ + σ ⊙ ε con ε fijo hace de z una función diferenciable de μ y σ, así que los gradientes pueden fluir de vuelta al codificador.", correct: true },
+        { text: "Elimina el decodificador del camino del gradiente, así que solo se entrena el codificador." },
+        { text: "Hace cero el término KL, simplificando la pérdida." },
+        { text: "Reemplaza el muestreo aleatorio por la media condicional, eliminando todo el ruido." },
+      ],
+      explanation: "Muestrear z directamente es un nodo estocástico no diferenciable. Mover la aleatoriedad a un ε externo y construir z de forma determinista permite que la regla de la cadena alcance μ y σ (∂z/∂μ = 1, ∂z/∂σ = ε).",
+    },
+    {
+      question: "Necesitas un escenario de estrés que sea 'este trimestre, pero más áspero'. ¿Qué capacidad del VAE lo entrega de forma más directa?",
+      options: [
+        { text: "Codificar el trimestre, luego moverse a lo largo de una dirección latente de volatilidad y decodificar el código dirigido.", correct: true },
+        { text: "Remuestrear un z ~ N(0, I) fresco y esperar que resulte ser más áspero." },
+        { text: "Subir β hasta que el decodificador produzca la ventana media." },
+        { text: "Quitar el término KL para que el latente se vuelva agujereado." },
+      ],
+      explanation: "Un latente suave te deja *dirigir*: codifica la referencia, suma un múltiplo de la dirección de volatilidad y decodifica una variante del mismo régimen pero más áspera. Remuestrear da una trayectoria sin relación; subir β difumina; quitar la KL rompe la muestreabilidad.",
+    },
+  ]}
+/>

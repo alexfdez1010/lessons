@@ -1,0 +1,442 @@
+---
+title: "Evaluar datos sintéticos sin engañarte a ti mismo"
+description: "La lección más difícil: tests distribucionales y de dependencia, las puntuaciones discriminativa y predictiva (entrenar-en-sintético/probar-en-real), los tests de memorización y vecino más cercano que cazan a un generador que copia, y el campo de minas de la fuga de datos donde un generador entrenado con tu historial completo infla cada backtest que toca."
+topic: "es/generative-models-for-synthetic-market-data"
+order: 7
+minutes: 18
+updated: 2026-06-21
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, SyntheticVsRealPaths, ReturnDistribution, TsAcfPlot } from '@/components/react';
+
+Hemos pasado seis lecciones aprendiendo a *fabricar* datos de mercado falsos — líneas base clásicas, GAN, VAE, difusión. Esta lección es a la que el curso entero apuntaba en silencio, y es la difícil: **un generador solo es tan fiable como tu capacidad de evaluarlo.** Puedes construir el muestreador de difusión más elegante del edificio, pero si no puedes demostrar que su salida es a la vez *realista* y *honesta*, es un pasivo, no un activo. Fabricar los datos es la parte divertida. Juzgarlos es la parte que te mantiene fuera de problemas.
+
+Aquí va el remate, dicho sin rodeos para que se quede: **la forma más fácil de "ganar" todos los tests de realismo es memorizar el conjunto de entrenamiento.** Un generador que simplemente reproduce las trayectorias con las que se entrenó tendrá colas impecables, autocorrelaciones perfectas, un discriminador incapaz de distinguir lo real de lo falso — una estrella dorada en cada boletín de notas distribucional. Y también es el modo de fallo *más peligroso*, porque los datos memorizados son el pasado fotocopiado y devuelto. Mete eso en un backtest y ya no estás simulando el futuro; lo estás filtrando. Tu ratio de Sharpe lucirá espectacular, justo hasta que el dinero real se encuentre con los mercados reales.
+
+Así que la evaluación es **un guante de desafíos, no un número.** Ningún test aislado certifica un generador. Ejecutas una batería — marginales y dependencia, un discriminador, una puntuación predictiva orientada al uso, una sonda explícita de memorización y una auditoría de fuga — precisamente *porque cada test tiene un punto ciego que el siguiente está diseñado para cubrir.* Sáltate cualquier peldaño de la escalera y el memorizador se cuela directo por el hueco. Construyamos la escalera.
+
+## Tests distribucionales y de dependencia
+
+<MCQ
+  client:visible
+  pretest
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="Un generador sintético reproduce casi a la perfección el histograma de retornos de los datos reales. ¿Qué ha demostrado con certeza?"
+  options={[
+    { text: "Que su distribución marginal coincide — nada sobre la dependencia a lo largo del tiempo", correct: true },
+    { text: "Que no está memorizando el conjunto de entrenamiento" },
+    { text: "Que un modelo posterior entrenado con él generalizará" },
+    { text: "Que captura el agrupamiento de volatilidad" },
+  ]}
+  explanation="Igualar el histograma es una afirmación únicamente sobre la distribución marginal (de un punto). No dice nada sobre cómo se relacionan los retornos en el tiempo, y desde luego nada sobre si el generador llegó a ese histograma copiando."
+/>
+
+**Analogía.** Imagina que calificas a un falsificador. Lo primero que compruebas es si cada pincelada individual se parece a la del maestro — los *colores*, la *textura*, el *peso* del trazo. Esa es la distribución marginal. Pero a un maestro también se le reconoce por cómo se *relacionan* los trazos: el ritmo, los motivos recurrentes, el modo en que un pasaje oscuro sigue a uno brillante. Esa es la estructura de dependencia. Un falsificador que clava los colores pero arruina el ritmo sigue siendo un falsificador.
+
+**Definición.** Los tests distribucionales preguntan si las estadísticas *marginales* de los datos sintéticos coinciden con las reales; los tests de dependencia preguntan si sus *relaciones a lo largo del tiempo* coinciden. En concreto, vuelves a ejecutar la **rúbrica de hechos estilizados de la lección 2** sobre la serie sintética y comparas, hecho a hecho:
+
+- **Colas anchas** — índice de cola y exceso de curtosis (los retornos reales son leptocúrticos, con curtosis muy por encima de 3).
+- **Sin autocorrelación lineal de los retornos** — la ACF de los retornos brutos debería morir casi de inmediato.
+- **Agrupamiento de volatilidad** — la ACF de los retornos *absolutos* (o al cuadrado) debería decaer despacio, a lo largo de muchos retardos.
+- **Efecto apalancamiento** — correlación negativa entre el retorno de hoy y la volatilidad de mañana.
+
+Los instrumentos son estándar: **gráficos QQ** para comparar las colas visualmente, las distancias de **Kolmogórov–Smirnov** y **Anderson–Darling** para cuantificar cuán separadas están dos distribuciones (Anderson–Darling pondera más las colas, que es exactamente donde viven las finanzas) y **curvas ACF** lado a lado para los hechos de dependencia.
+
+<ReturnDistribution client:visible caption="El test marginal hecho visual: un ajuste gaussiano (fino) yerra estrepitosamente las colas anchas y el pico afilado de los retornos diarios reales. El histograma de un buen generador debería superponerse al real — incluidas esas colas." />
+
+**Ejemplo resuelto.** Muestreas 5.000 retornos diarios sintéticos y los tabulas frente a la serie real:
+
+| Estadístico | Real | Sintético A | Sintético B |
+|---|---|---|---|
+| Exceso de curtosis | 6.1 | 5.8 | 0.3 |
+| Índice de cola (Hill) | 3.4 | 3.3 | 8.0 |
+| ACF(retornos), retardo 1 | 0.01 | 0.00 | 0.02 |
+| ACF(\|retornos\|), retardo 10 | 0.18 | 0.16 | 0.01 |
+| Distancia KS | 0.00 | 0.03 | 0.21 |
+
+El Sintético A sigue cada hecho — colas anchas (curtosis 5.8, índice de cola 3.3), sin autocorrelación de retornos, agrupamiento de volatilidad persistente (la ACF de los retornos absolutos sigue en 0.16 al retardo 10). **El Sintético B es un impostor casi gaussiano**: curtosis 0.3, índice de cola 8.0 (demasiado fino) y una ACF de retornos absolutos que se desvanece — sin agrupamiento de volatilidad alguno. La distancia KS de 0.21 confirma que la marginal de B está muy desviada. B falla; A supera este peldaño.
+
+<TsAcfPlot client:visible caption="El test de dependencia hecho visual: los retornos brutos (arriba) no muestran casi autocorrelación, mientras que los retornos absolutos (abajo) se mantienen positivos durante muchos retardos — la firma del agrupamiento de volatilidad que un generador debe reproducir." />
+
+<Callout variant="warning">
+**Superar todos los tests distribucionales y de dependencia es necesario, pero categóricamente NO suficiente.** Un generador que memoriza el conjunto de entrenamiento reproduce cada una de estas estadísticas *a la perfección* — sus colas, ACF y correlación de apalancamiento son exactas, porque SON los datos reales. Así que un boletín limpio de hechos estilizados es el precio de la entrada, no un certificado de salud. El memorizador es invisible en este peldaño.
+</Callout>
+
+### Cuándo usarlo
+
+Siempre, y primero. Esta es la prueba de humo barata y rápida: si un generador ni siquiera consigue igualar las marginales y la ACF del agrupamiento de volatilidad, te detienes aquí y lo arreglas antes de invertir esfuerzo en cualquier cosa posterior. Descarta generadores malos; nunca puede dar el visto bueno a uno bueno.
+
+<FillBlank
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+  question="Completa la firma del agrupamiento de volatilidad."
+  text="La ACF de los retornos brutos muere casi de inmediato, pero la ACF de los retornos {{absolutos|con signo|acumulados}} decae despacio — ese decaimiento lento es la firma del agrupamiento de volatilidad que un generador debe reproducir."
+  explanation="La ACF de los retornos brutos muere enseguida, pero la de los retornos absolutos (o al cuadrado) decae despacio durante muchos retardos. Ese decaimiento lento es justo la firma del agrupamiento de volatilidad."
+/>
+
+## La puntuación discriminativa (¿puede un clasificador distinguirlos?)
+
+<MCQ
+  client:visible
+  pretest
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="Entrenas un clasificador para separar muestras reales de sintéticas y alcanza un AUC de 0.51. ¿Qué significa?"
+  options={[
+    { text: "Lo falso es esencialmente indistinguible de lo real — una buena señal", correct: true },
+    { text: "El clasificador está estropeado" },
+    { text: "La mitad de las muestras sintéticas están memorizadas" },
+    { text: "Los datos sintéticos son inútiles para entrenar" },
+  ]}
+  explanation="Un AUC cercano a 0.5 significa que el mejor clasificador que podrías entrenar no lo hace mejor que lanzar una moneda al distinguir lo real de lo falso — la distribución sintética se asienta justo encima de la real. Eso es exactamente lo que quieres desde el punto de vista del realismo."
+/>
+
+**Analogía.** Contrata al autenticador de arte más agudo del mundo y entrégale un montón de cuadros, mitad genuinos, mitad falsificados, con las etiquetas ocultas. Si los aciertos del experto no superan a una moneda al aire, las falsificaciones son *indistinguibles*. Si el experto clava cada falso, las falsificaciones tienen un delator. La puntuación discriminativa automatiza a ese experto.
+
+**Definición.** Entrena un clasificador binario (árboles con potenciación de gradiente, una red pequeña — lo que sea potente) para predecir la etiqueta "real" frente a "sintético" sobre un conjunto mezclado y reservado. Reporta su **AUC** (área bajo la curva ROC):
+
+- **AUC ≈ 0.5** → el clasificador no puede ganarle al azar. Las distribuciones sintética y real se solapan. *Bien.*
+- **AUC ≈ 1.0** → el clasificador las separa a la perfección. Lo falso tiene un delator obvio — colas erróneas, un artefacto revelador, la dependencia equivocada. *Mal.*
+
+Esto es estrictamente más fuerte que los tests marginales, porque un clasificador potente puede explotar estructura *conjunta* y de *orden superior* que un puñado de estadísticas resumen no captan.
+
+**Ejemplo resuelto.** Tres generadores candidatos, mismos datos reales:
+
+| Generador | AUC del discriminador | Lectura |
+|---|---|---|
+| VAE borroso | 0.94 | El clasificador casi siempre gana → delator obvio (trayectorias sobresuavizadas) |
+| GAN decente | 0.62 | Algo de separabilidad → realismo parcial, margen de mejora |
+| Difusión ajustada | 0.52 | Casi una moneda al aire → las distribuciones se solapan bien |
+
+El modelo de difusión está ganando la competición de *realismo*. Pero fíjate en la trampa que aguarda en el siguiente aviso.
+
+<Callout variant="warning">
+**Un generador que memoriza TAMBIÉN saca AUC ≈ 0.5.** Si las muestras sintéticas son copias de filas reales de entrenamiento, proceden de la distribución real *exacta*, así que ningún clasificador puede separarlas — el discriminador queda perfectamente engañado. Una vez más, el memorizador se esconde. La puntuación discriminativa es necesaria-pero-no-suficiente por la misma razón que lo eran los hechos estilizados: realismo y honestidad son preguntas distintas, y este test solo mide el realismo.
+</Callout>
+
+### Cuándo usarlo
+
+Tras superar los hechos estilizados, como tu métrica de *realismo* de titular — es el único número que mejor resume "¿lo falso parece real, teniendo en cuenta la estructura conjunta?". Síguela mientras ajustas un generador. Pero nunca dejes que un 0.5 te adormezca pensando que has terminado; has superado el realismo, no la memorización.
+
+## La puntuación predictiva (entrenar en sintético, probar en real)
+
+<MCQ
+  client:visible
+  pretest
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="¿Cuál es el sentido de los datos de mercado sintéticos para la mayoría de los equipos cuant?"
+  options={[
+    { text: "Aumentar el entrenamiento para que un modelo posterior generalice mejor a los datos reales", correct: true },
+    { text: "Sustituir por completo a los datos reales en producción" },
+    { text: "Hacer que los backtests luzcan mejor" },
+    { text: "Comprimir el conjunto de datos" },
+  ]}
+  explanation="Toda la razón para generar datos suele ser su utilidad posterior — más material de entrenamiento, escenarios de estrés, compartir preservando la privacidad. Así que el test que más importa pregunta: ¿entrenar con ellos ayuda de verdad sobre datos REALES?"
+/>
+
+**Analogía.** Un simulador de vuelo solo merece el espacio del hangar si los pilotos que se entrenan en él pilotan bien aviones reales. A nadie le importa cuán fotorrealistas sean las nubes del simulador si los graduados estrellan el 737 de verdad. **Entrenar en Sintético, Probar en Real (TSTR, por sus siglas en inglés)** es el examen de graduación-en-el-simulador para los datos.
+
+**Definición.** TSTR: entrena tu modelo posterior (un predictor de retornos, un clasificador, una estrategia) **íntegramente con datos sintéticos** y luego evalúalo sobre un conjunto **real reservado** del que nunca generaste. Compáralo con **TRTR** — Entrenar en Real, Probar en Real, el mismo modelo posterior entrenado con datos reales. Si los datos sintéticos llevan la señal que el modelo necesita, entonces:
+
+$$\text{TSTR} \approx \text{TRTR}$$
+
+Una brecha pequeña entre TSTR y TRTR significa que los datos sintéticos son *útiles* — pueden sustituir a los datos reales, o aumentarlos. Una brecha grande significa que el generador perdió la señal (a menudo porque suavizó hasta hacer desaparecer la propia estructura de la que depende la tarea posterior).
+
+**Ejemplo resuelto.** Mismo clasificador posterior, tres regímenes de entrenamiento, evaluados sobre el *mismo* conjunto de prueba real:
+
+| Datos de entrenamiento | Precisión sobre real | Sharpe sobre real |
+|---|---|---|
+| Real (TRTR — la referencia) | 0.61 | 1.05 |
+| Sintético A (TSTR) | 0.59 | 0.98 |
+| Sintético B (TSTR) | 0.52 | 0.41 |
+
+El Sintético A casi iguala la referencia real (precisión 0.59 frente a 0.61; Sharpe 0.98 frente a 1.05) — preservó la señal predictiva y es genuinamente útil para aumentar datos. El Sintético B se desploma a una precisión casi de azar y un Sharpe enclenque — marginales de aspecto realista, pero la *señal* ha desaparecido. Este es el test donde por fin se caza a un generador "bonito pero inútil".
+
+<Callout variant="warning">
+**Una puntuación TSTR alta es una gran noticia — pero un generador que memoriza también puede sacarla alta, por la razón equivocada.** Si copió filas reales de entrenamiento, un modelo entrenado con ellas aún puede generalizar... y no has aprendido nada sobre la generación, mientras te preparas calladamente para una fuga (siguiente sección). TSTR mide la utilidad, no la originalidad. Ejecútalo *junto al* test de memorización, nunca en su lugar.
+</Callout>
+
+### Cuándo usarlo
+
+Siempre que el objetivo sea aumentar datos, compartir preservando la privacidad o hacer pruebas de estrés — es decir, casi siempre. TSTR es el test más *orientado al uso* del guante: habla directamente de "¿ayudarán estos datos a mi tarea real?" en vez de "¿luce bonito?". Conviértelo en tu criterio de aceptación para llevar un generador a un pipeline de entrenamiento.
+
+<MatchConcepts
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Une cada test con la pregunta que responde."
+  question="Une cada test con la pregunta que responde"
+  pairs={[
+    { term: "Comparación de hechos estilizados", definition: "¿Coinciden las marginales y la dependencia (colas, ACF, apalancamiento) con los datos reales?" },
+    { term: "Puntuación discriminativa (AUC)", definition: "¿Puede el clasificador más potente distinguir lo real de lo sintético?" },
+    { term: "TSTR frente a TRTR", definition: "¿Un modelo entrenado con datos sintéticos rinde aún sobre datos REALES reservados?" },
+  ]}
+/>
+
+## El test de memorización y vecino más cercano — el que caza a un copión
+
+<MCQ
+  client:visible
+  pretest
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="Todos los tests de realismo (hechos estilizados, AUC del discriminador ≈ 0.5, incluso TSTR) pueden ser superados por un generador que simplemente memorizó el conjunto de entrenamiento. ¿Qué propiedad debe medir un test dedicado para cazarlo?"
+  options={[
+    { text: "Cuán cerca se sitúa cada muestra sintética de su muestra real de ENTRENAMIENTO más cercana", correct: true },
+    { text: "La curtosis de los retornos sintéticos" },
+    { text: "El AUC del discriminador a mayor resolución" },
+    { text: "El número de muestras sintéticas generadas" },
+  ]}
+  explanation="La memorización es una afirmación sobre la distancia al conjunto de entrenamiento, así que tienes que medir esa distancia directamente. Ninguna estadística marginal o distribucional puede verla, porque las marginales del memorizador son exactas por construcción."
+/>
+
+**Analogía.** Un estudiante que *entiende* la materia escribe frases nuevas que son correctas. Un estudiante que *plagia* escribe frases palabra por palabra idénticas a la fuente — y un detector de plagio no califica la calidad, mide **cuán cerca está cada frase de algo en la biblioteca fuente.** Ese es el test de vecino más cercano, aplicado a los datos.
+
+**Definición.** Para cada muestra sintética, encuentra su **vecino más cercano en el conjunto de entrenamiento** (menor distancia bajo una métrica sensata sobre retornos/trayectorias) y registra esa distancia. Luego compara dos distribuciones de distancias:
+
+- las distancias de vecino más cercano **sintético → entrenamiento**, y
+- una **línea base**: las distancias **holdout → entrenamiento** (muestras reales que el generador nunca vio, medidas contra el mismo conjunto de entrenamiento).
+
+Si las distancias sintético-a-entrenamiento son **mucho menores** que las distancias holdout-a-entrenamiento, el generador está asentado encima de sus datos de entrenamiento — está **copiando**, no generando. Un generador sano produce distancias sintético-a-entrenamiento *comparables a* las distancias holdout-a-entrenamiento: novedoso, pero extraído del mismo vecindario.
+
+Este es el peldaño que caza lo que todos los tests anteriores pasan por alto. Arrastra el control de abajo y observa cómo ocurre.
+
+<SyntheticVsRealPaths
+  client:visible
+  title="Generador sano frente a uno que memoriza"
+  memorizationLabel="Memorización del generador"
+  novelLabel="Novedoso (sano)"
+  copyLabel="Copiando (fuga)"
+  distanceLabel="Distancia al vecino más cercano"
+  verdictLabel="Veredicto"
+  healthyVerdict="Las trayectorias sintéticas comparten la estadística real pero siguen siendo distintas — seguras para entrenar."
+  memorizedVerdict="Las trayectorias sintéticas se pegan al conjunto de entrenamiento — tu backtest solo te está leyendo de vuelta el futuro que memorizó."
+  resimulateLabel="Resimular"
+  realLabel="Real (entrenamiento)"
+  syntheticLabel="Sintético"
+  caption="Arrastra el control. A medida que el generador memoriza, las trayectorias sintéticas se colapsan sobre las reales y la distancia al vecino más cercano se desploma hacia cero — ese es exactamente el test de «¿solo lo ha copiado?» que ejecutas antes de fiarte de cualquier generador."
+/>
+
+Recórrelo con cuidado: en el extremo **Novedoso** el veredicto es sano — trayectorias distintas, distancia de vecino más cercano cómoda, seguro para entrenar. Desliza hacia **Copiando** y las curvas sintéticas se pegan a las trayectorias reales de entrenamiento mientras la **lectura de distancia se desploma**. Ese colapso a cero es *el* número que calculas en producción. Todo lo que queda a la izquierda de "Copiando" es un generador en el que puedes confiar; todo lo que se desliza hacia distancia cero es un backtest a punto de mentirte.
+
+**Ejemplo resuelto.** Calculas las distancias medianas de vecino más cercano (menor = más cerca de los datos de entrenamiento):
+
+| Distancia medida | Mediana | Lectura |
+|---|---|---|
+| Holdout → entrenamiento (línea base) | 1.00 | El aspecto de "novedoso pero misma distribución" |
+| Generador A: sintético → entrenamiento | 0.97 | ≈ línea base → genuinamente novedoso ✓ |
+| Generador B: sintético → entrenamiento | 0.06 | ≪ línea base → memorizando / copiando ✗ |
+
+Las muestras sintéticas del Generador A están más o menos tan lejos del conjunto de entrenamiento como lo están los *datos reales no vistos* — exactamente lo correcto. Las muestras del Generador B están prácticamente pegadas a filas de entrenamiento (0.06 frente a una línea base de 1.00). B es una fotocopiadora disfrazada de generador, y solo este test lo desenmascaró.
+
+<Callout variant="warning">
+**El test de memorización es el enclavamiento de seguridad de todo lo demás.** Un generador puede bordar los hechos estilizados, sacar AUC 0.5 y publicar un TSTR fuerte — y aun así ser un memorizador, porque los tres son *compatibles con copiar*. El test de vecino más cercano es el único peldaño que distingue "aprendió la distribución" de "almacenó los datos". Si las distancias sintético-a-entrenamiento se hunden por debajo de la línea base holdout-a-entrenamiento, **rechaza el generador por muy bien que luzcan sus otras puntuaciones** — porque copiar es la rampa de acceso a la fuga.
+</Callout>
+
+### Cuándo usarlo
+
+En cada generador, cada vez, antes de dejarlo acercarse a un backtest o a un conjunto de entrenamiento. Es barato (una búsqueda de vecino más cercano) y es la *única* defensa contra el modo de fallo al que todas las métricas de realismo son ciegas. Trata un test de memorización superado como precondición para confiar en cualquiera de las otras puntuaciones.
+
+## El campo de minas de la fuga de datos
+
+<MCQ
+  client:visible
+  pretest
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="Ajustas un generador con tu historial COMPLETO de precios y luego usas sus trayectorias sintéticas para backtestear una estrategia en 2018. ¿Por qué el Sharpe resultante no es de fiar?"
+  options={[
+    { text: "El generador vio datos posteriores a 2018, así que sus trayectorias sintéticas pueden codificar el futuro relativo a la ventana del backtest", correct: true },
+    { text: "Los datos sintéticos siempre tienen menor varianza" },
+    { text: "Los backtests requieren datos reales por ley" },
+    { text: "Nunca se midió el AUC del generador" },
+  ]}
+  explanation="Un generador entrenado con el historial completo ha absorbido información que es 'futuro' relativo a cualquier ventana de backtest anterior. Las trayectorias sintéticas que emite pueden llevar ese futuro, y entrenar-en-sintético / probar-en-real lo filtra directo a tus números de rendimiento."
+/>
+
+Esta es la advertencia que el curso entero ha estado rodeando, ahora hecha concreta. Recuerda el credo de *Deep Learning para Datos de Mercado*: **la fuga es el inflador silencioso del Sharpe**, y un generador es una manera nueva y sigilosa de cometerla.
+
+**Analogía.** Imagina a un "profesor de historia" que ha leído el periódico de mañana y luego te pone un examen sobre ayer. Sus preguntas te orientarán sutilmente hacia lo que *de verdad* pasó después — y bordarás el examen, sin aprender nada sobre si habrías podido predecirlo en tiempo real. Un generador ajustado con tu **historial completo** es ese profesor. Ha visto datos que son *futuro* relativo a cualquier ventana de backtest anterior, y las trayectorias sintéticas que produce pueden codificar calladamente ese futuro.
+
+**Definición.** La fuga del generador es la contaminación que ocurre cuando un generador se ajusta con datos que se solapan o son posteriores a la ventana de evaluación, de modo que su salida sintética lleva información que la estrategia no podría haber conocido en tiempo real. Ejecuta entrenar-en-sintético / probar-en-real sobre esas trayectorias y el futuro filtrado **infla tu Sharpe** — exactamente como cuando ajustas características sobre el conjunto de prueba, pero más difícil de detectar porque los datos sintéticos *parecen* limpios y la memorización puede ser difusa en lugar de literal.
+
+**Los arreglos — y no son negociables:**
+
+1. **Ajusta el generador SOLO con la ventana de entrenamiento.** Nunca dejes que toque el periodo de prueba. El generador es parte de tu modelo, así que debe obedecer el mismo muro temporal que cualquier otro componente.
+2. **Anida la generación dentro de validación cruzada purgada y en cuarentena.** Reajusta (o niégate a usar) el generador *dentro de cada pliegue*, purgando las muestras cuya información se solapa con el pliegue de prueba y poniendo en cuarentena un margen tras él — la misma CV purgada/en cuarentena de *Deep Learning para Datos de Mercado*. Un generador ajustado una sola vez con todo y reutilizado entre pliegues echa por tierra el esquema entero.
+3. **Desinfla por la búsqueda de generadores.** Cada arquitectura, semilla e hiperparámetro de generador que probaste es una *prueba*. Buscar entre muchos generadores y quedarte con el mejor infla el Sharpe por pruebas múltiples — así que aplica la corrección de **Sharpe desinflado** por el número de pruebas de generador, igual que harías con las pruebas de estrategia.
+
+<ReturnDistribution client:visible caption="La fuga no cambia cómo SE VEN los retornos sintéticos — la distribución puede ser impecable. Eso es lo que la hace peligrosa: la contaminación vive en CUÁNDO vio el generador los datos, no en la forma de su salida." />
+
+<Callout variant="warning">
+**Un generador entrenado con tu historial completo ha visto, por definición, el futuro relativo a cualquier backtest anterior — y las trayectorias sintéticas pueden colar ese futuro en tus resultados.** Este es el fallo más peligroso de todo el curso porque es *invisible a todos los tests de realismo*: los datos lucen perfectos, el discriminador queda engañado, las marginales coinciden. La única protección es el proceso: ajusta los generadores solo dentro de la ventana de entrenamiento, anídalos en CV purgada/en cuarentena y desinfla por la búsqueda de generadores. **Si recuerdas una sola frase de este curso, que sea esta.**
+</Callout>
+
+### Cuándo usarlo
+
+Este no es un test que ejecutas una vez; es una disciplina que incorporas al *pipeline*. Audita la fuga cada vez que un generador alimente un backtest o un bucle de selección de modelos — es decir, continuamente. El test de memorización caza la copia *literal*; la auditoría de fuga caza la contaminación temporal más sutil que sobrevive incluso cuando las distancias de vecino más cercano lucen bien.
+
+## La lista de verificación de la evaluación
+
+Ningún test aislado basta — ese ha sido el redoble de cada sección. Cada peldaño cubre un punto ciego del anterior, así que los ejecutas **en orden** y un generador debe superarlos *todos*:
+
+| # | Peldaño | Pregunta que responde | Qué caza | Ciego a |
+|---|---|---|---|---|
+| 1 | Hechos estilizados | ¿Coinciden marginales y dependencia? | Colas erróneas, sin agrupamiento de volatilidad | Memorización, fuga |
+| 2 | AUC discriminativo | ¿Puede un clasificador separar lo real de lo falso? | Delatores de estructura conjunta, artefactos | Memorización, fuga |
+| 3 | Predictiva (TSTR frente a TRTR) | ¿Son *útiles* los datos sintéticos sobre datos reales? | Señal perdida, "bonito pero inútil" | Memorización, fuga |
+| 4 | Memorización / vecino más cercano | ¿Está el generador copiando el conjunto de entrenamiento? | Un generador fotocopiadora | Fuga temporal sutil |
+| 5 | Auditoría de fuga | ¿Vio el generador el futuro? | Sharpe inflado por contaminación | (la disciplina que respalda a todos los demás) |
+
+Fíjate en el patrón: los peldaños 1–3 son todos ciegos a la memorización, por eso existe el peldaño 4; y los peldaños 1–4 pueden todos ser superados por un generador que, sin embargo, filtra, por eso el peldaño 5 es un *proceso*, no una métrica. **Sáltate un peldaño y el fallo que pretendía cazar se cuela directamente.**
+
+<MCQ
+  client:visible
+  allowMultiple
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="Un generador que ha memorizado en secreto su conjunto de entrenamiento SUPERARÁ calladamente ¿cuáles de estos tests? (Selecciona todas las que correspondan.)"
+  options={[
+    { text: "La comparación de hechos estilizados / distribucional", correct: true },
+    { text: "El AUC del clasificador discriminativo cercano a 0.5", correct: true },
+    { text: "La puntuación predictiva TSTR sobre los mismos datos memorizados", correct: true },
+    { text: "El test de distancia de vecino más cercano contra el conjunto de entrenamiento" },
+  ]}
+  explanation="Una fotocopiadora reproduce las marginales, engaña al discriminador e incluso puede parecer útil en TSTR — pasa con holgura los peldaños 1–3. El único test construido para cazarla es la distancia de vecino más cercano, que se desploma hacia cero precisamente porque las muestras sintéticas se asientan encima de los puntos de entrenamiento."
+/>
+
+<Categorize
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Coloca cada elemento en su grupo."
+  question="Clasifica cada hallazgo en el peldaño del guante que lo sacaría a la luz."
+  buckets={["Tests de realismo (hechos estilizados / AUC)", "Memorización y vecino más cercano", "Auditoría de fuga"]}
+  items={[
+    { text: "Los retornos sintéticos tienen curtosis 0.3 frente a 6.1 real", bucket: "Tests de realismo (hechos estilizados / AUC)" },
+    { text: "Un clasificador separa lo real de lo falso con AUC 0.95", bucket: "Tests de realismo (hechos estilizados / AUC)" },
+    { text: "Las distancias sintético-a-entrenamiento son 0.06 frente a una línea base holdout de 1.00", bucket: "Memorización y vecino más cercano" },
+    { text: "Cada trayectoria sintética se asienta encima de una trayectoria real de entrenamiento", bucket: "Memorización y vecino más cercano" },
+    { text: "El generador se ajustó con el historial completo, incluida la ventana del backtest", bucket: "Auditoría de fuga" },
+    { text: "El Sharpe está inflado y la búsqueda de generadores nunca se desinfló", bucket: "Auditoría de fuga" },
+  ]}
+  explanation="Las marginales erróneas y los delatores de estructura conjunta los cazan los tests de realismo; las distancias colapsadas y las trayectorias pegadas a entrenamiento las caza el test de memorización; ajustar con el historial completo y no desinflar la búsqueda son fallos de proceso que solo la auditoría de fuga saca a la luz."
+/>
+
+## Recapitulación
+
+Evaluar datos de mercado sintéticos es más difícil que generarlos, y la razón es un único adversario: **un generador que memoriza el conjunto de entrenamiento supera todos los tests de realismo mientras filtra el futuro a tus backtests.** Así que no confías en un número — ejecutas un guante de desafíos. Empieza con la comparación de **hechos estilizados** (marginales, colas, las ACF de los retornos y de los retornos absolutos, apalancamiento) para confirmar que los datos *parecen* reales; añade la **puntuación discriminativa** para que un clasificador potente no encuentre un delator (un AUC cercano a 0.5 es el objetivo); añade el test **predictivo TSTR frente a TRTR** para saber que los datos son de verdad *útiles* sobre datos reales reservados. Después — y esto es crucial — ejecuta el test de **memorización / vecino más cercano**, el único peldaño que distingue "aprendió la distribución" de "almacenó los datos": si las distancias sintético-a-entrenamiento se hunden por debajo de la línea base holdout-a-entrenamiento, rechaza el generador. Por último, trata la **fuga** como una disciplina de proceso: ajusta los generadores solo con la ventana de entrenamiento, anídalos dentro de CV purgada y en cuarentena, y desinfla por la búsqueda de generadores. Cada peldaño tapa un punto ciego del anterior. Supera los cinco, en orden, y tienes un generador en el que de verdad puedes creer.
+
+<MindMap
+  client:visible
+  eyebrow="El guante de la evaluación"
+  root={{
+    label: "Evaluar datos sintéticos",
+    children: [
+      {
+        label: "Realismo — ¿parece real?",
+        children: [
+          { label: "Hechos estilizados — colas, ACF de retornos y retornos absolutos, apalancamiento" },
+          { label: "AUC discriminativo — clasificador cerca de 0.5 significa indistinguible" },
+        ],
+      },
+      {
+        label: "Utilidad — TSTR frente a TRTR",
+        children: [
+          { label: "Entrenar en sintético, probar en real" },
+          { label: "Brecha pequeña con entrenar-en-real significa útil para aumentar datos" },
+        ],
+      },
+      {
+        label: "Honestidad — ¿está copiando?",
+        children: [
+          { label: "Distancia de vecino más cercano al conjunto de entrenamiento" },
+          { label: "Sintético-a-entrenamiento muy por debajo de holdout-a-entrenamiento significa memorización" },
+        ],
+      },
+      {
+        label: "Auditoría de fuga — ¿vio el futuro?",
+        children: [
+          { label: "Ajustar el generador solo con la ventana de entrenamiento" },
+          { label: "Anidar dentro de CV purgada y en cuarentena" },
+          { label: "Desinflar por la búsqueda de generadores" },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="El guante de la evaluación — comprobación final"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  nextLabel="Siguiente pregunta"
+  backLabel="Atrás"
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  seeResultsLabel="Ver resultados"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  gateLabel="Comprueba tu respuesta para continuar."
+  questions={[
+    {
+      question: "Tu discriminador alcanza AUC 0.50 separando lo real de lo sintético. ¿Qué conclusión está justificada?",
+      options: [
+        { text: "La distribución sintética se solapa con la real — pero esto también es compatible con un generador que memorizó el conjunto de entrenamiento", correct: true },
+        { text: "El generador definitivamente no está memorizando" },
+        { text: "Los datos sintéticos están garantizados como útiles para el entrenamiento posterior" },
+        { text: "El generador tiene las colas equivocadas" },
+      ],
+      explanation: "Un AUC 0.50 significa distribuciones indistinguibles, lo cual es bueno para el realismo — pero un memorizador también saca 0.50, porque las copias SÍ proceden de la distribución real. Necesario, no suficiente.",
+    },
+    {
+      question: "¿Qué afirmación sobre el guante de la evaluación es VERDADERA?",
+      options: [
+        { text: "Ningún test aislado basta; cada peldaño está diseñado para cubrir un punto ciego de los otros", correct: true },
+        { text: "Una puntuación TSTR alta por sí sola certifica que un generador es seguro" },
+        { text: "Superar el test de hechos estilizados descarta la memorización" },
+        { text: "La puntuación discriminativa detecta la fuga" },
+      ],
+      explanation: "Todo el sentido es la estratificación: los tests de realismo no ven la memorización, el test de memorización no ve la fuga sutil, y la auditoría de fuga respalda todo lo demás. Un solo número nunca basta.",
+    },
+    {
+      question: "Un generador supera los hechos estilizados, saca AUC 0.51 y publica un TSTR fuerte. ¿Cuál es la trampa?",
+      options: [
+        { text: "Los tres son compatibles con un generador que simplemente memorizó el conjunto de entrenamiento — solo el test de vecino más cercano puede descartarlo", correct: true },
+        { text: "Significa que el generador está sobreajustado a las colas del conjunto de prueba" },
+        { text: "Un TSTR fuerte significa que los datos son demasiado suaves" },
+        { text: "AUC 0.51 es demasiado alto para fiarse" },
+      ],
+      explanation: "La memorización reproduce las marginales con exactitud, engaña al discriminador e incluso puede sostener un modelo posterior útil — así que pasa con holgura los peldaños 1–3. Debes medir la distancia sintético-a-entrenamiento para cazarla.",
+    },
+    {
+      question: "Ajustas un generador con tu historial completo de precios, luego backtesteas una estrategia de 2018 sobre sus trayectorias sintéticas y obtienes un Sharpe deslumbrante. ¿Qué pasó con más probabilidad?",
+      options: [
+        { text: "El generador absorbió información posterior a 2018, sus trayectorias sintéticas codificaron ese futuro, y entrenar-en-sintético/probar-en-real lo filtró al Sharpe", correct: true },
+        { text: "Los datos sintéticos simplemente tienen mayor Sharpe que los reales" },
+        { text: "La ventana del backtest era demasiado larga" },
+        { text: "El AUC del discriminador era demasiado bajo" },
+      ],
+      explanation: "Un generador ajustado con el historial completo ha visto datos que son futuro relativo a 2018. Las trayectorias sintéticas pueden llevar ese futuro; la fuga infla el Sharpe. Arréglalo ajustando solo con la ventana de entrenamiento, anidando en CV purgada/en cuarentena y desinflando por la búsqueda de generadores.",
+    },
+    {
+      question: "¿En qué se diferencia el propósito del test predictivo (TSTR) del test discriminativo (AUC)?",
+      options: [
+        { text: "TSTR mide si los datos son ÚTILES en tareas reales; la puntuación discriminativa mide si los datos PARECEN reales para un clasificador", correct: true },
+        { text: "Miden lo mismo con matemáticas distintas" },
+        { text: "TSTR detecta la memorización mientras que AUC detecta la fuga" },
+        { text: "AUC mide la utilidad y TSTR mide el realismo" },
+      ],
+      explanation: "La puntuación discriminativa es una métrica de realismo (¿puede un clasificador distinguir lo falso de lo real?). TSTR es una métrica orientada al uso (¿entrenar con los datos sintéticos transfiere a datos reales reservados?). Un generador puede ser realista pero inútil, o — vía memorización — útil pero no fiable, por eso ejecutas ambos junto al test de memorización.",
+    },
+  ]}
+/>

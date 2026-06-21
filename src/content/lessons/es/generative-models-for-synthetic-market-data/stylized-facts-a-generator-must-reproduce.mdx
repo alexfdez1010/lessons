@@ -1,0 +1,485 @@
+---
+title: "Los hechos estilizados que un generador debe reproducir"
+description: "El boletín innegociable contra el que se evalúa todo generador de datos sintéticos: colas anchas, agrupación de volatilidad, caída lenta de la autocorrelación de rendimientos absolutos, el efecto apalancamiento, la gaussianidad por agregación y la asimetría ganancia/pérdida — y por qué un paseo aleatorio gaussiano falla casi todos."
+topic: "es/generative-models-for-synthetic-market-data"
+order: 2
+minutes: 16
+updated: 2026-06-21
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, StylizedFactsChecklist, ReturnDistribution, TsAcfPlot } from '@/components/react';
+
+Supón que construyes un generador de datos sintéticos, lo apuntas a una década de rendimientos del S&P 500 y aprende diligentemente que el **rendimiento diario medio ronda el 0,03%** y la **desviación típica diaria ronda el 1%**. Le dejas escupir una década nueva de rendimientos de «mercado» que casan exactamente con esos dos números. Enhorabuena — has producido *basura que ningún operador reconocería como un mercado*.
+
+¿Por qué? Porque la media y la varianza son solo los dos primeros momentos de una distribución, y **los mercados viven en los momentos superiores y en la estructura temporal**. Una serie puede tener la media correcta y el bamboleo correcto sin tener desplomes, sin ritmo de calma-luego-tormenta, sin memoria y con un perfil al alza/a la baja perfectamente simétrico. Valoraría mal las opciones, dimensionaría mal el riesgo y haría backtesting de estrategias en una fantasía. Un mercado real no es «ruido aleatorio con el botón de volumen bien puesto» — tiene una huella dactilar.
+
+Esa huella dactilar es una breve lista de **hechos estilizados**: regularidades empíricas que aparecen en *todos* los mercados líquidos — renta variable, divisas, materias primas, cripto — a lo largo de décadas y de continentes, sin importar el activo. Fueron catalogadas por Mandelbrot, Fama, Cont y otros, y son notablemente universales. Para nosotros no son trivia: **son el baremo.** Todo generador que conocerás más adelante en este curso — el clásico Movimiento Browniano Geométrico de la lección 3, y las GAN, los VAE y los modelos de difusión de las lecciones 4–6 — se evalúa contra exactamente este boletín. Así que aprende el baremo antes de conocer a los concursantes.
+
+<StylizedFactsChecklist
+  client:visible
+  title="El boletín de hechos estilizados"
+  scorecardLabel="Puntuación del paseo aleatorio gaussiano"
+  passLabel="El MBG lo reproduce"
+  failLabel="El MBG lo falla"
+  caption="Haz clic en cualquier hecho para ver qué muestra el mercado real frente a un simple paseo aleatorio gaussiano. Un generador útil debe marcar estas casillas — y la línea base ingenua no marca casi ninguna."
+  facts={[
+    { kind: 'fat-tails', name: 'Colas anchas (curtosis alta)', definition: 'Los movimientos extremos ocurren mucho más a menudo de lo que predice una campana normal.', real: 'Los rendimientos diarios tienen exceso de curtosis; días de ±5σ que «nunca» deberían ocurrir aparecen cada pocos años.', gbmReproduces: false, verdict: 'Un paseo aleatorio gaussiano extrae sus shocks de una distribución normal, así que sus colas son finas por construcción — subestima los desplomes.' },
+    { kind: 'vol-clustering', name: 'Agrupación de volatilidad', definition: 'Los grandes movimientos siguen a grandes movimientos, la calma a la calma — la volatilidad llega en rachas.', real: 'Los rendimientos al cuadrado/absolutos están fuertemente autocorrelacionados; las semanas turbulentas se agrupan.', gbmReproduces: false, verdict: 'El MBG usa volatilidad constante y shocks independientes, así que su turbulencia se reparte de forma uniforme — sin agrupación alguna.' },
+    { kind: 'abs-acf', name: 'Caída lenta de la autocorrelación de |rendimientos|', definition: 'Los rendimientos en sí parecen no correlacionados, pero sus magnitudes siguen correlacionadas durante semanas.', real: 'La autocorrelación de los rendimientos absolutos cae lentamente (memoria larga), aunque la ACF de los rendimientos crudos sea ~0.', gbmReproduces: false, verdict: 'En el MBG las magnitudes son i.i.d., así que la ACF de rendimientos absolutos es plana en cero — no tiene memoria larga.' },
+    { kind: 'leverage', name: 'Efecto apalancamiento', definition: 'La volatilidad sube más tras caídas de precio que tras subidas del mismo tamaño — el miedo es asimétrico.', real: 'Los rendimientos negativos predicen mayor volatilidad futura que los positivos del mismo tamaño.', gbmReproduces: false, verdict: 'El MBG trata los shocks al alza y a la baja de forma simétrica, así que una caída y un repunte elevan la volatilidad futura por igual — y no es así.' },
+    { kind: 'gaussianity', name: 'Gaussianidad por agregación', definition: 'Al sumar rendimientos en ventanas más largas, la distribución vuelve a acercarse a la normal.', real: 'Los rendimientos mensuales parecen mucho más acampanados que los salvajes y anchos rendimientos diarios.', gbmReproduces: true, verdict: 'El MBG ya es gaussiano en todo horizonte, así que «pasa» trivialmente esta — pero solo porque nunca tuvo colas anchas para empezar.' },
+    { kind: 'gain-loss', name: 'Asimetría ganancia/pérdida', definition: 'Los precios caen más rápido y más bruscamente de lo que suben — los desplomes son abruptos, los repuntes cuestan.', real: 'Las grandes caídas ocurren en lapsos más cortos que las subidas igual de grandes.', gbmReproduces: false, verdict: 'Un paseo gaussiano simétrico hace que las rachas al alza y a la baja sean imágenes especulares, borrando la asimetría desplome-rápido/subida-lenta.' },
+  ]}
+/>
+
+Fíjate en el marcador: un simple paseo aleatorio gaussiano pasa esencialmente **uno** de los seis, y ese uno solo por accidente. Guarda esa idea — volveremos al boletín completo al final. Primero, una sección por hecho, cada una con la prueba que de verdad ejecutarías para evaluar un generador en ella.
+
+## Colas anchas (exceso de curtosis)
+
+<MCQ
+  client:visible
+  pretest
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="Una distribución de rendimientos diarios tiene la misma media y varianza que una distribución normal, pero los días extremos (grandes ganancias y grandes pérdidas) ocurren mucho más a menudo de lo que predice la campana. ¿Qué implica esto sobre su curtosis?"
+  options={[
+    { text: "La curtosis es mayor que 3 (exceso de curtosis positivo)", correct: true },
+    { text: "La curtosis es menor que 3 (exceso de curtosis negativo)" },
+    { text: "La curtosis es exactamente 3, ya que la varianza coincide" },
+    { text: "La curtosis es indefinida siempre que la media sea distinta de cero" },
+  ]}
+  explanation="Las colas más anchas ponen más masa de probabilidad lejos de la media, lo que eleva el cuarto momento. Una distribución normal tiene curtosis 3 (exceso 0); los rendimientos con colas anchas se sitúan por encima."
+/>
+
+**Analogía.** Una distribución normal es una aerolínea cautelosa que promete un retraso «casi nunca». Los mercados reales son una aerolínea que promete lo mismo — y luego te deja tirado en la pista dos veces al año. El retraso *medio* puede coincidir con el folleto mientras que las *catástrofes* son muchísimo más frecuentes.
+
+**Definición.** La curtosis es el cuarto momento estandarizado, $\kappa = \mathbb{E}\!\left[\left(\frac{r-\mu}{\sigma}\right)^4\right]$. Una distribución normal tiene $\kappa = 3$, así que los analistas citan el **exceso de curtosis** $\kappa - 3$ (cero para una gaussiana). Los rendimientos diarios de renta variable muestran de forma rutinaria un **exceso de curtosis de 5 a 30** — las colas no son un poco pesadas, son pesadas.
+
+**Ejemplo resuelto — la tormenta milenaria de 25.000 años.** Bajo un modelo normal con $\sigma = 1\%$ diario, un día de $-5\sigma$ significa un movimiento de $-5\%$. La probabilidad de un evento de $5\sigma$ en una gaussiana es de unos $2.87 \times 10^{-7}$. Así que la espera esperada entre días así es
+
+$$\frac{1}{2.87 \times 10^{-7}} \approx 3{,}480{,}000 \text{ días} \approx 13{,}800 \text{ años (una cola)},$$
+
+y aproximadamente **25.000 años** si solo te importa la cola a la baja en ese umbral exacto a lo largo del calendario. Sin embargo los mercados entregan días de $\pm 5\sigma$ cada **pocos años** — octubre de 1987 fue un evento de $-20\sigma$+ bajo la gaussiana, que el modelo normal califica como «una vez cada muchas veces la edad del universo». Cuando tu modelo dice «época geológica» y la realidad dice «martes», tus colas son demasiado finas.
+
+<ReturnDistribution client:visible caption="Rendimientos diarios reales (histograma) frente al mejor ajuste normal con la misma media y varianza. Mismo centro, misma anchura — pero la distribución real es más alta en el medio y, crucialmente, más ancha en las colas. Ese sobresaliente en las colas es el exceso de curtosis." />
+
+<Callout variant="warning">
+**Trampa: casar la varianza ≠ casar el riesgo.** Un generador puede clavar la desviación típica y aun así errar el riesgo de cola en órdenes de magnitud, porque la varianza la dominan los días típicos mientras que el riesgo de desplome vive en la cola. Si evalúas un generador solo por la volatilidad, un modelo de colas finas pasa sin problema — y luego te revienta el VaR y los precios de tus opciones al primer trimestre de apariencia tranquila.
+</Callout>
+
+### Cuándo usarlo
+
+Para **probar** un generador en busca de colas anchas: calcula el exceso de curtosis muestral de sus rendimientos y compáralo con la serie real (la real debería estar muy por encima de 0; un generador gaussiano se sitúa cerca de 0). Mejor aún, compara los **cuantiles empíricos de cola** — p. ej. el 0,1% de peor día — o ajusta una Pareto generalizada / ley de potencias a la cola y comprueba el índice de cola. Un gráfico QQ de rendimientos sintéticos frente a reales hace que las colas finas salten a la vista: los puntos se desvían de la diagonal en los extremos.
+
+<MCQ
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="Una serie sintética tiene un exceso de curtosis de 0,1. Rendimientos reales comparables muestran un exceso de curtosis de 9. ¿Cuál es el veredicto?"
+  options={[
+    { text: "El generador subproduce los movimientos extremos — sus colas son demasiado finas", correct: true },
+    { text: "El generador está bien; una curtosis cerca de 0 significa que está bien calibrado" },
+    { text: "El generador sobreproduce los movimientos extremos" },
+    { text: "Nada — la curtosis no puede compararse entre series" },
+  ]}
+  explanation="Un exceso de curtosis cerca de 0 es fino como una gaussiana. Frente a un valor real de 9, la serie sintética casi nunca produce los desplomes que el mercado entrega de verdad."
+/>
+
+## Agrupación de volatilidad
+
+<MCQ
+  client:visible
+  pretest
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="En los mercados reales, ¿qué afirmación sobre la autocorrelación de rendimientos suele ser VERDADERA?"
+  options={[
+    { text: "Los rendimientos crudos están casi sin correlación, pero los rendimientos al cuadrado (o absolutos) están positivamente autocorrelacionados", correct: true },
+    { text: "Tanto los rendimientos crudos como los rendimientos al cuadrado están fuertemente autocorrelacionados de forma positiva" },
+    { text: "Los rendimientos crudos están fuertemente autocorrelacionados, los rendimientos al cuadrado no" },
+    { text: "Ni los rendimientos crudos ni los rendimientos al cuadrado muestran ninguna autocorrelación" },
+  ]}
+  explanation="Si los rendimientos crudos fueran predecibles, los arbitrarías hasta hacerlos desaparecer — así que están ~sin correlación. Pero el TAMAÑO de los movimientos se agrupa: un día grande predice otro día grande, lo que se manifiesta como autocorrelación positiva en los rendimientos al cuadrado/absolutos."
+/>
+
+**Analogía.** Los terremotos no llegan al ritmo de un metrónomo — vienen en enjambres. Un gran temblor y el suelo sigue temblando con réplicas durante días, luego se queda en silencio durante un largo tramo. La volatilidad es exactamente eso: las tormentas se agrupan, la calma se agrupa.
+
+**Definición.** Los grandes movimientos tienden a seguir a grandes movimientos y los pequeños a los pequeños, *sin importar el signo*. Formalmente: la autocorrelación de los **rendimientos crudos** $r_t$ es aproximadamente cero en todos los retardos (los mercados son más o menos impredecibles en dirección), pero la autocorrelación de los **rendimientos al cuadrado o absolutos** es significativamente **positiva** durante muchos retardos:
+
+$$\rho_{|r|}(k) = \operatorname{Corr}\!\left(|r_t|,\, |r_{t-k}|\right) > 0 \quad\text{para } k \ge 1.$$
+
+Esta es precisamente la regularidad que **GARCH** (de *Finanzas de Series Temporales*) fue construido para capturar: la varianza de hoy depende del shock al cuadrado de ayer y de la varianza de ayer, así que los shocks persisten.
+
+**Ejemplo resuelto — una tabla de ACF.** Calcula las autocorrelaciones en los retardos 1, 5 y 10 para una serie diaria real:
+
+| Retardo $k$ | ACF de rendimientos crudos $r_t$ | ACF de rendimientos al cuadrado $r_t^2$ |
+|---|---|---|
+| 1 | -0.02 | 0.22 |
+| 5 | 0.01 | 0.15 |
+| 10 | 0.00 | 0.11 |
+
+La columna de los crudos ronda el 0 (sin predecibilidad direccional). La columna de los cuadrados es claramente positiva y solo se desvanece despacio — esa brecha *es* la agrupación de volatilidad. Una serie cuya ACF de rendimientos al cuadrado también es ~0 no tiene agrupación: sus días grandes están salpicados al azar en lugar de apiñarse en tormentas.
+
+<Callout variant="warning">
+**Trampa: barajar i.i.d. destruye la agrupación pero conserva el histograma.** Si tomas una serie de rendimientos real y **barajas** los días al azar, el histograma (y por tanto la curtosis) queda *intacto*, pero cada tormenta se dispersa — la ACF de rendimientos al cuadrado colapsa a cero. Un generador que extrae rendimientos i.i.d. de la verdadera distribución de colas anchas tiene colas anchas *y* cero agrupación. Casar la distribución de un día no dice nada sobre la estructura temporal.
+</Callout>
+
+### Cuándo usarlo
+
+Para **probar** la agrupación: dibuja la ACF de $r_t$ y la de $r_t^2$ (o $|r_t|$) una al lado de la otra, con bandas de confianza. Las series reales y de un buen generador muestran una ACF cruda plana y una ACF al cuadrado claramente positiva. Cuantitativamente, ejecuta un **test de Ljung–Box sobre los rendimientos al cuadrado** (o un test ARCH-LM): un valor p pequeño confirma la agrupación. Ejecútalo tanto en la serie real como en la sintética y compara.
+
+<FillBlank
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+  question="Completa la idea central de la agrupación de volatilidad."
+  text="La agrupación de volatilidad se manifiesta como autocorrelación positiva en los rendimientos {{al cuadrado|crudos|con signo}}, mientras que los rendimientos {{crudos|al cuadrado|absolutos}} permanecen más o menos sin correlación."
+  explanation="La agrupación de volatilidad vive en el tamaño de los movimientos (al cuadrado/absoluto), no en su dirección. Los rendimientos crudos permanecen casi sin correlación porque la dirección es más o menos impredecible."
+/>
+
+## Caída lenta de la autocorrelación de rendimientos absolutos (memoria larga)
+
+<MCQ
+  client:visible
+  pretest
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="La agrupación de volatilidad dice que la ACF de rendimientos al cuadrado es positiva. El hecho de la 'memoria larga' añade una afirmación más afilada sobre CÓMO se comporta esa ACF a lo largo de los retardos. ¿Cuál es?"
+  options={[
+    { text: "Decae muy despacio — cerca de una ley de potencias — manteniéndose positiva hasta decenas o cientos de retardos", correct: true },
+    { text: "Decae exponencialmente rápido, llegando a cero en 2–3 retardos" },
+    { text: "Oscila entre positiva y negativa en cada retardo sucesivo" },
+    { text: "Es constante en todos los retardos, sin decaer jamás" },
+  ]}
+  explanation="La memoria larga es la caída lenta, casi de ley de potencias: la autocorrelación de |rendimiento| sigue siendo visiblemente positiva en el retardo 20, 50, incluso 100. Esa caída hiperbólica es mucho más lenta que la caída exponencial que daría un modelo simple."
+/>
+
+**Analogía.** Una campana de iglesia golpeada no se queda en silencio en el instante en que el siguiente banco está vacío; *sigue sonando*, su zumbido desvaneciéndose en una cola larga y lenta. La volatilidad del mercado suena como esa campana — su eco en los rendimientos absolutos persiste mucho más de lo que espera cualquier modelo de memoria corta.
+
+**Definición.** Más allá de ser meramente positiva, la autocorrelación de los rendimientos absolutos (y al cuadrado) **decae despacio con el retardo** — empíricamente cerca de una ley de potencias, $\rho_{|r|}(k) \sim k^{-\gamma}$ con un $\gamma$ pequeño (a menudo $0.2$–$0.4$), en lugar de la rápida caída geométrica $\rho(k) \sim \phi^{k}$ de un proceso de memoria corta. Esta es la **memoria larga** o **dependencia de largo alcance** de la volatilidad: el pasado influye en el presente a lo largo de horizontes muy largos.
+
+**Ejemplo resuelto — ACF cruda frente a absoluta a lo largo de los retardos.** Contrasta las dos series en retardos crecientes:
+
+| Retardo $k$ | ACF de rendimientos crudos | ACF de $\lvert r_t \rvert$ |
+|---|---|---|
+| 1 | -0.02 | 0.30 |
+| 5 | 0.01 | 0.26 |
+| 20 | 0.00 | 0.20 |
+| 50 | -0.01 | 0.14 |
+
+La ACF de rendimientos crudos es ruido estadístico en torno a cero en cada retardo — plana desde el principio. La ACF de rendimientos absolutos empieza en 0,30 y *sigue en torno a 0,20 en el retardo 20* y 0,14 en el retardo 50. Una caída de memoria corta (geométrica) desde 0,30 con $\phi = 0.8$ ya estaría en $0.30 \times 0.8^{20} \approx 0.0035$ en el retardo 20 — prácticamente desaparecida. La realidad sigue sonando fuerte; esa persistencia es la memoria larga.
+
+<TsAcfPlot client:visible caption="Autocorrelación por retardo. La ACF de rendimientos crudos (clara) cae dentro de la banda de confianza de inmediato y se queda ahí. La ACF de rendimientos absolutos (oscura) se mantiene muy por encima de la banda durante muchos retardos, desvaneciéndose despacio — la caída característica casi de ley de potencias de la memoria larga de la volatilidad." />
+
+<Callout variant="warning">
+**Trampa: una comprobación de un solo retardo no ve la memoria larga.** Un generador podría casar la ACF de rendimientos al cuadrado en el retardo 1 a la perfección (así que «tiene agrupación») y aun así tener una ACF que colapsa a cero en el retardo 5. Pasa un test ingenuo de agrupación y aun así falla la memoria larga. Inspecciona siempre el **perfil de caída completo**, no un solo retardo — la caída lenta es una afirmación sobre la *forma* de la curva.
+</Callout>
+
+### Cuándo usarlo
+
+Para **probar** la memoria larga: dibuja $\rho_{|r|}(k)$ hasta retardos grandes (50–100) en una escala **log–log**; una línea más o menos recta de pendiente pequeña señala una caída de ley de potencias. Estima directamente el exponente de memoria larga — p. ej. el **exponente de Hurst** $H$ de los rendimientos absolutos (la volatilidad real da $H > 0.5$), mediante análisis R/S o un estimador GPH/de log-periodograma. Compara el exponente y la curva ACF completa de la serie sintética con los de la real.
+
+<MCQ
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="La ACF de |rendimiento| de un generador es 0,28 en el retardo 1 pero 0,01 en el retardo 5, mientras que la serie real sigue en 0,20 en el retardo 20. ¿Qué hecho FALLA el generador, aunque muestre agrupación?"
+  options={[
+    { text: "Caída lenta / memoria larga — el eco de su volatilidad muere demasiado rápido", correct: true },
+    { text: "Colas anchas" },
+    { text: "Gaussianidad por agregación" },
+    { text: "Asimetría ganancia/pérdida" },
+  ]}
+  explanation="Tiene agrupación de corto alcance (retardo 1 positivo) pero la ACF colapsa en el retardo 5. La volatilidad real persiste hasta el retardo 20+. El hecho que falta es la caída lenta de memoria larga."
+/>
+
+## El efecto apalancamiento
+
+<MCQ
+  client:visible
+  pretest
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="Empíricamente, ¿tras qué tipo de día tiende a subir MÁS la volatilidad de la renta variable?"
+  options={[
+    { text: "Tras una gran CAÍDA de precio — la volatilidad responde de forma asimétrica a los rendimientos negativos", correct: true },
+    { text: "Tras una gran SUBIDA de la misma magnitud" },
+    { text: "Por igual tras movimientos al alza y a la baja del mismo tamaño" },
+    { text: "La volatilidad cae tras cualquier movimiento grande, al alza o a la baja" },
+  ]}
+  explanation="El efecto apalancamiento: un movimiento a la baja de tamaño x eleva la volatilidad futura más que un movimiento al alza de tamaño x. Los rendimientos y la volatilidad futura están negativamente correlacionados — el miedo dispara la volatilidad más que la codicia."
+/>
+
+**Analogía.** Las buenas noticias elevan una acción como sube una marea tranquila — con suavidad. Las malas noticias la tiran como una alarma de incendios vacía un edificio: empujones, gritos, caos. El *pánico* a la baja agita mucha más turbulencia que la alegría al alza.
+
+**Definición.** La volatilidad tiende a aumentar **más** tras las caídas de precio que tras las subidas de igual magnitud — hay una **correlación negativa entre los rendimientos actuales y la volatilidad futura**, $\operatorname{Corr}(r_t,\, \sigma_{t+1}) < 0$. Clásicamente atribuida al apalancamiento financiero (una caída de precio eleva la ratio deuda/capital de la empresa, haciendo el capital más arriesgado), de ahí el nombre — aunque el efecto es mayor de lo que el apalancamiento por sí solo explica.
+
+**Ejemplo resuelto — volatilidad realizada post-subida frente a post-caída.** Divide los días según el signo del rendimiento del día anterior y mide la volatilidad realizada del día siguiente (anualizada):
+
+| Día anterior | Volatilidad realizada del día siguiente |
+|---|---|
+| Día al alza ($r_{t-1} > 0$) | 14% |
+| Día a la baja ($r_{t-1} < 0$) | 21% |
+
+Shocks del mismo tamaño, secuelas muy distintas: a un día a la baja le sigue una volatilidad unas $21/14 \approx 1.5\times$ mayor que tras un día al alza. Un modelo simétrico (GARCH, MBG) daría cifras más o menos iguales en ambas filas; la brecha es el efecto apalancamiento. Modelos asimétricos como **EGARCH** o **GJR-GARCH** se inventaron precisamente para capturar esto.
+
+<Callout variant="warning">
+**Trampa: los modelos simétricos son ciegos a él.** El GARCH simple y el MBG tratan ambos los shocks $+x$ y $-x$ de forma idéntica — *no pueden* producir un efecto apalancamiento, por mucho que los ajustes, porque su actualización de volatilidad depende de $r^2$, que descarta el signo. Si la volatilidad de tu generador no distingue entre un desplome y una subida explosiva, valorará mal el sesgo de volatilidad que los mercados de opciones cotizan cada día.
+</Callout>
+
+### Cuándo usarlo
+
+Para **probar** el efecto apalancamiento: estima la **correlación cruzada** $\operatorname{Corr}(r_t,\, |r_{t+k}|)$ o $\operatorname{Corr}(r_t,\, r_{t+k}^2)$ para $k \ge 1$ — los mercados reales dan valores significativamente *negativos*, un generador sin el efecto da ~0. O simplemente agrupa la volatilidad realizada del día siguiente por el signo del rendimiento de hoy (como en la tabla) y comprueba si hay una brecha. En lenguaje de opciones, el efecto se manifiesta como un **sesgo de volatilidad negativo**.
+
+<Categorize
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Coloca cada elemento en su grupo."
+  question="Clasifica cada modelo según capture o no el efecto apalancamiento."
+  buckets={["Captura el efecto apalancamiento", "Simétrico (no puede capturarlo)"]}
+  items={[
+    { text: "EGARCH", bucket: "Captura el efecto apalancamiento" },
+    { text: "GJR-GARCH", bucket: "Captura el efecto apalancamiento" },
+    { text: "GARCH(1,1) simple", bucket: "Simétrico (no puede capturarlo)" },
+    { text: "Movimiento Browniano Geométrico", bucket: "Simétrico (no puede capturarlo)" },
+  ]}
+  explanation="EGARCH y GJR-GARCH dejan que los shocks negativos afecten a la volatilidad de forma distinta que los positivos, así que capturan el apalancamiento. El GARCH simple y el MBG dependen de r² (sin signo), por lo que son simétricos y ciegos a él."
+/>
+
+## Gaussianidad por agregación
+
+<MCQ
+  client:visible
+  pretest
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="A medida que sumas rendimientos diarios en rendimientos semanales, luego mensuales, luego trimestrales, ¿qué le ocurre al exceso de curtosis de la distribución resultante?"
+  options={[
+    { text: "Cae hacia 0 — la distribución se ve progresivamente más normal", correct: true },
+    { text: "Crece sin límite — los rendimientos de horizonte más largo tienen colas cada vez más anchas" },
+    { text: "Permanece exactamente constante en todos los horizontes" },
+    { text: "Cambia de signo, volviéndose negativo en horizontes largos" },
+  ]}
+  explanation="Gaussianidad por agregación: a medida que los rendimientos se suman en ventanas más largas, la distribución converge hacia una normal (un efecto al estilo del Teorema Central del Límite), así que el exceso de curtosis se encoge hacia 0. Las colas anchas son sobre todo un fenómeno de alta frecuencia."
+/>
+
+**Analogía.** De cerca, una costa es dentada, con acantilados violentos y entrantes. Aléjate hasta un mapa del continente entero y el detalle salvaje se suaviza en una curva apacible. Agrega los rendimientos en ventanas más largas y la aspereza de colas anchas de los movimientos diarios se suaviza hacia la pulcra campana de Gauss.
+
+**Definición.** A medida que el intervalo de muestreo se alarga — diario → semanal → mensual — la distribución de rendimientos **se aproxima a una distribución normal**, y el exceso de curtosis **decae hacia 0**. Este es un efecto con sabor a Teorema Central del Límite: un rendimiento mensual es una suma de ~21 rendimientos diarios, y las sumas de shocks (débilmente dependientes) derivan hacia la gaussiana. Crucialmente, **este es el único hecho que un paseo aleatorio gaussiano «pasa» trivialmente** — porque era gaussiano en todo horizonte desde el principio.
+
+**Ejemplo resuelto — la curtosis cayendo con el horizonte.** Toma una serie diaria con **exceso de curtosis 8**. Si los rendimientos diarios fueran independientes, sumar $n$ de ellos divide el exceso de curtosis por $n$: un mes de 21 días da $8 / 21 \approx 0.38$. Los rendimientos reales no son del todo independientes (la agrupación de volatilidad ralentiza la convergencia), así que el exceso de curtosis mensual aterriza un poco más alto — empíricamente en torno a **1** — pero la dirección es inconfundible:
+
+| Horizonte | Exceso de curtosis típico |
+|---|---|
+| Diario | 8 |
+| Semanal | 3 |
+| Mensual | ≈ 1 |
+
+De 8 a cerca de 1 a medida que te alejas — las colas se desinflan. Un generador que es gaussiano en todas partes casa bien la forma *mensual*; la prueba es si *también* tiene las colas anchas *diarias* desde las que se supone que debe converger.
+
+<Callout variant="warning">
+**Trampa: pasar este no demuestra nada.** Como un paseo aleatorio gaussiano es normal en *todo* horizonte, «pasa» la gaussianidad por agregación automáticamente — pero por la razón equivocada. Nunca tuvo colas anchas diarias que perder. Así que un generador que casa solo la distribución mensual puede estar escondiendo una distribución diaria completamente errónea. Evalúa siempre a la **alta frecuencia**, donde viven las colas anchas, no solo en el horizonte agregado.
+</Callout>
+
+### Cuándo usarlo
+
+Para **probar** la gaussianidad por agregación: calcula el exceso de curtosis (y ejecuta un test de normalidad como el de Jarque–Bera) en **varios horizontes** — diario, semanal, mensual — y confirma que el valor **tiende a la baja** hacia 0 a medida que crece la ventana. Un buen generador reproduce la *curva entera*: ancha en diario, casi normal en mensual. Casar un solo horizonte no basta; es la **forma de la convergencia** la que debe coincidir.
+
+<MCQ
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="¿Qué afirmación sobre un simple paseo aleatorio gaussiano es correcta?"
+  options={[
+    { text: "Pasa la gaussianidad por agregación trivialmente, porque es normal en todo horizonte desde el principio", correct: true },
+    { text: "Falla la gaussianidad por agregación porque sus rendimientos diarios tienen colas demasiado anchas" },
+    { text: "Pasa porque converge correctamente de colas diarias anchas a rendimientos mensuales normales" },
+    { text: "Falla porque sus rendimientos mensuales no son normales" },
+  ]}
+  explanation="Un paseo gaussiano es normal en todos los horizontes, así que «pasa» la gaussianidad por agregación — pero solo porque nunca tuvo las colas diarias anchas desde las que se suponía que debía converger. Es un aprobado por la razón equivocada."
+/>
+
+## Asimetría ganancia/pérdida
+
+<MCQ
+  client:visible
+  pretest
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="Comparando cómo un índice suele alcanzar una ganancia del +20% frente a una pérdida del -20%, ¿qué patrón casa con los mercados reales?"
+  options={[
+    { text: "Las pérdidas llegan más rápido y más bruscamente; las ganancias se acumulan más despacio", correct: true },
+    { text: "Las ganancias llegan más rápido; las pérdidas se arrastran despacio" },
+    { text: "Ganancias y pérdidas son perfectamente simétricas en velocidad y forma" },
+    { text: "Ambas alcanzan su objetivo en exactamente el mismo número de días, siempre" },
+  ]}
+  explanation="Los mercados 'suben por la escalera y bajan por el ascensor': las subidas se arrastran despacio, los desplomes son abruptos. Esto se manifiesta como asimetría a la izquierda en los rendimientos y como caídas que alcanzan una magnitud dada más rápido que las subidas del mismo tamaño."
+/>
+
+**Analogía.** El mercado sube por la escalera y baja por el ascensor. Las ganancias son una caminata paciente — un escalón cada vez durante semanas. Las pérdidas son una trampilla: un acantilado que se abre en días. Simétricas en tamaño, salvajemente asimétricas en *velocidad y forma*.
+
+**Definición.** Las grandes **caídas** tienden a ser **más bruscas y rápidas** que las subidas de igual magnitud, produciendo **asimetría negativa** en la distribución de rendimientos, $\operatorname{skew}(r) < 0$. De forma equivalente (la «asimetría ganancia/pérdida» de Johansen–Sornette): el tiempo de espera típico para alcanzar un rendimiento acumulado **negativo** dado es **más corto** que el tiempo de espera para alcanzar el mismo rendimiento **positivo**.
+
+**Ejemplo resuelto — tiempo hasta ±20%.** Rastrea cuánto tarda típicamente un índice en moverse un 20% acumulado desde un punto de partida:
+
+| Objetivo | Tiempo típico para alcanzarlo |
+|---|---|
+| +20% (subida) | ≈ 90 días de cotización |
+| -20% (caída) | ≈ 35 días de cotización |
+
+Misma magnitud del 20%, pero la caída llega en aproximadamente **un tercio del tiempo**. Esa asimetría de velocidad deja una huella de **asimetría negativa** (aquí, digamos, $\operatorname{skew} \approx -0.6$ en rendimientos diarios): la cola izquierda es más larga y más abrupta que la derecha.
+
+<Callout variant="warning">
+**Trampa: la asimetría y las colas son auditorías distintas.** Una distribución puede ser perfectamente **simétrica** (asimetría cero) y aun así tener **colas anchas** — la $t$ de Student es el ejemplo de manual. Así que un generador puede bordar las colas anchas y *aun así* fallar la asimetría ganancia/pérdida, porque las colas pesadas simétricas ponen igual masa en ganancias enormes que en pérdidas enormes. Debes probar la asimetría **por separado** de la curtosis; pasar una no dice nada sobre la otra.
+</Callout>
+
+### Cuándo usarlo
+
+Para **probar** la asimetría ganancia/pérdida: calcula la **asimetría muestral** de los rendimientos (la renta variable real da un pequeño valor negativo) y compárala con la del generador. Más directamente, mide la distribución del **tiempo de primer paso** hasta $+\theta$ frente a $-\theta$ para un umbral $\theta$ (p. ej. 20%) y comprueba que el lado a la baja llega antes. Las estadísticas de caída — caída máxima, duración de la caída — son la versión del profesional de la misma auditoría.
+
+<Reveal summary="Comprobación rápida: un generador tiene exceso de curtosis 9 (casa con la realidad) pero asimetría exactamente 0. ¿Qué hecho sigue fallando?">
+
+Falla la **asimetría ganancia/pérdida**. Las colas anchas (curtosis) y la asimetría son auditorías independientes: una distribución de colas anchas simétrica como una $t$ de Student tiene asimetría cero, así que sus grandes ganancias y grandes pérdidas son igual de abruptas. Los mercados reales caen más rápido de lo que suben — esa asimetría a la izquierda falta aquí.
+
+</Reveal>
+
+## El boletín completo
+
+Ahora hazlo total. Alinea los seis hechos contra un **simple paseo aleatorio gaussiano** — la línea base de la lección 3 (MBG con volatilidad constante) — y la nota es brutal:
+
+| Hecho estilizado | Paseo aleatorio gaussiano |
+|---|---|
+| Colas anchas | **Falla** — los shocks son normales, las colas son finas por construcción |
+| Agrupación de volatilidad | **Falla** — shocks i.i.d., varianza constante, sin memoria del tamaño pasado |
+| Caída lenta / memoria larga | **Falla** — sin agrupación no hay caída de memoria larga que tener |
+| Efecto apalancamiento | **Falla** — simétrico en el signo del shock; $+x$ y $-x$ se comportan idénticamente |
+| Gaussianidad por agregación | **«Pasa»** — pero trivialmente, porque ya es normal en todo horizonte |
+| Asimetría ganancia/pérdida | **Falla** — distribución simétrica, asimetría cero, bajar la escalera es igual que subirla |
+
+**Uno de seis, y el que pasa lo pasa por la razón equivocada.** Un paseo aleatorio gaussiano no es un mercado — es la *hipótesis nula* contra la que se define un mercado. Por esto exactamente los modelos clásicos de la lección 3 (el MBG, y las familias parcheadas de difusión con saltos / volatilidad estocástica que intentan volver a atornillarle algunos hechos) se juzgan contra esta tabla, y por esto los generadores aprendidos de las lecciones 4–6 (GAN, VAE, difusión) viven o mueren en las *mismas* seis filas. Cuando alguien te enseñe un flamante modelo nuevo de datos sintéticos, ya conoces las seis preguntas que hacer antes de creerte una palabra.
+
+<MCQ
+  client:visible
+  allowMultiple
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="¿Qué hechos estilizados falla de verdad en reproducir un simple paseo aleatorio gaussiano? (Selecciona todos los que correspondan.)"
+  options={[
+    { text: "Colas anchas — sus shocks son normales, así que los extremos son demasiado raros", correct: true },
+    { text: "Agrupación de volatilidad — sus shocks son i.i.d. con varianza constante", correct: true },
+    { text: "El efecto apalancamiento — trata los shocks al alza y a la baja de forma simétrica", correct: true },
+    { text: "Gaussianidad por agregación — la distribución se ve más normal en horizontes más largos" },
+  ]}
+  explanation="El paseo falla colas anchas, agrupación, memoria larga, apalancamiento y asimetría ganancia/pérdida. La única casilla que marca es la gaussianidad por agregación — y solo porque era gaussiano en todo horizonte desde el principio, lo cual es un aprobado gratis, no una virtud."
+/>
+
+## Recapitulación
+
+Los hechos estilizados son la **huella dactilar universal de los mercados líquidos** — regularidades empíricas que comparte toda clase de activo, situadas en los momentos superiores y la estructura temporal que la media y la varianza ignoran. Los seis grandes: **colas anchas** (exceso de curtosis 5–30, desplomes mucho más frecuentes que en una gaussiana), **agrupación de volatilidad** (ACF de rendimientos al cuadrado positiva mientras la ACF de rendimientos crudos ≈ 0), **caída lenta / memoria larga** (ACF de rendimientos absolutos desvaneciéndose como una ley de potencias, aún positiva en el retardo 20+), el **efecto apalancamiento** (la volatilidad sube más tras las caídas — correlación negativa rendimiento/volatilidad futura), la **gaussianidad por agregación** (las colas se desinflan hacia la normal a medida que sumas en horizontes más largos), y la **asimetría ganancia/pérdida** (asimetría negativa — los mercados caen más rápido de lo que suben). Cada uno viene con una prueba concreta — curtosis y gráficos QQ, Ljung–Box sobre rendimientos al cuadrado, ACF log–log y exponentes de Hurst, correlación cruzada rendimiento/volatilidad futura, curvas de curtosis frente a horizonte, y asimetría / tiempos de primer paso. Un simple paseo aleatorio gaussiano falla cinco y medio de los seis. **Esta tabla es el baremo contra el que se evaluará todo generador de este curso — memorízala.**
+
+<MindMap
+  client:visible
+  caption="Los seis hechos estilizados y el estadístico con el que pruebas cada uno."
+  root={{
+    label: "Hechos estilizados",
+    children: [
+      {
+        label: "Colas anchas",
+        children: [{ label: "Prueba: exceso de curtosis 5–30; gráfico QQ; índice de cola" }],
+      },
+      {
+        label: "Agrupación de volatilidad",
+        children: [{ label: "Prueba: ACF(r²)>0 mientras ACF(r)≈0; Ljung–Box / ARCH-LM" }],
+      },
+      {
+        label: "Memoria larga (caída lenta)",
+        children: [{ label: "Prueba: ACF de |r| ~ ley de potencias hasta retardo 20+; Hurst H>0,5" }],
+      },
+      {
+        label: "Efecto apalancamiento",
+        children: [{ label: "Prueba: Corr(rₜ, σₜ₊₁)<0; volatilidad post-caída vs post-subida; sesgo de volatilidad" }],
+      },
+      {
+        label: "Gaussianidad por agregación",
+        children: [{ label: "Prueba: exceso de curtosis → 0 al crecer el horizonte; Jarque–Bera" }],
+      },
+      {
+        label: "Asimetría ganancia/pérdida",
+        children: [{ label: "Prueba: asimetría negativa; tiempo de primer paso a -θ < +θ" }],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Evalúa el generador: examen de hechos estilizados"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  nextLabel="Siguiente pregunta"
+  backLabel="Atrás"
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  seeResultsLabel="Ver resultados"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  gateLabel="Comprueba tu respuesta para continuar."
+  questions={[
+    {
+      question: "Un modelo normal con σ = 1% diario califica un día de -5% como un evento de aproximadamente una vez cada 25.000 años. Los mercados reales entregan días de ±5σ cada pocos años. ¿Qué hecho estilizado demuestra esta brecha, y qué estadístico lo capta?",
+      options: [
+        { text: "Colas anchas — medidas por el exceso de curtosis positivo (rendimientos reales: 5–30, gaussiana: 0)", correct: true },
+        { text: "Agrupación de volatilidad — medida por la ACF de rendimientos al cuadrado" },
+        { text: "Gaussianidad por agregación — medida por la curtosis cayendo con el horizonte" },
+        { text: "El efecto apalancamiento — medido por la correlación rendimiento/volatilidad futura" },
+      ],
+      explanation: "Que los movimientos extremos lleguen mucho más a menudo de lo que permite la campana es la definición de colas anchas, cuantificada por un exceso de curtosis muy por encima del valor gaussiano de 0.",
+    },
+    {
+      question: "¿Qué afirmación sobre un simple paseo aleatorio gaussiano es VERDADERA?",
+      options: [
+        { text: "Pasa la gaussianidad por agregación, pero solo trivialmente — ya es normal en todo horizonte, así que nunca tuvo colas diarias anchas desde las que converger", correct: true },
+        { text: "Pasa la agrupación de volatilidad porque su varianza es constante" },
+        { text: "Captura el efecto apalancamiento porque los shocks al cuadrado persisten" },
+        { text: "Reproduce la asimetría ganancia/pérdida mediante su asimetría negativa" },
+      ],
+      explanation: "Un paseo gaussiano es normal en todos los horizontes, así que «pasa» la gaussianidad por agregación por la razón equivocada. Falla los otros cinco hechos de plano — sus shocks son i.i.d., simétricos y de colas finas.",
+    },
+    {
+      question: "Un compañero dice: 'Mi generador casa el histograma de rendimientos diarios reales exactamente — mismas colas anchas, misma asimetría. Así que también tiene agrupación de volatilidad.' ¿Cuál es la trampa?",
+      options: [
+        { text: "El histograma de un día no dice nada sobre la estructura temporal; las extracciones i.i.d. de la distribución de colas anchas correcta tienen cero agrupación", correct: true },
+        { text: "Casar el histograma garantiza automáticamente la agrupación, así que el compañero tiene razón" },
+        { text: "La agrupación es imposible de probar, así que la afirmación no puede evaluarse" },
+        { text: "Un histograma casado significa que el generador también debe fallar las colas anchas" },
+      ],
+      explanation: "Barajar una serie real deja el histograma (y la curtosis) intactos pero destruye la agrupación. La ACF de rendimientos al cuadrado es una prueba separada, basada en el tiempo, que el histograma no puede ver.",
+    },
+    {
+      question: "Dos generadores muestran ambos agrupación (ACF de rendimientos al cuadrado positiva en el retardo 1). La ACF de |rendimiento| del Generador A vuelve cerca de 0 en el retardo 5; la del Generador B sigue en ~0,20 en el retardo 20, casando con los datos reales. ¿Qué hecho los distingue?",
+      options: [
+        { text: "Caída lenta / memoria larga — solo B reproduce la persistencia casi de ley de potencias de la volatilidad", correct: true },
+        { text: "Colas anchas — solo B tiene exceso de curtosis positivo" },
+        { text: "El efecto apalancamiento — solo B tiene volatilidad asimétrica" },
+        { text: "Asimetría ganancia/pérdida — solo B tiene asimetría a la izquierda" },
+      ],
+      explanation: "Ambos tienen agrupación de corto alcance, pero solo la ACF de volatilidad de B decae lo bastante despacio para casar con la memoria larga real. El colapso de A en el retardo 5 falla el hecho de la caída lenta.",
+    },
+    {
+      question: "Un índice de renta variable cae un 20% en unos 35 días de cotización pero tarda unos 90 días de cotización en subir un 20%. ¿Qué hecho estilizado evidencia esto directamente, y qué signo de asimetría lo acompaña?",
+      options: [
+        { text: "Asimetría ganancia/pérdida — acompañada de asimetría negativa (las pérdidas son más rápidas y bruscas que las ganancias)", correct: true },
+        { text: "Colas anchas — acompañada de exceso de curtosis positivo" },
+        { text: "Gaussianidad por agregación — acompañada de asimetría cero en horizontes largos" },
+        { text: "Agrupación de volatilidad — acompañada de autocorrelación positiva de rendimientos crudos" },
+      ],
+      explanation: "Que las caídas alcancen una magnitud más rápido que las subidas del mismo tamaño es la asimetría ganancia/pérdida, que deja asimetría negativa en la distribución de rendimientos — el mercado cae más rápido de lo que sube.",
+    },
+  ]}
+/>

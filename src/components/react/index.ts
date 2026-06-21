@@ -812,3 +812,10 @@ export type { RlExecutionScheduleProps } from '@/components/react/RlExecutionSch
 
 export { MarketMakingQuoteLadder, default as MarketMakingQuoteLadderDefault } from '@/components/react/MarketMakingQuoteLadder';
 export type { MarketMakingQuoteLadderProps } from '@/components/react/MarketMakingQuoteLadder';
+
+// Generative-models-for-synthetic-market-data islands
+export { StylizedFactsChecklist, default as StylizedFactsChecklistDefault } from '@/components/react/StylizedFactsChecklist';
+export type { StylizedFactsChecklistProps, StylizedFact, StylizedFactKind } from '@/components/react/StylizedFactsChecklist';
+
+export { SyntheticVsRealPaths, default as SyntheticVsRealPathsDefault } from '@/components/react/SyntheticVsRealPaths';
+export type { SyntheticVsRealPathsProps } from '@/components/react/SyntheticVsRealPaths';

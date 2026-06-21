@@ -1,0 +1,526 @@
+---
+title: "Variational Autoencoders for Market Data"
+description: "Encode a price window to a smooth latent space and decode it back: the reconstruction-versus-KL trade-off, why a continuous latent buys interpolation and scenario knobs, the reparameterization trick — and why VAEs tend to blur the very fat tails you most need."
+topic: "en/generative-models-for-synthetic-market-data"
+order: 5
+minutes: 16
+updated: 2026-06-21
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, ReturnDistribution } from '@/components/react';
+
+The GAN from last lesson was a brawler: sharp, fast, and prone to throwing the
+same punch over and over (mode collapse). The **variational autoencoder** (VAE)
+is the calmer sibling. Instead of a generator and a critic locked in combat, a
+VAE has two cooperating halves: an **encoder** that squeezes a price window down
+into a tiny **latent code**, and a **decoder** that tries to rebuild the window
+from that code. Train them together and the network learns a compact, reusable
+summary of "what a plausible price window looks like."
+
+The clever extra ingredient — the *variational* part — is that the VAE doesn't
+just learn a code, it learns a **smooth, samplable space of codes**. It forces
+that latent space to look like a tidy bell-shaped cloud, so you can reach in,
+draw a brand-new code you've never seen, decode it, and get a *novel* but
+plausible path. That is what turns a humble compressor into a generative model:
+new codes in, new market data out.
+
+The trade against GANs runs through this whole lesson. VAEs are **stable** (no
+adversarial tug-of-war to balance), they hand you an **interpretable latent**
+you can interpolate and steer, and they almost never collapse to a single mode.
+But they pay for it: their samples tend to come out **soft and over-smoothed** —
+and "smooth" is exactly the wrong word when the entire job is reproducing the
+**fat tails** that make markets dangerous. Keep that tension in mind; the last
+section is where it bites.
+
+## Autoencoders → variational autoencoders
+
+<MCQ
+  client:visible
+  pretest
+  question="A plain (non-variational) autoencoder is trained only to reconstruct its inputs. Why is it a poor *generator* of new data?"
+  options={[
+    { text: "Its latent space is full of 'holes' — regions no training point mapped to — so a randomly drawn code decodes to garbage.", correct: true },
+    { text: "It has no decoder, so there is nothing to turn a code back into a sample." },
+    { text: "It can only ever output one of the exact training windows, never anything new." },
+    { text: "It cannot compress, so the latent code is the same size as the input." },
+  ]}
+  explanation="A plain autoencoder optimizes reconstruction only. Nothing tells it to fill the latent space evenly, so encoded points clump and the gaps between them are meaningless. Sample a random code from a gap and the decoder produces noise. A VAE fixes exactly this."
+/>
+
+A **plain autoencoder** is a compress-then-rebuild machine. The encoder maps an
+input $x$ (say, a 60-day window of log-returns) to a low-dimensional code $z$;
+the decoder maps $z$ back to a reconstruction $\hat{x}$. You train it to make
+$\hat{x} \approx x$. It learns a great compression — but it learns *nothing*
+about the shape of the latent space. Encoded points land wherever minimizing
+reconstruction error puts them, leaving vast empty regions in between. Sample a
+random code and you've almost certainly landed in a hole, and the decoder hands
+you nonsense.
+
+**Analogy.** Think of the latent space as a **filing cabinet**. A plain
+autoencoder is a cabinet stuffed by someone in a hurry: every document is filed
+*somewhere*, and they can retrieve any one they've seen, but the drawers have
+huge empty gaps and no system. Ask for "the file halfway between these two" and
+you pull out an empty space. A VAE is the cabinet of an obsessive organizer:
+files are spread **evenly and continuously**, every spot you reach into holds
+something sensible, and neighboring spots hold *similar* things.
+
+The VAE achieves this with two changes:
+
+1. The encoder outputs not a single point but a **distribution** per latent
+   dimension — a mean $\mu$ and a (log-)variance $\sigma^2$. So $x$ maps to
+   $q(z \mid x) = \mathcal{N}(\mu, \sigma^2)$, a little fuzzy ball rather than a
+   pinpoint.
+2. A **regularizer** pulls every one of those balls toward a shared standard
+   normal prior $\mathcal{N}(0, I)$. This packs the balls together to tile the
+   space with no holes, so the *whole* region near the origin is now samplable.
+
+At generation time you ignore the encoder entirely: draw $z \sim \mathcal{N}(0, I)$,
+push it through the decoder, and out comes a fresh, plausible price window.
+
+<Callout variant="warning">
+A VAE is **not** just "an autoencoder with noise added." The defining move is the
+KL regularizer that shapes the latent into a known, samplable distribution. Drop
+that term and you're back to a plain autoencoder with a holey latent — it'll
+reconstruct fine and *generate* like a random-number generator with a grudge.
+</Callout>
+
+### When to use it
+
+Reach for the autoencoder framing whenever you want both a **compressor** (a
+compact representation of market windows for downstream models) *and* a
+**generator** from the same network. If you only ever need to reconstruct or
+denoise — never sample new data — a plain autoencoder is lighter. The moment you
+need to *draw novel paths*, you need the variational machinery.
+
+<FillBlank
+  client:visible
+  text="The encoder of a VAE outputs a {{distribution|single point|holey latent|reconstruction}} per latent dimension — specifically a mean and variance — rather than a single deterministic code, and a regularizer pulls that toward the prior {{N(0, I)|the training data|the decoder|a uniform grid}}."
+/>
+
+## The ELBO: reconstruction vs KL
+
+<MCQ
+  client:visible
+  pretest
+  question="A VAE's loss has two terms pulling in different directions. What does the KL term reward?"
+  options={[
+    { text: "Keeping the encoder's posterior q(z|x) close to the standard-normal prior.", correct: true },
+    { text: "Making the reconstruction match the input as exactly as possible." },
+    { text: "Maximizing the variance of the decoder's output." },
+    { text: "Forcing the latent code to be as high-dimensional as possible." },
+  ]}
+  explanation="The KL term measures how far the encoder's posterior strays from the prior N(0, I) and penalizes the distance. It is the 'keep the filing cabinet tidy' term, traded off against reconstruction fidelity."
+/>
+
+A VAE is trained by maximizing the **evidence lower bound** (ELBO), or
+equivalently minimizing its negative. For a single input $x$ the loss is:
+
+$$
+\mathcal{L}(x) = \underbrace{-\,\mathbb{E}_{q(z \mid x)}\!\left[\log p(x \mid z)\right]}_{\text{reconstruction}} \;+\; \beta \,\underbrace{D_{\mathrm{KL}}\!\big(q(z \mid x)\,\Vert\,p(z)\big)}_{\text{regularizer}}
+$$
+
+Two forces, pulling opposite ways:
+
+- **Reconstruction** wants $\hat{x}$ to match $x$ — it would happily encode every
+  window to its own private, far-flung code if that gave a crisper rebuild.
+- **KL** wants every posterior $q(z \mid x)$ to sit near the prior
+  $p(z) = \mathcal{N}(0, I)$ — it would happily collapse every input to the same
+  bland code at the origin if that minimized divergence.
+
+The coefficient $\beta$ is the **knob** between them ($\beta = 1$ recovers the
+original VAE; the general case is the **$\beta$-VAE**). Watch the extremes:
+
+| $\beta$ | What the loss favors | Latent space | Samples |
+|---|---|---|---|
+| $\beta \to 0$ | Reconstruction only | Holey — back to a plain autoencoder | Crisp on training data, garbage from random codes |
+| $\beta = 1$ | Balanced | Smooth, samplable | Plausible but a touch soft |
+| $\beta$ large | KL dominates | Extremely tidy, but ignored | **Posterior collapse**: decoder outputs the blurry mean |
+
+**Worked example.** Suppose with $\beta = 1$ your VAE reconstructs a window with
+mean-squared error $0.018$ and a KL of $12.4$ nats, total loss $\approx 0.018 + 12.4$.
+Crank $\beta$ to $8$. The optimizer now finds it cheaper to **shrink the KL**: it
+pushes every posterior toward $\mathcal{N}(0, I)$, the latent stops carrying
+information about $x$, and the decoder — getting no useful signal — falls back on
+emitting the *average* window for every input. Reconstruction error balloons (say
+to $0.061$) but total loss drops because the KL term cratered. That degenerate
+state is **posterior collapse**, and its symptom on the page is blur: every
+sample looks like a washed-out, mean-reverting smudge.
+
+<Callout variant="warning">
+Posterior collapse is the VAE failure mode that mirrors the GAN's mode collapse —
+but it looks different. GAN collapse gives you **sharp samples with no variety**;
+VAE collapse gives you **varied-in-name-only samples that are all blurry
+averages**. If your VAE's outputs all look like the same gently wiggling line,
+suspect $\beta$ is too high (or your decoder is too weak to exploit the latent).
+</Callout>
+
+### When to use it
+
+Treat $\beta$ as a dial you *tune to the job*. Pushing $\beta$ above 1 buys a
+more **disentangled, controllable** latent (good for the scenario knobs below) at
+the cost of fidelity. Pulling it toward 0 buys sharper reconstructions at the
+cost of samplability. For market data, where you already fight blur, you rarely
+want a large $\beta$ unless you specifically need clean, steerable latent axes.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Reconstruction term", definition: "Rewards the decoded output matching the original input window." },
+    { term: "KL term", definition: "Penalizes the encoder's posterior for drifting away from the N(0, I) prior." },
+    { term: "β → 0", definition: "Collapses the model into a plain autoencoder with a holey, unsamplable latent." },
+    { term: "β large", definition: "Triggers posterior collapse — the latent is ignored and the decoder emits a blurry mean." },
+  ]}
+/>
+
+## The reparameterization trick
+
+<MCQ
+  client:visible
+  pretest
+  question="The encoder samples z from q(z|x) before decoding. Why is that sampling step a problem for training by gradient descent?"
+  options={[
+    { text: "You can't backpropagate gradients through a random sampling operation — it's not a differentiable function of μ and σ.", correct: true },
+    { text: "Sampling is too slow to run inside a training loop." },
+    { text: "The samples are always zero, so no gradient ever flows." },
+    { text: "Random sampling violates the chain rule of probability." },
+  ]}
+  explanation="Drawing z ~ N(μ, σ²) is a stochastic node. Gradients of the loss with respect to μ and σ can't flow back *through* a raw 'draw a random number' operation, because that operation isn't a deterministic, differentiable function of its parameters."
+/>
+
+Here's the snag. Training needs gradients of the loss with respect to the
+encoder's outputs $\mu$ and $\sigma$. But between the encoder and the loss sits a
+**random draw** $z \sim \mathcal{N}(\mu, \sigma^2)$, and you can't backpropagate
+through "roll a die." The randomness blocks the gradient.
+
+**The trick** is to move the randomness *out of the way*. Instead of sampling $z$
+directly, sample a fixed, parameter-free noise variable
+$\epsilon \sim \mathcal{N}(0, I)$ and build $z$ deterministically from it:
+
+$$
+z = \mu + \sigma \odot \epsilon, \qquad \epsilon \sim \mathcal{N}(0, I)
+$$
+
+where $\odot$ is elementwise multiplication. Now $z$ is a **differentiable
+function** of $\mu$ and $\sigma$ — the only random thing, $\epsilon$, is an
+external input that carries no gradient and no learnable parameters. The
+stochasticity has been shoved outside the computation graph.
+
+**Analogy.** You can't take the derivative of "spin a roulette wheel." But you
+*can* take the derivative of "take a fixed random spin $\epsilon$, then stretch it
+by $\sigma$ and shift it by $\mu$." The casino still injects randomness — you just
+moved your tunable knobs ($\mu$, $\sigma$) to where calculus can reach them.
+
+**Worked example.** Take one latent dimension. The chain rule now flows cleanly,
+because $z = \mu + \sigma \epsilon$:
+
+$$
+\frac{\partial z}{\partial \mu} = 1, \qquad \frac{\partial z}{\partial \sigma} = \epsilon
+$$
+
+So if the upstream gradient of the loss at $z$ is $g = \partial \mathcal{L} / \partial z$,
+then $\partial \mathcal{L} / \partial \mu = g \cdot 1 = g$ and
+$\partial \mathcal{L} / \partial \sigma = g \cdot \epsilon$. Concretely, with a
+sampled $\epsilon = 0.7$ and an upstream $g = -0.4$, the encoder's mean gets
+gradient $-0.4$ and its standard deviation gets $-0.4 \times 0.7 = -0.28$. Both
+are finite, both are usable — training proceeds.
+
+<Callout variant="warning">
+Forget the reparameterization and sample $z$ directly inside the graph and your
+VAE simply **won't learn the encoder**: gradients to $\mu$ and $\sigma$ are
+either zero or undefined, so the encoder's variance heads wander aimlessly. This
+isn't an optimization nicety — it's the single trick that makes the VAE
+trainable end-to-end in the first place.
+</Callout>
+
+### When to use it
+
+Always, for a Gaussian-latent VAE — it's not optional. The same idea generalizes:
+any time a model must **differentiate through a sampling step**, look for a
+"sample fixed noise, then transform deterministically" rewrite (the same logic
+powers the noise schedule you'll meet in the diffusion lesson).
+
+<FillBlank
+  client:visible
+  text="The reparameterization trick writes the latent as z = {{μ + σ ⊙ ε|μ × ε|σ + μ ⊙ ε|ε only}}, with ε drawn from {{N(0, I)|q(z|x)|the prior over x|a uniform grid}}, which moves the randomness {{outside|inside|on top of|underneath}} the gradient path so μ and σ become trainable."
+/>
+
+## A smooth latent buys scenario knobs
+
+<MCQ
+  client:visible
+  pretest
+  question="Because a VAE's latent space is continuous and organized, you can do something a plain autoencoder can't reliably do. What?"
+  options={[
+    { text: "Interpolate between two encoded windows and decode plausible *intermediate* market regimes along the way.", correct: true },
+    { text: "Guarantee the decoder reproduces every training window exactly." },
+    { text: "Train without any loss function." },
+    { text: "Remove the need for a decoder." },
+  ]}
+  explanation="A smooth, hole-free latent means paths *between* points are also meaningful. Walk from a calm window's code to a turbulent window's code and each step decodes to a plausible in-between regime — the basis for interpolation and steerable scenario knobs."
+/>
+
+A holey latent is good for nothing but the points it memorized. A **smooth**
+latent is a playground. Because every nearby code decodes to something sensible
+and *similar*, the space picks up usable geometry — and that geometry is what
+turns a VAE into a **scenario generator** (recall the synthetic-data uses from
+lesson 1: stress testing, augmentation, privacy-safe sharing).
+
+**Two moves the smooth latent gives you for free:**
+
+- **Interpolation.** Encode a calm window to code $z_{\text{calm}}$ and a
+  turbulent one to $z_{\text{turb}}$, then decode the straight-line blend
+  $z(t) = (1 - t)\, z_{\text{calm}} + t\, z_{\text{turb}}$ for $t$ sweeping from 0
+  to 1. Each decoded $z(t)$ is a plausible window *between* the two regimes —
+  markets that are calmer than the storm but choppier than the lull. A plain
+  autoencoder's interpolations pass through holes and decode to mush.
+- **Latent directions as dials.** If a particular axis of the latent correlates
+  with realized volatility, *adding* a multiple of that direction to a code dials
+  the turbulence up or down while leaving other features roughly intact — a
+  ready-made **"crank up the vol" knob** for stress scenarios.
+
+**Worked example (conceptual).** You want a stress path that's "this quarter, but
+50% rougher." Encode the quarter to $z_0$. Find the volatility direction $v$
+(e.g. the latent axis along which decoded windows get choppier). Decode
+$z_0 + 0.5\,v$. Out comes the *same broad regime* — same drift, same rough
+shape — but with visibly fatter intraday swings, ready to feed a risk engine. You
+generated a counterfactual scenario by *steering*, not by re-sampling from
+scratch. That controllability is something a GAN's tangled latent struggles to
+offer.
+
+<Callout variant="warning">
+Smoothness does **not** guarantee that latent axes are clean, independent dials —
+that's *disentanglement*, and you usually have to fight for it (raising $\beta$,
+special architectures). Out of the box, the "volatility direction" may be
+entangled with drift or trend, so pushing your vol knob can quietly drag other
+properties along. Validate that a knob does only what you think before trusting
+it in a stress test.
+</Callout>
+
+### When to use it
+
+Lean on latent interpolation and steering when you need **controlled,
+interpretable scenarios** — "show me the path between these two regimes," "give me
+a high-vol variant of last week." For raw realism with no steering requirement,
+the latent geometry is a nice-to-have, not the point. It's most valuable for
+**stress testing and what-if generation**, where you care *how* a sample differs
+from a baseline.
+
+<Categorize
+  client:visible
+  buckets={["VAE strength", "VAE weakness"]}
+  items={[
+    { text: "Stable training with no adversarial balancing act", bucket: "VAE strength" },
+    { text: "Smooth latent you can interpolate between regimes", bucket: "VAE strength" },
+    { text: "Steerable directions for stress-scenario knobs", bucket: "VAE strength" },
+    { text: "Rarely suffers GAN-style mode collapse", bucket: "VAE strength" },
+    { text: "Samples come out soft and over-smoothed", bucket: "VAE weakness" },
+    { text: "Under-produces extreme tail moves", bucket: "VAE weakness" },
+    { text: "Can suffer posterior collapse if β is too high", bucket: "VAE weakness" },
+  ]}
+/>
+
+## Why VAEs blur the fat tails
+
+<MCQ
+  client:visible
+  pretest
+  allowMultiple
+  question="VAEs are notorious for producing over-smoothed market samples. Which factors push a VAE toward blur and thin tails? (Select all that apply.)"
+  options={[
+    { text: "A Gaussian decoder likelihood, which rewards predicting the conditional mean and treats large deviations as costly outliers.", correct: true },
+    { text: "Averaging over the latent posterior, which smears sharp features toward the average.", correct: true },
+    { text: "The KL term pulling posteriors toward N(0, I), discouraging the rare, far-out codes that would decode to extremes.", correct: true },
+    { text: "The reparameterization trick, which deletes the tails of the input by construction." },
+  ]}
+  explanation="The first three are real culprits: a Gaussian likelihood is a mean-seeking, thin-tailed objective; integrating over the posterior averages away sharpness; and KL regularization discourages the extreme codes that decode to extreme moves. The reparameterization trick is just a gradient mechanism — it doesn't touch the tails."
+/>
+
+Now the catch that makes VAEs a *risky default* for market data. Everything that
+makes a VAE stable and tidy also makes it **regress toward the mean** — and
+"the mean" is precisely where the danger *isn't*.
+
+Three forces conspire:
+
+1. **Gaussian likelihood.** The standard decoder maximizes a Gaussian
+   log-likelihood, which is equivalent to minimizing squared error. Squared error
+   is **minimized by predicting the conditional mean**, and it punishes large
+   deviations brutally — so the model learns to *avoid* extreme outputs. Real
+   return distributions are leptokurtic (lesson 2's fat tails); a Gaussian
+   objective treats those tails as expensive mistakes to be smoothed away.
+2. **Averaging over the posterior.** The decoded output effectively integrates
+   over the fuzzy latent ball $q(z \mid x)$. Averaging is a low-pass filter:
+   sharp spikes and abrupt regime switches get smeared toward something gentler.
+3. **KL pressure toward the prior.** The far-flung latent codes that would decode
+   to genuine crashes are *exactly* the ones the KL term discourages — they sit in
+   the low-density skirts of $\mathcal{N}(0, I)$. Push everything toward the
+   center and you push the extremes off the table.
+
+Graded against the **stylized-facts rubric** from lesson 2, a vanilla VAE gets a
+mixed report card:
+
+| Stylized fact | Vanilla VAE |
+|---|---|
+| Heavy/fat tails (excess kurtosis) | **Weak** — tails come out too thin; extreme moves under-produced |
+| Volatility clustering | **Weak–moderate** — sharp clusters get smeared by averaging |
+| Negligible return autocorrelation | Usually OK |
+| Roughly symmetric, near-zero-mean marginal | **Good** — the bulk of the distribution is captured well |
+| Sample stability / no collapse | **Good** — far more reliable to train than a GAN |
+
+In one line: a VAE nails the **middle of the distribution** and **fails the
+edges** — the opposite of what a risk model needs, where the edges *are* the
+product.
+
+<Callout variant="warning">
+This is the headline weakness, so internalize it: a vanilla VAE will hand you
+synthetic returns whose **tails are too thin and whose worst days are too tame**.
+Feed those into a Value-at-Risk or stress engine and you'll **systematically
+understate risk** — the most expensive error in the book. If you must use a VAE
+for tail-sensitive work, you have to fight back explicitly: a heavier-tailed
+decoder likelihood (Student-$t$ instead of Gaussian), a lower $\beta$, an
+autoregressive decoder, or post-hoc tail correction. Out of the box, a VAE's
+calm is a *lie about the tails*.
+</Callout>
+
+The picture below shows the tell-tale signature: a VAE's synthetic return
+distribution sits too narrow and too thin in the wings compared to the real,
+fat-tailed thing — the blur made visible.
+
+<ReturnDistribution
+  client:visible
+  caption="A VAE's over-smoothed synthetic returns (thin, light wings) versus a real, fat-tailed return distribution: the bulk matches, but the extremes that matter most for risk are missing."
+/>
+
+### When to use it
+
+Use a VAE when **stability, a controllable latent, and a faithful distribution
+*bulk*** matter more than nailing the extremes — exploratory scenario sketches,
+data augmentation for the common case, representation learning. **Avoid** a
+vanilla VAE as your sole engine for **tail-risk** work (VaR, stress, extreme
+clustering) without explicit tail fixes. When sharp tails are non-negotiable, a
+GAN (sharper, lesson 4) or a diffusion model (lesson 6) is usually the better
+starting point.
+
+## Recap
+
+A variational autoencoder pairs an **encoder** that compresses a price window
+into a distribution over a latent code with a **decoder** that rebuilds the
+window — and the *variational* twist forces that latent into a smooth, samplable
+$\mathcal{N}(0, I)$-shaped cloud, so new codes decode to novel paths. Training
+minimizes the **ELBO**: a reconstruction term versus a $\beta$-weighted **KL**
+term, with $\beta \to 0$ degenerating into a holey plain autoencoder and large
+$\beta$ triggering **posterior collapse**. The **reparameterization trick**
+($z = \mu + \sigma \odot \epsilon$) shoves the randomness outside the gradient
+path so the encoder is trainable at all. The payoff is a **smooth latent** you
+can interpolate and steer for scenarios and stress tests — far more stable and
+interpretable than a GAN. The price is **blur**: a Gaussian likelihood,
+posterior averaging, and KL pressure all push the model toward the mean, so it
+**under-produces the fat tails** that risk work lives and dies by. Stable and
+faithful in the middle; soft and dangerous at the edges.
+
+<MindMap
+  client:visible
+  root={{
+    label: "Variational Autoencoders for Market Data",
+    children: [
+      {
+        label: "Architecture",
+        children: [
+          { label: "Encoder → distribution (μ, σ) per latent dim" },
+          { label: "Decoder → rebuilds window from a code z" },
+          { label: "Sample z ~ N(0, I) → decode → novel path" },
+        ],
+      },
+      {
+        label: "ELBO loss",
+        children: [
+          { label: "Reconstruction: decoded ≈ input" },
+          { label: "β · KL: posterior stays near N(0, I)" },
+          { label: "β → 0: holey plain autoencoder" },
+          { label: "β large: posterior collapse → blurry mean" },
+        ],
+      },
+      {
+        label: "Reparameterization trick",
+        children: [
+          { label: "z = μ + σ ⊙ ε, ε ~ N(0, I)" },
+          { label: "Randomness moved outside the gradient path" },
+          { label: "Makes μ, σ — the encoder — trainable" },
+        ],
+      },
+      {
+        label: "Latent scenario knobs",
+        children: [
+          { label: "Interpolate calm ↔ turbulent regimes" },
+          { label: "Steer a latent direction to dial volatility" },
+          { label: "Stress testing & what-if generation" },
+        ],
+      },
+      {
+        label: "Weakness: blurred tails",
+        children: [
+          { label: "Gaussian likelihood seeks the mean" },
+          { label: "Posterior averaging smears sharp features" },
+          { label: "KL pressure discourages extreme codes" },
+          { label: "Under-states fat tails → risky for VaR/stress" },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="VAEs for market data: the full picture"
+  questions={[
+    {
+      question: "Which statement about a VAE versus a GAN is TRUE?",
+      options: [
+        { text: "The VAE trains more stably and gives a smoother, more interpretable latent, but its samples tend to be blurrier.", correct: true },
+        { text: "The VAE is more prone to mode collapse than a GAN." },
+        { text: "The VAE has no decoder, whereas the GAN does." },
+        { text: "The VAE produces sharper tails than a GAN by design." },
+      ],
+      explanation: "VAEs trade the GAN's sharpness for stability and an organized, steerable latent. The cost is over-smoothing — the GAN tends to make crisper (if less varied) samples.",
+    },
+    {
+      question: "You increase β from 1 to a large value and watch your samples turn into near-identical blurry wiggles. What happened?",
+      options: [
+        { text: "Posterior collapse: the KL term dominated, the latent stopped carrying information, and the decoder fell back on the average window.", correct: true },
+        { text: "Mode collapse: the discriminator overpowered the generator." },
+        { text: "The reparameterization trick stopped working, so gradients vanished." },
+        { text: "The latent space became holey, like a plain autoencoder." },
+      ],
+      explanation: "Large β makes shrinking the KL cheaper than reconstructing, so posteriors collapse to the prior, the latent is ignored, and the decoder outputs a bland mean. A holey latent is the *opposite* extreme (β → 0).",
+    },
+    {
+      question: "A colleague trains a vanilla VAE on equity returns and feeds its synthetic output straight into a Value-at-Risk engine. What's the trap?",
+      options: [
+        { text: "The VAE under-produces extreme moves, so its thin tails will make VaR understate true risk.", correct: true },
+        { text: "The VAE over-produces extreme moves, so VaR will be far too conservative." },
+        { text: "The VAE can only output the exact training returns, so VaR is meaningless." },
+        { text: "VaR cannot be computed from synthetic data at all." },
+      ],
+      explanation: "A Gaussian likelihood, posterior averaging, and KL pressure all thin the tails. Tail-sensitive risk measures like VaR will then be optimistic — exactly the wrong direction. Fix it with a heavier-tailed decoder, lower β, or tail correction.",
+    },
+    {
+      question: "Why does the reparameterization trick make a VAE trainable, when sampling z directly does not?",
+      options: [
+        { text: "Writing z = μ + σ ⊙ ε with fixed ε makes z a differentiable function of μ and σ, so gradients can flow back to the encoder.", correct: true },
+        { text: "It removes the decoder from the gradient path, so only the encoder is trained." },
+        { text: "It makes the KL term zero, simplifying the loss." },
+        { text: "It replaces random sampling with the conditional mean, eliminating all noise." },
+      ],
+      explanation: "Sampling z directly is a non-differentiable stochastic node. Moving the randomness into an external ε and building z deterministically lets the chain rule reach μ and σ (∂z/∂μ = 1, ∂z/∂σ = ε).",
+    },
+    {
+      question: "You need a stress scenario that is 'this quarter, but rougher.' Which VAE capability delivers it most directly?",
+      options: [
+        { text: "Encode the quarter, then move along a latent volatility direction and decode the steered code.", correct: true },
+        { text: "Re-sample a fresh z ~ N(0, I) and hope it happens to be rougher." },
+        { text: "Raise β until the decoder outputs the mean window." },
+        { text: "Drop the KL term so the latent becomes holey." },
+      ],
+      explanation: "A smooth latent lets you *steer*: encode the baseline, add a multiple of the volatility direction, and decode a same-regime-but-rougher variant. Re-sampling gives an unrelated path; raising β blurs; dropping KL breaks samplability.",
+    },
+  ]}
+/>

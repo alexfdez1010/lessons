@@ -1,0 +1,378 @@
+---
+title: "Diffusion & Score-Based Models for Price Paths"
+description: "The noise-then-denoise paradigm that conquered image generation, adapted to returns: the forward corruption process, the learned reverse denoiser, score matching, and the honest question of whether the state of the art in pictures earns its keep on a few thousand noisy returns."
+topic: "en/generative-models-for-synthetic-market-data"
+order: 6
+minutes: 17
+updated: 2026-06-21
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, ReturnDistribution, TsAcfPlot } from '@/components/react';
+
+Here is the idea that ate computer vision and then came for everything else: instead of trying to *draw* a realistic sample in one heroic stroke — the GAN move, all-or-nothing, prone to mode collapse and 3 a.m. training instability — you teach a model to do something almost insultingly easy first. You take real data, you slowly **destroy** it by stirring in Gaussian noise until nothing but static remains, and you record every step of the demolition. That part is trivial; anyone can add noise. The magic is that you then train a network to run the demolition *backwards* — to look at a slightly noisy thing and guess what it looked like one notch cleaner. Chain enough of those tiny clean-up steps together and you can start from **pure noise** and walk it, step by patient step, all the way back into a brand-new realistic sample the model has never seen.
+
+That's a diffusion model. It's the engine behind the image generators you've heard of, and on paper it's the answer to the cliffhanger from the last two lessons. The GAN (lesson 4) gave you *sharp, high-fidelity* samples but was a temperamental diva that collapsed onto a few modes and fought you the whole way. The VAE (lesson 5) was a calm, *stable, structured* citizen that you could actually train — but its samples came out *blurry*, the probabilistic average of everything that could have been. Diffusion's pitch is that you don't have to choose: it trains as stably as a VAE (it's just a regression problem, predict-the-noise, no adversarial knife-fight) **and** generates as sharply as a GAN, while covering modes better than either. The catch — and there's always a catch — is that it samples *slowly*, grinding through dozens or hundreds of denoising steps for every path, and it's even hungrier for data than its predecessors.
+
+So we'll do two things at once in this lesson. We'll build the machine honestly — forward process, reverse denoiser, the score-based view that unifies it, and conditioning — and we'll keep asking the course's central, uncomfortable question: this technology earned its crown on **ten million near-stationary cat photos**. You have a few thousand non-stationary, low-signal returns. Does the state of the art in pictures actually earn its keep here, or are we cargo-culting a benchmark win that never reaches the P&L?
+
+## The forward (noising) process
+
+<MCQ
+  client:visible
+  pretest
+  question="In a diffusion model, what is the 'forward process'?"
+  options={[
+    { text: "A fixed, learning-free procedure that gradually adds Gaussian noise to real data over many steps until it becomes pure noise.", correct: true },
+    { text: "A neural network that learns to generate new samples from noise." },
+    { text: "The training loss that the denoiser minimizes." },
+    { text: "An adversarial discriminator that scores how realistic a path is." }
+  ]}
+  explanation="The forward (or 'diffusion') process is the easy, parameter-free half: you just keep stirring in Gaussian noise on a fixed schedule until the data is indistinguishable from static. No learning happens here — it's the demolition you'll later teach a network to reverse."
+/>
+
+**Analogy.** Drop a single bead of ink into a glass of still water. At first it's a sharp, structured blob — you could point to it. A second later it's a faint cloud; a minute later the whole glass is uniformly, boringly grey and you'd never guess where the drop landed. *Diffusing the ink forward is effortless* — physics does it for free, and it's irreversible in practice. But imagine being asked to run the film backwards: to reassemble that uniform grey back into the original crisp drop. That reverse problem is staggeringly hard — and learning to do it is the entire game.
+
+**Definition.** The forward process takes a real data point $x_0$ (here, a return path or a window of returns) and produces a sequence $x_1, x_2, \dots, x_T$ by repeatedly mixing in Gaussian noise on a fixed schedule of coefficients $\alpha_t$:
+
+$$
+x_t = \sqrt{\alpha_t}\, x_{t-1} + \sqrt{1-\alpha_t}\,\epsilon, \qquad \epsilon \sim \mathcal{N}(0, I).
+$$
+
+Each step shrinks the surviving signal by $\sqrt{\alpha_t}$ and injects fresh noise of variance $1-\alpha_t$, so by step $T$ essentially all structure is gone and $x_T \approx \mathcal{N}(0, I)$ — pure static. A beautiful convenience: because each step is just scaling-plus-Gaussian, you can jump straight to any step in **closed form** without simulating the ones in between. Writing $\bar\alpha_t = \prod_{s=1}^{t}\alpha_s$,
+
+$$
+x_t = \sqrt{\bar\alpha_t}\, x_0 + \sqrt{1-\bar\alpha_t}\,\epsilon.
+$$
+
+This should feel familiar from *Monte-Carlo Finance*: that recursion is a discretized stochastic differential equation, and in the continuous limit the forward process **is** a diffusion SDE — Brownian motion slowly drowning the signal. You already know how to simulate Brownian noise; diffusion just runs it as a controlled corruption with a known schedule.
+
+**Worked example.** Let $x_0 = 1.0$ (a normalized return value) and use a gentle schedule $\alpha_1 = \alpha_2 = 0.9$. Suppose the noise draws come out $\epsilon_1 = 0.5$ and $\epsilon_2 = -1.2$.
+
+- Step 1: $x_1 = \sqrt{0.9}\cdot 1.0 + \sqrt{0.1}\cdot 0.5 \approx 0.949 + 0.158 = 1.107$. Still recognizably "around 1" — most of the signal survives.
+- Step 2: $x_2 = \sqrt{0.9}\cdot 1.107 + \sqrt{0.1}\cdot(-1.2) \approx 1.050 - 0.379 = 0.671$. The original value is fading; noise is taking over.
+
+Check the closed form: $\bar\alpha_2 = 0.9 \times 0.9 = 0.81$, so the *surviving signal coefficient* is $\sqrt{0.81} = 0.9$. After only two steps, $x_0$ contributes $0.9 \times 1.0 = 0.9$ to the mean — keep iterating and that coefficient marches toward zero. By the time $\bar\alpha_t \approx 0$, the data point is indistinguishable from a standard normal draw. That's the demolition, complete.
+
+<Callout variant="warning">
+**Pitfall: thinking the forward process needs training or tuning to "match the data."** It doesn't — it's deliberately dumb. The forward process is a *fixed* schedule that you choose in advance; it never looks at the data's structure and has zero learnable parameters. All the intelligence lives in the **reverse** model. A common rookie error is to over-engineer the noise schedule expecting it to capture fat tails or volatility clustering — it can't and shouldn't. Its only job is to reliably erase the signal so the denoiser has a clean target to learn against.
+</Callout>
+
+### When to use it
+
+The forward process isn't something you "use" at inference — you never run it to generate. You run it only during **training**, as the cheap mechanism that manufactures (noisy input, known noise) pairs for the denoiser to learn from. Its real value is conceptual: it converts the impossible problem "model the full distribution of returns" into the trivial-to-pose problem "given a noisy thing, predict the noise" — at every corruption level at once.
+
+<FillBlank
+  client:visible
+  question="Fill in the nature of the forward process."
+  text="The forward process is a {{fixed|learned|adversarial|stochastic-only}} schedule that adds Gaussian noise until the data becomes pure static — it has no learnable parameters, so all the model's intelligence lives in reversing it."
+  explanation="The forward (noising) process is fixed and parameter-free: you choose the noise schedule in advance. Only the reverse denoiser is learned."
+/>
+
+## The reverse (denoising) process
+
+<MCQ
+  client:visible
+  pretest
+  question="At generation time, how does a trained diffusion model produce a new sample?"
+  options={[
+    { text: "It starts from pure Gaussian noise and iteratively denoises, using the network to remove a little estimated noise at each of many steps until a clean sample emerges.", correct: true },
+    { text: "It runs the forward noising process once and reads off the result." },
+    { text: "It samples a single latent vector and decodes it in one forward pass." },
+    { text: "It picks the nearest real training path and adds jitter." }
+  ]}
+  explanation="Sampling reverses the corruption. You begin at x_T ~ N(0,I) — pure noise — and apply the learned denoiser repeatedly, each step nudging the sample toward the data manifold, until you reach a clean x_0. The 'single forward pass' answer describes a VAE decoder, not diffusion."
+/>
+
+**Analogy.** A master sculptor doesn't carve a statue in one swing. They look at a rough block, chip away a *little* of what obviously isn't the statue, step back, look again, chip a little more. Each pass is a modest, low-risk decision; the masterpiece emerges from the *accumulation* of small corrections. The diffusion denoiser is that sculptor, and the block of marble is a screen of pure noise. It never has to nail the whole path at once — it just has to answer the easy question "what noise is in front of me right now?" a few hundred times in a row.
+
+**Definition.** We train a single network $\epsilon_\theta(x_t, t)$ to look at a noisy input $x_t$ and its corruption level $t$, and **predict the noise $\epsilon$** that was added. Thanks to the closed form $x_t = \sqrt{\bar\alpha_t}\,x_0 + \sqrt{1-\bar\alpha_t}\,\epsilon$, generating a training example is free: pick a real $x_0$, pick a random step $t$, draw a noise $\epsilon$, build $x_t$, and ask the net to recover $\epsilon$. The loss is a plain mean-squared error — no adversary, no balancing act:
+
+$$
+\mathcal{L} = \mathbb{E}_{x_0, t, \epsilon}\, \big\lVert \epsilon - \epsilon_\theta(x_t, t)\big\rVert^2.
+$$
+
+That MSE simplicity is *the whole reason diffusion is stable* — it's just regression, the most well-behaved thing in deep learning. To **sample**, start at $x_T \sim \mathcal{N}(0, I)$ and step backwards: at each $t$, predict the noise, subtract the implied amount to estimate a slightly cleaner $x_{t-1}$, add back a touch of fresh randomness (so you sample rather than collapse to one answer), and repeat down to $x_0$.
+
+**Worked conceptual walk-through of one denoising step.** Say you're at step $t$ holding a noisy path $x_t$ that's, visually, "mostly static with a faint trend showing through."
+
+1. Feed $(x_t, t)$ to the network. It outputs $\epsilon_\theta$ — its best guess of the noise contaminating this path *at this corruption level*.
+2. Rearranging the forward closed form gives an estimate of the clean path: $\hat{x}_0 = \big(x_t - \sqrt{1-\bar\alpha_t}\,\epsilon_\theta\big)/\sqrt{\bar\alpha_t}$. This is the model "imagining" the finished sample — early on, $\hat{x}_0$ is a blurry guess; near the end it's crisp.
+3. Don't jump all the way to $\hat{x}_0$ — that would be the over-confident one-shot move. Instead take a *small* step toward it to get the mean of $x_{t-1}$, then add a little Gaussian noise back so you're drawing from a distribution, not a point.
+4. Now you're at $x_{t-1}$: marginally cleaner. Repeat. After all $T$ steps the faint trend has been resolved into a sharp, realistic return path.
+
+The reason the output is sharp (unlike a VAE's blurry single-shot decode) is exactly this *iterative refinement*: hundreds of small corrective steps let the model commit to fine detail it would never dare produce in one pass.
+
+<Callout variant="warning">
+**Pitfall: forgetting that sampling is expensive — one path costs many forward passes.** A VAE or GAN spits out a sample in a *single* network evaluation. A vanilla diffusion model needs one forward pass *per denoising step* — often 50 to 1,000 of them — to produce **one** path. Generate a Monte-Carlo book of 100,000 scenario paths and that factor bites hard: you may be doing tens of millions of network evaluations. Fast samplers (DDIM, distillation) cut the step count, but "sharp like a GAN, stable like a VAE" always comes stapled to "and meaningfully slower to sample." Budget for it before you promise a risk team overnight scenarios.
+</Callout>
+
+### When to use it
+
+Reach for the denoiser framing — predict-the-noise, sample-by-refinement — whenever training stability is the bottleneck and you can afford slow generation. If your GAN keeps collapsing or your VAE keeps blurring and you have *enough* data, the diffusion reverse process is the stable, high-fidelity alternative. Skip it when you need to generate enormous path counts under a tight latency budget and a cheaper generator already clears your fidelity bar.
+
+<Reveal client:visible summary="Why is the diffusion training objective so much more stable than a GAN's?">
+Because it's **not a game**. A GAN trains two networks against each other; the loss is a moving target and the equilibrium is fragile, which is where mode collapse and oscillation come from. Diffusion's loss is a *fixed regression target* — predict the known noise $\epsilon$ — minimized by ordinary supervised learning. There's no adversary to balance, so training just... descends, the way well-posed regression always does. The price for that calm is paid at *sampling* time (many steps), not training time.
+</Reveal>
+
+## Score-based view
+
+<MCQ
+  client:visible
+  pretest
+  question="In the score-based view of diffusion, what does the model learn?"
+  options={[
+    { text: "The score — the gradient of the log-density, ∇ₓ log p(x), which points toward regions of higher data density.", correct: true },
+    { text: "The exact probability p(x) of each sample as a normalized number." },
+    { text: "A discrete lookup table mapping noise vectors to real paths." },
+    { text: "The covariance matrix of the returns and nothing else." }
+  ]}
+  explanation="Score-based models learn the SCORE: ∇ₓ log p(x), a vector field pointing toward higher-density (more realistic) regions. Crucially you never need the normalized density p(x) itself — just its gradient — which sidesteps the intractable normalizing constant."
+/>
+
+**Analogy.** Imagine the space of all possible return paths as a landscape where realistic paths sit in deep valleys and absurd ones (a stock that triples every day for a month) perch on high, lonely ridges. The **score** is the local downhill direction — a gravity field that, everywhere you stand, points toward the nearest valley of plausibility. You don't need a map of the whole terrain's altitude; you just need to know, at your feet, *which way is down*. Drop a marble (a noise sample) anywhere and let this gravity pull it, with a little jitter so it explores, and it rolls into a valley — a realistic sample.
+
+**Definition.** The **score** of a distribution is $\nabla_x \log p(x)$: the gradient, with respect to the data itself, of the log-density. It's a vector at every point of data-space pointing toward higher probability. The elegant part: estimating it never requires the normalized density $p(x)$ — the intractable normalizing constant cancels in the gradient of the log. Once you have a learned score $s_\theta(x) \approx \nabla_x \log p(x)$, you generate by **Langevin dynamics**: start from noise and repeatedly step in the score's direction plus a dash of random noise,
+
+$$
+x \leftarrow x + \tfrac{\eta}{2}\, s_\theta(x) + \sqrt{\eta}\, z, \qquad z \sim \mathcal{N}(0, I),
+$$
+
+which provably settles into samples from $p(x)$. To make this work across all noise levels, Song & Ermon learn the score of *increasingly noised* versions of the data — and that is **exactly the same model** as the denoiser. Ho et al.'s noise-prediction $\epsilon_\theta$ and the score $s_\theta$ are related by a simple rescaling: $s_\theta(x_t, t) \approx -\,\epsilon_\theta(x_t, t)/\sqrt{1-\bar\alpha_t}$. Predicting the noise *is* estimating the score, up to a known constant. Two vocabularies, one machine.
+
+**Worked example.** Suppose the true data distribution is a simple Gaussian centered at $\mu = 0.05$ (a tiny positive average return) with variance $\sigma^2$. Its score has a clean closed form: $\nabla_x \log p(x) = -(x - \mu)/\sigma^2$. Stand at $x = 0.30$ — an implausibly large daily return, far out on the ridge. With $\sigma^2 = 0.01$, the score is $-(0.30 - 0.05)/0.01 = -25$: a strong vector pointing *back toward* the bulk of the distribution. Stand instead right at the mean, $x = 0.05$: the score is $0$ — you're already in the valley, no push needed. Langevin dynamics simply follows these arrows downhill, and the further you stray into implausible territory, the harder the field yanks you back.
+
+<Callout variant="warning">
+**Pitfall: thinking the score gives you a probability you can quote.** $\nabla_x \log p(x)$ tells you the *direction* toward higher density, not the density's value — you can't read off "this path has probability 0.002" from a score model, and you certainly can't compare two paths' likelihoods without extra machinery. For finance this matters: people want to *rank* scenario plausibility, and a raw score model won't hand you a calibrated likelihood for that. Don't promise a probability the model never learned to output.
+</Callout>
+
+### When to use it
+
+The score view is the one to invoke when you want the *theory* — it's what connects diffusion to SDEs (the continuous-time formulation you met in *Monte-Carlo Finance*), explains why the model generalizes rather than memorizes, and unifies a dozen sampler variants. Practically, you'll *implement* the noise-prediction form (it's a cleaner loss), but reason about *why it works* in the score-based language. Use it whenever someone asks "but what is the network actually estimating?" — the honest answer is a gravity field over data-space.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Score ∇ₓ log p(x)", definition: "A vector field pointing toward higher data density — the 'downhill' direction toward realistic samples." },
+    { term: "Langevin dynamics", definition: "Sampling by repeatedly stepping along the score plus a dash of noise, until you settle into the data distribution." },
+    { term: "Noise prediction εθ(xₜ, t)", definition: "The DDPM training target — equivalent to the score up to a known rescaling, so it's the same model in different clothes." },
+    { term: "Normalizing constant", definition: "The intractable term in p(x) that conveniently cancels when you take the gradient of the log, which is why the score is learnable at all." }
+  ]}
+/>
+
+## Conditioning and the GAN/VAE comparison
+
+<MCQ
+  client:visible
+  pretest
+  question="You want a diffusion model that, on demand, generates return paths for a SPECIFIC volatility regime (say, a high-vol crisis). What's the right tool?"
+  options={[
+    { text: "Conditional diffusion — feed the denoiser a regime/volatility/asset label (or use guidance) so it steers generation toward that condition.", correct: true },
+    { text: "Retrain a separate unconditional model from scratch for every regime and hope they're comparable." },
+    { text: "Add more noise during the forward process for high-vol regimes only." },
+    { text: "Switch back to a GAN, since diffusion cannot be conditioned." }
+  ]}
+  explanation="Conditional diffusion passes the desired attribute (a regime tag, a target volatility, an asset id) into the denoiser, so the same model can be steered to produce paths matching that condition. Guidance techniques sharpen the steering further. No need for a zoo of separate models."
+/>
+
+**Analogy.** An unconditional generator is a jukebox on shuffle — press play and you get *some* realistic song, but you don't get to choose. A *conditional* generator is the same jukebox with a genre dial: turn it to "crisis" and it plays you a high-volatility, fat-tailed, clustering-heavy path; turn it to "calm bull grind" and it serves a low-vol drift. Same machine, same training; you just told it which shelf to draw from.
+
+**Definition.** **Conditional diffusion** augments the denoiser with a condition $c$ — a regime label, a target volatility, an asset identifier, a macro state — so it learns $\epsilon_\theta(x_t, t, c)$ and generates samples consistent with $c$. **Guidance** (classifier or classifier-free) then dials *how strongly* the model adheres to the condition, trading a bit of diversity for sharper on-condition samples. This is exactly what makes diffusion attractive for *scenario generation* (lesson 1): you can ask for the regime you need rather than waiting for shuffle to hand it to you. Now place diffusion against its two predecessors:
+
+| Property | GAN (lesson 4) | VAE (lesson 5) | Diffusion (this lesson) |
+|---|---|---|---|
+| **Training stability** | Low — adversarial, oscillates, hard to tune | High — single stable objective | High — plain MSE regression, no adversary |
+| **Sample fidelity** | High — sharp, crisp | Lower — blurry (averaged) | High — sharp via iterative refinement |
+| **Mode coverage** | Poor — prone to mode collapse | Good — but smeared | **Best** — covers modes, few dropped |
+| **Latent structure** | Implicit, hard to interpret | Explicit, smooth, interpretable | Implicit (the noise schedule), less directly navigable |
+| **Sampling speed** | Fast — one forward pass | Fast — one forward pass | **Slow** — many denoising steps |
+| **Data hunger** | High | Moderate | **Highest** — most data-hungry of the three |
+
+The standout row for finance is **mode coverage**. A GAN that collapses might generate a thousand variations of the same calm bull path and silently *never* produce a crash — catastrophic if you're stress-testing. Diffusion's strength is that it tends to cover the modes, including the rare, scary ones in the tails — precisely the regimes a risk team actually cares about.
+
+**Worked example.** You're building a stress-scenario generator across three regimes: calm, transition, crisis. With a mode-collapse-prone GAN, you might train it and discover — only after a bad month — that "crisis" paths essentially never appear in its output: the discriminator found it easier to police the abundant calm paths, so the generator quietly abandoned the rare mode. A conditional diffusion model instead lets you *request* `c = crisis` and, because the architecture doesn't punish covering rare modes, returns genuine high-vol, fat-tailed paths on demand. You pay for it in sampling time — generating 10,000 crisis paths at 100 steps each is a million forward passes — but you actually *get the crash you asked for*.
+
+<Callout variant="warning">
+**Pitfall: assuming conditioning conjures regimes the data never contained.** Conditioning lets you *steer* toward regimes the model **learned**; it does not let you summon regimes the training data never showed. Ask a conditional model for a "1970s stagflation" it never saw and it will hand you its best *interpolation* of nearby regimes wearing a stagflation label — not a faithful stagflation. This is the same ceiling from lesson 1: a learned generator can only rearrange and interpolate the information in its training set. Diffusion's better mode coverage helps you not *drop* observed modes; it cannot invent unobserved ones.
+</Callout>
+
+### When to use it
+
+Reach for **conditional diffusion** when you need *steerable* scenario generation across regimes or assets and mode coverage matters more than sampling speed — multi-asset stress books, regime-conditioned augmentation, "give me 500 paths that look like Q4 2018." Stick with a **GAN** when sample speed and crispness dominate and you can police mode collapse; stick with a **VAE** when you want an *interpretable, navigable latent space* (smoothly interpolating between regimes) and can tolerate blur. The three aren't ranked — they're tools with different sharp edges.
+
+<Categorize
+  client:visible
+  question="Sort each property to the generative model it best characterizes."
+  buckets={["GAN", "VAE", "Diffusion"]}
+  items={[
+    { text: "Adversarial training that oscillates and is prone to mode collapse", bucket: "GAN" },
+    { text: "Explicit, smooth latent space you can interpolate through", bucket: "VAE" },
+    { text: "Best mode coverage but the slowest sampling", bucket: "Diffusion" },
+    { text: "Sharp samples from a single forward pass, if you can tame instability", bucket: "GAN" },
+    { text: "Stable to train but produces blurry, averaged samples", bucket: "VAE" },
+    { text: "Stable MSE training AND sharp samples, at the cost of many denoising steps", bucket: "Diffusion" }
+  ]}
+  explanation="GAN: sharp but unstable and mode-collapsing. VAE: stable and structured but blurry. Diffusion: stable training plus sharp, mode-covering samples — but slow to sample and the most data-hungry."
+/>
+
+## Does it earn its keep on returns?
+
+<MCQ
+  client:visible
+  pretest
+  question="Diffusion models dominate image generation. Why might that dominance NOT transfer to financial returns? (Select all that apply.)"
+  allowMultiple
+  options={[
+    { text: "Finance has tiny, non-stationary datasets, while diffusion's wins come from huge, near-stationary image corpora.", correct: true },
+    { text: "Returns are low signal-to-noise, so 'high-fidelity generation' can mean faithfully reproducing noise.", correct: true },
+    { text: "Diffusion's slow, many-step sampling is costly when you need huge Monte-Carlo path counts.", correct: true },
+    { text: "Diffusion models cannot represent Gaussian noise, which dominates returns." }
+  ]}
+  explanation="The first three are real obstacles: data scarcity and non-stationarity, low SNR (fidelity to noise is not a virtue), and expensive sampling. The fourth is false — Gaussian noise is literally the forward process's endpoint; representing it is no problem at all."
+/>
+
+**Analogy.** A Formula 1 car is the pinnacle of automotive engineering — on a smooth, dry, purpose-built track. Drop it on a muddy farm road full of potholes and it's *worse* than a tractor: too low, too stiff, too specialized for terrain it was never built for. Diffusion is the F1 car. Image datasets are the racetrack: enormous, clean, near-stationary, high signal. Financial returns are the muddy farm road: a few thousand noisy, non-stationary, low-signal observations. The engineering that wins the race can lose the farm.
+
+**The honest accounting.** Strip away the hype and weigh diffusion against the course's two yardsticks — the **stylized-facts rubric** (lesson 2) and the **cheap classical baselines** (lesson 3):
+
+- **Data scarcity bites hardest here.** Diffusion is the *most data-hungry* of the three deep generators, and finance is the *most data-starved* domain. Ten million cat photos vs. a few thousand returns is not a small gap — it's the difference between the regime where diffusion shines and the regime where it overfits. The one-history problem (lesson 1) doesn't go away because you used a fancier model; it gets *worse*.
+- **Non-stationarity breaks the core assumption.** Image distributions barely drift — a cat looked like a cat in 2010 and looks like one now. Markets *regime-shift*: the distribution you trained on is not the one you'll deploy into. A model that flawlessly fits last decade's distribution can be confidently wrong about next year's.
+- **Low SNR turns "fidelity" into a liability.** In images, high fidelity means crisp, correct detail. In returns, most of the variance *is noise* — so a high-fidelity generator can faithfully reproduce noise and call it a stylized fact. Sharper is not automatically better when the thing you're sharpening is mostly randomness.
+- **Slow sampling collides with Monte-Carlo's appetite.** Risk and scenario work wants *hundreds of thousands* of paths. Many-step diffusion sampling makes that expensive in exactly the use case (lesson 1) where you most want path volume.
+
+So you grade it like everything else. Does the diffusion output reproduce the stylized facts — fat tails, volatility clustering, the leverage effect, aggregational Gaussianity? Look at the distribution and the autocorrelation of *squared* returns, and compare not against "looks plausible" but against a tuned regime-switching or block-bootstrap baseline from lesson 3:
+
+<ReturnDistribution client:visible caption="The bar a diffusion generator must clear is the SHAPE of the real return distribution — a sharp peak and fat tails, not a tidy Gaussian. A model that produces the wider, well-behaved curve has captured volatility but missed the tail risk that actually hurts you. Grade against the stylized-facts rubric, not against vibes." />
+
+<TsAcfPlot client:visible caption="Volatility clustering is the make-or-break test: real returns show slowly decaying autocorrelation in their SQUARED values (calm follows calm, chaos follows chaos), like the geometric decay shown here — while raw returns look like white noise inside the band. A diffusion model that nails the marginal distribution but produces white-noise squared returns has failed the most important stylized fact." />
+
+**When diffusion genuinely earns its keep** — and it sometimes does — is the narrow band where its specific strengths line up with a real need: **rich conditioning** (steerable multi-regime scenarios you can't hand-specify), **multi-asset / high-dimensional** generation where the joint structure across many series is too tangled for a bootstrap, and any setting where **mode coverage** is the whole point (you must not silently drop the crash mode). There, "stable + sharp + mode-covering" can beat the classical toolkit. Where it's mostly **hype** is the common case: a single asset, a few years of daily returns, a stylized-facts target a regime-switching model already hits at 1% of the compute and zero leakage risk. If diffusion doesn't *beat the baseline on the rubric*, it has earned nothing but a bigger cloud bill.
+
+<Callout variant="warning">
+**The skeptic's verdict — benchmark wins are not P&L.** Diffusion's image-domain crown was won on enormous, near-stationary, high-SNR data — the exact opposite of financial returns. A diffusion model can post a beautiful FID-style fidelity score on synthetic returns and still teach a strategy *nothing it can trade*, because faithfully reproducing a few thousand noisy, non-stationary observations mostly reproduces the noise and the leakage. Always: (1) grade against the stylized-facts rubric, not eyeball appeal; (2) beat a tuned classical baseline or don't bother; (3) run the lesson-7 memorization checks — diffusion's high fidelity makes it *more* capable of near-copying, not less. State of the art in pictures is a hypothesis here, never a guarantee.
+</Callout>
+
+### When to use it
+
+Use diffusion on returns when — and essentially only when — you have a genuinely **rich conditioning** need or a **high-dimensional, multi-asset** joint to capture, you can afford slow sampling, you have enough data to feed the hungriest of the generators, and you've *proven* on the stylized-facts rubric that it beats the cheap baseline. Otherwise, default down the ladder: a regime-switching simulator or a block bootstrap is faster, auditable, leak-resistant, and frequently just as good on the metrics that map to P&L. Sophistication is a cost to be justified, not a prize to be won.
+
+<FillBlank
+  client:visible
+  question="Fill in the skeptic's core point."
+  text="Diffusion's dominance in images came from huge, near-stationary, high-signal data — so on tiny, non-stationary, low-signal returns its benchmark wins rarely transfer to {{P&L|fidelity|kurtosis|latency}} unless it also beats a cheap classical baseline on the stylized-facts rubric."
+  explanation="A pretty fidelity score is not tradable edge. The whole point is whether synthetic data improves real decisions (P&L) — which a high-fidelity-on-noise model can fail to do even while topping a benchmark."
+/>
+
+## Recap
+
+A diffusion model generates by **reversing a corruption**. The **forward process** is a fixed, learning-free schedule that stirs Gaussian noise into real data until $x_T \approx \mathcal{N}(0, I)$ — and thanks to a closed form, you can jump to any noise level instantly; it's a discretized diffusion SDE, the Brownian machinery from *Monte-Carlo Finance* run as controlled demolition. The **reverse process** is the learned half: a network $\epsilon_\theta(x_t, t)$ trained by plain MSE to predict the noise, then run iteratively from pure static back to a clean path — stable to train (no adversary) and sharp to sample (hundreds of small refinements), but *slow*. The **score-based view** says the same model is really estimating $\nabla_x \log p(x)$, a gravity field toward realistic data that you ride via Langevin dynamics — predicting noise and estimating the score are one machine in two languages. **Conditioning** makes it steerable for scenario generation, and against its predecessors diffusion is the rare combination of *stable like a VAE* and *sharp like a GAN*, with the **best mode coverage** — at the price of slow sampling and the highest data hunger. And the creed of the course still rules: diffusion won its crown on ten million near-stationary, high-signal images, while finance hands you a few thousand non-stationary, low-signal returns — so grade it on the **stylized-facts rubric**, make it **beat the cheap classical baseline**, run the **memorization checks** (lesson 7), and only crown it when it earns its keep on the metrics that touch P&L. State of the art in pictures is a hypothesis here, not a verdict.
+
+<MindMap
+  client:visible
+  title="Diffusion & score-based models for price paths"
+  caption="A fixed forward corruption, a learned reverse denoiser, the unifying score view, steerable conditioning — all weighed against the hard finance reality check."
+  root={{
+    label: 'Diffusion models',
+    children: [
+      {
+        label: 'Forward (noising) process',
+        children: [
+          { label: 'Fixed, learning-free Gaussian-noise schedule' },
+          { label: 'Closed form: jump to any step instantly' },
+          { label: 'A discretized diffusion SDE (Brownian motion)' }
+        ]
+      },
+      {
+        label: 'Reverse (denoising) process',
+        children: [
+          { label: 'Learn εθ(xₜ, t): predict the added noise' },
+          { label: 'Plain MSE loss — stable, no adversary' },
+          { label: 'Sample by iterative refinement from pure noise' },
+          { label: 'Sharp but SLOW (many steps)' }
+        ]
+      },
+      {
+        label: 'Score-based view',
+        children: [
+          { label: 'Learn the score ∇ₓ log p(x): a gravity field' },
+          { label: 'Sample via Langevin dynamics' },
+          { label: 'Noise-prediction = score, up to rescaling' }
+        ]
+      },
+      {
+        label: 'Conditioning & comparison',
+        children: [
+          { label: 'Conditional diffusion: steer by regime / vol / asset' },
+          { label: 'GAN: sharp, unstable, mode-collapse' },
+          { label: 'VAE: stable, blurry, structured latent' },
+          { label: 'Diffusion: stable AND sharp, best mode coverage' }
+        ]
+      },
+      {
+        label: 'Finance reality check',
+        children: [
+          { label: 'Tiny, non-stationary, low-SNR data vs. huge image corpora' },
+          { label: 'Most data-hungry generator meets most data-starved domain' },
+          { label: 'Grade on stylized-facts rubric; beat the cheap baseline' },
+          { label: 'Benchmark fidelity ≠ tradable P&L' }
+        ]
+      }
+    ]
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Diffusion & Score-Based Models — mixed recap"
+  questions={[
+    {
+      question: "Which statement about the forward process is TRUE?",
+      options: [
+        { text: "It is fixed and parameter-free: a chosen noise schedule that erases the signal, with all learning reserved for the reverse model.", correct: true },
+        { text: "It is a neural network trained to add noise in a data-aware way." },
+        { text: "It runs at sampling time to generate new paths from noise." },
+        { text: "It learns the score ∇ₓ log p(x) at each corruption level." }
+      ],
+      explanation: "Which-is-true: the forward (noising) process has no learnable parameters — it's a fixed schedule. Generation and all learning happen in the reverse denoiser; the score is what the reverse model implicitly estimates."
+    },
+    {
+      question: "A team replaces their unstable GAN with a diffusion model and training instantly stops oscillating. What CAUSED the new stability?",
+      options: [
+        { text: "Diffusion's objective is a plain MSE regression (predict the known noise), so there's no adversarial game to balance — well-posed supervised learning just descends.", correct: true },
+        { text: "Diffusion uses fewer parameters, so it can't overfit or oscillate." },
+        { text: "Diffusion samples faster, which stabilizes the gradients." },
+        { text: "Diffusion has no loss function, so there is nothing to oscillate." }
+      ],
+      explanation: "Cause→effect: GAN instability comes from the adversarial min-max game. Diffusion replaces it with a fixed regression target (predict ε), removing the moving-target dynamics — that's the source of the stability. It samples slower, not faster, and it certainly has a loss."
+    },
+    {
+      question: "You must generate stress scenarios and absolutely cannot afford to silently drop the 'crash' regime. Comparing GAN, VAE, and diffusion, which is the best fit and why?",
+      options: [
+        { text: "Diffusion — it tends to have the best mode coverage, so it's least likely to drop the rare crash mode that a mode-collapsing GAN might abandon.", correct: true },
+        { text: "GAN — its sharpness guarantees it captures every mode including crashes." },
+        { text: "VAE — its blurriness ensures all modes including crashes are represented crisply." },
+        { text: "All three are identical on mode coverage, so pick the fastest." }
+      ],
+      explanation: "Comparison: mode coverage is diffusion's standout strength. A GAN can collapse and quietly never produce the crash mode; a VAE covers modes but smears them. For 'don't drop the rare scary regime,' diffusion is the safest of the three."
+    },
+    {
+      question: "A vendor reports their diffusion model achieves a state-of-the-art fidelity score on synthetic returns and pitches it as obviously superior. Where's the trap?",
+      options: [
+        { text: "A high fidelity score on a few thousand noisy, non-stationary returns can mean faithfully reproducing noise and leakage — it isn't tradable P&L, and it may just signal near-memorization, so it must beat a cheap baseline on the stylized-facts rubric and pass memorization checks first.", correct: true },
+        { text: "There is no trap; a top fidelity score proves the synthetic data will improve any strategy." },
+        { text: "The trap is that fidelity scores can't be computed on returns at all." },
+        { text: "The trap is that diffusion cannot represent fat tails, so the score must be fake." }
+      ],
+      explanation: "Spot-the-trap: benchmark fidelity ≠ P&L. With low-SNR, non-stationary, scarce data, high fidelity can reproduce noise or near-copy the training set. Grade on the stylized-facts rubric, beat the classical baseline, and run lesson-7 memorization checks before believing the pitch."
+    },
+    {
+      question: "You need 200,000 Monte-Carlo paths overnight for a risk report, on a single liquid asset with a few years of daily data, and a tuned regime-switching simulator already reproduces the stylized facts. Should you swap in a 500-step diffusion model?",
+      options: [
+        { text: "No — many-step diffusion sampling makes 200,000 paths very expensive, the data is too thin to feed the hungriest generator, and the baseline already clears the rubric; diffusion hasn't earned its keep here.", correct: true },
+        { text: "Yes — diffusion is state of the art, so it must beat the baseline regardless of data size or cost." },
+        { text: "Yes — diffusion samples faster than a regime-switching model, so it will hit the overnight deadline more easily." },
+        { text: "Yes — a single asset is exactly where diffusion's mode coverage and conditioning shine most." }
+      ],
+      explanation: "Scenario: this is the case where diffusion is mostly hype — single asset, thin data, slow many-step sampling, and a cheap leak-resistant baseline that already passes the rubric. Diffusion's real edge (rich conditioning, multi-asset joints, mode coverage) isn't needed; default down the ladder."
+    }
+  ]}
+/>

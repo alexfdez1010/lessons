@@ -68,25 +68,6 @@ export interface UpcomingCourse {
  */
 export const upcomingCourses: UpcomingCourse[] = [
   {
-    slug: 'generative-models-for-synthetic-market-data',
-    icon: '🌀',
-    difficulty: 'expert',
-    order: 15,
-    accent: 'accent',
-    title: {
-      en: 'Generative Models for Synthetic Market Data',
-      es: 'Modelos Generativos para Datos de Mercado Sintéticos',
-    },
-    description: {
-      en: 'Manufacturing more market when you have too little: GANs, VAEs and diffusion models for synthetic price paths, the stylized facts a good generator must reproduce, and the hard problem of evaluating — and not fooling yourself with — fake data.',
-      es: 'Fabricar más mercado cuando tienes demasiado poco: GAN, VAE y modelos de difusión para trayectorias de precios sintéticas, los hechos estilizados que un buen generador debe reproducir, y el problema difícil de evaluar —y no engañarte con— datos falsos.',
-    },
-    dependencies: ['deep-learning-for-market-data', 'monte-carlo-finance', 'time-series-finance'],
-    tags: ['quantitative-finance'],
-    buildNotes:
-      'The deep-learning answer to the tiny-effective-sample-size problem from deep-learning-for-market-data: generate more data. Generative models for financial time series — GANs (and the QuantGAN/TimeGAN lineage), variational autoencoders, and diffusion/score-based models — versus the classical Monte-Carlo simulators from monte-carlo-finance (GBM, block bootstrap, regime-switching). The stylized facts a generator MUST reproduce to be useful (fat tails, volatility clustering, autocorrelation of absolute returns, leverage effect) — tie hard to time-series-finance. Uses: data augmentation for training, scenario generation and stress testing, privacy-preserving data sharing, and synthetic backtesting. The central trap, in the spirit of the ML-for-alpha creed: how do you EVALUATE synthetic data, and why training/validating on a generator that learned your history can leak and inflate every downstream backtest? Mode collapse, memorization, and the "is it real or did the GAN just copy?" test. Islands: stylized-facts-checklist + synthetic-vs-real-paths.',
-  },
-  {
     slug: 'agent-based-market-simulation',
     icon: '🐜',
     difficulty: 'expert',

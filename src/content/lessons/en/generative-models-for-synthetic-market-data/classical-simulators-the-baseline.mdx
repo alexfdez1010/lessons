@@ -1,0 +1,384 @@
+---
+title: "Classical Simulators: The Baseline to Beat"
+description: "Before any neural generator, the honest control group: geometric Brownian motion, the block and stationary bootstrap, and regime-switching / hidden-Markov models — cheap, interpretable, leak-resistant, and already good enough to embarrass a sloppy GAN."
+topic: "en/generative-models-for-synthetic-market-data"
+order: 3
+minutes: 16
+updated: 2026-06-21
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, ReturnDistribution, TsAcfPlot } from '@/components/react';
+
+When someone says "let's generate synthetic market data," the modern reflex is to spin up a GAN, feed it a few years of returns, and wait for the magic. That reflex is almost always wrong as a *first* move. A neural generator is a black box with millions of parameters and a long list of ways to fool you — mode collapse, silent overfitting, and a tendency to memorize and replay your training set while looking creative. You should never reach for one until you know what you're trying to beat.
+
+What you're trying to beat is a **classical simulator**: a small, transparent model you can write on a napkin and fully understand. Three of them carry almost all the weight in practice — geometric Brownian motion, the bootstrap (block and stationary), and regime-switching / hidden-Markov models. They are cheap, they train in milliseconds, every parameter has a meaning, and crucially they are *leak-resistant*: a bootstrap can only replay returns that really happened, and GBM has so few knobs it physically cannot memorize your data. They are the control group of this entire field.
+
+So the rule for the rest of the course is simple. A learned generator (lessons 4–6) is only worth its compute, its fragility, and its leakage risk if it clears this baseline **and** survives the evaluation gauntlet (lesson 7). In this lesson we line up the three classical simulators and grade each one against the stylized-facts rubric from lesson 2 — fat tails, volatility clustering, slow absolute-return ACF, the leverage effect, aggregational Gaussianity, and gain/loss asymmetry. Some of these "straw men" turn out to be alarmingly hard to knock down.
+
+## Geometric Brownian motion (GBM)
+
+<MCQ
+  client:visible
+  pretest
+  question="Under geometric Brownian motion, the day-to-day log-returns of an asset are…"
+  options={[
+    { text: "independent and identically distributed (i.i.d.) draws from a normal distribution", correct: true },
+    { text: "fat-tailed and clustered, just like real markets" },
+    { text: "perfectly predictable from yesterday's return" },
+    { text: "uniformly distributed between the day's high and low" }
+  ]}
+  explanation="GBM's defining assumption is i.i.d. Gaussian log-returns with constant drift and volatility. That assumption is exactly why it fails the interesting stylized facts."
+/>
+
+**Analogy.** GBM is the spherical cow of finance. A physicist who wants a *first* answer assumes the cow is a frictionless sphere — wrong in every detail, but a clean starting point you can compute by hand. GBM assumes a market with constant volatility and memoryless, perfectly Gaussian returns. Nobody believes the cow is a sphere; you use it because it gives you a number to argue against.
+
+**Definition.** GBM is the model you already met in *Monte-Carlo Finance*. The price $S_t$ follows the stochastic differential equation
+
+$$dS = \mu S\, dt + \sigma S\, dW,$$
+
+where $\mu$ is the drift, $\sigma$ the volatility, and $dW$ a Brownian increment. The closed-form solution makes log-returns i.i.d. normal:
+
+$$\ln\frac{S_{t+\Delta t}}{S_t} \sim \mathcal{N}\!\left(\left(\mu - \tfrac{1}{2}\sigma^2\right)\Delta t,\ \sigma^2 \Delta t\right).$$
+
+To simulate one step you draw a standard normal $Z \sim \mathcal{N}(0,1)$ and push the price forward:
+
+$$S_{t+\Delta t} = S_t \exp\!\left[\left(\mu - \tfrac{1}{2}\sigma^2\right)\Delta t + \sigma\sqrt{\Delta t}\, Z\right].$$
+
+**Worked example.** Take a start price of \$100, so $S_0 = 100$, with annual drift $\mu = 0.08$, annual volatility $\sigma = 0.20$, and one daily step $\Delta t = 1/252$. Then:
+
+- Drift term: $\left(\mu - \tfrac{1}{2}\sigma^2\right)\Delta t = (0.08 - 0.02)\cdot \tfrac{1}{252} = 0.06/252 \approx 0.000238.$
+- Diffusion scale: $\sigma\sqrt{\Delta t} = 0.20 \cdot \sqrt{1/252} = 0.20 \cdot 0.0630 \approx 0.0126.$
+
+Suppose the random draw is $Z = 1.5$ (a brisk up day). The log-return is $0.000238 + 0.0126 \cdot 1.5 = 0.000238 + 0.0189 = 0.01914$, so
+
+$$S_{t+\Delta t} = 100 \cdot e^{0.01914} = 100 \cdot 1.01932 \approx 101.93,$$
+
+i.e. a price of about \$101.93.
+
+A draw of $Z = -2.0$ instead gives a log-return of $0.000238 - 0.0252 = -0.02496$ and a price of about \$97.54. Same machinery, just a different Gaussian draw — and that *sameness* is the whole problem.
+
+**Grading GBM against the rubric.** Here is where the spherical cow gets exposed:
+
+| Stylized fact | GBM verdict |
+|---|---|
+| Aggregational Gaussianity | **Pass** (trivially — it's Gaussian at *every* horizon, so summing days stays Gaussian) |
+| Fat tails | **Fail** — Gaussian tails are far too thin; a true 6σ crash is "impossible" |
+| Volatility clustering | **Fail** — constant $\sigma$ means calm and storm are equally likely tomorrow |
+| Slow absolute-return ACF | **Fail** — i.i.d. returns have zero autocorrelation at every lag |
+| Leverage effect | **Fail** — returns and future volatility are independent by construction |
+| Gain/loss asymmetry | **Fail** — the distribution is symmetric |
+
+It passes exactly one box, and only because it cheats by being Gaussian everywhere. The picture below shows the core failure: GBM's return distribution is a clean bell curve, while real returns pile up extra mass in the middle *and* in the tails.
+
+<ReturnDistribution
+  client:visible
+  caption="GBM produces the thin-tailed normal curve. Real market returns are leptokurtic — taller and skinnier in the middle, with far more mass in the tails. The 'impossible' crashes live in that tail gap, which is exactly what GBM cannot generate."
+/>
+
+<Callout variant="warning">
+**The straw-man trap works both ways.** GBM is so obviously wrong that people dismiss it entirely — and then ship a neural generator that, when you actually measure it, fails the *same* boxes GBM fails (no leverage effect, tails too thin). If your fancy model can't beat the spherical cow on a stylized fact, you haven't built a generator, you've built an expensive GBM. Always score the baseline first so you know which boxes are still empty.
+</Callout>
+
+### When to use it
+
+Use GBM as the **null hypothesis and pricing scaffold**, not as a realistic data source. It is the right tool when you need a closed-form benchmark (Black–Scholes lives here), a quick sanity path, or a deliberately *honest* lower bound to measure everything else against. The moment you care about tail risk, clustering, or anything path-dependent, GBM is a liability — but it is an indispensable yardstick.
+
+<FillBlank
+  client:visible
+  text="The single stylized fact GBM passes is {{aggregational Gaussianity|volatility clustering|the leverage effect}}, and it only passes because its returns are normal at every time horizon."
+/>
+
+## The block bootstrap
+
+<MCQ
+  client:visible
+  pretest
+  question="Why resample BLOCKS of consecutive returns instead of individual days?"
+  options={[
+    { text: "Blocks of consecutive days preserve short-range dependence like volatility clustering; shuffling single days destroys it", correct: true },
+    { text: "Blocks are faster to compute than single draws" },
+    { text: "Blocks guarantee the synthetic series is Gaussian" },
+    { text: "Single-day resampling is impossible without a closed-form model" }
+  ]}
+  explanation="A plain i.i.d. bootstrap that draws one day at a time scrambles the ordering and wipes out clustering. Resampling whole blocks keeps neighboring days together, so a volatile week stays a volatile week."
+/>
+
+**Analogy.** Imagine making a "new" highlight reel from old game footage. If you splice it one frame at a time, you get incoherent flicker. If you splice it in *clips* of a few seconds each, every clip still contains real, coherent motion — you've just reshuffled the order of plays. The block bootstrap splices market history in clips, not frames, so each clip carries its own little burst of volatility intact.
+
+**Definition.** The bootstrap resamples *with replacement* from your historical returns to build new series of the same length. The naïve version draws single days, which destroys all temporal structure. The **moving-block bootstrap** instead picks a block length $b$, forms every overlapping block $(r_i, r_{i+1}, \dots, r_{i+b-1})$, and samples whole blocks at random, concatenating them until the synthetic series is long enough.
+
+- **Non-overlapping** blocks chop the series into fixed, disjoint windows — simpler, but fewer distinct blocks to draw from.
+- **Moving (overlapping)** blocks slide one step at a time, giving $n - b + 1$ candidate blocks and far more variety.
+
+The block length $b$ is the one knob, and it is a genuine tradeoff:
+
+- **Too short** ($b = 1$): you're back to the i.i.d. bootstrap — clustering and all serial dependence vanish.
+- **Too long** ($b \approx n$): every "synthetic" series is just your real history with the start point shifted — no novelty at all.
+
+**Worked example.** Take a tiny daily-return series of $n = 8$ days (in percent):
+
+$$[\,+1,\ +2,\ -5,\ -4,\ +1,\ 0,\ +2,\ -1\,].$$
+
+Choose block length $b = 3$. The overlapping blocks are $n - b + 1 = 8 - 3 + 1 = 6$ of them:
+
+$$B_1=[+1,+2,-5],\quad B_2=[+2,-5,-4],\quad B_3=[-5,-4,+1],$$
+$$B_4=[-4,+1,0],\quad B_5=[+1,0,+2],\quad B_6=[0,+2,-1].$$
+
+To build a synthetic length-8 series, draw blocks at random with replacement and concatenate, trimming to 8. Drawing $B_2$, then $B_5$, then $B_1$ gives
+
+$$[+2,-5,-4,\ +1,0,+2,\ +1,+2]\ \to\ \text{trim to 8:}\ [+2,-5,-4,+1,0,+2,+1,+2].$$
+
+Notice the $-5,-4$ pair survived as a unit — the volatile cluster traveled together. A single-day bootstrap could just as easily have separated them, drowning the storm.
+
+**The stationary bootstrap (Politis–Romano).** A fixed block length leaves an awkward seam: the synthetic series isn't strictly stationary because the block boundaries land at predictable spots. The **stationary bootstrap** fixes this by making the block length *random* — each block continues with probability $p$ and ends with probability $1 - p$ at every step, so block lengths follow a geometric distribution with mean $1/p$. Averaging over random lengths smooths out the boundary artifacts and guarantees the resampled series is stationary. You trade the single parameter $b$ for the single parameter $p$ (expected length $1/p$).
+
+**Grading the bootstrap against the rubric.** The bootstrap's superpower is that it resamples *real* returns, so anything baked into individual days survives for free:
+
+| Stylized fact | Block bootstrap verdict |
+|---|---|
+| Fat tails | **Pass** — it replays actual returns, so the empirical tail thickness is preserved |
+| Volatility clustering (short-range) | **Pass** within a block; the whole point of $b > 1$ |
+| Slow absolute-return ACF (long-range) | **Fail** — memory only extends $b$ days; correlation snaps to zero past the block |
+| Leverage effect | **Partial** — present *inside* a block, broken at every seam |
+| Can exceed history's worst day | **Fail** — you can only ever replay moves that happened |
+
+<TsAcfPlot
+  client:visible
+  caption="Volatility clustering shows up as a slowly decaying autocorrelation in ABSOLUTE returns. The block bootstrap reproduces this decay inside each block, but the memory dies abruptly once you cross a block boundary — so the long, slow tail of the real ACF gets truncated near lag b."
+/>
+
+<Callout variant="warning">
+**The bootstrap can never imagine a crash worse than your worst day.** If your sample contains a –12% day but not the –22% day that's coming, no amount of clever resampling will produce one — the support of the synthetic distribution is exactly the support of the historical sample. For tail-risk and stress-testing work this is disqualifying: the bootstrap is structurally blind to the unprecedented, which is the one scenario stress tests exist to probe.
+</Callout>
+
+### When to use it
+
+Reach for the block (or stationary) bootstrap when you want **realistic, leak-resistant samples and you trust your history to be representative** — backtesting trading rules, sizing confidence intervals on a Sharpe ratio, bootstrapping P&L distributions. It is the strongest baseline precisely because it inherits every stylized fact your data already has, at near-zero modeling cost. Avoid it whenever the future must contain events the past did not — novel regimes, structural breaks, or stress beyond the historical maximum.
+
+<Categorize
+  client:visible
+  buckets={["Bootstrap strength", "Bootstrap weakness"]}
+  items={[
+    { text: "Preserves empirical fat tails for free", bucket: "Bootstrap strength" },
+    { text: "Keeps short-range volatility clustering inside a block", bucket: "Bootstrap strength" },
+    { text: "Leak-resistant — only replays real returns", bucket: "Bootstrap strength" },
+    { text: "Cannot produce a move larger than history's worst", bucket: "Bootstrap weakness" },
+    { text: "Memory snaps to zero past the block length", bucket: "Bootstrap weakness" },
+    { text: "Breaks the leverage effect at every block seam", bucket: "Bootstrap weakness" }
+  ]}
+/>
+
+## Regime-switching / hidden-Markov models
+
+<MCQ
+  client:visible
+  pretest
+  question="In a two-state regime-switching (hidden-Markov) model of returns, what is 'hidden'?"
+  options={[
+    { text: "Which regime — calm or turbulent — the market is currently in; you only observe the returns, not the state that generated them", correct: true },
+    { text: "The returns themselves, which are never observed" },
+    { text: "The transition matrix, which must be guessed by hand" },
+    { text: "Nothing — both the state and its parameters are directly observable" }
+  ]}
+  explanation="The latent regime is unobserved (hidden); you infer it from the returns. Each regime emits returns with its own mean and volatility, and a Markov transition matrix governs how states evolve."
+/>
+
+**Analogy.** Think of the market as weather with two moods: sunny (low volatility, gentle drift) and stormy (high volatility, sharp moves). You never get a label that says "it is storm season now" — you only see the daily returns and have to *infer* the mood. And moods are sticky: a sunny day is usually followed by another sunny day, a storm tends to rage on for a while. That stickiness is the Markov transition matrix.
+
+**Definition.** A hidden-Markov / regime-switching model posits a small number $K$ of latent states. State $k$ emits returns from its own distribution, typically Gaussian with mean $\mu_k$ and volatility $\sigma_k$. A $K \times K$ transition matrix $P$, with entries $p_{ij} = \Pr(\text{state}_{t+1}=j \mid \text{state}_t=i)$ and rows summing to 1, governs the dynamics. For a two-state (calm / turbulent) model:
+
+$$P = \begin{pmatrix} p_{CC} & p_{CT} \\ p_{TC} & p_{TT} \end{pmatrix},\qquad p_{CC}+p_{CT}=1,\quad p_{TC}+p_{TT}=1.$$
+
+The **expected duration** of a regime follows from the self-transition probability $p_{\text{stay}}$. Each day the regime survives with probability $p_{\text{stay}}$, so its length is geometric with mean
+
+$$\mathbb{E}[\text{duration}] = \frac{1}{1 - p_{\text{stay}}}.$$
+
+**Worked example.** Calibrate a two-state model with
+
+$$P = \begin{pmatrix} 0.98 & 0.02 \\ 0.10 & 0.90 \end{pmatrix},\qquad \begin{aligned} &\text{Calm: } \mu_C = +0.05\%/\text{day},\ \sigma_C = 0.6\%\\ &\text{Turbulent: } \mu_T = -0.10\%/\text{day},\ \sigma_T = 2.5\% \end{aligned}$$
+
+Expected durations:
+
+- Calm: $1/(1 - 0.98) = 1/0.02 = 50$ trading days (about 10 weeks of quiet).
+- Turbulent: $1/(1 - 0.90) = 1/0.10 = 10$ trading days (a two-week storm).
+
+Long-run regime probabilities come from the stationary distribution $\pi P = \pi$. Solving, the calm probability is $p_{TC}/(p_{CT}+p_{TC}) = 0.10/(0.02+0.10) = 0.10/0.12 \approx 0.833$, so the market is calm about 83% of the time and turbulent about 17%. The unconditional return distribution is then a **mixture** of two normals:
+
+$$f(r) = 0.833 \cdot \mathcal{N}(0.0005,\ 0.006^2) + 0.167 \cdot \mathcal{N}(-0.001,\ 0.025^2).$$
+
+That mixture is where the magic happens. A narrow calm bell glued to a wide turbulent bell produces a combined distribution that is **peaked in the middle and fat in the tails** — leptokurtic, just like real returns — even though each component is a plain Gaussian.
+
+**Grading the HMM against the rubric.** For such a simple model, the scorecard is surprisingly strong:
+
+| Stylized fact | 2-state HMM verdict |
+|---|---|
+| Fat tails | **Pass** — a mixture of a calm and a turbulent normal is leptokurtic |
+| Volatility clustering | **Pass** — sticky states ($p_{\text{stay}}$ near 1) make high-vol days bunch together |
+| Slow absolute-return ACF | **Partial** — persistence gives slow-ish decay, though a single switch can be too abrupt vs. real markets |
+| Gain/loss asymmetry | **Pass-ish** — the turbulent state can carry negative drift, tilting the downside |
+| Leverage effect | **Fail** — by default states are symmetric; returns don't *drive* the next state's volatility |
+
+<Callout variant="warning">
+**Two regimes is a model, not a law of nature.** It's tempting to keep adding states until the fit is gorgeous — but every extra regime multiplies parameters in the transition matrix ($K^2$ of them) and you quickly overfit, "discovering" regimes that are just noise. Worse, with enough states an HMM starts to *memorize* the training path, quietly forfeiting the leak-resistance that made the baseline trustworthy. Keep $K$ small (2–4), justify each state, and validate out-of-sample.
+</Callout>
+
+### When to use it
+
+Use a regime-switching model when you need **interpretable structure with realistic tails and clustering** — scenario generation for stress tests where you want a named "crisis regime," volatility forecasting, or any setting where stakeholders will ask *why* a path looks the way it does. It threads the needle between GBM (too simple) and a neural generator (too opaque): few parameters, every one nameable, yet it clears most of the rubric. Skip it when the real dynamics are genuinely continuous rather than a handful of discrete moods, or when you need the leverage effect baked in.
+
+<Reveal title="Why does a mixture of two normals have fat tails? (intuition)">
+Kurtosis measures how much mass lives far from the mean *relative* to a single Gaussian of the same overall variance. When you blend a low-variance normal (calm) with a high-variance one (turbulent), the calm component over-fills the center while the turbulent component over-fills the tails — both at the expense of the "shoulders" a single Gaussian would have. The result is taller in the middle, thinner at the shoulders, and heavier in the tails: textbook leptokurtosis. No fat-tailed input distribution required — clustering of variances alone manufactures the fat tails.
+</Reveal>
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Transition matrix P", definition: "Probabilities of moving between latent regimes; each row sums to 1" },
+    { term: "Expected regime duration", definition: "1 / (1 − p_stay), the geometric mean lifetime of a state" },
+    { term: "Mixture of normals", definition: "The unconditional return law that turns two Gaussians into a fat-tailed distribution" },
+    { term: "Stationary distribution π", definition: "Long-run fraction of time the chain spends in each regime, solving πP = π" }
+  ]}
+/>
+
+## Why the baseline is so hard to beat
+
+It would be convenient if these models were toys. They are not. The reason they survive is a combination of three properties that learned generators struggle to match all at once.
+
+**They are cheap.** GBM is two parameters. A bootstrap is *zero* parameters plus a block length. A two-state HMM is a handful. They calibrate in milliseconds on a laptop, with no GPU, no training instability, and no hyperparameter séance.
+
+**They are interpretable.** Every knob has a name and a unit. When the output looks wrong you can point at the parameter responsible — drift, volatility, block length, self-transition probability. A GAN that misbehaves offers you a loss curve and a shrug.
+
+**They are leak-resistant.** This is the underrated one. The bootstrap can *only* emit returns that actually occurred, so it cannot accidentally regurgitate a memorized training example that the rest of your pipeline then mistakes for genuine novelty — its "leakage" is honest and bounded by construction. GBM and HMMs have so few parameters that they physically lack the capacity to memorize individual paths. A neural generator with millions of weights has exactly the opposite problem: its default failure mode is to copy the training set and pass it off as synthetic, which is catastrophic if you're using the data to validate a model that also trained on the original.
+
+So a learned generator has to clear a high bar: match or beat the HMM on fat tails *and* clustering, add the leverage effect and long-range memory the classics miss, *and* generate genuine novelty (moves beyond the historical sample) the bootstrap can't — all **without** secretly memorizing the training data, and while surviving the full evaluation gauntlet of lesson 7. Here is the scorecard that frames the rest of the course:
+
+| Property | GBM | Block bootstrap | 2-state HMM | Learned generators (preview, L4–6) |
+|---|---|---|---|---|
+| Fat tails | No | Yes (empirical) | Yes (mixture) | Yes (if trained well) |
+| Volatility clustering | No | Short-range only | Yes (sticky states) | Yes, potentially long-range |
+| Leverage effect | No | Partial (in-block) | No (by default) | Yes (the main prize) |
+| Novelty / can exceed history | Yes (Gaussian, unbounded) | No (replays only) | Limited (within state ranges) | Yes (the other main prize) |
+| Interpretability | High | High | High | Low |
+| Leakage risk | None | None (replays real data) | Very low | **High** (can memorize) |
+| Data hunger | None (assume params) | Low | Low–moderate | High |
+
+Read that table as a job description. The two columns where the classics are weak — the **leverage effect** and **genuine novelty** — are exactly what a neural generator must deliver to justify its cost. Everything else, it merely has to *not lose*.
+
+<MCQ
+  client:visible
+  allowMultiple
+  question="Select EVERY reason classical simulators are a demanding baseline for a neural generator to beat. (Choose all that apply.)"
+  options={[
+    { text: "They are leak-resistant — a bootstrap only replays real returns, and GBM/HMM lack the capacity to memorize paths", correct: true },
+    { text: "They are cheap and interpretable, so a fragile black box must justify its extra cost", correct: true },
+    { text: "A two-state HMM already reproduces fat tails AND volatility clustering", correct: true },
+    { text: "They generate the leverage effect by default, which neural models cannot" },
+    { text: "They can always produce crashes worse than any in the historical sample" }
+  ]}
+  explanation="The first three are genuine baseline strengths. The last two are false: the leverage effect is precisely what the classics MISS (it's the neural generator's prize), and the bootstrap in particular can never exceed history's worst move."
+/>
+
+## Recap
+
+Before any neural generator earns a place in your pipeline, it has to beat a control group you fully understand. **Geometric Brownian motion** is the honest straw man: i.i.d. Gaussian log-returns that pass aggregational Gaussianity and fail everything else, but give you a closed-form yardstick. The **block (and stationary) bootstrap** resamples clips of real history, inheriting empirical fat tails and short-range volatility clustering for free, at the cost of long-range memory and any move bigger than history's worst day. The **two-state hidden-Markov model** blends a calm and a turbulent regime into a mixture of normals that delivers both fat tails and clustering while staying interpretable, with expected regime duration $1/(1-p_{\text{stay}})$. All three are cheap, transparent, and leak-resistant — which is exactly why they're hard to beat. The learned generators of lessons 4–6 must clear this bar on the leverage effect and on genuine novelty, *without* memorizing the data, and then survive the evaluation gauntlet of lesson 7.
+
+<MindMap
+  client:visible
+  root={{
+    label: "Classical simulators: the baseline to beat",
+    children: [
+      {
+        label: "GBM — the honest straw man",
+        children: [
+          { label: "dS = μS dt + σS dW; i.i.d. Gaussian log-returns" },
+          { label: "Passes: aggregational Gaussianity (only)" },
+          { label: "Fails: fat tails, clustering, leverage, asymmetry" },
+          { label: "Use: null hypothesis & pricing scaffold" }
+        ]
+      },
+      {
+        label: "Block / stationary bootstrap",
+        children: [
+          { label: "Resample blocks of length b to keep clustering" },
+          { label: "Stationary = random geometric block length (Politis–Romano)" },
+          { label: "Passes: fat tails, short-range clustering" },
+          { label: "Fails: long-range memory, moves beyond history" }
+        ]
+      },
+      {
+        label: "Regime-switching / HMM",
+        children: [
+          { label: "K latent states, each μ_k/σ_k, transition matrix P" },
+          { label: "Expected duration = 1/(1 − p_stay)" },
+          { label: "Passes: fat tails (mixture) + clustering (sticky states)" },
+          { label: "Fails: leverage effect by default" }
+        ]
+      },
+      {
+        label: "Why it's hard to beat",
+        children: [
+          { label: "Cheap + interpretable + leak-resistant" },
+          { label: "Neural prize: leverage effect + true novelty" },
+          { label: "Must avoid memorizing data (leakage)" }
+        ]
+      }
+    ]
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Classical simulators: graded"
+  questions={[
+    {
+      question: "A regime-switching model has a turbulent state with self-transition probability p_stay = 0.90. What is the expected duration of a turbulent spell, in trading days?",
+      options: [
+        { text: "10 days", correct: true },
+        { text: "9 days" },
+        { text: "90 days" },
+        { text: "0.10 days" }
+      ],
+      explanation: "Expected duration = 1 / (1 − p_stay) = 1 / (1 − 0.90) = 1 / 0.10 = 10 trading days."
+    },
+    {
+      question: "Which statement about the block bootstrap is TRUE?",
+      options: [
+        { text: "It preserves short-range volatility clustering because it resamples consecutive blocks of real returns", correct: true },
+        { text: "It can generate a daily move larger than any observed in the historical sample" },
+        { text: "It assumes returns are i.i.d. Gaussian, like GBM" },
+        { text: "A longer block length b always produces more novel synthetic series" }
+      ],
+      explanation: "Resampling whole blocks keeps neighboring (real) returns together, preserving clustering. It can never exceed history's worst move, makes no Gaussian assumption, and a longer b means LESS novelty — at b ≈ n you just replay history."
+    },
+    {
+      question: "A colleague claims their two-state HMM 'proves' the leverage effect is captured by classical models. Where's the trap?",
+      options: [
+        { text: "A default symmetric HMM does NOT produce the leverage effect — returns don't drive the next state's volatility — so the claim conflates clustering with leverage", correct: true },
+        { text: "HMMs cannot produce fat tails, so the whole model is invalid" },
+        { text: "The leverage effect only exists in GBM" },
+        { text: "Two states is too many to ever capture clustering" }
+      ],
+      explanation: "A vanilla HMM captures fat tails and clustering but NOT the leverage effect (the asymmetric link from negative returns to higher future volatility). Capturing leverage is precisely what's left for the neural generators to earn."
+    },
+    {
+      question: "Comparing the three classics on 'can it generate a move worse than anything in the data,' which is correct?",
+      options: [
+        { text: "GBM can (Gaussian tails are unbounded), the bootstrap cannot (it only replays observed returns), and the HMM is limited to its states' ranges", correct: true },
+        { text: "All three can freely exceed the historical worst case" },
+        { text: "Only the bootstrap can exceed the historical worst case" },
+        { text: "None of the three can ever exceed the mean return" }
+      ],
+      explanation: "GBM's normal has unbounded support so it CAN draw an extreme value; the bootstrap is bounded by the empirical sample and cannot; the HMM can only emit values from its (Gaussian) state distributions, so it's limited in practice."
+    },
+    {
+      question: "You're stress-testing a portfolio and must include crashes more severe than any in your 10-year sample. Which classical simulator is structurally DISQUALIFIED for this job?",
+      options: [
+        { text: "The block bootstrap — its synthetic support equals the historical sample, so it can't imagine an unprecedented crash", correct: true },
+        { text: "GBM — its Gaussian tails make extreme draws impossible" },
+        { text: "The HMM — it has too few parameters to model a crash" },
+        { text: "All three are equally fine for unprecedented stress" }
+      ],
+      explanation: "The bootstrap can only replay moves that already happened, so it's blind to the unprecedented — exactly the scenario a stress test needs. GBM (unbounded tails) and a turbulent-regime HMM can at least reach beyond the sample, though GBM's tails are unrealistically thin."
+    }
+  ]}
+/>

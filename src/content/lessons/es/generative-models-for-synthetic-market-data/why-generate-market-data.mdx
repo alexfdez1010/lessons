@@ -1,0 +1,362 @@
+---
+title: "¿Por qué generar datos de mercado?"
+description: "El deep learning se muere de hambre con un único historial de mercado — así que fabrica más. Los cuatro usos reales de los datos sintéticos, la división aprender-un-generador frente a simular-un-mecanismo, y la trampa de fuga que enmarca todo el curso."
+topic: "es/generative-models-for-synthetic-market-data"
+order: 1
+minutes: 15
+updated: 2026-06-21
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, TsStationarityChart } from '@/components/react';
+
+Aquí va el secreto incómodo del machine learning en finanzas: estás intentando aprender de un río que fluyó exactamente **una vez**. Un modelo de visión llega a ver diez millones de fotos de gatos. Un modelo de lenguaje inhala internet entero, dos veces. Tú, el quant, recibes *un solo* camino realizado del historial de mercado — un 2008, un crac de 2020, una subida vertical por el COVID — y se acabó. El proceso generador de datos ejecutó el experimento una única vez y te entregó el resultado sin repeticiones.
+
+Ya sabes por *Deep Learning para Datos de Mercado* por qué esto es fatal: el **tamaño muestral efectivo** es minúsculo. Veinte años de precios diarios parecen miles de filas, pero esas filas están autocorrelacionadas, agrupadas por régimen y solapadas, así que el número de observaciones genuinamente independientes está más cerca de las *decenas* que de los miles. Las redes profundas son bestias hambrientas con millones de parámetros; aliméntalas con decenas de ejemplos efectivos y no aprenden el mercado — lo **memorizan**, y luego publican un backtest glorioso que se evapora en cuanto el dinero real lo toca.
+
+Así que la jugada es audaz: si el historial solo se ejecutó una vez, **fabrica más historial**. Entrena o construye un *generador* que emita caminos de retorno nuevos, jamás realizados, que aun así parezcan el mercado — mismas colas anchas, mismo agrupamiento de volatilidad — y aliméntalos a tu modelo hambriento. Es una idea brillante con un cuchillo escondido dentro, y ese cuchillo enmarca todo el curso: un generador entrenado con tu historial ha, en cierto sentido, *visto el futuro relativo a cualquier backtest que ejecutes sobre él*. Despístate y filtrará tus propios datos de vuelta dentro de tus pruebas, disfrazados de "sintéticos". Guarda esa idea — es la columna vertebral de la lección 4 en adelante y la advertencia a la que volveremos una y otra vez.
+
+## El problema del historial único
+
+<MCQ
+  client:visible
+  pretest
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="Tienes 20 años de retornos diarios del S&P 500. ¿Por qué es engañoso llamar a esto '~5.000 puntos de datos independientes'?"
+  options={[
+    { text: "Los retornos están autocorrelacionados y agrupados por régimen, así que el número de observaciones efectivamente independientes es mucho menor que el recuento de filas.", correct: true },
+    { text: "Los datos diarios son de demasiada alta frecuencia para contener señal alguna." },
+    { text: "5.000 filas son en realidad de sobra para una red profunda con millones de parámetros." },
+    { text: "El S&P 500 cambia sus constituyentes, así que las filas antiguas no son válidas." }
+  ]}
+  explanation="El recuento de filas no es el tamaño muestral. El agrupamiento de volatilidad y la persistencia de régimen hacen que las observaciones consecutivas porten información solapada, así que el tamaño muestral EFECTIVO — extracciones independientes del proceso — es drásticamente menor."
+/>
+
+**Analogía.** Imagina a un químico que puede ejecutar su reacción exactamente una vez, jamás otra. Sin repeticiones, sin barras de error, sin "probemos de nuevo a otra temperatura". Lo que pasó, pasó — y ahora debe publicar leyes universales a partir de ese único vaso de precipitados. Ese químico eres tú, y el único vaso es el historial de mercado. No puedes volver a ejecutar 2008 con una decisión de Lehman distinta; la cinta es un experimento de un solo disparo.
+
+**Definición.** El historial de mercado es un **único camino realizado** extraído de un **proceso generador de datos (PGD)** desconocido y no estacionario. Observas una trayectoria; nunca observas la distribución de la que vino, y desde luego no puedes muestrearla de nuevo. El **tamaño muestral efectivo** $N_{\text{eff}}$ es el número de observaciones *independientes* que vale ese camino — siempre muy por debajo del recuento bruto de filas una vez tienes en cuenta la autocorrelación y la persistencia de régimen.
+
+**Ejemplo resuelto.** Toma 20 años de datos diarios: aproximadamente
+
+$$
+20 \text{ años} \times 252 \text{ días de cotización} \approx 5{,}040 \text{ filas}.
+$$
+
+Suena abundante. Pero una corrección cruda de muestra efectiva por autocorrelación lo encoge. Si las observaciones consecutivas tienen autocorrelación de retardo 1 $\rho \approx 0.97$ a nivel de *volatilidad* (la volatilidad se agrupa con fuerza), una aproximación habitual da
+
+$$
+N_{\text{eff}} \approx N \cdot \frac{1-\rho}{1+\rho} = 5{,}040 \cdot \frac{0.03}{1.97} \approx 77.
+$$
+
+Setenta y siete. Y esa es la lectura *generosa* — si en cambio preguntas "¿cuántos **regímenes** de mercado genuinamente distintos observé?" (un mercado alcista, el crac de 2008, la lenta molienda del QE, el desplome y rebote del COVID, un ciclo de subidas de tipos), los cuentas con los dedos. Un historial de veinte años es, para las preguntas que importan, aproximadamente **una extracción** del PGD.
+
+Mira cómo se ve en realidad el camino único — precio no estacionario vagando arriba, pero *retornos* estacionarios y agrupados debajo:
+
+<TsStationarityChart client:visible caption="Un historial realizado: el precio (arriba) es un único camino no estacionario que nunca se repite, mientras que sus retornos (abajo) son estacionarios pero muestran agrupamiento de volatilidad — la calma engendra calma, el caos engendra caos. Observas exactamente una de estas trayectorias." />
+
+<Callout variant="warning">
+**Trampa: confundir el recuento de filas con el tamaño muestral.** "Tengo 5.000 filas, eso son datos de sobra" es la frase más cara de las finanzas cuantitativas. Las filas no son evidencia; las filas *independientes* lo son. Un modelo que cree tener 5.000 ejemplos cuando efectivamente tiene 77 sobreajustará con suprema confianza y te entregará un desastre de Sharpe desinflado. Pregunta siempre cuántos *regímenes independientes* contienen realmente tus datos.
+</Callout>
+
+### Cuándo usarlo
+
+Invoca el encuadre del historial único siempre que alguien te agite un gran recuento de filas como prueba de que un modelo profundo "tiene datos de sobra". Es el diagnóstico que te dice que un modelo se muere de hambre incluso cuando la hoja de cálculo parece llena — y es toda la motivación para fabricar más caminos.
+
+<FillBlank
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+  question="Completa la distinción central."
+  text="Veinte años de precios diarios son miles de {{filas|regímenes|extracciones|caminos}}, pero solo un puñado de regímenes de mercado independientes — por eso el tamaño muestral efectivo es minúsculo."
+  explanation="Las filas son abundantes; los regímenes independientes (y por tanto las observaciones efectivas) son escasos. La brecha entre ambos es el problema del historial único en una sola frase."
+/>
+
+## Los cuatro usos de los datos sintéticos
+
+<MCQ
+  client:visible
+  pretest
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="Un equipo de riesgos quiere probar su cartera frente a un shock de estanflación que nunca ha ocurrido en su ventana de datos. ¿Qué uso de los datos sintéticos es este?"
+  options={[
+    { text: "Generación de escenarios y pruebas de estrés — fabricar regímenes que la cinta nunca entregó.", correct: true },
+    { text: "Compartición de datos preservando la privacidad." },
+    { text: "Aumento de datos para entrenar un modelo escaso." },
+    { text: "Backtesting sintético de una estrategia existente sobre más caminos." }
+  ]}
+  explanation="Generar un régimen que el historial nunca produjo — para poder someter a presión una cartera frente a él — es generación de escenarios / pruebas de estrés. Los otros usos sirven al entrenamiento, a la compartición o al recuento de caminos, no a '¿y si nos golpea un régimen jamás visto?'."
+/>
+
+**Analogía.** Un simulador de vuelo. Los pilotos reales no pueden estrellar un 747 de verdad para practicar, no pueden invocar un incendio de motor a demanda, no pueden esperar a la microrráfaga de una vez por década para que les enseñe. Así que *generan* esos escenarios. Los datos de mercado sintéticos son el simulador de vuelo para estrategias y sistemas de riesgo — y como un simulador de vuelo, solo son útiles en la medida en que la física que falsean sea honesta.
+
+**Definición.** Los **datos de mercado sintéticos** son datos producidos artificialmente — caminos de retorno, flujos de órdenes, precios — que imitan las propiedades estadísticas de los mercados reales sin ser una copia literal de ningún periodo observado. Se usan para cuatro trabajos distintos, cada uno comprándote algo diferente y cada uno cargando con su propio riesgo.
+
+| Uso | Qué te compra | El riesgo |
+|---|---|---|
+| **Aumento de datos** | Más caminos de entrenamiento para modelos hambrientos y de datos escasos | Los caminos fabricados pueden compartir los *mismos* sesgos, así que amplificas el error, no la señal |
+| **Generación de escenarios / pruebas de estrés** | Regímenes que la cinta nunca entregó (una estanflación de los 70, una variante de flash-crash) | Escenarios basura → falsa confianza; el shock que modelas no es el que golpea |
+| **Compartición preservando la privacidad** | Compartir un *generador* / estadísticas, no posiciones o P&L de clientes | Un generador con fugas puede reconstruir los registros privados con los que se entrenó |
+| **Backtesting sintético** | Probar una estrategia a lo largo de miles de caminos, no del único que da el historial | **Fuga** — si el generador memorizó el historial, tu prueba "fuera de muestra" no lo es |
+
+**Mini-ejemplo resuelto.** Supón que aumentas un conjunto de entrenamiento de **5.000** filas de retorno reales a **50.000** caminos — un impulso de 10x. ¿Qué *arregla*? Le da a tu optimizador más pasos de gradiente sobre más trayectorias variadas, lo que puede reducir genuinamente la varianza en lo que el modelo aprende y domar el peor sobreajuste. ¿Qué **no** arregla? Si tu generador se construyó a partir de ese mismo historial único, esos 50.000 caminos siguen codificando el **mismo** puñado de regímenes. No observaste un nuevo 2008; observaste ecos del viejo. El contenido de información efectivo apenas se movió — pasaste de ~77 observaciones independientes a quizá ~80, no a 800. Más caminos ≠ más información *independiente*.
+
+<Callout variant="warning">
+**Trampa: tratar el recuento de caminos como información.** Generar 50.000 caminos a partir de un generador entrenado con un historial **no** te da 50.000 historiales independientes. El techo de información son los datos *reales* de los que el generador aprendió. Los datos sintéticos pueden reordenar e interpolar lo que hay; no pueden conjurar regímenes que el PGD nunca le mostró. (La generación de escenarios deliberadamente *extrapola* más allá del historial — pero entonces tú eres dueño del supuesto de que tu extrapolación es realista.)
+</Callout>
+
+### Cuándo usarlo
+
+Empareja el uso con la pregunta. ¿Modelo escaso muriéndose de hambre por variedad de gradiente? Aumento. ¿Necesitas sobrevivir a un shock que el historial nunca repartió? Generación de escenarios. ¿Legalmente no puedes compartir las posiciones en bruto? Generador de privacidad. ¿Quieres robustez a lo largo de muchos futuros, no de un solo pasado? Backtesting sintético — *con la guardia de fuga de la lección 7 firmemente en su sitio*.
+
+<Categorize
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Coloca cada elemento en su grupo."
+  question="Clasifica cada escenario en el uso de datos sintéticos que mejor encaja."
+  buckets={["Aumento", "Escenarios / pruebas de estrés"]}
+  items={[
+    { text: "Reforzar un conjunto de entrenamiento escaso para que un modelo profundo sobreajuste menos", bucket: "Aumento" },
+    { text: "Modelar un régimen de estanflación que nunca aparece en tu ventana de datos", bucket: "Escenarios / pruebas de estrés" },
+    { text: "Dar a un optimizador más caminos variados sobre los que avanzar", bucket: "Aumento" },
+    { text: "Someter a presión una cartera frente a una variante de crac de un día estilo 1987", bucket: "Escenarios / pruebas de estrés" }
+  ]}
+  explanation="El aumento alimenta a un modelo hambriento con más caminos de entrenamiento (similares); la generación de escenarios fabrica deliberadamente regímenes fuera de lo que el historial entregó para poder someterte a estrés frente a ellos."
+/>
+
+<MCQ
+  client:visible
+  allowMultiple
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="¿Cuáles de estos son trabajos legítimos para los datos de mercado sintéticos? (Selecciona todos los que correspondan.)"
+  options={[
+    { text: "Aumentar un conjunto de entrenamiento escaso para que un modelo profundo vea más variedad", correct: true },
+    { text: "Generar escenarios de estrés que la cinta histórica nunca entregó", correct: true },
+    { text: "Compartir el carácter estadístico de un conjunto de datos sin exponer posiciones privadas", correct: true },
+    { text: "Conjurar información genuinamente nueva sobre el futuro que el historial real nunca contuvo" },
+  ]}
+  explanation="Los tres primeros son exactamente para lo que sirven los datos sintéticos. El cuarto es la fantasía: un generador puede rebarajar y recombinar la estructura que ya hay en tu historial, pero no puede inventar información que nunca estuvo ahí — creer lo contrario es cómo la fuga se disfraza de hallazgo."
+/>
+
+## Dos filosofías: aprender frente a simular
+
+<MCQ
+  client:visible
+  pretest
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="¿Qué enfoque construye un generador codificando supuestos explícitos sobre la mecánica del mercado (una deriva, una volatilidad, un cambio de régimen) en lugar de aprender la distribución a partir de los datos?"
+  options={[
+    { text: "Simular un mecanismo — de abajo arriba, guiado por supuestos, interpretable (MBG, bootstrap, conmutación de régimen).", correct: true },
+    { text: "Aprender un generador — de arriba abajo, guiado por datos (GAN, VAE, difusión)." },
+    { text: "Ambos hacen exactamente lo mismo por debajo." },
+    { text: "Ninguno — los generadores nunca codifican supuestos." }
+  ]}
+  explanation="Simular un mecanismo significa que ESCRIBES la dinámica (la deriva+vol del MBG, una matriz de conmutación de régimen) — guiado por supuestos e interpretable. Aprender un generador significa que una red neuronal infiere la distribución a partir de los datos — guiado por datos y opaco."
+/>
+
+**Analogía.** Dos formas de construir un simulador de vuelo. **Mecanismo (simular):** un ingeniero escribe las ecuaciones de la aerodinámica — sustentación, resistencia, empuje — desde primeros principios. Puedes leer cada línea y discutirla. **Aprendido:** atas sensores a diez mil vuelos reales y entrenas una red para predecir "qué hace el avión a continuación" — inquietantemente realista, pero pregúntale *por qué* hizo algo y se encoge de hombros. Ambos vuelan el simulador; uno lo puedes auditar, al otro en gran parte tienes que confiarle.
+
+**Definición.** Hay dos filosofías para producir datos de mercado sintéticos:
+
+- **Simular un mecanismo** (*de abajo arriba, guiado por supuestos*): especificas la dinámica explícitamente — movimiento browniano geométrico, un bootstrap por bloques, un modelo de conmutación de régimen — y muestreas de tus ecuaciones. Interpretable, ligero en datos, pero solo tan realista como tus supuestos. (Lección 3.)
+- **Aprender un generador** (*de arriba abajo, guiado por datos*): entrenas una red neuronal — GAN, VAE o modelo de difusión — para reproducir la distribución de los datos. Flexible y de alta fidelidad, pero opaco y *hambriento de datos*, con riesgo real de fuga. (Lecciones 4–6.)
+
+| Dimensión | Simular un mecanismo (MBG, bootstrap, conmutación de régimen) | Aprender un generador (GAN, VAE, difusión) |
+|---|---|---|
+| **Interpretabilidad** | Alta — escribiste las ecuaciones | Baja — pesos de caja negra |
+| **Hambre de datos** | Baja — unos pocos parámetros que estimar | Alta — necesita muchos datos (escasos) |
+| **Riesgo de fuga** | Bajo — no puede memorizar lo que nunca almacenó | Alto — puede memorizar y regurgitar el conjunto de entrenamiento |
+| **Fidelidad a los hechos estilizados** | Parcial — el MBG se pierde las colas anchas y el agrupamiento; modelos más ricos lo hacen mejor | Potencialmente alta — *si* se entrena bien y se evalúa con honestidad |
+
+**Ejemplo resuelto.** Supón que quieres retornos de colas anchas con agrupamiento de volatilidad. *Camino del mecanismo:* el MBG simple no te da ninguno — sus retornos son gaussianos y homocedásticos, así que la curtosis $\approx 3$ (sin colas anchas) y sin agrupamiento. Tendrías que ascender a un mecanismo de conmutación de régimen o de volatilidad estocástica para llegar ahí, y *sabrías* exactamente qué supuesto produjo las colas anchas. *Camino aprendido:* una GAN bien entrenada podría reproducir una curtosis de, digamos, $\approx 8$ — emparejando bellamente las colas anchas reales — pero no podrías señalar *qué* parámetro lo hizo, y tendrías que ejecutar pruebas de memorización para asegurarte de que no se limitó a fotocopiar un crac.
+
+Aquí está la parte que la gente se salta: **los simuladores clásicos son la línea base que los modelos aprendidos deben superar.** Una GAN que no reproduce los hechos estilizados mejor que un simulador de conmutación de régimen bien afinado — mientras cuesta 100x el cómputo y carga con riesgo de fuga — no se ha ganado nada. Empezamos con los mecanismos simples en la lección 3 precisamente para que tengas un patrón de medida.
+
+<Callout variant="warning">
+**Trampa: suponer que "neuronal = mejor".** Un modelo generativo profundo no es automáticamente superior a un humilde bootstrap. Es más flexible, sí — pero la flexibilidad corta por ambos lados: puede memorizar, necesita los datos que no tienes y es difícil de auditar. Si tu sofisticado modelo de difusión no puede reproducir los hechos estilizados mejor que una línea base de conmutación de régimen, gana la línea base. Compara siempre los generadores aprendidos *contra* los clásicos, no en el vacío.
+</Callout>
+
+### Cuándo usarlo
+
+Echa mano de **mecanismos** cuando necesites interpretabilidad, tengas pocos datos, o quieras un escenario de estrés auditable que puedas defender ante un regulador. Echa mano de un **generador aprendido** cuando tengas datos suficientes, los hechos estilizados sean demasiado ricos para especificarlos a mano, y hayas presupuestado el esfuerzo de evaluación (lección 7) para demostrar que no tiene fugas. En la práctica: empieza por lo mecanístico, gradúate a lo aprendido solo cuando se gane el sueldo de forma demostrable.
+
+<MatchConcepts
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Une cada concepto con su definición."
+  pairs={[
+    { term: "Movimiento browniano geométrico", definition: "Un mecanismo de abajo arriba — deriva y volatilidad explícitas — interpretable pero se pierde las colas anchas y el agrupamiento." },
+    { term: "GAN / VAE / difusión", definition: "Generadores aprendidos de arriba abajo — alta fidelidad pero opacos, hambrientos de datos y propensos a la fuga." },
+    { term: "Modelo de conmutación de régimen", definition: "Un mecanismo que añade estados para capturar el agrupamiento — la línea base que un modelo aprendido debe superar." },
+    { term: "Bootstrap por bloques", definition: "Remuestrear trozos contiguos del historial real — ligero en supuestos, pero solo puede repetir lo que se observó." }
+  ]}
+/>
+
+## La trampa de fuga que lo enmarca todo
+
+<MCQ
+  client:visible
+  pretest
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="Un generador se entrena con tu historial completo de precios. Luego 'haces backtest' de una estrategia sobre datos que produjo. ¿Por qué esto potencialmente no es fuera de muestra?"
+  options={[
+    { text: "El generador ya ha visto todo el historial — incluidos los periodos que tu backtest trata como el futuro — así que su salida puede codificar información que tu prueba supone que no tiene.", correct: true },
+    { text: "Los datos sintéticos siempre están sesgados hacia los mercados alcistas." },
+    { text: "Los backtests sobre datos sintéticos corren demasiado lento para ser válidos." },
+    { text: "No pasa nada — los datos sintéticos son por definición fuera de muestra." }
+  ]}
+  explanation="Un generador entrenado con el historial completo ha, en efecto, visto el futuro relativo a cualquier backtest ejecutado sobre su salida. Si memoriza, tu prueba 'fuera de muestra' está probando calladamente sobre los datos de entrenamiento — fuga disfrazada."
+/>
+
+**Analogía.** Un estudiante hace el examen, y luego lo contratan para escribir el examen del *año que viene*. Si reproduce preguntas de memoria, cada futuro estudiante que "estudia el examen de práctica" simplemente está memorizando las respuestas reales. El examen de práctica parece legítimo — portada distinta, tipografía oficial — pero es el examen de verdad disfrazado. Un generador que memoriza el historial es ese estudiante, y tu backtest es la clase futura que saca notas sospechosamente altas.
+
+**Definición.** La **fuga** es cuando información de los datos sobre los que tu modelo está siendo *probado* contamina los datos sobre los que fue *entrenado* (o viceversa), inflando el rendimiento medido. Con generadores aprendidos es insidiosa: entrena un generador $G$ con tu historial completo $\mathcal{H}$, luego ejecuta *entrenar-en-sintético, probar-en-real* (o haz backtest sobre la salida de $G$). Como $G$ vio todo $\mathcal{H}$ — incluido el periodo que tu prueba finge que es el futuro no visto — cualquier memorización en $G$ alimenta calladamente las respuestas hacia delante. Los datos "sintéticos" no son independientes de la verdad; son una copia con pérdidas de ella.
+
+**Ejemplo resuelto — el generador que hace trampas y se sale con la suya.** Imagina el peor caso: un generador que *copia perfectamente su conjunto de entrenamiento* (simplemente muestrea ventanas históricas reales y las reetiqueta como "sintéticas").
+
+| Prueba que ejecutas | Qué esperarías que revelara | Qué puntúa en realidad esta copiona |
+|---|---|---|
+| ¿Media / varianza emparejan lo real? | Memorización | Pasa — idéntica por construcción |
+| ¿Colas anchas (curtosis) emparejan? | Memorización | Pasa — idéntica |
+| ¿Autocorrelación / agrupamiento emparejan? | Memorización | Pasa — idéntica |
+| Sharpe del backtest posterior | Generalización verdadera | **Inflado** — la estrategia se prueba sobre sus propios datos de entrenamiento |
+
+Cada prueba de distribución le da un certificado de buena salud, porque emparejar la distribución es *exactamente* lo que hace una copia perfecta. Sin embargo, en cuanto la usas para backtesting sintético, el Sharpe de la estrategia se dispara — la están "validando" sobre los mismísimos precios a los que se ajustó. Un generador que memoriza es **indistinguible de un gran generador en cada prueba distribucional, y catastróficamente peor en la única cosa que te importaba.** Por eso emparejar la distribución por sí solo nunca puede certificar un generador.
+
+**La disciplina (la tesis de este curso).** *Evalúa el generador antes de confiar en un solo resultado de datos sintéticos.* En concreto, ejecuta **pruebas de memorización / vecino más cercano** — para cada muestra sintética, comprueba que no esté sospechosamente cerca de un ejemplo de entrenamiento real — *antes* de cualquier afirmación de entrenar-en-sintético o de backtest-sintético. Ese kit de evaluación es la lección 7, y es la puerta que todo generador aprendido debe pasar.
+
+<Callout variant="warning">
+**La trampa que enmarca todo el curso.** Un generador que pasa cada prueba de distribución todavía puede ser un memorizador que filtra tu historial dentro de tu backtest, inflando el Sharpe y engañándote por completo. Emparejar medias, varianzas, colas anchas y autocorrelación es *necesario pero ni de lejos suficiente*. Nunca reportes un resultado de datos sintéticos hasta que el generador haya superado las comprobaciones de memorización y vecino más cercano. La fidelidad distribucional prueba que el generador es realista; solo la prueba de fuga prueba que es *honesto*.
+</Callout>
+
+### Cuándo usarlo
+
+Esto no es una comprobación ocasional — es una puerta permanente. Cada vez que entrenes un generador y pretendas usar su salida para *cualquier cosa* en la que vayas a confiar (entrenamiento aumentado, un backtest, un conjunto de datos compartido), la pregunta de la fuga va primero. Si no puedes demostrar que el generador no memorizó, no puedes creer ningún número posterior que produjera. Lleva esto a través de las lecciones 4, 5 y 6; cóbralo en la lección 7.
+
+<Reveal client:visible summary="Comprobación rápida de instinto: ¿por qué 'emparejó todos los hechos estilizados' no certifica un generador?">
+Porque **una fotocopia perfecta del historial empareja cada hecho estilizado por construcción** — mismas colas, mismo agrupamiento, misma autocorrelación — siendo a la vez el generador *más* propenso a la fuga posible. La fidelidad distribucional y la memorización no son opuestos; un memorizador es el extremo de la fidelidad. Necesitas una prueba aparte que pregunte "¿está cada muestra sintética demasiado cerca de una real?" — esa es la comprobación de vecino más cercano / memorización, no una comprobación de distribución.
+</Reveal>
+
+## Recapitulación
+
+El machine learning se muere de hambre en finanzas porque observas los mercados ejecutándose *una vez*: miles de filas autocorrelacionadas colapsan en un puñado de regímenes independientes, así que el tamaño muestral efectivo es minúsculo y los modelos profundos hambrientos memorizan en lugar de aprender. El arreglo es **fabricar más historial de mercado** con un generador, y esos datos sintéticos hacen cuatro trabajos — aumentar conjuntos de entrenamiento escasos, generar escenarios de estrés que el historial nunca entregó, compartir estadísticas en lugar de posiciones privadas, y hacer backtesting a lo largo de muchos caminos. Puedes construir ese generador de dos formas: **simular un mecanismo** (interpretable, guiado por supuestos, resistente a la fuga, la línea base) o **aprender un generador** (flexible, hambriento de datos, opaco, propenso a la fuga). Y atravesándolo todo está la **trampa de fuga**: un generador entrenado con tu historial puede memorizarlo y pasar cada prueba de distribución mientras alimenta calladamente las respuestas a tu backtest — así que *evalúa el generador en busca de memorización antes de confiar en cualquier resultado que produzca*. Esa última frase es el curso en una línea.
+
+<MindMap
+  client:visible
+  title="¿Por qué generar datos de mercado?"
+  caption="El problema del historial único motiva los datos sintéticos; sus cuatro usos se reparten en dos filosofías de construcción; la trampa de fuga regula todo lo que confías."
+  root={{
+    label: '¿Por qué generar datos de mercado?',
+    children: [
+      {
+        label: 'Problema del historial único',
+        children: [
+          { label: 'Un camino realizado del PGD' },
+          { label: 'Tamaño muestral efectivo minúsculo' },
+          { label: 'Los modelos hambrientos memorizan' }
+        ]
+      },
+      {
+        label: 'Cuatro usos',
+        children: [
+          { label: 'Aumento de datos' },
+          { label: 'Escenarios / pruebas de estrés' },
+          { label: 'Compartición preservando la privacidad' },
+          { label: 'Backtesting sintético' }
+        ]
+      },
+      {
+        label: 'Dos filosofías',
+        children: [
+          { label: 'Simular un mecanismo (MBG, bootstrap, conmutación de régimen) — línea base' },
+          { label: 'Aprender un generador (GAN, VAE, difusión) — hambriento de datos, opaco' }
+        ]
+      },
+      {
+        label: 'Trampa de fuga',
+        children: [
+          { label: 'El generador vio el "futuro" de cualquier backtest' },
+          { label: 'Un memorizador pasa cada prueba de distribución' },
+          { label: 'Evalúa antes de confiar (lección 7)' }
+        ]
+      }
+    ]
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="¿Por qué generar datos de mercado? — repaso mixto"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  nextLabel="Siguiente pregunta"
+  backLabel="Atrás"
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  seeResultsLabel="Ver resultados"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  gateLabel="Comprueba tu respuesta para continuar."
+  questions={[
+    {
+      question: "Tienes 30 años de retornos diarios (~7.560 filas). Tratando cada fila como una observación independiente, afirmas 7.560 muestras. ¿Qué afirmación corrige mejor esto?",
+      options: [
+        { text: "El agrupamiento de volatilidad y la persistencia de régimen hacen que las filas sean muy dependientes, así que el tamaño muestral efectivo — regímenes distintos de información independiente — está más cerca de las decenas.", correct: true },
+        { text: "7.560 filas son independientes; el único problema es el sesgo de supervivencia." },
+        { text: "Los datos diarios no tienen autocorrelación, así que el recuento está bien." },
+        { text: "El recuento debería duplicarse para tener en cuenta los movimientos intradía." }
+      ],
+      explanation: "Trampa numérica: el recuento de filas no es el tamaño muestral. La dependencia entre observaciones consecutivas significa que el número efectivo de extracciones independientes (piensa: regímenes distintos) es mucho menor que el recuento bruto."
+    },
+    {
+      question: "Un equipo de cumplimiento debe compartir datos con un investigador externo pero no puede exponer posiciones de clientes ni P&L. ¿Qué uso de los datos sintéticos encaja, y cuál es su riesgo característico?",
+      options: [
+        { text: "Compartición preservando la privacidad — y el riesgo es un generador con fugas que puede reconstruir los registros privados con los que se entrenó.", correct: true },
+        { text: "Aumento de datos — y el riesgo es sobreajustar el modelo de cumplimiento." },
+        { text: "Generación de escenarios — y el riesgo son shocks de estrés poco realistas." },
+        { text: "Backtesting sintético — y el riesgo es un tiempo de ejecución lento." }
+      ],
+      explanation: "Escenario: compartir un generador en lugar de posiciones en bruto es compartición preservando la privacidad. Su peligro específico es un generador que memoriza y puede invertirse para filtrar los mismísimos datos privados que debía proteger."
+    },
+    {
+      question: "¿Cuál de las siguientes es CIERTA sobre los simuladores clásicos frente a los generadores aprendidos?",
+      options: [
+        { text: "Los simuladores clásicos (MBG, bootstrap, conmutación de régimen) son la línea base interpretable que los generadores aprendidos deben superar para justificar su coste y su riesgo de fuga.", correct: true },
+        { text: "Los generadores aprendidos siempre son superiores porque las redes neuronales son más flexibles." },
+        { text: "El MBG simple reproduce las colas anchas y el agrupamiento de volatilidad de fábrica." },
+        { text: "Los simuladores clásicos cargan con mayor riesgo de fuga que los generadores aprendidos." }
+      ],
+      explanation: "Cuál-es-cierta: los mecanismos son la línea base auditable; el MBG notablemente se pierde las colas anchas y el agrupamiento; y los mecanismos cargan con MENOR riesgo de fuga (no pueden memorizar lo que nunca almacenaron). Un modelo aprendido tiene que ganarse el sueldo frente a esta línea base."
+    },
+    {
+      question: "Se demuestra que un generador empareja los retornos reales en media, varianza, curtosis (colas anchas) y autocorrelación a la perfección. Un colega concluye que es seguro para backtesting sintético. ¿Dónde está la trampa?",
+      options: [
+        { text: "Una copia perfecta del historial empareja todos esos estadísticos por construcción y sin embargo es máximamente propensa a la fuga — las pruebas de distribución no pueden detectar la memorización, así que se requiere primero una comprobación de vecino más cercano / memorización.", correct: true },
+        { text: "No hay trampa; emparejar los cuatro estadísticos prueba que el generador generaliza." },
+        { text: "La trampa es que la curtosis no puede estimarse a partir de datos diarios." },
+        { text: "La trampa es que las pruebas de autocorrelación no son fiables, pero el resto están bien." }
+      ],
+      explanation: "Detecta-la-trampa: la fidelidad distribucional es necesaria pero no suficiente. Un memorizador pasa cada prueba de distribución mientras filtra datos de entrenamiento dentro del backtest. Solo una prueba de memorización / vecino más cercano (lección 7) cierra la brecha."
+    },
+    {
+      question: "Compara aumentar un conjunto de entrenamiento de 5.000 a 50.000 caminos (generador entrenado con el mismo historial único) frente a generar un régimen de estanflación jamás visto. ¿Cuál es la diferencia clave?",
+      options: [
+        { text: "El aumento reordena/interpola los mismos regímenes observados — añade caminos, no información independiente — mientras que la generación de escenarios deliberadamente extrapola más allá del historial, lo que compra nuevos regímenes a costa de hacerte dueño del supuesto de realismo.", correct: true },
+        { text: "Ambos añaden la misma cantidad de nueva información independiente." },
+        { text: "El aumento crea nuevos regímenes mientras que la generación de escenarios solo copia los viejos." },
+        { text: "Ninguno cambia nada sobre el entrenamiento del modelo." }
+      ],
+      explanation: "Comparación: el aumento está acotado por la información de los datos reales de los que aprendió (10x caminos no es 10x información), mientras que la generación de escenarios intencionadamente va más allá del historial — útil, pero solo si el régimen fabricado es realista, lo cual es ahora tu supuesto que defender."
+    }
+  ]}
+/>

@@ -1,0 +1,361 @@
+---
+title: "GANs for Financial Time Series"
+description: "The generator-versus-discriminator game applied to returns: the QuantGAN and TimeGAN lineages, conditional and Wasserstein variants, and the two demons that haunt them on small financial data — training instability and mode collapse."
+topic: "en/generative-models-for-synthetic-market-data"
+order: 4
+minutes: 17
+updated: 2026-06-21
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, ReturnDistribution } from '@/components/react';
+
+Take two neural networks, point them at each other, and let them fight. One — the **generator** — is a forger: it takes a handful of random numbers and tries to paint a slice of market history convincing enough to fool a critic. The other — the **discriminator** — is a detective: handed a sample, it must call "real" or "fake." Each round, the forger gets feedback on what gave it away and the detective gets sharper at catching it. Run the arms race long enough and, in theory, the forger's fakes become indistinguishable from real returns — at which point the detective is reduced to flipping a coin. That coin flip is the whole point: when the best possible critic can't beat 50/50, the generator has, by definition, learned the data distribution.
+
+That is the **Generative Adversarial Network** (GAN), and on paper it is one of the most elegant ideas in machine learning. You never write down a likelihood, you never assume a distributional form — you just let competition do the density estimation for you. For images it produced the famous photorealistic faces. For finance, the promise is seductive: a generator that has internalized the joint behavior of returns could spit out unlimited synthetic price paths that clump volatility, fatten tails, and break leverage exactly like the real thing.
+
+The catch is that GANs are conceptually beautiful and operationally cranky — and finance hands them the worst possible conditions. The samples are tiny (a few thousand daily returns, not a million labeled photos), drenched in noise, and non-stationary. A GAN that is merely hard to train on ImageNet becomes a temperamental diva on a decade of S&P 500 returns. This lesson is a builder's tour of the machinery — the adversarial game, the QuantGAN and TimeGAN architectures, the conditional and Wasserstein variants — paired with a skeptic's warning about the two demons, **mode collapse** and **memorization**, that wait to ruin your stress tests and corrupt your backtests.
+
+## The adversarial game
+
+<MCQ
+  client:visible
+  pretest
+  question="A GAN reaches its theoretical ideal when the discriminator, on every input, outputs roughly..."
+  options={[
+    { text: "0.5 — it can no longer tell real from fake, so it just guesses", correct: true },
+    { text: "1.0 — it perfectly recognizes every real sample" },
+    { text: "0.0 — it rejects everything as fake" },
+    { text: "The probability that the market goes up tomorrow" },
+  ]}
+  explanation="At the Nash equilibrium the generator's distribution matches the data's, so no discriminator can do better than a coin flip: D(x) = 0.5 everywhere. A discriminator that scores 1.0 on reals means the generator is still losing."
+/>
+
+**Analogy.** Picture a counterfeiter and a Treasury agent. The counterfeiter prints bills; the agent inspects them. Early on the agent spots fakes instantly (the watermark is wrong), and that rejection teaches the counterfeiter what to fix. As the bills improve, the agent has to find subtler tells. The arms race ends when the bills are perfect — the agent is reduced to guessing, and the counterfeit currency is, functionally, real currency. A GAN is that loop, automated, with gradients standing in for the counterfeiter's intuition.
+
+**The definition.** A generator $G$ maps a noise vector $z$ (drawn from a simple prior like a standard Gaussian) to a fake sample $G(z)$. A discriminator $D$ takes a sample and outputs the probability it is real. They optimize a single two-player **minimax** objective:
+
+$$
+\min_G \max_D \; \mathbb{E}_{x \sim p_{\text{data}}}[\log D(x)] + \mathbb{E}_{z \sim p_z}[\log(1 - D(G(z)))].
+$$
+
+Read it from $D$'s side first: $D$ wants $\log D(x)$ large (call reals real) and $\log(1 - D(G(z)))$ large (call fakes fake), so it **maximizes**. Now read $G$'s side: $G$ only touches the second term and wants it *small* — it wants $D(G(z))$ near 1, i.e. fakes mistaken for real — so it **minimizes**. The unique ideal is the **Nash equilibrium** where $G$'s output distribution equals $p_{\text{data}}$; there, $D(x) = 0.5$ everywhere and neither player can improve unilaterally.
+
+**Worked walk-through of one training step.** Training alternates two gradient updates on a mini-batch:
+
+1. **Discriminator update (G frozen).** Sample real returns $\{x_i\}$ and noise $\{z_i\}$. Say on this batch $D$ assigns reals an average score of $0.78$ and fakes $0.30$. The detective is decent but imperfect. Compute the loss and take a gradient *ascent* step on $D$'s weights, nudging real scores up toward 1 and fake scores down toward 0.
+2. **Generator update (D frozen).** Keep the same noise batch. Push $G$'s weights so that $D(G(z))$ rises — i.e., the fakes that scored $0.30$ start scoring $0.45$. In practice you flip the sign and **maximize $\log D(G(z))$** rather than minimize $\log(1 - D(G(z)))$ (the "non-saturating" trick), because the original term has vanishing gradients exactly when $G$ is losing and needs the strongest signal.
+
+Repeat for thousands of batches. Healthy training looks like both losses hovering, the discriminator score drifting toward $0.5$ — not one player flat-lining the other.
+
+<Callout variant="warning">
+The two updates must stay roughly **balanced**. If the discriminator becomes too strong too fast — easy on small financial datasets where it can practically memorize the few thousand real returns — it returns near-zero gradients to the generator, and $G$ stops learning. A flat-lining generator loss that never recovers is not convergence; it is a detective who won so hard the forger gave up. You usually fix it by weakening $D$ (fewer $D$ steps per $G$ step, lower capacity, dropout) or by switching the loss (see WGAN below), not by training longer.
+</Callout>
+
+### When to use it
+
+Reach for the raw adversarial framework when you want a **likelihood-free** generator — a model that captures structure you can't or won't write down as a parametric density. That is precisely the finance use case: returns have fat tails, volatility clustering, and leverage effects that no clean closed form nails simultaneously. But "use a GAN" never means "use the 2014 vanilla GAN as-is" on returns; it means adopt the game and then bolt on the architectural and loss fixes in the rest of this lesson.
+
+<FillBlank
+  client:visible
+  text="At the GAN equilibrium, the generator's distribution equals the {{data|noise|discriminator}} distribution, and the discriminator outputs {{0.5|1.0|0.0}} on every input because it can no longer distinguish real from fake."
+/>
+
+## QuantGAN and the TCN backbone
+
+<MCQ
+  client:visible
+  pretest
+  question="QuantGAN (Wiese et al.) builds both its generator and discriminator out of...?"
+  options={[
+    { text: "Temporal convolutional networks — causal, dilated 1-D convolutions", correct: true },
+    { text: "Plain feed-forward layers that ignore time order" },
+    { text: "Transformers with full bidirectional attention over the whole path" },
+    { text: "Gradient-boosted decision trees" },
+  ]}
+  explanation="QuantGAN uses TCNs — stacks of causal, dilated 1-D convolutions — for both networks, the same backbone you met in Deep Learning for Market Data. They give a long receptive field without the training pain of recurrence."
+/>
+
+**Analogy.** A recurrent network reads a time series like a person reading a long scroll one character at a time, holding everything in working memory — slow, and prone to forgetting the start by the time it reaches the end. A **temporal convolutional network** (TCN) is more like a wide-angle lens with adjustable focus: by stacking *dilated* convolutions (filters that skip every 2nd, then 4th, then 8th step), it sees exponentially far back in time while processing every position in parallel. Same long memory, none of the sequential bottleneck.
+
+**The architecture.** QuantGAN, from Wiese, Knobloch, Korn, and Kretschmer, makes two design choices that matter:
+
+- **TCN generator and discriminator.** Both networks are stacks of **causal dilated convolutions** — *causal* so output at time $t$ depends only on inputs at $t$ and earlier (no peeking at the future, which would be cheating for a time series), *dilated* so the **receptive field** grows geometrically with depth. You met this exact construction in *Deep Learning for Market Data*; QuantGAN simply drops it into both halves of the adversarial game.
+- **An invertible preprocessing transform.** Raw log-returns are heavy-tailed and awkward for a net to model directly. QuantGAN applies an **invertible "log-return → approximately-Gaussian"** mapping (an inverse-Lambert-W / Gaussianizing transform plus standardization) before training. The generator then learns to produce the *well-behaved, near-Gaussian* series; at sampling time you run the transform **backward** to recover realistically fat-tailed returns. Modeling a tame target and un-taming it afterward is far easier than asking the net to birth fat tails from scratch.
+
+**Why TCNs over RNNs here.** Three reasons: (1) **parallelism** — convolutions process the whole window at once, so training is dramatically faster than step-by-step recurrence; (2) **stable gradients** — no backprop-through-time exploding/vanishing pathologies; (3) **a controllable, long receptive field** — to capture volatility clustering that persists for weeks, you just add dilation layers, and you can read off exactly how far back the model can see.
+
+**Worked example — receptive field.** With kernel size $k = 2$ and dilation doubling per layer ($1, 2, 4, 8, \dots$), the receptive field after $L$ layers is $1 + \sum_{\ell=0}^{L-1}(k-1)\,2^{\ell} = 2^{L}$. So $L = 8$ layers reach back $2^{8} = 256$ steps — about a year of daily returns — while every layer is a cheap parallel convolution. To double the memory to roughly two years, you add **one** layer, not 256 recurrent steps.
+
+**What it reproduces well.** In the paper's evaluation against the rubric you'll recognize from the *stylized facts* lesson, QuantGAN's synthetic paths reproduce **volatility clustering** (the autocorrelation of *squared* returns decays slowly, like the real series), **fat tails** (excess kurtosis and tail behavior close to empirical), and the near-zero autocorrelation of raw returns. It is a genuine step up on the classical baselines from the previous lesson — though, as lesson 7 will hammer home, "matches the stylized facts" is necessary, not sufficient.
+
+<Callout variant="warning">
+The Gaussianizing transform is invertible, which is a double-edged sword. Because the pipeline can map any generated near-Gaussian sequence *exactly* back to return-space, a generator that has quietly **memorized** the training returns will sail through marginal-distribution and stylized-fact checks — the transform faithfully reproduces the copies. Reproducing the stylized facts tells you the *shape* is right; it says nothing about whether the paths are *novel*. Hold that thought for the memorization demon below and the evaluation gauntlet in lesson 7.
+</Callout>
+
+### When to use it
+
+Choose the QuantGAN recipe when your target is a **univariate (or low-dimensional) return series** and your priority is faithfully reproducing the marginal stylized facts — vol clustering and fat tails — with fast, stable training. The TCN backbone is the default for almost any financial-sequence GAN now; the Gaussianizing transform specifically earns its keep when raw returns are too heavy-tailed for the net to model comfortably head-on.
+
+<MatchConcepts
+  client:visible
+  question="Match each QuantGAN ingredient to its job"
+  pairs={[
+    { term: "Causal convolution", definition: "Output at time t depends only on inputs at t and earlier — no peeking at the future" },
+    { term: "Dilated convolution", definition: "Skips steps so the receptive field grows geometrically with depth, reaching far back cheaply" },
+    { term: "Invertible Gaussianizing transform", definition: "Maps heavy-tailed returns to a near-Gaussian series for training, then inverts to restore fat tails" },
+    { term: "Discriminator", definition: "Scores how likely a path is real, supplying the gradient signal the generator learns from" },
+  ]}
+/>
+
+## TimeGAN and conditioning
+
+<MCQ
+  client:visible
+  pretest
+  question="TimeGAN (Yoon et al.) adds an extra loss term beyond the adversarial one. What does that supervised stepwise loss force the model to learn?"
+  options={[
+    { text: "The temporal dynamics — how each step follows from the previous ones, not just the marginal", correct: true },
+    { text: "The exact mean and variance of the training set, nothing about order" },
+    { text: "To classify which market regime each real sample came from" },
+    { text: "To compress samples to the smallest possible file size" },
+  ]}
+  explanation="TimeGAN's supervised loss makes an embedding network predict the next latent step from past ones, explicitly teaching conditional temporal dynamics. The adversarial loss alone tends to nail the marginal distribution while getting the step-to-step structure wrong."
+/>
+
+**Analogy.** A plain GAN trained on returns can learn to produce a *bag* of values with the right histogram — like a writer who has memorized the frequency of every English word but strings them into gibberish. TimeGAN adds a grammar teacher: a supervised loss that grades whether each step plausibly *follows* the ones before it. You get a bag with the right contents **and** a sentence that parses.
+
+**The architecture.** TimeGAN, from Yoon, Jarrett, and van der Schaar, fuses three learning signals:
+
+- An **autoencoder embedding** — an encoder maps real sequences into a lower-dimensional latent space and a decoder maps back, so the adversarial game plays out in a compact, learned representation rather than raw return-space.
+- A **supervised stepwise loss** — in latent space, a network is trained to predict the next embedding from the history of embeddings. Minimizing the gap between predicted and actual next-step latents explicitly bakes in **temporal dynamics**.
+- An **adversarial loss** — the usual generator-vs-discriminator term, operating on latent sequences, to match the overall distribution.
+
+Training all three jointly yields a model that respects both the *marginal* (what values occur) and the *conditional* (how today depends on yesterday) — the combination that pure-adversarial models tend to botch.
+
+**Conditional GANs (cGAN).** Both $G$ and $D$ can be fed an extra label $y$, so they model $p(x \mid y)$ instead of $p(x)$: the generator becomes $G(z, y)$ and the discriminator $D(x, y)$. For finance, $y$ is a knob you can turn at sampling time — a **regime tag** (calm / crisis), a **volatility bucket**, or a **macro covariate** (rate level, credit spread). Instead of one undifferentiated firehose of paths, you get *steerable* scenarios.
+
+**Worked conceptual example — conditioning on a high-vol regime.** Suppose you label every training window with $y \in \{\text{low-vol}, \text{high-vol}\}$ using, say, a realized-volatility threshold. You train $G(z, y)$ and $D(x, y)$ on the labeled data. At generation time you **clamp $y = \text{high-vol}$** and draw many $z$ vectors: the model now produces only crisis-flavored paths — wider swings, sharper drawdowns, heavier tails — on demand. That is exactly what a stress-testing or risk-scenario desk wants: synthetic 2008-like or 2020-like tape without waiting for the next 2008. (The cost: you need enough *real* high-vol windows to learn that conditional, and crises are, by nature, rare — a sampling problem we'll keep running into.)
+
+<Callout variant="warning">
+Conditioning is only as honest as your labels and your data. If "high-vol" appears in just a few dozen real windows, the conditional generator has almost nothing to learn from and will either **memorize** those handful of crises (and replay them verbatim) or **collapse** onto a bland average of them. A confident-looking crisis generator trained on a thimble of crisis data is a liability dressed as a tool — it manufactures false confidence about tail scenarios you never really sampled.
+</Callout>
+
+### When to use it
+
+Reach for **TimeGAN** when *temporal dynamics* are the thing you most need right — autocorrelation structure, the way volatility propagates step to step — and a marginal-only model isn't cutting it. Reach for a **conditional GAN** when you need **controllable** generation: stress scenarios by regime, what-if paths across macro states, or any setting where "give me samples *like this*" beats "give me samples." The two compose — a conditional TimeGAN is a perfectly sensible build.
+
+<FillBlank
+  client:visible
+  text="A conditional GAN feeds an extra label to both networks so the generator models {{p(x | y)|p(x)|p(y)}} — letting you clamp the label at sampling time to steer generation toward, say, a high-volatility regime."
+/>
+
+## Wasserstein GANs and training stability
+
+<MCQ
+  client:visible
+  pretest
+  question="Why does the vanilla GAN's gradient to the generator tend to vanish exactly when training goes badly?"
+  options={[
+    { text: "When the discriminator wins decisively, the Jensen–Shannon objective saturates and stops sending useful gradient", correct: true },
+    { text: "Because the generator's learning rate is always set too low by default" },
+    { text: "Because noise vectors z are too short to carry gradient" },
+    { text: "Because real financial data has no gradient" },
+  ]}
+  explanation="The original objective implicitly minimizes the Jensen–Shannon divergence. When the real and fake distributions barely overlap — easy when a strong D separates them cleanly — JS is locally flat, so the generator gradient vanishes precisely when it most needs guidance."
+/>
+
+**Analogy.** Imagine grading the forger's bills with a pass/fail stamp. Once the bills are obviously bad, every one fails — and "fail, fail, fail" tells the forger *nothing* about which fake was closer. Now imagine instead measuring, in dollars, **how much work** it would take to reshape the fake pile into the real pile. Even terrible fakes get a meaningful, smoothly-decreasing distance to chase. That shift — from a saturating pass/fail to a smooth "how far apart are these piles" — is exactly what the Wasserstein GAN does.
+
+**The definition.** The vanilla objective effectively minimizes the **Jensen–Shannon (JS) divergence** between real and fake distributions, which is flat (zero gradient) when the two barely overlap — common in early training and rampant on small data where $D$ separates the piles cleanly. **WGAN** (Arjovsky et al.) swaps in the **Wasserstein-1 distance**, a.k.a. the **Earth-Mover distance** $W(p_{\text{data}}, p_g)$ — informally, the minimum "mass times distance" of work to transport one distribution onto the other. Its key virtue: it varies *smoothly* even when the distributions don't overlap, so the generator always gets a usable gradient.
+
+To make this tractable, WGAN reformulates the discriminator as a **critic** $f$ that outputs an unbounded real score (not a 0–1 probability), and the loss becomes $\mathbb{E}[f(x)] - \mathbb{E}[f(G(z))]$. The Earth-Mover duality only holds if $f$ is **1-Lipschitz** (its outputs can't change faster than its inputs), which you enforce by either:
+
+- **Weight clipping** — clamp the critic's weights into $[-c, c]$ each step (the original WGAN; crude, can distort capacity), or
+- **Gradient penalty (WGAN-GP)** — add a penalty pushing the critic's input-gradient norm toward 1 at interpolated points. Smoother and the modern default.
+
+**Why this matters more in finance.** Financial datasets are *small*. A capable discriminator can practically memorize a few thousand real returns and separate real from fake with near-certainty almost immediately — which under the JS objective slams the generator's gradient to zero before it learns anything. The Wasserstein critic keeps handing back a graded, informative signal even when the piles are far apart, so $G$ keeps improving instead of stalling. On tiny, noisy series, WGAN-GP is less a luxury than a survival mechanism.
+
+**Worked intuition — why "how far" beats "real or fake."** Suppose fakes cluster near $-2\%$ and reals near $+1\%$, with no overlap. A vanilla discriminator outputs $\approx 0$ on every fake and $\approx 1$ on every real — JS is maxed and *flat*, so moving the fakes from $-2\%$ toward $-1.5\%$ changes the loss by essentially nothing: no gradient, no learning. The Wasserstein distance, by contrast, *shrinks* from $3\%$ of "transport work" to $2.5\%$ as the fakes inch closer — a real, downhill gradient pointing the generator the right way. Smooth distance, smooth learning.
+
+<Callout variant="warning">
+WGAN cures *vanishing* gradients; it does **not** cure mode collapse or memorization. Practitioners routinely report a beautifully stable WGAN loss curve and conclude all is well — then discover the generator quietly settled onto a narrow band of calm-market paths, or worse, on near-copies of the training set. A smooth, well-behaved Wasserstein loss is a sign the *optimization* is healthy, not that the *distribution* is covered. Never read training stability as a coverage guarantee.
+</Callout>
+
+### When to use it
+
+Default to **WGAN-GP** whenever training is unstable or the generator stalls early — which, on the small, noisy samples of finance, is most of the time. Keep it as your baseline loss and only step back to the standard cross-entropy GAN if you have a specific, working reason. Just remember what it does and doesn't buy you: stability of optimization, yes; faithful coverage of the distribution, not on its own.
+
+<Categorize
+  client:visible
+  question="Which problem does each tool actually solve?"
+  buckets={["Fixes training instability / vanishing gradients", "Does NOT fix it on its own"]}
+  items={[
+    { text: "Switching the loss to Wasserstein-1 (Earth-Mover) distance", bucket: "Fixes training instability / vanishing gradients" },
+    { text: "Enforcing a 1-Lipschitz critic via gradient penalty (WGAN-GP)", bucket: "Fixes training instability / vanishing gradients" },
+    { text: "Balancing D and G update steps so neither overpowers the other", bucket: "Fixes training instability / vanishing gradients" },
+    { text: "Hoping a stable loss curve guarantees the tails are covered", bucket: "Does NOT fix it on its own" },
+    { text: "Assuming WGAN automatically prevents mode collapse", bucket: "Does NOT fix it on its own" },
+  ]}
+/>
+
+## Mode collapse and memorization — the two demons
+
+<MCQ
+  client:visible
+  pretest
+  allowMultiple
+  question="Select EVERY statement that is true about a GAN suffering mode collapse. (More than one is correct.)"
+  options={[
+    { text: "The generator maps many different noise vectors to only a few distinct outputs", correct: true },
+    { text: "It can cover the calm-market center while almost never producing crash paths", correct: true },
+    { text: "It is harmless for stress testing because the average return is still about right", },
+    { text: "It means the generator has memorized and copied the training set exactly", },
+    { text: "It under-represents part of the real distribution — a coverage failure", correct: true },
+  ]}
+  explanation="Mode collapse is a coverage failure: G squeezes its output onto a few modes (often the calm center), starving the tails — catastrophic for stress testing. It is distinct from memorization (copying samples), and the missing tails make it anything but harmless."
+/>
+
+These are the two failure modes that turn a promising GAN into a dangerous one. They are different diseases with different cures — and on financial data, both are common.
+
+**Mode collapse.** Recall that $G$ maps a whole space of noise vectors $z$ to outputs. In a healthy model, sweeping $z$ sweeps the full diversity of the data — calm days, trends, crashes. In **mode collapse**, the generator discovers a few outputs that reliably fool the current discriminator and **maps many different $z$ to those same few outputs**, ignoring large regions of the real distribution. The histogram of fakes covers only *part* of the real histogram.
+
+In finance this is uniquely poisonous. The most common collapse is onto the **calm, central regime** — the generator faithfully reproduces ordinary trading days and **almost never produces a crash**. Your synthetic data looks plausible day-to-day, your average return is fine, and your value-at-risk model trained on it will be blissfully, catastrophically optimistic. A stress-testing generator that can't generate stress is worse than useless; it is *confidently* wrong about exactly the scenarios it exists to explore.
+
+<ReturnDistribution
+  client:visible
+  caption="Mode collapse, illustrated. A mode-collapsed generator (the narrow curve) reproduces the calm center but starves the tails — both curves peak at the same average return, yet the collapsed one almost never emits the large moves that live out in the wide curve's tails. Train risk models on the narrow distribution and your stress tests quietly stop containing any stress."
+/>
+
+**Memorization.** The opposite extreme. Instead of learning the *distribution*, $G$ learns to reproduce the *training samples* — emitting near-exact copies of windows it saw. This generator **aces every distribution test**: its marginals, its stylized facts, its autocorrelations all match the real data perfectly, because it *is* the real data, photocopied. And that is the trap. If you generate synthetic paths from a memorizing GAN and use them to build or backtest a strategy, you have **leaked the future into your backtest** — the "synthetic" tape contains the actual historical moves your strategy will be tested on, so it looks brilliant in-sample and dies live. This is the recurring danger of the whole course, and lesson 7's evaluation gauntlet is built largely to catch it (nearest-neighbor distances, train/test discriminability, out-of-sample novelty checks).
+
+**Worked example — same scorecard, opposite diseases.** Take three generators evaluated on the stylized-fact rubric:
+
+| Generator | Tail coverage | Marginal / stylized-fact match | What's really wrong |
+|---|---|---|---|
+| Healthy | Full — emits calm and crash paths | Good (close, not perfect) | Nothing major — this is the goal |
+| **Mode-collapsed** | Missing — almost no crash paths | *Fails* the tail/kurtosis checks | Under-covers: no stress in the stress test |
+| **Memorizing** | Full (it's copying real crashes) | *Aces* everything | Over-fits: paths are near-copies; future leaks into backtests |
+
+Notice the cruel asymmetry. Mode collapse at least **announces itself** — the tail statistics are visibly off. Memorization is **silent on a distribution scorecard** and only surfaces when you specifically test for novelty. A model that scores *too well* on every stylized-fact metric should make you *more* suspicious, not less.
+
+<Callout variant="warning">
+The two demons demand opposite reflexes, so diagnose before you treat. **Mode collapse** = the generator's outputs are too *narrow* (missing tails, missing regimes) — fight it with minibatch discrimination, unrolled or WGAN-style objectives, conditioning on regimes, and explicit tail metrics. **Memorization** = the outputs are too *close to the training data* — catch it only with novelty tests (nearest-neighbor distance to the training set, a train-vs-synthetic discriminator, held-out generalization), never with marginal-fit metrics. The deadliest mistake is treating a high stylized-fact score as a clean bill of health: a memorizing GAN earns a perfect score precisely *because* it's cheating. Acing the distribution tests is, on its own, evidence of nothing — and sometimes evidence of fraud.
+</Callout>
+
+### When to use it
+
+This section isn't a tool to deploy — it's a permanent checklist to run. **Every** GAN you train on market data must be probed for *both* demons before you trust a single synthetic path: tail and regime-coverage diagnostics for mode collapse, novelty and nearest-neighbor tests for memorization. Treat a generator as guilty until proven innovative. Lesson 7 turns this instinct into a formal gauntlet.
+
+<MatchConcepts
+  client:visible
+  question="Two demons, two signatures, two cures"
+  pairs={[
+    { term: "Mode collapse — signature", definition: "Outputs too narrow; missing tails and regimes; fails kurtosis and tail checks" },
+    { term: "Mode collapse — cure", definition: "Minibatch discrimination, regime conditioning, WGAN-style objectives, explicit tail metrics" },
+    { term: "Memorization — signature", definition: "Aces every distribution test because outputs are near-copies of the training data" },
+    { term: "Memorization — cure", definition: "Novelty and nearest-neighbor tests, train-vs-synthetic discriminator, held-out checks" },
+  ]}
+/>
+
+## Recap
+
+A GAN is an arms race: a generator forging market paths from noise and a discriminator trying to catch them, converging — in theory — when the critic is reduced to a coin flip and the generator has learned the data distribution. To make that work on financial time series, the field layered on architecture and loss fixes. **QuantGAN** swaps in **TCNs** (causal dilated convolutions) for both networks and a **Gaussianizing transform** so the model targets a tame series and un-tames it at sampling — reproducing volatility clustering and fat tails. **TimeGAN** adds an autoencoder embedding plus a **supervised stepwise loss** so the model learns *temporal dynamics*, not just the marginal, and **conditional GANs** let you clamp a regime or macro label to steer scenarios. **WGAN / WGAN-GP** replaces the saturating JS objective with the smooth **Wasserstein distance** under a Lipschitz constraint, curing the vanishing gradients that plague tiny financial datasets. But none of this defeats the **two demons**: **mode collapse**, where the generator covers only part of the distribution (typically the calm center, starving the crash tails and gutting your stress tests), and **memorization**, where it copies the training data, aces every distribution metric, and silently leaks the future into your backtests. The builder's toolkit gets you a model; the skeptic's checklist — test for *both* demons, and distrust a perfect stylized-fact score — keeps it honest. Lesson 7's gauntlet is where that skepticism becomes procedure.
+
+<MindMap
+  client:visible
+  title="GANs for financial time series — the map"
+  root={{
+    label: "GANs for finance",
+    children: [
+      {
+        label: "The adversarial game",
+        children: [
+          { label: "Generator forges, discriminator detects" },
+          { label: "Minimax objective" },
+          { label: "Ideal Nash equilibrium D equals 0.5" },
+        ],
+      },
+      {
+        label: "Architecture variants",
+        children: [
+          { label: "QuantGAN — TCN backbone plus Gaussianizing transform" },
+          { label: "TimeGAN — embedding plus supervised stepwise loss" },
+          { label: "Conditional GAN — clamp a regime or macro label" },
+        ],
+      },
+      {
+        label: "Stability — WGAN",
+        children: [
+          { label: "Earth-Mover distance replaces JS divergence" },
+          { label: "Lipschitz via weight clipping or gradient penalty" },
+          { label: "Smooth gradients on tiny financial data" },
+        ],
+      },
+      {
+        label: "The two demons",
+        children: [
+          { label: "Mode collapse — too narrow, missing crash tails" },
+          { label: "Memorization — copies data, leaks future into backtests" },
+          { label: "Diagnose before you treat" },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Stress-test your understanding"
+  questions={[
+    {
+      question: "Which statement about the GAN training game is TRUE?",
+      options: [
+        { text: "At the ideal equilibrium the discriminator outputs about 0.5 everywhere because the generator's distribution now matches the data's", correct: true },
+        { text: "A discriminator that scores 1.0 on every real sample means training has succeeded" },
+        { text: "The generator and discriminator share a single loss they both try to minimize" },
+        { text: "Training is healthiest when the discriminator overpowers the generator as fast as possible" },
+      ],
+      explanation: "Success means the generator has matched p_data, leaving the best discriminator at a coin flip (0.5). A dominant discriminator starves the generator of gradient — the opposite of healthy.",
+    },
+    {
+      question: "A teammate proudly shows a synthetic generator that scores a near-perfect match on every stylized-fact metric — kurtosis, vol-clustering autocorrelation, the lot. What should worry you MOST?",
+      options: [
+        { text: "It may be memorizing the training data — copies ace distribution tests and leak the future into backtests", correct: true },
+        { text: "Nothing — a perfect stylized-fact score is a clean bill of health" },
+        { text: "It must be suffering mode collapse, which always produces perfect marginal scores" },
+        { text: "Wasserstein loss can no longer be applied to it" },
+      ],
+      explanation: "A too-perfect distribution score is a classic memorization tell: a generator that copies real windows reproduces every marginal statistic exactly. Catch it with novelty / nearest-neighbor tests, not marginal-fit metrics.",
+    },
+    {
+      question: "How do QuantGAN's TCN backbone and a recurrent (RNN) backbone compare for this task?",
+      options: [
+        { text: "TCNs process the whole window in parallel with stable gradients and a controllable long receptive field; RNNs are sequential and gradient-prone", correct: true },
+        { text: "RNNs are strictly faster and have a longer effective memory than dilated TCNs" },
+        { text: "TCNs cannot model long-range dependencies, so RNNs are required for volatility clustering" },
+        { text: "Both are identical; the choice is purely cosmetic" },
+      ],
+      explanation: "Dilated causal convolutions give an exponentially growing receptive field, parallel training, and stable gradients — which is why QuantGAN (and most modern financial sequence GANs) prefer TCNs over recurrence.",
+    },
+    {
+      question: "On a small financial dataset, a discriminator quickly learns to separate real from fake with near-certainty. Under the vanilla GAN objective, what does this CAUSE — and what fixes it?",
+      options: [
+        { text: "It causes the generator's gradient to vanish (saturated JS divergence); WGAN's smooth Earth-Mover distance restores a usable gradient", correct: true },
+        { text: "It causes memorization, which WGAN automatically prevents" },
+        { text: "It causes the noise vector z to grow unbounded, fixed by clipping z" },
+        { text: "It speeds up convergence, so no fix is needed" },
+      ],
+      explanation: "A decisive discriminator means barely-overlapping distributions, where JS divergence is flat and the generator gradient vanishes. WGAN replaces JS with the Wasserstein distance, which varies smoothly even without overlap — keeping the generator learning.",
+    },
+    {
+      question: "Your bank wants a generator to produce stress-test scenarios. After training, you notice almost none of the synthetic paths contain a sharp crash, even though the average return looks right. What has likely happened, and why is it dangerous here specifically?",
+      options: [
+        { text: "Mode collapse onto the calm regime — the generator omits the crash tails, so any risk model trained on it will be dangerously optimistic about exactly the scenarios it should stress", correct: true },
+        { text: "Memorization — the generator copied real crashes verbatim, which is ideal for stress testing" },
+        { text: "Successful convergence — missing crashes proves the model is well-calibrated" },
+        { text: "A Lipschitz violation in the critic, harmless for risk work" },
+      ],
+      explanation: "Collapsing onto the calm center while starving the tails is the signature mode-collapse failure — and it's catastrophic precisely for stress testing, the one job that needs the tails. Fight it with regime conditioning, tail metrics, and minibatch discrimination.",
+    },
+  ]}
+/>

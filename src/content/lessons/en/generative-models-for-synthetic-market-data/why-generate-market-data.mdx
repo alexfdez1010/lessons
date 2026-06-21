@@ -1,0 +1,329 @@
+---
+title: "Why Generate Market Data?"
+description: "Deep learning starves on a single market history — so manufacture more. The four real uses of synthetic data, the learn-a-generator vs simulate-a-mechanism split, and the leakage trap that frames the whole course."
+topic: "en/generative-models-for-synthetic-market-data"
+order: 1
+minutes: 15
+updated: 2026-06-21
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, TsStationarityChart } from '@/components/react';
+
+Here is the uncomfortable secret of machine learning in finance: you are trying to learn from a river that flowed exactly **once**. A vision model gets to see ten million cat photos. A language model inhales the entire internet, twice. You, the quant, get *one* realized path of market history — one 2008, one 2020 crash, one COVID melt-up — and that's it. The data-generating process ran the experiment a single time and handed you the result with no replays.
+
+You already know from *Deep Learning for Market Data* why this is fatal: the **effective sample size** is tiny. Twenty years of daily prices looks like thousands of rows, but those rows are autocorrelated, regime-clustered, and overlapping, so the number of genuinely independent observations is closer to *dozens* than thousands. Deep nets are hungry beasts with millions of parameters; feed them dozens of effective examples and they don't learn the market — they **memorize** it, then post a glorious backtest that evaporates the instant real money touches it.
+
+So the move is audacious: if history only ran once, **manufacture more history**. Train or build a *generator* that emits new, never-realized return paths that still look like the market — same fat tails, same volatility clustering — and feed *those* to your hungry model. It's a brilliant idea with a knife hidden in it, and that knife frames this entire course: a generator trained on your history has, in a sense, *seen the future relative to any backtest you run on it*. Get sloppy and it leaks your own data right back into your tests, dressed up as "synthetic." Hold that thought — it's the spine of lesson 4 onward and the warning we'll keep returning to.
+
+## The one-history problem
+
+<MCQ
+  client:visible
+  pretest
+  question="You have 20 years of daily S&P 500 returns. Why is calling this '~5,000 independent data points' misleading?"
+  options={[
+    { text: "The returns are autocorrelated and regime-clustered, so the number of effectively independent observations is far smaller than the row count.", correct: true },
+    { text: "Daily data is too high-frequency to contain any signal at all." },
+    { text: "5,000 rows is actually plenty for a deep network with millions of parameters." },
+    { text: "The S&P 500 changes its constituents, so old rows are invalid." }
+  ]}
+  explanation="Row count is not sample size. Volatility clustering and regime persistence mean consecutive observations carry overlapping information, so the EFFECTIVE sample size — independent draws from the process — is dramatically smaller."
+/>
+
+**Analogy.** Imagine a chemist who can run their reaction exactly once, ever. No repeats, no error bars, no "let's try it again at a different temperature." Whatever happened, happened — and now they must publish universal laws from that single beaker. That chemist is you, and the single beaker is market history. You cannot rerun 2008 with a different Lehman decision; the tape is a one-shot experiment.
+
+**Definition.** Market history is a **single realized path** drawn from an unknown, non-stationary **data-generating process (DGP)**. You observe one trajectory; you never observe the distribution it came from, and you certainly can't sample it again. The **effective sample size** $N_{\text{eff}}$ is the number of *independent* observations that path is worth — always far below the raw row count once you account for autocorrelation and regime persistence.
+
+**Worked example.** Take 20 years of daily data: roughly
+
+$$
+20 \text{ years} \times 252 \text{ trading days} \approx 5{,}040 \text{ rows}.
+$$
+
+Sounds rich. But a crude effective-sample correction for autocorrelation shrinks it. If consecutive observations have lag-1 autocorrelation $\rho \approx 0.97$ at the *volatility* level (volatility clusters hard), one common approximation gives
+
+$$
+N_{\text{eff}} \approx N \cdot \frac{1-\rho}{1+\rho} = 5{,}040 \cdot \frac{0.03}{1.97} \approx 77.
+$$
+
+Seventy-seven. And that's the *generous* read — if instead you ask "how many genuinely distinct market **regimes** did I observe?" (a bull run, the 2008 crash, the slow QE grind, the COVID crash-and-rip, a rate-hike cycle), you're counting on your fingers. One twenty-year history is, for the questions that matter, roughly **one draw** from the DGP.
+
+Look at what the single path actually looks like — non-stationary price wandering on top, but stationary, clustered *returns* underneath:
+
+<TsStationarityChart client:visible caption="One realized history: the price (top) is a single non-stationary path that never repeats, while its returns (bottom) are stationary but show volatility clustering — calm begets calm, chaos begets chaos. You observe exactly one of these trajectories." />
+
+<Callout variant="warning">
+**Pitfall: confusing row count with sample size.** "I have 5,000 rows, that's plenty of data" is the most expensive sentence in quant finance. Rows are not evidence; *independent* rows are. A model that thinks it has 5,000 examples when it effectively has 77 will overfit with supreme confidence and hand you a deflated-Sharpe disaster. Always ask how many *independent regimes* your data actually contains.
+</Callout>
+
+### When to use it
+
+Invoke the one-history framing whenever someone waves a big row count at you as proof a deep model "has enough data." It's the diagnostic that tells you a model is starving even when the spreadsheet looks full — and it's the entire motivation for manufacturing more paths.
+
+<FillBlank
+  client:visible
+  question="Fill in the core distinction."
+  text="Twenty years of daily prices is thousands of {{rows|regimes|draws|paths}}, but only a handful of independent market regimes — which is why the effective sample size is tiny."
+  explanation="Rows are abundant; independent regimes (and therefore effective observations) are scarce. The gap between the two is the one-history problem in one sentence."
+/>
+
+## The four uses of synthetic data
+
+<MCQ
+  client:visible
+  pretest
+  question="A risk team wants to test their portfolio against a stagflation shock that has never occurred in their data window. Which use of synthetic data is this?"
+  options={[
+    { text: "Scenario generation and stress testing — manufacturing regimes the tape never delivered.", correct: true },
+    { text: "Privacy-preserving data sharing." },
+    { text: "Data augmentation for training a thin model." },
+    { text: "Synthetic backtesting of an existing strategy on more paths." }
+  ]}
+  explanation="Generating a regime that history never produced — so you can pressure-test a portfolio against it — is scenario generation / stress testing. The other uses serve training, sharing, or path-count, not 'what if a never-seen regime hit us'."
+/>
+
+**Analogy.** A flight simulator. Real pilots can't crash a real 747 to practice, can't summon an engine fire on demand, can't wait for the once-a-decade microburst to teach them. So they *generate* those scenarios. Synthetic market data is the flight simulator for strategies and risk systems — and like a flight sim, it's only useful insofar as the physics it fakes are honest.
+
+**Definition.** **Synthetic market data** is artificially produced data — return paths, order flows, prices — that mimics the statistical properties of real markets without being a literal copy of any observed period. It gets used for four distinct jobs, each buying you something different and each carrying its own risk.
+
+| Use | What it buys you | The risk |
+|---|---|---|
+| **Data augmentation** | More training paths for hungry, thin-data models | Manufactured paths may share the *same* biases, so you amplify error, not signal |
+| **Scenario generation / stress testing** | Regimes the tape never delivered (a 1970s stagflation, a flash-crash variant) | Garbage scenarios → false confidence; the shock you model isn't the one that hits |
+| **Privacy-preserving sharing** | Share a *generator* / statistics, not client positions or P&L | A leaky generator can reconstruct the private records it was trained on |
+| **Synthetic backtesting** | Test a strategy across thousands of paths, not the one history gives | **Leakage** — if the generator memorized history, your "out-of-sample" test isn't |
+
+**Worked mini-example.** Say you augment a training set from **5,000** real return rows to **50,000** paths — a 10x boost. What does it *fix*? It gives your optimizer more gradient steps over more varied trajectories, which can genuinely reduce variance in what the model learns and tame the worst overfitting. What does it **not** fix? If your generator was built from that same one history, those 50,000 paths still encode the **same** handful of regimes. You did not observe a new 2008; you observed echoes of the old one. The effective information content barely moved — you went from ~77 independent observations to maybe ~80, not 800. More paths ≠ more *independent* information.
+
+<Callout variant="warning">
+**Pitfall: treating path count as information.** Generating 50,000 paths from a generator trained on one history does **not** give you 50,000 independent histories. The ceiling on information is the *real* data the generator learned from. Synthetic data can rearrange and interpolate what's there; it cannot conjure regimes the DGP never showed it. (Scenario generation deliberately *extrapolates* beyond history — but then you own the assumption that your extrapolation is realistic.)
+</Callout>
+
+### When to use it
+
+Match the use to the question. Thin model starving for gradient variety? Augmentation. Need to survive a shock history never dealt? Scenario generation. Legally can't share the raw positions? Privacy generator. Want robustness across many futures, not one past? Synthetic backtesting — *with the leakage guard from lesson 7 firmly in place*.
+
+<Categorize
+  client:visible
+  question="Sort each scenario into the synthetic-data use it best fits."
+  buckets={["Augmentation", "Scenario / stress testing"]}
+  items={[
+    { text: "Boosting a thin training set so a deep model overfits less", bucket: "Augmentation" },
+    { text: "Modeling a stagflation regime that never appears in your data window", bucket: "Scenario / stress testing" },
+    { text: "Giving an optimizer more varied paths to step over", bucket: "Augmentation" },
+    { text: "Pressure-testing a portfolio against a 1987-style one-day crash variant", bucket: "Scenario / stress testing" }
+  ]}
+  explanation="Augmentation feeds a hungry model more (similar) training paths; scenario generation deliberately manufactures regimes outside what history delivered so you can stress-test against them."
+/>
+
+<MCQ
+  client:visible
+  allowMultiple
+  question="Which of these are legitimate jobs for synthetic market data? (Select all that apply.)"
+  options={[
+    { text: "Augmenting a thin training set so a deep model sees more variety", correct: true },
+    { text: "Generating stress scenarios the historical tape never delivered", correct: true },
+    { text: "Sharing a dataset's statistical character without exposing private positions", correct: true },
+    { text: "Conjuring genuinely new information about the future that the real history never contained" },
+  ]}
+  explanation="The first three are exactly what synthetic data is for. The fourth is the fantasy: a generator can reshuffle and recombine the structure already in your history, but it cannot invent information that was never there — believing otherwise is how leakage masquerades as insight."
+/>
+
+## Two philosophies: learn vs simulate
+
+<MCQ
+  client:visible
+  pretest
+  question="Which approach builds a generator by encoding explicit assumptions about market mechanics (a drift, a volatility, a regime switch) rather than learning the distribution from data?"
+  options={[
+    { text: "Simulate a mechanism — bottom-up, assumption-driven, interpretable (GBM, bootstrap, regime-switching).", correct: true },
+    { text: "Learn a generator — top-down, data-driven (GANs, VAEs, diffusion)." },
+    { text: "Both do exactly the same thing under the hood." },
+    { text: "Neither — generators never encode assumptions." }
+  ]}
+  explanation="Simulating a mechanism means you WRITE DOWN the dynamics (GBM's drift+vol, a regime-switch matrix) — assumption-driven and interpretable. Learning a generator means a neural net infers the distribution from data — data-driven and opaque."
+/>
+
+**Analogy.** Two ways to build a flight simulator. **Mechanism (simulate):** an engineer writes the equations of aerodynamics — lift, drag, thrust — from first principles. You can read every line and argue with it. **Learned:** you strap sensors to ten thousand real flights and train a net to predict "what the plane does next" — eerily realistic, but ask it *why* it did something and it shrugs. Both fly the sim; one you can audit, the other you mostly have to trust.
+
+**Definition.** There are two philosophies for producing synthetic market data:
+
+- **Simulate a mechanism** (*bottom-up, assumption-driven*): you specify the dynamics explicitly — geometric Brownian motion, a block bootstrap, a regime-switching model — and sample from your equations. Interpretable, data-light, but only as realistic as your assumptions. (Lesson 3.)
+- **Learn a generator** (*top-down, data-driven*): you train a neural network — GAN, VAE, or diffusion model — to reproduce the data's distribution. Flexible and high-fidelity, but opaque and *data-hungry*, with real leakage risk. (Lessons 4–6.)
+
+| Dimension | Simulate a mechanism (GBM, bootstrap, regime-switch) | Learn a generator (GAN, VAE, diffusion) |
+|---|---|---|
+| **Interpretability** | High — you wrote the equations | Low — black-box weights |
+| **Data hunger** | Low — a few parameters to estimate | High — needs lots of (scarce) data |
+| **Leakage risk** | Low — it can't memorize what it never stored | High — it can memorize and regurgitate the training set |
+| **Fidelity to stylized facts** | Partial — GBM misses fat tails & clustering; richer models do better | Potentially high — *if* trained well and evaluated honestly |
+
+**Worked example.** Suppose you want fat-tailed returns with volatility clustering. *Mechanism path:* plain GBM gives you neither — its returns are Gaussian and homoscedastic, so kurtosis $\approx 3$ (no fat tails) and no clustering. You'd need to upgrade to a regime-switching or stochastic-vol mechanism to get there, and you'd *know* exactly which assumption produced the fat tails. *Learned path:* a well-trained GAN might reproduce kurtosis of, say, $\approx 8$ — matching the real fat tails beautifully — but you couldn't point to *which* parameter did it, and you'd have to run memorization tests to be sure it didn't just photocopy a crash.
+
+Here's the part people skip: **classical simulators are the baseline the learned models must beat.** A GAN that doesn't reproduce stylized facts better than a well-tuned regime-switching simulator — while costing 100x the compute and carrying leakage risk — has earned nothing. We start with the simple mechanisms in lesson 3 precisely so you have a yardstick.
+
+<Callout variant="warning">
+**Pitfall: assuming "neural = better."** A deep generative model is not automatically superior to a humble bootstrap. It's more flexible, yes — but flexibility cuts both ways: it can memorize, it needs the data you don't have, and it's hard to audit. If your fancy diffusion model can't out-reproduce stylized facts versus a regime-switching baseline, the baseline wins. Always benchmark learned generators *against* the classical ones, not in a vacuum.
+</Callout>
+
+### When to use it
+
+Reach for **mechanisms** when you need interpretability, have little data, or want an auditable stress scenario you can defend to a regulator. Reach for a **learned generator** when you have enough data, the stylized facts are too rich to hand-specify, and you've budgeted the evaluation effort (lesson 7) to prove it isn't leaking. In practice: start mechanistic, graduate to learned only when it provably earns its keep.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Geometric Brownian motion", definition: "A bottom-up mechanism — explicit drift and volatility — interpretable but misses fat tails and clustering." },
+    { term: "GAN / VAE / diffusion", definition: "Top-down learned generators — high fidelity but opaque, data-hungry, and prone to leakage." },
+    { term: "Regime-switching model", definition: "A mechanism that adds states to capture clustering — the baseline a learned model must beat." },
+    { term: "Block bootstrap", definition: "Resampling contiguous chunks of real history — assumption-light, but can only replay what was observed." }
+  ]}
+/>
+
+## The leakage trap that frames everything
+
+<MCQ
+  client:visible
+  pretest
+  question="A generator is trained on your full price history. You then 'backtest' a strategy on data it produced. Why is this potentially not out-of-sample?"
+  options={[
+    { text: "The generator has already seen the entire history — including the periods your backtest treats as the future — so its output can encode information your test assumes it doesn't have.", correct: true },
+    { text: "Synthetic data is always biased toward bull markets." },
+    { text: "Backtests on synthetic data run too slowly to be valid." },
+    { text: "It is fine — synthetic data is by definition out-of-sample." }
+  ]}
+  explanation="A generator trained on the full history has, in effect, seen the future relative to any backtest run on its output. If it memorizes, your 'out-of-sample' test is quietly testing on the training data — leakage in disguise."
+/>
+
+**Analogy.** A student writes the exam, then is hired to write *next year's* exam. If they reproduce questions from memory, every future student who "studies the practice exam" is just memorizing the real answers. The practice exam looks legitimate — different cover sheet, official font — but it's the actual test in disguise. A generator that memorizes history is that student, and your backtest is the future class scoring suspiciously high.
+
+**Definition.** **Leakage** is when information from the data your model is being *tested* on contaminates the data it was *trained* on (or vice versa), inflating measured performance. With learned generators it's insidious: train a generator $G$ on your full history $\mathcal{H}$, then run *train-on-synthetic, test-on-real* (or backtest on $G$'s output). Because $G$ saw all of $\mathcal{H}$ — including the period your test pretends is the unseen future — any memorization in $G$ silently feeds the answers forward. The "synthetic" data isn't independent of the truth; it's a lossy copy of it.
+
+**Worked example — the generator that cheats and gets away with it.** Picture the worst case: a generator that *perfectly copies its training set* (it just samples real historical windows and relabels them "synthetic").
+
+| Test you run | What you'd hope it reveals | What this copy-cat actually scores |
+|---|---|---|
+| Mean / variance match real? | Memorization | Passes — identical by construction |
+| Fat tails (kurtosis) match? | Memorization | Passes — identical |
+| Autocorrelation / clustering match? | Memorization | Passes — identical |
+| Downstream backtest Sharpe | True generalization | **Inflated** — strategy is tested on its own training data |
+
+Every distribution test gives it a clean bill of health, because matching the distribution is *exactly* what a perfect copy does. Yet the moment you use it for synthetic backtesting, the strategy's Sharpe balloons — it's being "validated" on the very prices it was fit to. A generator that memorizes is **indistinguishable from a great generator on every distributional test, and catastrophically worse on the one thing you cared about.** That's why distribution-matching alone can never certify a generator.
+
+**The discipline (the thesis of this course).** *Evaluate the generator before you trust a single synthetic-data result.* Specifically, run **memorization / nearest-neighbour tests** — for each synthetic sample, check it isn't suspiciously close to a real training example — *before* any train-on-synthetic or synthetic-backtest claim. That evaluation toolkit is lesson 7, and it's the gate every learned generator must pass.
+
+<Callout variant="warning">
+**The trap that frames the whole course.** A generator that passes every distribution test can still be a memorizer that leaks your history into your backtest, inflating Sharpe and fooling you completely. Matching means, variances, fat tails, and autocorrelation is *necessary but nowhere near sufficient*. Never report a synthetic-data result until the generator has cleared memorization and nearest-neighbour checks. Distribution fidelity proves the generator is realistic; only leakage testing proves it's *honest*.
+</Callout>
+
+### When to use it
+
+This isn't an occasional check — it's a permanent gate. Every time you train a generator and intend to use its output for *anything* you'll trust (augmented training, a backtest, a shared dataset), the leakage question comes first. If you can't show the generator didn't memorize, you can't believe any downstream number it produced. Carry this through lessons 4, 5, and 6; cash it out in lesson 7.
+
+<Reveal client:visible summary="Quick gut-check: why doesn't 'it matched all the stylized facts' clear a generator?">
+Because **a perfect photocopy of history matches every stylized fact by construction** — same tails, same clustering, same autocorrelation — while being the *most* leaky generator possible. Distributional fidelity and memorization are not opposites; a memorizer is the extreme of fidelity. You need a separate test that asks "is each synthetic sample too close to a real one?" — that's the nearest-neighbour / memorization check, not a distribution check.
+</Reveal>
+
+## Recap
+
+Machine learning starves in finance because you observe markets running *once*: thousands of autocorrelated rows collapse to a handful of independent regimes, so the effective sample size is tiny and hungry deep models memorize instead of learn. The fix is to **manufacture more market history** with a generator, and that synthetic data does four jobs — augmenting thin training sets, generating stress scenarios history never delivered, sharing statistics instead of private positions, and backtesting across many paths. You can build that generator two ways: **simulate a mechanism** (interpretable, assumption-driven, leak-resistant, the baseline) or **learn a generator** (flexible, data-hungry, opaque, leak-prone). And threading through all of it is the **leakage trap**: a generator trained on your history can memorize it and pass every distribution test while quietly feeding your backtest the answers — so you *evaluate the generator for memorization before you trust any result it produces*. That last sentence is the course in one line.
+
+<MindMap
+  client:visible
+  title="Why generate market data?"
+  caption="The one-history problem motivates synthetic data; its four uses split across two build philosophies; the leakage trap gates everything you trust."
+  root={{
+    label: 'Why generate market data?',
+    children: [
+      {
+        label: 'One-history problem',
+        children: [
+          { label: 'One realized path of the DGP' },
+          { label: 'Tiny effective sample size' },
+          { label: 'Hungry models memorize' }
+        ]
+      },
+      {
+        label: 'Four uses',
+        children: [
+          { label: 'Data augmentation' },
+          { label: 'Scenario / stress testing' },
+          { label: 'Privacy-preserving sharing' },
+          { label: 'Synthetic backtesting' }
+        ]
+      },
+      {
+        label: 'Two philosophies',
+        children: [
+          { label: 'Simulate a mechanism (GBM, bootstrap, regime-switch) — baseline' },
+          { label: 'Learn a generator (GAN, VAE, diffusion) — data-hungry, opaque' }
+        ]
+      },
+      {
+        label: 'Leakage trap',
+        children: [
+          { label: 'Generator saw the "future" of any backtest' },
+          { label: 'Memorizer passes every distribution test' },
+          { label: 'Evaluate before you trust (lesson 7)' }
+        ]
+      }
+    ]
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Why Generate Market Data? — mixed recap"
+  questions={[
+    {
+      question: "You have 30 years of daily returns (~7,560 rows). Treating each row as an independent observation, you claim 7,560 samples. Which statement best corrects this?",
+      options: [
+        { text: "Volatility clustering and regime persistence make rows highly dependent, so the effective sample size — distinct regimes worth of independent information — is closer to dozens.", correct: true },
+        { text: "7,560 rows is independent; the only problem is survivorship bias." },
+        { text: "Daily data has no autocorrelation, so the count is fine." },
+        { text: "The count should be doubled to account for intraday moves." }
+      ],
+      explanation: "Numeric trap: row count is not sample size. Dependence between consecutive observations means the effective number of independent draws (think: distinct regimes) is far smaller than the raw count."
+    },
+    {
+      question: "A compliance team must share data with an external researcher but cannot expose client positions or P&L. Which use of synthetic data fits, and what's its signature risk?",
+      options: [
+        { text: "Privacy-preserving sharing — and the risk is a leaky generator that can reconstruct the private records it was trained on.", correct: true },
+        { text: "Data augmentation — and the risk is overfitting the compliance model." },
+        { text: "Scenario generation — and the risk is unrealistic stress shocks." },
+        { text: "Synthetic backtesting — and the risk is slow runtime." }
+      ],
+      explanation: "Scenario: sharing a generator instead of raw positions is privacy-preserving sharing. Its specific danger is a generator that memorizes and can be inverted to leak the very private data it was meant to protect."
+    },
+    {
+      question: "Which of the following is TRUE about classical simulators versus learned generators?",
+      options: [
+        { text: "Classical simulators (GBM, bootstrap, regime-switching) are the interpretable baseline that learned generators must beat to justify their cost and leakage risk.", correct: true },
+        { text: "Learned generators are always superior because neural networks are more flexible." },
+        { text: "Plain GBM reproduces fat tails and volatility clustering out of the box." },
+        { text: "Classical simulators carry higher leakage risk than learned generators." }
+      ],
+      explanation: "Which-is-true: mechanisms are the auditable baseline; GBM notably misses fat tails and clustering; and mechanisms carry LOWER leakage risk (they can't memorize what they never stored). A learned model has to earn its keep against this baseline."
+    },
+    {
+      question: "A generator is shown to match real returns on mean, variance, kurtosis (fat tails), and autocorrelation perfectly. A colleague concludes it is safe for synthetic backtesting. Where's the trap?",
+      options: [
+        { text: "A perfect copy of history matches all those statistics by construction yet is maximally leaky — distribution tests can't detect memorization, so a nearest-neighbour / memorization check is required first.", correct: true },
+        { text: "There is no trap; matching all four statistics proves the generator generalizes." },
+        { text: "The trap is that kurtosis can't be estimated from daily data." },
+        { text: "The trap is that autocorrelation tests are unreliable, but the rest are fine." }
+      ],
+      explanation: "Spot-the-trap: distributional fidelity is necessary but not sufficient. A memorizer passes every distribution test while leaking training data into the backtest. Only a memorization/nearest-neighbour test (lesson 7) closes the gap."
+    },
+    {
+      question: "Compare augmenting a training set from 5,000 to 50,000 paths (generator trained on the same one history) against generating a never-seen stagflation regime. What's the key difference?",
+      options: [
+        { text: "Augmentation rearranges/interpolates the same observed regimes — it adds paths, not independent information — while scenario generation deliberately extrapolates beyond history, which buys new regimes at the cost of owning the realism assumption.", correct: true },
+        { text: "Both add the same amount of new independent information." },
+        { text: "Augmentation creates new regimes while scenario generation only copies old ones." },
+        { text: "Neither changes anything about the model's training." }
+      ],
+      explanation: "Comparison: augmentation is bounded by the information in the real data it learned from (10x paths is not 10x information), whereas scenario generation intentionally goes beyond history — useful, but only if the manufactured regime is realistic, which is now your assumption to defend."
+    }
+  ]}
+/>

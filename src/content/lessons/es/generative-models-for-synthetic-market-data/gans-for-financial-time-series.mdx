@@ -1,0 +1,403 @@
+---
+title: "GAN para series temporales financieras"
+description: "El juego del generador contra el discriminador aplicado a los retornos: los linajes QuantGAN y TimeGAN, las variantes condicionales y de Wasserstein, y los dos demonios que las acechan con pocos datos financieros — la inestabilidad del entrenamiento y el colapso de modos."
+topic: "es/generative-models-for-synthetic-market-data"
+order: 4
+minutes: 17
+updated: 2026-06-21
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, ReturnDistribution } from '@/components/react';
+
+Toma dos redes neuronales, apúntalas la una contra la otra y déjalas pelear. Una — el **generador** — es un falsificador: toma un puñado de números aleatorios e intenta pintar un trozo de historia de mercado lo bastante convincente como para engañar a un crítico. La otra — el **discriminador** — es un detective: cuando le entregan una muestra, debe sentenciar "real" o "falsa". En cada ronda, el falsificador recibe información sobre qué lo delató y el detective se vuelve más fino al cazarlo. Si dejas correr la carrera armamentística lo suficiente, en teoría las falsificaciones del falsificador acaban siendo indistinguibles de los retornos reales — momento en el que el detective queda reducido a lanzar una moneda al aire. Ese lanzamiento de moneda es la clave de todo: cuando el mejor crítico posible no puede superar el 50/50, el generador ha aprendido, por definición, la distribución de los datos.
+
+Eso es la **Red Generativa Antagónica** (GAN), y sobre el papel es una de las ideas más elegantes del aprendizaje automático. Nunca escribes una verosimilitud, nunca supones una forma distribucional — simplemente dejas que la competición haga la estimación de densidad por ti. Para las imágenes produjo las famosas caras fotorrealistas. Para las finanzas, la promesa es seductora: un generador que haya interiorizado el comportamiento conjunto de los retornos podría escupir trayectorias de precios sintéticas ilimitadas que agrupen la volatilidad, engorden las colas y rompan el apalancamiento exactamente igual que las de verdad.
+
+La pega es que las GAN son conceptualmente bellas y operativamente cascarrabias — y las finanzas les entregan las peores condiciones posibles. Las muestras son minúsculas (unos pocos miles de retornos diarios, no un millón de fotos etiquetadas), están empapadas de ruido y son no estacionarias. Una GAN que es meramente difícil de entrenar en ImageNet se convierte en una diva temperamental sobre una década de retornos del S&P 500. Esta lección es un recorrido de constructor por la maquinaria — el juego antagónico, las arquitecturas QuantGAN y TimeGAN, las variantes condicionales y de Wasserstein — emparejado con la advertencia de un escéptico sobre los dos demonios, el **colapso de modos** y la **memorización**, que esperan para arruinar tus pruebas de estrés y corromper tus backtests.
+
+## El juego antagónico
+
+<MCQ
+  client:visible
+  pretest
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="Una GAN alcanza su ideal teórico cuando el discriminador, ante cualquier entrada, devuelve aproximadamente..."
+  options={[
+    { text: "0,5 — ya no puede distinguir lo real de lo falso, así que se limita a adivinar", correct: true },
+    { text: "1,0 — reconoce a la perfección cada muestra real" },
+    { text: "0,0 — rechaza todo como falso" },
+    { text: "La probabilidad de que el mercado suba mañana" },
+  ]}
+  explanation="En el equilibrio de Nash la distribución del generador coincide con la de los datos, así que ningún discriminador puede hacerlo mejor que lanzar una moneda: D(x) = 0,5 en todas partes. Un discriminador que puntúa 1,0 sobre los reales significa que el generador aún está perdiendo."
+/>
+
+**Analogía.** Imagina un falsificador y un agente del Tesoro. El falsificador imprime billetes; el agente los inspecciona. Al principio el agente detecta las falsificaciones al instante (la marca de agua está mal), y ese rechazo enseña al falsificador qué corregir. A medida que los billetes mejoran, el agente tiene que encontrar pistas más sutiles. La carrera armamentística termina cuando los billetes son perfectos — el agente queda reducido a adivinar, y la moneda falsa es, funcionalmente, moneda real. Una GAN es ese bucle, automatizado, con gradientes haciendo de intuición del falsificador.
+
+**La definición.** Un generador $G$ mapea un vector de ruido $z$ (extraído de un prior sencillo como una gaussiana estándar) a una muestra falsa $G(z)$. Un discriminador $D$ toma una muestra y devuelve la probabilidad de que sea real. Ambos optimizan un único objetivo **minimax** de dos jugadores:
+
+$$
+\min_G \max_D \; \mathbb{E}_{x \sim p_{\text{data}}}[\log D(x)] + \mathbb{E}_{z \sim p_z}[\log(1 - D(G(z)))].
+$$
+
+Léelo primero desde el lado de $D$: $D$ quiere que $\log D(x)$ sea grande (llamar reales a los reales) y que $\log(1 - D(G(z)))$ sea grande (llamar falsas a las falsas), así que **maximiza**. Ahora léelo desde el lado de $G$: $G$ solo toca el segundo término y lo quiere *pequeño* — quiere que $D(G(z))$ esté cerca de 1, es decir, falsas confundidas con reales — así que **minimiza**. El único ideal es el **equilibrio de Nash** donde la distribución de salida de $G$ es igual a $p_{\text{data}}$; ahí, $D(x) = 0.5$ en todas partes y ningún jugador puede mejorar unilateralmente.
+
+**Recorrido resuelto de un paso de entrenamiento.** El entrenamiento alterna dos actualizaciones por gradiente sobre un minilote:
+
+1. **Actualización del discriminador (G congelado).** Muestrea retornos reales $\{x_i\}$ y ruido $\{z_i\}$. Digamos que en este lote $D$ asigna a los reales una puntuación media de $0.78$ y a las falsas $0.30$. El detective es decente pero imperfecto. Calcula la pérdida y da un paso de *ascenso* por gradiente sobre los pesos de $D$, empujando las puntuaciones reales hacia 1 y las falsas hacia 0.
+2. **Actualización del generador (D congelado).** Mantén el mismo lote de ruido. Empuja los pesos de $G$ para que $D(G(z))$ suba — es decir, las falsas que puntuaban $0.30$ empiezan a puntuar $0.45$. En la práctica cambias el signo y **maximizas $\log D(G(z))$** en lugar de minimizar $\log(1 - D(G(z)))$ (el truco "no saturante"), porque el término original tiene gradientes que se desvanecen exactamente cuando $G$ está perdiendo y necesita la señal más fuerte.
+
+Repite durante miles de lotes. Un entrenamiento sano se parece a ambas pérdidas fluctuando, con la puntuación del discriminador derivando hacia $0.5$ — no a un jugador aplanando al otro.
+
+<Callout variant="warning">
+Las dos actualizaciones deben mantenerse aproximadamente **equilibradas**. Si el discriminador se vuelve demasiado fuerte demasiado rápido — fácil con conjuntos de datos financieros pequeños donde prácticamente puede memorizar los pocos miles de retornos reales — devuelve gradientes casi nulos al generador, y $G$ deja de aprender. Una pérdida del generador que se aplana y nunca se recupera no es convergencia; es un detective que ganó tan fuerte que el falsificador se rindió. Normalmente se arregla debilitando a $D$ (menos pasos de $D$ por paso de $G$, menos capacidad, dropout) o cambiando la pérdida (ver WGAN más abajo), no entrenando más tiempo.
+</Callout>
+
+### Cuándo usarlo
+
+Recurre al marco antagónico puro cuando quieras un generador **sin verosimilitud** — un modelo que capture estructura que no puedes o no quieres escribir como una densidad paramétrica. Ese es precisamente el caso de uso financiero: los retornos tienen colas anchas, agrupamiento de volatilidad y efectos de apalancamiento que ninguna forma cerrada limpia clava a la vez. Pero "usa una GAN" nunca significa "usa la GAN vainilla de 2014 tal cual" sobre los retornos; significa adoptar el juego y luego atornillarle los arreglos de arquitectura y de pérdida del resto de esta lección.
+
+<FillBlank
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+  question="Completa la idea del equilibrio de la GAN."
+  text="En el equilibrio de la GAN, la distribución del generador es igual a la distribución de {{los datos|el ruido|el discriminador}}, y el discriminador devuelve {{0,5|1,0|0,0}} ante cada entrada porque ya no puede distinguir lo real de lo falso."
+/>
+
+## QuantGAN y la columna TCN
+
+<MCQ
+  client:visible
+  pretest
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="QuantGAN (Wiese et al.) construye tanto su generador como su discriminador a partir de...?"
+  options={[
+    { text: "Redes convolucionales temporales — convoluciones 1-D causales y dilatadas", correct: true },
+    { text: "Capas feedforward corrientes que ignoran el orden temporal" },
+    { text: "Transformers con atención bidireccional plena sobre toda la trayectoria" },
+    { text: "Árboles de decisión potenciados por gradiente" },
+  ]}
+  explanation="QuantGAN usa TCN — pilas de convoluciones 1-D causales y dilatadas — para ambas redes, la misma columna que conociste en Deep Learning para Datos de Mercado. Dan un campo receptivo largo sin el dolor de entrenamiento de la recurrencia."
+/>
+
+**Analogía.** Una red recurrente lee una serie temporal como una persona que lee un pergamino largo carácter a carácter, manteniéndolo todo en la memoria de trabajo — lenta, y propensa a olvidar el principio cuando llega al final. Una **red convolucional temporal** (TCN) es más bien como un objetivo gran angular con enfoque ajustable: al apilar convoluciones *dilatadas* (filtros que saltan cada 2.º paso, luego cada 4.º, luego cada 8.º), ve exponencialmente lejos hacia atrás en el tiempo mientras procesa cada posición en paralelo. La misma memoria larga, sin el cuello de botella secuencial.
+
+**La arquitectura.** QuantGAN, de Wiese, Knobloch, Korn y Kretschmer, toma dos decisiones de diseño que importan:
+
+- **Generador y discriminador TCN.** Ambas redes son pilas de **convoluciones causales dilatadas** — *causales* para que la salida en el instante $t$ dependa solo de las entradas en $t$ y anteriores (sin espiar el futuro, lo que sería hacer trampa con una serie temporal), *dilatadas* para que el **campo receptivo** crezca geométricamente con la profundidad. Conociste esta misma construcción en *Deep Learning para Datos de Mercado*; QuantGAN simplemente la mete en las dos mitades del juego antagónico.
+- **Una transformación de preprocesado invertible.** Los log-retornos crudos tienen colas pesadas y son incómodos de modelar directamente para una red. QuantGAN aplica un mapeo **invertible "log-retorno → aproximadamente gaussiano"** (una transformación gaussianizadora tipo Lambert-W inversa más estandarización) antes de entrenar. El generador aprende entonces a producir la serie *bien portada y casi gaussiana*; en el momento de muestrear, ejecutas la transformación **al revés** para recuperar retornos realistamente de colas anchas. Modelar un objetivo manso y desdomesticarlo después es mucho más fácil que pedirle a la red que pariera colas anchas desde cero.
+
+**Por qué TCN antes que RNN aquí.** Tres razones: (1) **paralelismo** — las convoluciones procesan toda la ventana de una vez, así que el entrenamiento es drásticamente más rápido que la recurrencia paso a paso; (2) **gradientes estables** — sin las patologías de explosión/desvanecimiento de la retropropagación en el tiempo; (3) **un campo receptivo largo y controlable** — para capturar el agrupamiento de volatilidad que persiste durante semanas, basta con añadir capas de dilatación, y puedes leer exactamente cuán atrás puede ver el modelo.
+
+**Ejemplo resuelto — campo receptivo.** Con tamaño de kernel $k = 2$ y dilatación que se duplica por capa ($1, 2, 4, 8, \dots$), el campo receptivo tras $L$ capas es $1 + \sum_{\ell=0}^{L-1}(k-1)\,2^{\ell} = 2^{L}$. Así que $L = 8$ capas alcanzan $2^{8} = 256$ pasos hacia atrás — alrededor de un año de retornos diarios — mientras cada capa es una convolución paralela barata. Para duplicar la memoria a aproximadamente dos años, añades **una** capa, no 256 pasos recurrentes.
+
+**Lo que reproduce bien.** En la evaluación del artículo frente al baremo que reconocerás de la lección de *hechos estilizados*, las trayectorias sintéticas de QuantGAN reproducen el **agrupamiento de volatilidad** (la autocorrelación de los retornos *al cuadrado* decae lentamente, como la serie real), las **colas anchas** (curtosis en exceso y comportamiento de cola cercanos a los empíricos), y la autocorrelación casi nula de los retornos crudos. Es un salto genuino sobre las líneas base clásicas de la lección anterior — aunque, como martilleará la lección 7, "coincidir con los hechos estilizados" es necesario, no suficiente.
+
+<Callout variant="warning">
+La transformación gaussianizadora es invertible, lo cual es un arma de doble filo. Como la tubería puede mapear cualquier secuencia generada casi gaussiana *exactamente* de vuelta al espacio de retornos, un generador que haya **memorizado** calladamente los retornos de entrenamiento pasará sin problemas las comprobaciones de distribución marginal y de hechos estilizados — la transformación reproduce fielmente las copias. Reproducir los hechos estilizados te dice que la *forma* es correcta; no dice nada sobre si las trayectorias son *novedosas*. Guarda esa idea para el demonio de la memorización de más abajo y la prueba de evaluación de la lección 7.
+</Callout>
+
+### Cuándo usarlo
+
+Elige la receta QuantGAN cuando tu objetivo sea una **serie de retornos univariante (o de baja dimensión)** y tu prioridad sea reproducir fielmente los hechos estilizados marginales — agrupamiento de volatilidad y colas anchas — con un entrenamiento rápido y estable. La columna TCN es ya el valor por defecto para casi cualquier GAN de secuencias financieras; la transformación gaussianizadora se gana específicamente el sueldo cuando los retornos crudos tienen colas demasiado pesadas para que la red los modele cómodamente de frente.
+
+<MatchConcepts
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Une cada concepto con su definición."
+  question="Une cada ingrediente de QuantGAN con su función"
+  pairs={[
+    { term: "Convolución causal", definition: "La salida en el instante t depende solo de las entradas en t y anteriores — sin espiar el futuro" },
+    { term: "Convolución dilatada", definition: "Salta pasos para que el campo receptivo crezca geométricamente con la profundidad, alcanzando lejos hacia atrás de forma barata" },
+    { term: "Transformación gaussianizadora invertible", definition: "Mapea retornos de colas pesadas a una serie casi gaussiana para entrenar, y luego invierte para restaurar las colas anchas" },
+    { term: "Discriminador", definition: "Puntúa cuán probable es que una trayectoria sea real, aportando la señal de gradiente de la que aprende el generador" },
+  ]}
+/>
+
+## TimeGAN y el condicionamiento
+
+<MCQ
+  client:visible
+  pretest
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="TimeGAN (Yoon et al.) añade un término de pérdida extra más allá del antagónico. ¿Qué obliga a aprender al modelo esa pérdida supervisada paso a paso?"
+  options={[
+    { text: "La dinámica temporal — cómo cada paso se sigue de los anteriores, no solo la marginal", correct: true },
+    { text: "La media y la varianza exactas del conjunto de entrenamiento, nada sobre el orden" },
+    { text: "A clasificar de qué régimen de mercado procede cada muestra real" },
+    { text: "A comprimir las muestras al tamaño de archivo más pequeño posible" },
+  ]}
+  explanation="La pérdida supervisada de TimeGAN hace que una red de embedding prediga el siguiente paso latente a partir de los anteriores, enseñando explícitamente la dinámica temporal condicional. La pérdida antagónica sola tiende a clavar la distribución marginal mientras se equivoca en la estructura paso a paso."
+/>
+
+**Analogía.** Una GAN corriente entrenada sobre retornos puede aprender a producir una *bolsa* de valores con el histograma correcto — como un escritor que ha memorizado la frecuencia de cada palabra en español pero las hilvana como un galimatías. TimeGAN añade un profesor de gramática: una pérdida supervisada que califica si cada paso *se sigue* de forma plausible de los anteriores. Obtienes una bolsa con el contenido correcto **y** una frase que se analiza.
+
+**La arquitectura.** TimeGAN, de Yoon, Jarrett y van der Schaar, fusiona tres señales de aprendizaje:
+
+- Un **embedding autocodificador** — un codificador mapea secuencias reales a un espacio latente de menor dimensión y un decodificador las mapea de vuelta, de modo que el juego antagónico se juega en una representación compacta y aprendida en lugar del espacio de retornos crudo.
+- Una **pérdida supervisada paso a paso** — en el espacio latente, una red se entrena para predecir el siguiente embedding a partir del historial de embeddings. Minimizar la diferencia entre el siguiente latente predicho y el real cuece explícitamente la **dinámica temporal**.
+- Una **pérdida antagónica** — el término habitual de generador contra discriminador, operando sobre secuencias latentes, para coincidir con la distribución global.
+
+Entrenar las tres conjuntamente produce un modelo que respeta tanto la *marginal* (qué valores ocurren) como la *condicional* (cómo el hoy depende del ayer) — la combinación que los modelos puramente antagónicos tienden a estropear.
+
+**GAN condicionales (cGAN).** Tanto a $G$ como a $D$ se les puede alimentar una etiqueta extra $y$, de modo que modelan $p(x \mid y)$ en lugar de $p(x)$: el generador pasa a ser $G(z, y)$ y el discriminador $D(x, y)$. Para las finanzas, $y$ es una palanca que puedes girar en el momento de muestrear — una **etiqueta de régimen** (calma / crisis), un **cubo de volatilidad** o una **covariable macro** (nivel de tipos, diferencial de crédito). En lugar de una manguera indiferenciada de trayectorias, obtienes escenarios *dirigibles*.
+
+**Ejemplo conceptual resuelto — condicionar sobre un régimen de alta volatilidad.** Supón que etiquetas cada ventana de entrenamiento con $y \in \{\text{baja-vol}, \text{alta-vol}\}$ usando, digamos, un umbral de volatilidad realizada. Entrenas $G(z, y)$ y $D(x, y)$ sobre los datos etiquetados. En el momento de generar **fijas $y = \text{alta-vol}$** y extraes muchos vectores $z$: el modelo produce ahora solo trayectorias con sabor a crisis — oscilaciones más amplias, caídas más bruscas, colas más pesadas — bajo demanda. Eso es exactamente lo que quiere una mesa de pruebas de estrés o de escenarios de riesgo: cinta sintética tipo 2008 o tipo 2020 sin esperar al próximo 2008. (El coste: necesitas suficientes ventanas *reales* de alta volatilidad para aprender esa condicional, y las crisis son, por naturaleza, raras — un problema de muestreo con el que seguiremos topándonos.)
+
+<Callout variant="warning">
+El condicionamiento es solo tan honesto como tus etiquetas y tus datos. Si "alta-vol" aparece en apenas unas docenas de ventanas reales, el generador condicional casi no tiene nada de lo que aprender y o bien **memoriza** ese puñado de crisis (y las repite al pie de la letra) o bien **colapsa** sobre una media insulsa de ellas. Un generador de crisis de aspecto seguro entrenado sobre un dedal de datos de crisis es una bomba disfrazada de herramienta — fabrica falsa confianza sobre escenarios de cola que en realidad nunca muestreaste.
+</Callout>
+
+### Cuándo usarlo
+
+Recurre a **TimeGAN** cuando la *dinámica temporal* sea lo que más necesitas acertar — la estructura de autocorrelación, la forma en que la volatilidad se propaga de paso a paso — y un modelo solo marginal no dé la talla. Recurre a una **GAN condicional** cuando necesites generación **controlable**: escenarios de estrés por régimen, trayectorias hipotéticas a través de estados macro, o cualquier situación donde "dame muestras *como esta*" gane a "dame muestras". Las dos componen — una TimeGAN condicional es una construcción perfectamente sensata.
+
+<FillBlank
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+  question="Completa la idea de la GAN condicional."
+  text="Una GAN condicional alimenta una etiqueta extra a ambas redes para que el generador modele {{p(x | y)|p(x)|p(y)}} — lo que te permite fijar la etiqueta al muestrear para dirigir la generación hacia, por ejemplo, un régimen de alta volatilidad."
+/>
+
+## GAN de Wasserstein y estabilidad del entrenamiento
+
+<MCQ
+  client:visible
+  pretest
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="¿Por qué el gradiente de la GAN vainilla hacia el generador tiende a desvanecerse exactamente cuando el entrenamiento va mal?"
+  options={[
+    { text: "Cuando el discriminador gana de forma decisiva, el objetivo de Jensen–Shannon se satura y deja de enviar gradiente útil", correct: true },
+    { text: "Porque la tasa de aprendizaje del generador siempre está fijada demasiado baja por defecto" },
+    { text: "Porque los vectores de ruido z son demasiado cortos para transportar gradiente" },
+    { text: "Porque los datos financieros reales no tienen gradiente" },
+  ]}
+  explanation="El objetivo original minimiza implícitamente la divergencia de Jensen–Shannon. Cuando las distribuciones real y falsa apenas se solapan — fácil cuando un D fuerte las separa limpiamente — la JS es localmente plana, así que el gradiente del generador se desvanece justo cuando más necesita orientación."
+/>
+
+**Analogía.** Imagina calificar los billetes del falsificador con un sello de apto/no apto. Una vez que los billetes son obviamente malos, todos suspenden — y "suspende, suspende, suspende" no le dice *nada* al falsificador sobre qué falsificación estuvo más cerca. Ahora imagina en su lugar medir, en euros, **cuánto trabajo** costaría reconformar el montón de falsas en el montón de reales. Hasta las falsas pésimas reciben una distancia significativa y suavemente decreciente que perseguir. Ese cambio — de un apto/no apto saturante a un suave "cuán separados están estos montones" — es exactamente lo que hace la GAN de Wasserstein.
+
+**La definición.** El objetivo vainilla minimiza efectivamente la **divergencia de Jensen–Shannon (JS)** entre las distribuciones real y falsa, que es plana (gradiente nulo) cuando las dos apenas se solapan — frecuente al inicio del entrenamiento y desbocado con pocos datos donde $D$ separa los montones limpiamente. **WGAN** (Arjovsky et al.) intercambia por la **distancia de Wasserstein-1**, también conocida como la **distancia del transportista de tierra** (Earth-Mover) $W(p_{\text{data}}, p_g)$ — informalmente, el "masa por distancia" mínimo de trabajo para transportar una distribución sobre la otra. Su virtud clave: varía *suavemente* incluso cuando las distribuciones no se solapan, así que el generador siempre recibe un gradiente utilizable.
+
+Para hacerlo tratable, WGAN reformula el discriminador como un **crítico** $f$ que devuelve una puntuación real sin acotar (no una probabilidad de 0 a 1), y la pérdida pasa a ser $\mathbb{E}[f(x)] - \mathbb{E}[f(G(z))]$. La dualidad del transportista de tierra solo se sostiene si $f$ es **1-Lipschitz** (sus salidas no pueden cambiar más rápido que sus entradas), lo cual impones mediante:
+
+- **Recorte de pesos** — acota los pesos del crítico dentro de $[-c, c]$ en cada paso (la WGAN original; tosco, puede distorsionar la capacidad), o
+- **Penalización de gradiente (WGAN-GP)** — añade una penalización que empuja la norma del gradiente de entrada del crítico hacia 1 en puntos interpolados. Más suave y el valor por defecto moderno.
+
+**Por qué esto importa más en finanzas.** Los conjuntos de datos financieros son *pequeños*. Un discriminador capaz puede prácticamente memorizar unos pocos miles de retornos reales y separar lo real de lo falso con casi total certeza casi de inmediato — lo que bajo el objetivo JS estampa el gradiente del generador a cero antes de que aprenda nada. El crítico de Wasserstein sigue devolviendo una señal graduada e informativa incluso cuando los montones están muy separados, así que $G$ sigue mejorando en lugar de atascarse. Sobre series minúsculas y ruidosas, WGAN-GP es menos un lujo que un mecanismo de supervivencia.
+
+**Intuición resuelta — por qué "cuán lejos" gana a "real o falso".** Supón que las falsas se agrupan cerca de $-2\%$ y las reales cerca de $+1\%$, sin solape. Un discriminador vainilla devuelve $\approx 0$ sobre cada falsa y $\approx 1$ sobre cada real — la JS está al máximo y *plana*, así que mover las falsas de $-2\%$ hacia $-1.5\%$ cambia la pérdida en esencialmente nada: sin gradiente, sin aprendizaje. La distancia de Wasserstein, en cambio, *encoge* de $3\%$ de "trabajo de transporte" a $2.5\%$ a medida que las falsas se acercan — un gradiente real, cuesta abajo, que apunta al generador en la dirección correcta. Distancia suave, aprendizaje suave.
+
+<Callout variant="warning">
+WGAN cura los gradientes que se *desvanecen*; **no** cura el colapso de modos ni la memorización. Los profesionales reportan rutinariamente una curva de pérdida WGAN bellamente estable y concluyen que todo va bien — para luego descubrir que el generador se asentó calladamente sobre una banda estrecha de trayectorias de mercado en calma, o peor, sobre casi-copias del conjunto de entrenamiento. Una pérdida de Wasserstein suave y bien portada es señal de que la *optimización* está sana, no de que la *distribución* esté cubierta. Nunca interpretes la estabilidad del entrenamiento como una garantía de cobertura.
+</Callout>
+
+### Cuándo usarlo
+
+Usa por defecto **WGAN-GP** siempre que el entrenamiento sea inestable o el generador se atasque pronto — lo que, sobre las muestras pequeñas y ruidosas de las finanzas, es la mayoría de las veces. Mantenla como tu pérdida de referencia y solo retrocede a la GAN de entropía cruzada estándar si tienes una razón específica que funcione. Solo recuerda lo que compra y lo que no: estabilidad de la optimización, sí; cobertura fiel de la distribución, no por sí sola.
+
+<Categorize
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Coloca cada elemento en su grupo."
+  question="¿Qué problema resuelve realmente cada herramienta?"
+  buckets={["Arregla la inestabilidad del entrenamiento / gradientes que se desvanecen", "NO lo arregla por sí solo"]}
+  items={[
+    { text: "Cambiar la pérdida a la distancia de Wasserstein-1 (transportista de tierra)", bucket: "Arregla la inestabilidad del entrenamiento / gradientes que se desvanecen" },
+    { text: "Imponer un crítico 1-Lipschitz mediante penalización de gradiente (WGAN-GP)", bucket: "Arregla la inestabilidad del entrenamiento / gradientes que se desvanecen" },
+    { text: "Equilibrar los pasos de actualización de D y G para que ninguno domine al otro", bucket: "Arregla la inestabilidad del entrenamiento / gradientes que se desvanecen" },
+    { text: "Esperar que una curva de pérdida estable garantice que las colas están cubiertas", bucket: "NO lo arregla por sí solo" },
+    { text: "Suponer que WGAN evita automáticamente el colapso de modos", bucket: "NO lo arregla por sí solo" },
+  ]}
+/>
+
+## Colapso de modos y memorización — los dos demonios
+
+<MCQ
+  client:visible
+  pretest
+  allowMultiple
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="Selecciona TODAS las afirmaciones que sean ciertas sobre una GAN que sufre colapso de modos. (Más de una es correcta.)"
+  options={[
+    { text: "El generador mapea muchos vectores de ruido distintos a solo unas pocas salidas diferentes", correct: true },
+    { text: "Puede cubrir el centro del mercado en calma sin producir casi nunca trayectorias de desplome", correct: true },
+    { text: "Es inofensivo para las pruebas de estrés porque el retorno medio sigue siendo aproximadamente correcto", },
+    { text: "Significa que el generador ha memorizado y copiado el conjunto de entrenamiento exactamente", },
+    { text: "Infrarrepresenta parte de la distribución real — un fallo de cobertura", correct: true },
+  ]}
+  explanation="El colapso de modos es un fallo de cobertura: G aprieta su salida sobre unos pocos modos (a menudo el centro en calma), matando de hambre a las colas — catastrófico para las pruebas de estrés. Es distinto de la memorización (copiar muestras), y las colas que faltan hacen que sea cualquier cosa menos inofensivo."
+/>
+
+Estos son los dos modos de fallo que convierten una GAN prometedora en una peligrosa. Son enfermedades distintas con curas distintas — y sobre datos financieros, ambas son frecuentes.
+
+**Colapso de modos.** Recuerda que $G$ mapea todo un espacio de vectores de ruido $z$ a salidas. En un modelo sano, barrer $z$ barre toda la diversidad de los datos — días en calma, tendencias, desplomes. En el **colapso de modos**, el generador descubre unas pocas salidas que engañan de forma fiable al discriminador actual y **mapea muchos $z$ distintos a esas mismas pocas salidas**, ignorando amplias regiones de la distribución real. El histograma de las falsas cubre solo *parte* del histograma real.
+
+En finanzas esto es singularmente venenoso. El colapso más común es sobre el **régimen central y en calma** — el generador reproduce fielmente los días de trading ordinarios y **casi nunca produce un desplome**. Tus datos sintéticos parecen plausibles día a día, tu retorno medio está bien, y tu modelo de valor en riesgo entrenado sobre ellos será dichosa y catastróficamente optimista. Un generador de pruebas de estrés que no puede generar estrés es peor que inútil; está *confiadamente* equivocado precisamente sobre los escenarios que existe para explorar.
+
+<ReturnDistribution
+  client:visible
+  caption="El colapso de modos, ilustrado. Un generador con modos colapsados (la curva estrecha) reproduce el centro en calma pero mata de hambre a las colas — ambas curvas tienen su pico en el mismo retorno medio, pero la colapsada casi nunca emite los grandes movimientos que viven en las colas de la curva ancha. Entrena modelos de riesgo sobre la distribución estrecha y tus pruebas de estrés dejan calladamente de contener estrés alguno."
+/>
+
+**Memorización.** El extremo opuesto. En lugar de aprender la *distribución*, $G$ aprende a reproducir las *muestras de entrenamiento* — emitiendo casi-copias exactas de ventanas que vio. Este generador **aprueba con sobresaliente cada prueba de distribución**: sus marginales, sus hechos estilizados, sus autocorrelaciones encajan a la perfección con los datos reales, porque *son* los datos reales, fotocopiados. Y ahí está la trampa. Si generas trayectorias sintéticas con una GAN memorizadora y las usas para construir o hacer backtest de una estrategia, has **filtrado el futuro en tu backtest** — la cinta "sintética" contiene los movimientos históricos reales contra los que tu estrategia será probada, así que parece brillante dentro de muestra y muere en real. Este es el peligro recurrente de todo el curso, y la prueba de evaluación de la lección 7 está construida en gran parte para cazarlo (distancias al vecino más cercano, discriminabilidad entrenamiento/prueba, comprobaciones de novedad fuera de muestra).
+
+**Ejemplo resuelto — mismo boletín de notas, enfermedades opuestas.** Toma tres generadores evaluados sobre el baremo de hechos estilizados:
+
+| Generador | Cobertura de colas | Coincidencia marginal / hechos estilizados | Qué falla de verdad |
+|---|---|---|---|
+| Sano | Plena — emite trayectorias en calma y de desplome | Buena (cercana, no perfecta) | Nada grave — este es el objetivo |
+| **Modos colapsados** | Ausente — casi ninguna trayectoria de desplome | *Falla* las comprobaciones de cola/curtosis | Infracubre: no hay estrés en la prueba de estrés |
+| **Memorizador** | Plena (está copiando desplomes reales) | *Aprueba con sobresaliente* todo | Sobreajusta: las trayectorias son casi-copias; el futuro se filtra en los backtests |
+
+Fíjate en la cruel asimetría. El colapso de modos al menos **se anuncia** — las estadísticas de cola están visiblemente mal. La memorización es **silenciosa en un boletín de distribución** y solo aflora cuando pruebas específicamente la novedad. Un modelo que puntúa *demasiado bien* en cada métrica de hechos estilizados debería hacerte *más* sospechar, no menos.
+
+<Callout variant="warning">
+Los dos demonios exigen reflejos opuestos, así que diagnostica antes de tratar. **Colapso de modos** = las salidas del generador son demasiado *estrechas* (faltan colas, faltan regímenes) — combátelo con discriminación por minilotes, objetivos desenrollados o estilo WGAN, condicionamiento sobre regímenes y métricas de cola explícitas. **Memorización** = las salidas están demasiado *cerca de los datos de entrenamiento* — cázala solo con pruebas de novedad (distancia al vecino más cercano respecto al conjunto de entrenamiento, un discriminador entrenamiento-contra-sintético, generalización sobre datos reservados), nunca con métricas de ajuste marginal. El error más mortal es tratar una alta puntuación de hechos estilizados como un certificado de salud limpio: una GAN memorizadora se gana una puntuación perfecta precisamente *porque* está haciendo trampa. Aprobar las pruebas de distribución es, por sí solo, evidencia de nada — y a veces evidencia de fraude.
+</Callout>
+
+### Cuándo usarlo
+
+Esta sección no es una herramienta que desplegar — es una lista de comprobación permanente que ejecutar. **Cada** GAN que entrenes sobre datos de mercado debe ser examinada por *ambos* demonios antes de que confíes en una sola trayectoria sintética: diagnósticos de cobertura de colas y de régimen para el colapso de modos, pruebas de novedad y de vecino más cercano para la memorización. Trata un generador como culpable hasta que se demuestre que innova. La lección 7 convierte este instinto en una prueba formal.
+
+<MatchConcepts
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Une cada concepto con su definición."
+  question="Dos demonios, dos firmas, dos curas"
+  pairs={[
+    { term: "Colapso de modos — firma", definition: "Salidas demasiado estrechas; faltan colas y regímenes; falla las comprobaciones de curtosis y de cola" },
+    { term: "Colapso de modos — cura", definition: "Discriminación por minilotes, condicionamiento por régimen, objetivos estilo WGAN, métricas de cola explícitas" },
+    { term: "Memorización — firma", definition: "Aprueba con sobresaliente cada prueba de distribución porque las salidas son casi-copias de los datos de entrenamiento" },
+    { term: "Memorización — cura", definition: "Pruebas de novedad y de vecino más cercano, discriminador entrenamiento-contra-sintético, comprobaciones sobre datos reservados" },
+  ]}
+/>
+
+## Recapitulación
+
+Una GAN es una carrera armamentística: un generador forjando trayectorias de mercado a partir de ruido y un discriminador intentando cazarlas, convergiendo — en teoría — cuando el crítico queda reducido a lanzar una moneda y el generador ha aprendido la distribución de los datos. Para que eso funcione sobre series temporales financieras, el campo fue añadiendo capas de arreglos de arquitectura y de pérdida. **QuantGAN** intercambia por **TCN** (convoluciones causales dilatadas) para ambas redes y una **transformación gaussianizadora** para que el modelo apunte a una serie mansa y la desdomestique al muestrear — reproduciendo el agrupamiento de volatilidad y las colas anchas. **TimeGAN** añade un embedding autocodificador más una **pérdida supervisada paso a paso** para que el modelo aprenda la *dinámica temporal*, no solo la marginal, y las **GAN condicionales** te dejan fijar una etiqueta de régimen o macro para dirigir los escenarios. **WGAN / WGAN-GP** reemplaza el objetivo JS saturante por la suave **distancia de Wasserstein** bajo una restricción de Lipschitz, curando los gradientes que se desvanecen que plagan los conjuntos de datos financieros minúsculos. Pero nada de esto derrota a los **dos demonios**: el **colapso de modos**, donde el generador cubre solo parte de la distribución (típicamente el centro en calma, matando de hambre a las colas de desplome y destripando tus pruebas de estrés), y la **memorización**, donde copia los datos de entrenamiento, aprueba con sobresaliente cada métrica de distribución y filtra calladamente el futuro en tus backtests. El kit del constructor te da un modelo; la lista del escéptico — prueba *ambos* demonios, y desconfía de una puntuación perfecta de hechos estilizados — lo mantiene honesto. La prueba de la lección 7 es donde ese escepticismo se convierte en procedimiento.
+
+<MindMap
+  client:visible
+  title="GAN para series temporales financieras — el mapa"
+  caption="Construye el mapa: el juego antagónico, las variantes de arquitectura, la estabilidad de WGAN y los dos demonios."
+  root={{
+    label: "GAN para finanzas",
+    children: [
+      {
+        label: "El juego antagónico",
+        children: [
+          { label: "El generador forja, el discriminador detecta" },
+          { label: "Objetivo minimax" },
+          { label: "Equilibrio de Nash ideal D igual a 0,5" },
+        ],
+      },
+      {
+        label: "Variantes de arquitectura",
+        children: [
+          { label: "QuantGAN — columna TCN más transformación gaussianizadora" },
+          { label: "TimeGAN — embedding más pérdida supervisada paso a paso" },
+          { label: "GAN condicional — fijar una etiqueta de régimen o macro" },
+        ],
+      },
+      {
+        label: "Estabilidad — WGAN",
+        children: [
+          { label: "La distancia del transportista de tierra reemplaza a la divergencia JS" },
+          { label: "Lipschitz vía recorte de pesos o penalización de gradiente" },
+          { label: "Gradientes suaves sobre datos financieros minúsculos" },
+        ],
+      },
+      {
+        label: "Los dos demonios",
+        children: [
+          { label: "Colapso de modos — demasiado estrecho, faltan colas de desplome" },
+          { label: "Memorización — copia datos, filtra el futuro en los backtests" },
+          { label: "Diagnostica antes de tratar" },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Pon a prueba tu comprensión"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  nextLabel="Siguiente pregunta"
+  backLabel="Atrás"
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  seeResultsLabel="Ver resultados"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  gateLabel="Comprueba tu respuesta para continuar."
+  questions={[
+    {
+      question: "¿Qué afirmación sobre el juego de entrenamiento de la GAN es VERDADERA?",
+      options: [
+        { text: "En el equilibrio ideal el discriminador devuelve alrededor de 0,5 en todas partes porque la distribución del generador coincide ahora con la de los datos", correct: true },
+        { text: "Un discriminador que puntúa 1,0 sobre cada muestra real significa que el entrenamiento ha tenido éxito" },
+        { text: "El generador y el discriminador comparten una única pérdida que ambos intentan minimizar" },
+        { text: "El entrenamiento es más sano cuando el discriminador domina al generador lo más rápido posible" },
+      ],
+      explanation: "El éxito significa que el generador ha igualado p_data, dejando al mejor discriminador lanzando una moneda (0,5). Un discriminador dominante mata de hambre de gradiente al generador — lo opuesto a sano.",
+    },
+    {
+      question: "Un compañero te muestra orgulloso un generador sintético que puntúa una coincidencia casi perfecta en cada métrica de hechos estilizados — curtosis, autocorrelación del agrupamiento de volatilidad, todo. ¿Qué debería preocuparte MÁS?",
+      options: [
+        { text: "Puede estar memorizando los datos de entrenamiento — las copias aprueban con sobresaliente las pruebas de distribución y filtran el futuro en los backtests", correct: true },
+        { text: "Nada — una puntuación perfecta de hechos estilizados es un certificado de salud limpio" },
+        { text: "Debe estar sufriendo colapso de modos, que siempre produce puntuaciones marginales perfectas" },
+        { text: "La pérdida de Wasserstein ya no se le puede aplicar" },
+      ],
+      explanation: "Una puntuación de distribución demasiado perfecta es una pista clásica de memorización: un generador que copia ventanas reales reproduce cada estadística marginal exactamente. Cázalo con pruebas de novedad / vecino más cercano, no con métricas de ajuste marginal.",
+    },
+    {
+      question: "¿Cómo se comparan la columna TCN de QuantGAN y una columna recurrente (RNN) para esta tarea?",
+      options: [
+        { text: "Las TCN procesan toda la ventana en paralelo con gradientes estables y un campo receptivo largo y controlable; las RNN son secuenciales y propensas a problemas de gradiente", correct: true },
+        { text: "Las RNN son estrictamente más rápidas y tienen una memoria efectiva más larga que las TCN dilatadas" },
+        { text: "Las TCN no pueden modelar dependencias de largo alcance, así que se requieren RNN para el agrupamiento de volatilidad" },
+        { text: "Ambas son idénticas; la elección es puramente cosmética" },
+      ],
+      explanation: "Las convoluciones causales dilatadas dan un campo receptivo que crece exponencialmente, entrenamiento paralelo y gradientes estables — por eso QuantGAN (y la mayoría de las GAN de secuencias financieras modernas) prefieren las TCN a la recurrencia.",
+    },
+    {
+      question: "Sobre un conjunto de datos financieros pequeño, un discriminador aprende rápido a separar lo real de lo falso con casi total certeza. Bajo el objetivo de la GAN vainilla, ¿qué PROVOCA esto — y qué lo arregla?",
+      options: [
+        { text: "Provoca que el gradiente del generador se desvanezca (divergencia JS saturada); la suave distancia del transportista de tierra de WGAN restaura un gradiente utilizable", correct: true },
+        { text: "Provoca memorización, que WGAN evita automáticamente" },
+        { text: "Provoca que el vector de ruido z crezca sin acotar, arreglado recortando z" },
+        { text: "Acelera la convergencia, así que no hace falta arreglo" },
+      ],
+      explanation: "Un discriminador decisivo significa distribuciones que apenas se solapan, donde la divergencia JS es plana y el gradiente del generador se desvanece. WGAN reemplaza la JS por la distancia de Wasserstein, que varía suavemente incluso sin solape — manteniendo al generador aprendiendo.",
+    },
+    {
+      question: "Tu banco quiere un generador para producir escenarios de prueba de estrés. Tras entrenar, observas que casi ninguna de las trayectorias sintéticas contiene un desplome brusco, aunque el retorno medio parece correcto. ¿Qué ha ocurrido probablemente, y por qué es peligroso aquí en concreto?",
+      options: [
+        { text: "Colapso de modos sobre el régimen en calma — el generador omite las colas de desplome, así que cualquier modelo de riesgo entrenado sobre él será peligrosamente optimista justo sobre los escenarios que debería estresar", correct: true },
+        { text: "Memorización — el generador copió desplomes reales al pie de la letra, lo cual es ideal para las pruebas de estrés" },
+        { text: "Convergencia exitosa — la ausencia de desplomes prueba que el modelo está bien calibrado" },
+        { text: "Una violación de Lipschitz en el crítico, inofensiva para el trabajo de riesgo" },
+      ],
+      explanation: "Colapsar sobre el centro en calma mientras se mata de hambre a las colas es el fallo de colapso de modos por excelencia — y es catastrófico precisamente para las pruebas de estrés, el único trabajo que necesita las colas. Combátelo con condicionamiento por régimen, métricas de cola y discriminación por minilotes.",
+    },
+  ]}
+/>
