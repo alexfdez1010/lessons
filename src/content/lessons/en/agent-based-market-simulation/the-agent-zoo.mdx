@@ -1,0 +1,292 @@
+---
+title: "The Agent Zoo"
+description: "Meet the five archetypes that populate an agent-based market — market makers, momentum traders, value traders, noise traders, and learned RL bots — and learn which stabilize price, which destabilize it, and how you assemble the mix."
+topic: "en/agent-based-market-simulation"
+order: 3
+minutes: 18
+updated: 2026-06-22
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, AgentPopulationMixer } from '@/components/react';
+
+So far you've built markets out of one kind of creature: the **zero-intelligence (ZI) trader** — an agent that submits random buy/sell orders within sensible price limits and otherwise has the strategic depth of a goldfish. ZI agents are a brilliant *baseline*. They're also, on their own, deeply boring. A pond full of identical goldfish does not a coral reef make.
+
+This lesson is the field trip to the rest of the zoo. We'll meet the heterogeneous cast that makes a simulated market actually *behave* like a market — generating trends, mean reversion, and the constant tug-of-war between calm and chaos. Each archetype gets a job description, a worked example, and a verdict: does it **stabilize** price (push it back toward calm) or **destabilize** it (push it further from calm)? And we'll trace where this whole enterprise came from — the Santa Fe Artificial Stock Market and the modern ABIDES simulator — before you learn the one move that defines an agent-based model: choosing the **mix**.
+
+## A market needs a cast
+
+Here's the core intuition. **Heterogeneity** — a population of agents that follow *different* rules and react *differently* to the same price — is the engine that generates interesting dynamics. A market of identical agents tends toward a single shared opinion; nothing surprising emerges because there's no internal disagreement to resolve. Disagreement *is* the dynamics.
+
+Think of an ecosystem. One species of rabbit, alone, just multiplies until it eats all the grass and starves — a flat, predictable arc. Add foxes (who eat rabbits) and the grass (which regrows) and you get the famous boom-bust population cycles, oscillations no single species would ever produce alone. The cycle is **emergent**: it lives in the *interaction*, not in any one animal. A market is the same. Trends, crashes, and volatility clusters are emergent properties of agents with conflicting strategies trading against each other — not features hard-coded into any single trader.
+
+The cast we'll meet has five archetypes:
+
+| Archetype | One-line job | Effect on price |
+|---|---|---|
+| Market maker | Quotes both sides, earns the spread | **Stabilizing** (dampens) |
+| Momentum / trend follower | Buys winners, sells losers | **Destabilizing** (amplifies) |
+| Fundamental / value trader | Fades deviations from fair value | **Stabilizing** (mean-reverts) |
+| Noise / ZI trader | Trades randomly, supplies liquidity | Neutral baseline |
+| Learned RL agent | Optimizes a reward via training | Depends on what it learned |
+
+Before we walk through them one at a time, here's the whole zoo in a single sandbox. The mixer below lets you set the population weights of four agent types and watch the **emergent price path** redraw. Crank one slider up and the market's *character* changes — sometimes calm, sometimes trending, sometimes pure noise. Keep it open as you read; every section maps directly onto one of these sliders.
+
+<AgentPopulationMixer client:visible />
+
+Play with the presets first. **"Stabilizing mix"** leans on market makers and value traders — notice the volatility readout stays low and the verdict reads calm. **"Trend-driven"** dials up momentum and the path sprouts long directional runs. **"Pure noise"** is all ZI traders: jittery, directionless, no persistent structure. We'll explain *why* each of those happens, one agent at a time.
+
+<MCQ
+  client:visible
+  pretest
+  question="Why does a market built from a single agent type tend to produce boring, structureless price behavior?"
+  options={[
+    { text: "Interesting dynamics like trends and mean reversion are emergent properties of agents with conflicting strategies interacting; one homogeneous type has no internal disagreement to generate them.", correct: true },
+    { text: "Single-type markets always crash immediately, so there's nothing left to observe." },
+    { text: "One agent type can't submit enough orders to move the price at all." },
+    { text: "Homogeneous markets violate conservation of money and are mathematically undefined." },
+  ]}
+  explanation="Heterogeneity is the engine. When every agent follows the same rule, they react to price in lockstep and the rich back-and-forth that produces trends, reversion, and volatility clustering never appears. Those patterns live in the interaction between DIFFERENT strategies."
+/>
+
+## Market makers (the liquidity providers)
+
+**Analogy.** A market maker is the currency-exchange booth at the airport. It always offers to buy your dollars *and* sell you euros, simultaneously, posting both prices. It doesn't care which way the crowd is heading — it just wants to be the one standing in the middle of every transaction, pocketing a sliver each time.
+
+**Definition.** A **market maker** is an agent that continuously posts **two-sided quotes**: a **bid** (the price at which it will buy) and an **ask** (the price at which it will sell), with the ask above the bid. The gap between them is the **spread**, and the maker's edge is earning that spread by buying low and selling high across many round trips. The cost of doing business is **inventory risk** — the danger of accumulating a large one-sided position that then moves against you. (You met inventory risk in depth in the deep-RL market-making prerequisite; here it's the same beast, now one species in a larger zoo.)
+
+**Effect: stabilizing.** Market makers *absorb* order flow. When a flurry of buyers arrives, the maker is the seller; when sellers pile in, the maker buys. By standing between impatient traders and the price, they dampen the swings those traders would otherwise cause. More makers in the population → tighter spreads, deeper liquidity, lower realized volatility.
+
+### Worked example
+
+A maker quotes **bid 99.90 / ask 100.10**, a spread of `100.10 − 99.90 = 0.20`. A balanced round trip — sell one unit at 100.10, buy one back at 99.90 — nets:
+
+`100.10 − 99.90 = 0.20` profit per round trip, on essentially zero net position. Do that 50 times in a session and you've earned `50 × 0.20 = 10.00`, having taken almost no directional bet.
+
+Now suppose flow turns **one-sided**: everyone wants to buy. The maker keeps filling those buyers from its ask side, *selling* unit after unit. After 30 one-sided fills its inventory is `−30` (short 30 units) — it owes the market 30 units it doesn't have. If price then jumps from 100.10 to 102.00, the maker's mark-to-market loss on that inventory is:
+
+`30 × (102.00 − 100.10) = 30 × 1.90 = 57.00` — wiping out a whole lot of patiently-earned spread. That is inventory risk biting.
+
+<Callout variant="warning" title="Stabilizers can vanish exactly when you need them">
+Market makers dampen volatility *while they're quoting*. But they are not charities — when inventory risk spikes (one-sided flow, gapping prices), a rational maker **widens its spread or withdraws entirely** to stop the bleeding. Liquidity that was deep a second ago can evaporate. That sudden withdrawal is a key ingredient of **flash crashes**, which we'll dissect later: the stabilizer steps back and removes the floor at the worst possible moment.
+</Callout>
+
+### When to use it
+
+Add market makers when you want a realistic **limit order book** with a functioning bid-ask spread and credible liquidity, or when you're studying how liquidity provision affects volatility and execution costs. They're also essential when other agents need *someone to trade against* — a population of pure directional traders with no makers often can't clear at all.
+
+## Momentum / trend followers (the amplifiers)
+
+**Analogy.** Momentum traders are the crowd at a nightclub that's "getting full." It looks busy, so more people queue up, which makes it look busier, so even more queue up. The line feeds itself — until it suddenly doesn't and everyone leaves at once. They buy *because* it's rising and sell *because* it's falling, treating the recent direction as a signal about the next one.
+
+**Definition.** A **momentum trader** (or **trend follower**) is an agent whose demand is a *positive function of recent returns*: rising prices trigger buying, falling prices trigger selling. This is **positive feedback** — the output (a price move) loops back to reinforce its own cause.
+
+**Effect: destabilizing.** Positive feedback amplifies. A small move begets buying, which makes a bigger move, which begets more buying. Momentum agents stretch fluctuations into **trends**, inflate **bubbles**, and accelerate **crashes**. They are also the prime suspects behind **volatility clustering** — the tendency of big moves to follow big moves — which is the headline topic of the next lesson. For now, just file away: trend followers manufacture persistence.
+
+### Worked example
+
+Price ticks up **+1%**. Momentum agents read that as a buy signal and pile in; their buying pushes price another **+0.6%**. That new move is *itself* a fresh signal, so a second wave buys, adding, say, **+0.6% × 0.6 = +0.36%**. The cumulative move from the original 1% nudge:
+
+`1% + 0.6% + 0.36% + … ≈ 1% × (1 / (1 − 0.6)) = 1% × 2.5 = 2.5%`
+
+A 1% spark became a 2.5% move purely through self-reinforcement (using the geometric-series sum with amplification factor 0.6). Flip the sign and the same machinery turns a small dip into a cascade.
+
+<Callout variant="warning" title="Amplifiers without brakes blow up the sim">
+A population that's *heavy* on momentum and *light* on stabilizers (makers + value traders) tends to run away: prices trend until they detach from anything sensible, then snap. If your simulated market produces parabolic blow-offs and violent reversals with no equilibrium, check the mix — you've probably starved it of the negative-feedback agents that act as brakes. The amplification factor staying below 1 (here, 0.6) is what keeps the series convergent; push the feedback gain past 1 and it diverges without bound.
+</Callout>
+
+### When to use it
+
+Use momentum agents when you want your market to exhibit **trends, bubbles, and fat-tailed crashes** rather than a placid random walk, or when you're specifically studying how positive feedback generates **volatility clustering** and self-fulfilling moves. They're the reason a simulated market can have *moods*.
+
+<FillBlank
+  client:visible
+  question="Fill in the feedback type that matches each agent's effect."
+  text="Momentum traders create {{positive|negative|zero}} feedback that amplifies moves and destabilizes price, while value traders create {{negative|positive|random}} feedback that pulls price back toward fair value."
+  explanation="Momentum = positive feedback (a move reinforces itself → destabilizing). Value trading = negative feedback (a deviation triggers the opposite trade → stabilizing, mean-reverting)."
+/>
+
+## Fundamental / value traders (the anchors)
+
+**Analogy.** A value trader is the bargain hunter who has a firm number in their head for what a sofa is *worth*. If the store marks it up far above that number, they walk away (or short it); if it's slashed below, they buy two. They trade *against* the crowd's enthusiasm, anchored to their own estimate of fair value.
+
+**Definition.** A **fundamental** or **value trader** is an agent that maintains an estimate of an asset's **fair value** (its intrinsic worth) and **fades deviations** from it: buy when price is below fair value (cheap), sell when price is above (dear). Their demand is a *negative function of the gap between price and fundamental*.
+
+**Effect: stabilizing.** This is **negative feedback** — the response opposes the move that triggered it — and negative feedback produces **mean reversion**: a tendency for price to be pulled back toward a central anchor. Value traders are the counterweight to momentum agents. Where trend followers chase, value traders fade.
+
+### Worked example
+
+Fair value is **100**. Price has been bid up to **110** — a `(110 − 100) / 100 = 10%` overvaluation. Value traders see a 10% premium and **sell**, supplying the asset to the eager crowd. Their selling pushes price down toward fair value: maybe to 106, then 102, as more value agents act on the shrinking-but-still-positive gap. The further price strays from 100, the harder they lean against it — a restoring force proportional to the deviation, like a spring. (Symmetrically, at a price of 90 they'd *buy* the 10% discount and push price back up.)
+
+<Callout variant="warning" title="The anchor is only as good as the fair-value estimate">
+Value traders stabilize *toward whatever number they believe is fair*. If their fair-value estimate is wrong — or if every value agent in your sim shares the *same* estimate and updates it the same way — they can anchor the market to the wrong place, or all capitulate at once when reality diverges. Worse, during a bubble, value traders who short an overvalued asset can be **carried out** before mean reversion arrives ("the market can stay irrational longer than you can stay solvent"). Stabilizing in the long run is not the same as stabilizing on every step.
+</Callout>
+
+### When to use it
+
+Add value traders whenever you want a credible **mean-reverting anchor** and a **fundamental** for price to orbit, or when you're modeling the eternal duel between trend-chasing and value-fading. Pair them with momentum agents and you get the realistic push-pull that generates oscillation around a fair value instead of either a flat line or an unbounded blow-off.
+
+<Categorize
+  client:visible
+  question="Sort each agent type by its net effect on price."
+  buckets={["Stabilizing", "Destabilizing"]}
+  items={[
+    { text: "Market maker absorbing two-sided flow", bucket: "Stabilizing" },
+    { text: "Momentum trader buying a rising market", bucket: "Destabilizing" },
+    { text: "Value trader fading an overvaluation", bucket: "Stabilizing" },
+    { text: "Trend follower selling into a falling market", bucket: "Destabilizing" },
+    { text: "Liquidity provider tightening the bid-ask spread", bucket: "Stabilizing" },
+  ]}
+  explanation="Negative-feedback agents (market makers absorbing flow, value traders fading deviations) dampen moves → stabilizing. Positive-feedback agents (momentum/trend followers chasing the direction) amplify moves → destabilizing."
+/>
+
+## Noise traders & learned RL agents
+
+The last two members of the zoo are the ones you already half-know — and the ones that point at where this course is heading.
+
+**Noise / zero-intelligence traders.** Recall from the ZI lesson: a **noise trader** submits orders driven by *random* demand rather than any view of value or direction. Far from being filler, they do real work. They **supply liquidity** (random orders on both sides give everyone someone to trade against), they inject **realism** (real markets are full of trades that have no clean strategic reason — hedging, rebalancing, impatience, noise), and they are the **baseline** against which you measure whether a fancier agent actually *adds* anything. If your sophisticated population produces the same stylized facts as pure ZI noise, your sophistication earned nothing.
+
+**Learned RL agents.** Here's the connective tissue. The execution and market-making bots you built with reinforcement learning in the deep-RL prerequisite — agents that *learned* a policy to maximize a reward (minimize execution cost, manage inventory) — can be **dropped into the simulation as just another population**. They don't get special status; they're one more species in the zoo, reacting to the same order book as everyone else. Sometimes a learned market-maker behaves like a smarter stabilizer; sometimes a learned execution agent behaves like a momentum trader without being told to. *What* it does to price depends entirely on what it was trained to optimize.
+
+This is a deliberate foreshadow of lesson 7, where we flip the relationship: the **ABM becomes the RL environment**. The simulated market — full of makers, momentum agents, value traders, and noise — is exactly the rich, reactive world an RL agent needs to train against. Zoo today, gymnasium tomorrow.
+
+<Callout variant="info" title="The balance is the whole game">
+Here's the tension to carry forward: **trend followers destabilize**; **value traders and market makers stabilize**; **noise traders set the floor of realism**; and **learned agents do whatever their reward taught them**. A market's entire *character* — calm or turbulent, trending or mean-reverting, liquid or fragile — is set by the **balance** between these forces. There's no single "correct" market. There's a dial, and the population mix is how you turn it.
+</Callout>
+
+<MCQ
+  client:visible
+  question="An RL market-making agent trained in the deep-RL prereq is dropped into the ABM. What determines its effect on the simulated price?"
+  options={[
+    { text: "What it was trained to optimize — its learned policy could end up stabilizing (good liquidity provision) or, if its reward incentivized chasing flow, destabilizing.", correct: true },
+    { text: "RL agents are always stabilizing because they are 'intelligent.'" },
+    { text: "RL agents are always destabilizing because they trade aggressively." },
+    { text: "It has no effect; learned agents are passive observers in an ABM." },
+  ]}
+  explanation="A learned agent is just another population. Its sign — stabilizing or destabilizing — falls out of its reward function and what behavior that reward selected for, not from a label like 'RL' or 'intelligent.' This is exactly why lesson 7 treats the ABM as a training environment: the agent's effect is endogenous."
+/>
+
+## The lineage and assembling a population
+
+Where did "model the market as a zoo of strategies" come from? Two landmarks.
+
+**The Santa Fe Artificial Stock Market** (Arthur, Holland, LeBaron, Palmer, Tayler; ~1990s). A foundational ABM in which **boundedly-rational, inductive** agents — agents with limited reasoning who *learn from experience* rather than computing a perfect optimum — each chose among a pool of trading rules, some **technical** (chartist, momentum-flavored) and some **fundamental** (value-flavored), and reinforced whichever rules had been paying off. The headline finding shook the prevailing theory: a **rich ecology of co-evolving strategies**, not a single rational-expectations equilibrium, is what produces **realistic, complex price behavior** — bubbles, crashes, persistent volatility. Heterogeneity wasn't a nuisance to be assumed away; it was the *source* of the realism.
+
+**ABIDES** (Agent-Based Interactive Discrete Event Simulation). The modern, open, high-fidelity descendant: a multi-agent **limit-order-book** simulator with a *real matching engine* and **nanosecond-resolution discrete-event** handling, so messages, latencies, and order priority behave like a genuine exchange. Because it's faithful and configurable, ABIDES is widely used as a **reinforcement-learning trading environment** — populate it with background agents, drop your learned agent in, and train. (Notice how this lands precisely where the previous section pointed.)
+
+So how do *you* assemble a population? You choose the **mix** — the counts or weights of each agent type. That's it. That's the central creative act of agent-based market modeling, and it is *literally the sliders in the mixer above*. More market makers and value traders → a calmer, mean-reverting market. More momentum agents → trends and fragility. All noise → structureless jitter. The mix is the model.
+
+<Callout variant="warning" title="More agent types ≠ more realism">
+It is tempting to keep adding species — "let's also add a contrarian, and a market-on-close agent, and three flavors of HFT." Resist. **Every agent type you add is another set of parameters to calibrate and another degree of freedom to overfit.** A baroque zoo can be tuned to reproduce *any* historical chart while explaining *nothing* and predicting *nothing* — the modeler's version of fooling yourself. The calibration-and-validation problem this creates is the subject of lessons 5–6. Prefer the smallest cast that produces the stylized facts you actually care about.
+</Callout>
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Market maker", definition: "Posts two-sided quotes and earns the spread; stabilizing, but can withdraw under inventory risk." },
+    { term: "Momentum trader", definition: "Buys winners and sells losers; positive feedback that amplifies moves into trends." },
+    { term: "Value trader", definition: "Fades deviations from estimated fair value; negative feedback driving mean reversion." },
+    { term: "Noise / ZI trader", definition: "Random demand that supplies liquidity and realism; the baseline to beat." },
+    { term: "Santa Fe Artificial Stock Market", definition: "1990s ABM of inductive, boundedly-rational agents choosing technical vs fundamental rules; showed a strategy ecology yields complex price behavior." },
+    { term: "ABIDES", definition: "Modern open multi-agent limit-order-book simulator with a real matching engine and nanosecond events; used as an RL trading environment." },
+  ]}
+/>
+
+## Recap
+
+The zoo, in one breath: a market gets its dynamics from **heterogeneity**, not from any single clever agent. **Market makers** quote both sides and dampen flow (stabilizing — until inventory risk makes them flee). **Momentum traders** chase direction and amplify it (destabilizing positive feedback; tomorrow's volatility clustering). **Value traders** fade deviations toward fair value (stabilizing negative feedback; mean reversion). **Noise/ZI traders** supply liquidity and realism and set the baseline. **Learned RL agents** are just another population whose sign depends on their reward. The field's lineage runs from the **Santa Fe Artificial Stock Market** (ecology beats equilibrium) to **ABIDES** (a faithful LOB sim doubling as an RL environment). And assembling a population *is* choosing the **mix** — the sliders — with the standing warning that more types means more knobs and more ways to overfit.
+
+<MindMap
+  client:visible
+  title="The Agent Zoo"
+  caption="Five archetypes, their feedback sign, and the lineage that assembles them into a market."
+  root={{
+    label: 'The Agent Zoo',
+    children: [
+      {
+        label: 'Stabilizing (negative feedback)',
+        children: [
+          { label: 'Market makers — quote both sides, earn spread, absorb flow' },
+          { label: 'Value traders — fade deviations → mean reversion' },
+        ],
+      },
+      {
+        label: 'Destabilizing (positive feedback)',
+        children: [
+          { label: 'Momentum / trend followers — chase direction, amplify into trends' },
+        ],
+      },
+      {
+        label: 'Baseline & learned',
+        children: [
+          { label: 'Noise / ZI traders — random demand, liquidity, realism' },
+          { label: 'Learned RL agents — effect depends on reward; ABM-as-RL-env (lesson 7)' },
+        ],
+      },
+      {
+        label: 'Lineage & assembly',
+        children: [
+          { label: 'Santa Fe ASM — inductive agents, ecology > equilibrium' },
+          { label: 'ABIDES — high-fidelity LOB sim, RL environment' },
+          { label: 'Assemble = choose the mix (the sliders); more types = more overfit' },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Walk the zoo"
+  questions={[
+    {
+      question: "Which statement is TRUE about the stabilizing vs destabilizing split?",
+      options: [
+        { text: "Market makers and value traders are stabilizing (negative feedback); momentum traders are destabilizing (positive feedback).", correct: true },
+        { text: "Momentum traders and market makers both stabilize the market." },
+        { text: "Value traders amplify moves while momentum traders dampen them." },
+        { text: "All agent types are stabilizing as long as there are enough of them." },
+      ],
+      explanation: "Negative feedback (makers absorbing flow, value traders fading deviations) dampens → stabilizing. Positive feedback (momentum chasing direction) amplifies → destabilizing.",
+    },
+    {
+      question: "What was the headline finding of the Santa Fe Artificial Stock Market?",
+      options: [
+        { text: "A rich ecology of co-evolving, boundedly-rational strategies — not a single rational-expectations equilibrium — produces realistic, complex price behavior.", correct: true },
+        { text: "Markets are always efficient and converge to one rational price." },
+        { text: "Only zero-intelligence traders are needed to reproduce every stylized fact." },
+        { text: "Nanosecond matching engines are required to see emergent dynamics." },
+      ],
+      explanation: "Santa Fe showed heterogeneity and inductive, experience-driven agents are the SOURCE of complex realism — equilibrium theory couldn't account for it. (ABIDES, separately, is the modern nanosecond-resolution LOB simulator.)",
+    },
+    {
+      question: "In the mixer, you set momentum very high and market makers + value traders near zero. What emergent behavior should you expect?",
+      options: [
+        { text: "Long self-reinforcing trends and violent reversals — runaway moves with no negative-feedback brakes to anchor price.", correct: true },
+        { text: "A perfectly flat price line at fair value." },
+        { text: "Tight spreads and low realized volatility." },
+        { text: "Structureless random jitter identical to a pure-noise market." },
+      ],
+      explanation: "Heavy positive feedback with no stabilizers means small moves amplify without bound until they snap — trends and crashes, not calm. Stabilizers are the brakes you just removed.",
+    },
+    {
+      question: "A modeler reproduces a historical crash perfectly by adding seven bespoke agent types, each with its own tuned parameters. What's the trap?",
+      options: [
+        { text: "More agent types means more knobs to calibrate and more degrees of freedom to overfit — the model may fit any chart while explaining and predicting nothing.", correct: true },
+        { text: "Seven is fine; realism scales linearly with the number of agent types." },
+        { text: "The crash must be real because the fit is exact." },
+        { text: "Bespoke agents are always more faithful than a small standard cast." },
+      ],
+      explanation: "A baroque zoo is the classic way to fool yourself: enough free parameters fit anything. Prefer the smallest cast that yields the stylized facts you care about — calibration/validation is lessons 5–6.",
+    },
+    {
+      question: "How does a value trader's effect on price DIFFER from a momentum trader's, facing the same +1% move?",
+      options: [
+        { text: "The momentum trader buys (reinforcing the up-move); the value trader, if price is now above fair value, sells (opposing it) — positive vs negative feedback.", correct: true },
+        { text: "Both buy, so they reinforce each other and double the move." },
+        { text: "Both sell, pulling price straight back down." },
+        { text: "Neither reacts to a 1% move; they only act on 10%+ moves." },
+      ],
+      explanation: "Same stimulus, opposite signs. Momentum reads the move as a signal to chase it (positive feedback); value reads the resulting overvaluation as a reason to fade it (negative feedback). Their balance sets the market's character.",
+    },
+  ]}
+/>

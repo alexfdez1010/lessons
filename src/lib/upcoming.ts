@@ -68,25 +68,6 @@ export interface UpcomingCourse {
  */
 export const upcomingCourses: UpcomingCourse[] = [
   {
-    slug: 'agent-based-market-simulation',
-    icon: '🐜',
-    difficulty: 'expert',
-    order: 16,
-    accent: 'accent',
-    title: {
-      en: 'Agent-Based Models & Market Simulation',
-      es: 'Modelos Basados en Agentes y Simulación de Mercados',
-    },
-    description: {
-      en: 'Grow a market from the bottom up: simulate it as a swarm of interacting agents — zero-intelligence traders, market makers, momentum and value players, learned RL bots — then calibrate it to real stylized facts and use it as a sandbox the historical tape can never give you.',
-      es: 'Haz crecer un mercado de abajo arriba: simúlalo como un enjambre de agentes que interactúan —traders de inteligencia cero, creadores de mercado, jugadores de momentum y de valor, bots de RL aprendidos— calíbralo con los hechos estilizados reales y úsalo como un laboratorio que la serie histórica nunca puede darte.',
-    },
-    dependencies: ['generative-models-for-synthetic-market-data', 'deep-rl-for-execution-and-market-making'],
-    tags: ['quantitative-finance'],
-    buildNotes:
-      'The other answer to "you only have one history": instead of LEARNING a generator (the generative-models course), BUILD the market mechanistically as interacting agents and let the price path emerge. Agent-based models (ABMs) for markets: zero-intelligence agents as the surprising baseline, the Santa Fe artificial stock market, the ABIDES/multi-agent-LOB lineage, and how heterogeneous strategies (market makers, momentum/trend, fundamental/value, noise, and the RL agents from deep-rl-for-execution-and-market-making) produce emergent stylized facts. The calibration problem: how do you tune an ABM so its output matches the fat tails, volatility clustering and autocorrelations from time-series-finance — and how do you VALIDATE it (the same "did you fool yourself?" discipline as synthetic data). Killer uses an ABM gives you that backtests cannot: counterfactual market structure (tick size, latency, a circuit breaker), flash-crash and feedback-loop stress testing, and a non-stationary training ground for RL that pushes back. Contrast ABM (bottom-up, mechanistic, interpretable) vs deep generative models (top-down, learned, opaque). Islands: agent-population-mixer + emergent-stylized-facts.',
-  },
-  {
     slug: 'foundation-models-for-financial-time-series',
     icon: '🧠',
     difficulty: 'expert',
@@ -123,6 +104,63 @@ export const upcomingCourses: UpcomingCourse[] = [
     tags: ['quantitative-finance'],
     buildNotes:
       'The capstone critique of everything predictive: a backtest shows correlation, but capital is allocated on the belief that the signal CAUSES the return — and confounding quietly wrecks that leap. Causal inference for quant: the potential-outcomes / Rubin framework and causal DAGs, confounders vs colliders, why "control for everything" (collider bias, bad controls) backfires, and how this reframes factor zoo / overfitting from the systematic-and-statistical-arbitrage course. The estimation toolkit pointed at finance: natural experiments and event studies (index reconstitutions, regulatory shocks), difference-in-differences, instrumental variables, regression discontinuity, and double/debiased machine learning (DML) layered on the models from deep-learning-for-market-data. The sharpest application: market impact and transaction-cost analysis as a CAUSAL problem — your own trade moves the price, so naive TCA is hopelessly confounded by why you traded; this ties straight back to optimal-execution. Honest limits: unobserved confounders, the un-testable assumptions every method rests on, and why an RCT is a luxury markets rarely grant. Islands: confounder-dag-explorer + correlation-vs-causation-backtest.',
+  },
+  {
+    slug: 'graph-neural-networks-for-financial-networks',
+    icon: '🕸️',
+    difficulty: 'expert',
+    order: 19,
+    accent: 'brand',
+    title: {
+      en: 'Graph Neural Networks for Financial Networks & Systemic Risk',
+      es: 'Redes Neuronales de Grafos para Redes Financieras y Riesgo Sistémico',
+    },
+    description: {
+      en: 'Markets are not a table of returns — they are a graph: banks lending to banks, firms wired into supply chains, assets co-moving, wallets transacting on-chain. Learn graph neural networks — message passing, node/edge/graph tasks — and aim them at the problems a flat table cannot see: contagion, systemic risk, fraud rings, and relational alpha.',
+      es: 'Los mercados no son una tabla de rendimientos — son un grafo: bancos que prestan a bancos, empresas cableadas en cadenas de suministro, activos que co-mueven, monederos que transaccionan en cadena. Aprende redes neuronales de grafos —paso de mensajes, tareas de nodo/arista/grafo— y apúntalas a los problemas que una tabla plana no puede ver: contagio, riesgo sistémico, redes de fraude y alfa relacional.',
+    },
+    dependencies: ['deep-learning-for-market-data'],
+    tags: ['quantitative-finance'],
+    buildNotes:
+      'The structural turn on top of deep-learning-for-market-data: most ML in finance flattens the world into a feature table and throws away the RELATIONSHIPS, but finance is natively a graph. Graph neural networks (GNNs) for finance: represent the system as nodes + edges (interbank lending, supply-chain links, asset correlation graphs, on-chain wallet/transaction graphs), the message-passing paradigm (aggregate-from-neighbours), and the three task types — node-level (classify/score an institution or wallet), edge-level (predict a new link, e.g. a counterparty exposure or a fraud transfer), graph-level (score a whole portfolio/market state). The architecture lineage: GCN, GraphSAGE (inductive, scales to new nodes), GAT (attention over neighbours), and temporal/dynamic GNNs for evolving networks. Killer finance applications: SYSTEMIC RISK & contagion (model how a default cascades through the lending network — a DebtRank/feedback story the tabular models structurally miss), fraud & AML ring detection on transaction graphs, relational alpha (cross-asset/peer-firm signal propagation), and on-chain analytics. The honest audit, carrying the deflated-Sharpe / leakage discipline: graphs leak HARD (a node sees its neighbours, so train/test splits must be topology-aware — no peeking across edges), over-smoothing as you stack layers, non-stationary topology, and the heavy data-plumbing cost. Contrast GNN (relational, structural) vs sequence models from deep-learning-for-market-data (temporal, per-asset). Islands: message-passing-animator + contagion-cascade-graph.',
+  },
+  {
+    slug: 'adversarial-ml-and-robustness-in-trading',
+    icon: '🛡️',
+    difficulty: 'expert',
+    order: 20,
+    accent: 'accent',
+    title: {
+      en: 'Adversarial Machine Learning & Model Robustness in Trading',
+      es: 'Machine Learning Adversarial y Robustez de Modelos en Trading',
+    },
+    description: {
+      en: 'Markets are adversarial: other agents probe, spoof, and trade against your model, and the data shifts the instant you deploy. Learn adversarial examples and data poisoning aimed at trading models, distribution shift and concept drift, and the robustness toolkit — adversarial training, robust optimization, and honest stress evaluation — for systems that must survive an opponent, not a benchmark.',
+      es: 'Los mercados son adversariales: otros agentes sondean, hacen spoofing y operan contra tu modelo, y los datos cambian en el instante en que despliegas. Aprende ejemplos adversariales y envenenamiento de datos apuntados a modelos de trading, cambio de distribución y deriva de concepto, y la caja de herramientas de robustez —entrenamiento adversarial, optimización robusta y evaluación de estrés honesta— para sistemas que deben sobrevivir a un oponente, no a un benchmark.',
+    },
+    dependencies: ['machine-learning-for-alpha', 'deep-learning-for-market-data'],
+    tags: ['quantitative-finance'],
+    buildNotes:
+      'The security mindset for quant ML: every other course assumes the data-generating process is indifferent to you — this one assumes it is HOSTILE. Adversarial machine learning for trading: adversarial examples (tiny, crafted input perturbations that flip a model — the FGSM/PGD lineage) reframed for market features, data poisoning and backdoor attacks (an adversary who can nudge the order flow your model learns from, e.g. spoofing/layering to bait a signal), and model extraction/inference attacks against a deployed strategy. The non-stationary, non-malicious half: distribution shift and concept drift (covariate vs label shift), why a strategy decays the moment it is live (the market adapts, alpha crowds out), and drift detection. The robustness toolkit: adversarial training and robust optimization (distributionally-robust optimization / DRO, min-max objectives), regularization and ensembling for stability, conformal prediction for honest uncertainty under shift, and stress evaluation against a worst-case opponent rather than an i.i.d. test set. Carry the deflated-Sharpe / "did you fool yourself" creed all the way: robustness claims are easy to fake, so the evaluation must be adversarial too. Ties to systematic-and-statistical-arbitrage (alpha decay) and deep-rl-for-execution (an environment that reacts). Islands: adversarial-perturbation-explorer + drift-detector-timeline.',
+  },
+  {
+    slug: 'quantum-computing-for-finance',
+    icon: '⚛️',
+    difficulty: 'expert',
+    order: 21,
+    accent: 'brand',
+    title: {
+      en: 'Quantum Computing for Finance',
+      es: 'Computación Cuántica para Finanzas',
+    },
+    description: {
+      en: 'The frontier-hardware bet: where quantum algorithms might actually help finance, and where it is pure hype. Amplitude estimation for a quadratic Monte-Carlo speedup in option pricing and risk, QAOA and quantum annealing for portfolio optimization, quantum-inspired methods you can run on classical hardware today — and a clear-eyed audit of the noise, qubit-count, and data-loading walls between the promise and a real edge.',
+      es: 'La apuesta por el hardware de frontera: dónde podrían ayudar de verdad los algoritmos cuánticos a las finanzas, y dónde es puro bombo. Estimación de amplitud para una aceleración cuadrática de Monte Carlo en valoración de opciones y riesgo, QAOA y recocido cuántico para optimización de carteras, métodos inspirados en lo cuántico que puedes ejecutar hoy en hardware clásico — y una auditoría lúcida de los muros de ruido, número de cúbits y carga de datos entre la promesa y una ventaja real.',
+    },
+    dependencies: ['monte-carlo-finance', 'portfolio-optimization'],
+    tags: ['quantitative-finance'],
+    buildNotes:
+      'The deepest frontier topic: a sober, technical map of quantum computing for finance that neither dismisses nor oversells it. Foundations just enough to use: qubits, superposition, entanglement, gates, and the two hardware paradigms (gate-model vs quantum annealing) — taught for the finance reader, not the physicist. The three application pillars: (1) Quantum Amplitude Estimation (QAE) giving a QUADRATIC speedup over classical Monte Carlo for option pricing and risk (VaR/CVaR) — the cleanest theoretical win, built directly on monte-carlo-finance; (2) portfolio optimization as QUBO solved with QAOA (gate model) or quantum annealing (D-Wave), handling cardinality/discrete constraints that choke classical convex solvers, building on portfolio-optimization; (3) quantum machine learning (quantum kernels, variational classifiers) for signals — with heavy skepticism. The reality check that anchors the whole course: the bottlenecks that make near-term advantage elusive — NISQ-era noise and decoherence, qubit counts and error correction overhead, and above all the DATA-LOADING / state-preparation problem (loading classical market data into amplitudes can erase the speedup). What is usable TODAY: quantum-inspired / tensor-network classical algorithms. Keep the same evidential discipline as the ML courses: a theoretical speedup is not a PnL edge until the end-to-end pipeline (including loading and readout) beats the best classical baseline. Islands: amplitude-estimation-convergence + qubo-portfolio-annealer.',
   },
 ];
 

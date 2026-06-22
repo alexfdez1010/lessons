@@ -819,3 +819,10 @@ export type { StylizedFactsChecklistProps, StylizedFact, StylizedFactKind } from
 
 export { SyntheticVsRealPaths, default as SyntheticVsRealPathsDefault } from '@/components/react/SyntheticVsRealPaths';
 export type { SyntheticVsRealPathsProps } from '@/components/react/SyntheticVsRealPaths';
+
+// Agent-based-market-simulation islands
+export { AgentPopulationMixer, default as AgentPopulationMixerDefault } from '@/components/react/AgentPopulationMixer';
+export type { AgentPopulationMixerProps } from '@/components/react/AgentPopulationMixer';
+
+export { EmergentStylizedFacts, default as EmergentStylizedFactsDefault } from '@/components/react/EmergentStylizedFacts';
+export type { EmergentStylizedFactsProps } from '@/components/react/EmergentStylizedFacts';
