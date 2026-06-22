@@ -17,8 +17,9 @@
  *     a slug in both places would draw the node twice.)
  *
  * ── Autonomous daily-agent contract (`scripts/daily-lesson.sh`) ──────────────
- * The daily agent builds the LOWEST-`order` entry, then DELETES that entry.
+ * The agent has TWO modes, decided by whether this array still has entries.
  *
+ * MODE A — queue NOT empty: build the LOWEST-`order` entry, then DELETE it.
  *   • Build strictly within the finance scope in CLAUDE.md (quantitative
  *     finance, crypto, DeFi). One topic per run, en + es twin.
  *   • Go in order: build the lowest-`order` upcoming entry first. Never build
@@ -28,8 +29,16 @@
  *     for catalog wiring, and keep the same `slug` for the topic MDX so it
  *     graduates cleanly.
  *   • After building, REMOVE its entry here (the topic MDX is now the record).
- *   • When fewer than 3 entries remain, APPEND the next harder topics (each one
- *     notch up) so the queue never empties.
+ *   • Do NOT append new entries. Once these planned courses are built the
+ *     catalog is considered complete — let the queue empty out.
+ *
+ * MODE B — queue EMPTY (`[]`): the catalog is complete. The agent NO LONGER
+ *   adds courses. Each run instead picks ONE already-built topic AT RANDOM
+ *   (e.g. `ls src/content/topics/en/ | shuf -n1`, varying the pick run to run),
+ *   reviews its current state against the mission (zero-to-expert depth, worked
+ *   examples, animation coverage, interaction density, quiz quality, accuracy,
+ *   en/es parity), and proposes + implements concrete improvements to that one
+ *   topic. This array stays empty and is left untouched.
  */
 
 import type { Difficulty } from '@/lib/catalog-filter';

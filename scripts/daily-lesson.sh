@@ -277,20 +277,38 @@ validate_and_finalize() {
 # validate, build, regenerate OG, git add, commit, or push -- the wrapper owns
 # all of that. None may launch background or detached processes.
 # ---------------------------------------------------------------------------
-PROMPT='Run one autonomous lesson-building session for this repository.
-Read CLAUDE.md and the relevant skills in .claude/skills first, then follow
-them completely. The build queue is DATA in `src/lib/upcoming.ts` (the `upcomingCourses`
-array), NOT a markdown checklist. Implement exactly the entry with the LOWEST `order`,
-from top to bottom, including its complete English and Spanish content. Use that entry'\''s
-`buildNotes` as the brief, its `dependencies`/`tags` for catalog wiring, and keep the same
-`slug` for the topic MDX. After the course is fully written, REMOVE that entry from
-`upcomingCourses` in `src/lib/upcoming.ts` (the built topic under `src/content/topics/` is
-now the record; leaving it in upcoming would draw the node twice). If fewer than three
-entries remain in `upcomingCourses`, first append suitable progressively harder finance,
-quantitative-finance, crypto, or DeFi entries (each one notch up) so the queue does not run
-empty, then implement only the lowest-`order` entry. Inspect the existing working tree
-carefully and never discard or overwrite changes you did not create. Work only inside this
-repository.
+PROMPT='Run one autonomous session for this repository.
+Read CLAUDE.md and the relevant skills in .claude/skills first, then follow them completely.
+The build queue is DATA in `src/lib/upcoming.ts` (the `upcomingCourses` array), NOT a markdown
+checklist. Your behavior depends on whether that array still has entries:
+
+MODE A -- QUEUE NOT EMPTY (`upcomingCourses` still has at least one entry): build a new course.
+Implement exactly the entry with the LOWEST `order`, including its complete English and Spanish
+content. Use that entry'\''s `buildNotes` as the brief, its `dependencies`/`tags` for catalog
+wiring, and keep the same `slug` for the topic MDX. After the course is fully written, REMOVE
+that entry from `upcomingCourses` in `src/lib/upcoming.ts` (the built topic under
+`src/content/topics/` is now the record; leaving it in upcoming would draw the node twice).
+Do NOT append any new entries to the queue -- once these planned courses are built the catalog
+is considered complete. Let the queue empty out.
+
+MODE B -- QUEUE EMPTY (`upcomingCourses` is `[]`): do NOT add any new course or any new topic.
+The catalog is complete; from now on every run IMPROVES one existing course instead of building
+a new one. Pick ONE already-built topic AT RANDOM and improve it this run:
+1. List the built English topics (`ls src/content/topics/en/`), then choose ONE at random --
+   use a real random pick (e.g. `ls src/content/topics/en/ | shuf -n1`) so the choice varies
+   run to run; do not always pick the same or the first.
+2. Review that topic'\''s current state thoroughly against the mission in CLAUDE.md and its
+   skills: zero-to-expert depth, per-concept worked numeric examples, exhaustiveness, animation/
+   chart coverage, interaction density, quiz quality (no repeated/interchangeable questions),
+   accuracy, accessibility, and en/es twin parity.
+3. Propose AND implement concrete improvements to THAT ONE topic this run -- deepen thin
+   sections, add missing worked examples or charts/animation islands, fix weak or duplicated
+   exercises, correct errors, and bring the es twin back into parity. Keep changes scoped to the
+   chosen topic (plus any shared reusable island you must add for it). Do not touch
+   `upcomingCourses`.
+
+In BOTH modes: inspect the existing working tree carefully and never discard or overwrite
+changes you did not create. Work only inside this repository.
 
 BEFORE YOU EXIT, self-check these recurring KaTeX/MDX-dollar pitfalls -- they are the cause
 of nearly every validation failure and repair round-trip in this system, and a repair
@@ -316,10 +334,10 @@ IMPORTANT -- you are running inside a wrapper that owns ALL validation and publi
 - NEVER launch background or detached processes (no trailing `&`, no `run_in_background`,
   no nohup/setsid/disown). Run only short foreground commands and wait for each to exit.
 
-Your job ends when the implementation (MDX content, components, and the `upcomingCourses`
-entry removal in `src/lib/upcoming.ts`) is
-written to the working tree. When it is complete, simply stop and exit, leaving all your
-changes uncommitted in the working tree for the wrapper to validate and publish.'
+Your job ends when the implementation is written to the working tree -- in Mode A the new
+course'\''s MDX/components plus the `upcomingCourses` entry removal in `src/lib/upcoming.ts`; in
+Mode B the improvements to the chosen existing topic. When it is complete, simply stop and exit,
+leaving all your changes uncommitted in the working tree for the wrapper to validate and publish.'
 
 RESCUE_PROMPT='A previous autonomous session for this repository exited while leaving
 uncommitted or untracked changes in the working tree. Do NOT start any new upcoming course or
