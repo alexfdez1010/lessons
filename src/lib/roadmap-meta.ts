@@ -143,6 +143,66 @@ export const roadmaps: RoadmapMeta[] = [
       es: 'La visión global — dinero, inflación, PIB, bancos centrales, mercados de bonos y cómo se negocian las divisas entre sí.',
     },
   },
+  {
+    tag: 'portfolio',
+    icon: '📦',
+    order: 12,
+    title: { en: 'Portfolio Construction', es: 'Construcción de Carteras' },
+    description: {
+      en: 'Turn a pile of assets into a portfolio — risk-and-return metrics, mean-variance optimization, factor models, and sizing bets with Kelly.',
+      es: 'Convierte un montón de activos en una cartera — métricas de riesgo-rentabilidad, optimización media-varianza, modelos de factores y dimensionar apuestas con Kelly.',
+    },
+  },
+  {
+    tag: 'options',
+    icon: '📐',
+    order: 13,
+    title: { en: 'Options & Volatility', es: 'Opciones y Volatilidad' },
+    description: {
+      en: 'Options from first contract to the vol surface — payoffs, Black-Scholes pricing, the Greeks, volatility trading, exotics, and on-chain options.',
+      es: 'Opciones desde el primer contrato hasta la superficie de volatilidad — pagos, valoración Black-Scholes, las griegas, trading de volatilidad, exóticos y opciones on-chain.',
+    },
+  },
+  {
+    tag: 'credit',
+    icon: '🏦',
+    order: 14,
+    title: { en: 'Credit & Securitization', es: 'Crédito y Titulización' },
+    description: {
+      en: 'Default risk priced and traded — swaps and rate derivatives, fixed-income analytics, credit derivatives, securitization, and counterparty/XVA risk.',
+      es: 'El riesgo de impago, valorado y negociado — swaps y derivados de tipos, analítica de renta fija, derivados de crédito, titulización y riesgo de contraparte/XVA.',
+    },
+  },
+  {
+    tag: 'algo-trading',
+    icon: '🦾',
+    order: 15,
+    title: { en: 'Algorithmic & Quant Trading', es: 'Trading Algorítmico y Cuantitativo' },
+    description: {
+      en: 'How quants actually trade — market microstructure, execution algorithms, statistical arbitrage, high-frequency market making, and RL for execution.',
+      es: 'Cómo operan de verdad los quants — microestructura de mercado, algoritmos de ejecución, arbitraje estadístico, creación de mercado de alta frecuencia y RL para ejecución.',
+    },
+  },
+  {
+    tag: 'ai-ml',
+    icon: '🤖',
+    order: 16,
+    title: { en: 'AI & Machine Learning for Finance', es: 'IA y Machine Learning para Finanzas' },
+    description: {
+      en: 'Modern AI on market data — ML for alpha without leakage, deep learning, reinforcement learning, generative and foundation models, GNNs, and robustness.',
+      es: 'IA moderna sobre datos de mercado — ML para alfa sin fugas, deep learning, aprendizaje por refuerzo, modelos generativos y fundacionales, GNNs y robustez.',
+    },
+  },
+  {
+    tag: 'mev',
+    icon: '⛏️',
+    order: 17,
+    title: { en: 'MEV & On-chain Trading', es: 'MEV y Trading On-chain' },
+    description: {
+      en: 'The hidden game beneath every block — ordering and MEV, cross-DEX and cross-chain arbitrage, bridge MEV, and order-flow auctions that redistribute it.',
+      es: 'El juego oculto bajo cada bloque — ordenación y MEV, arbitraje cross-DEX y cross-chain, MEV de puentes y subastas de flujo de órdenes que lo redistribuyen.',
+    },
+  },
 ];
 
 /** Quick lookup by tag. */
