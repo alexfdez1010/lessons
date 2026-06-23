@@ -1,0 +1,461 @@
+---
+title: "LLMs as Research Tools & as Signals"
+description: "The two jobs an LLM can hold in a quant stack — as a signal that turns text into a return-predicting number, and as a researcher that proposes hypotheses, features, and code — with sentiment-and-event extraction, multimodal price-plus-text fusion, the AI-quant idea loop, and the data-snooping explosion that an automated idea firehose detonates."
+topic: "en/foundation-models-for-financial-time-series"
+order: 4
+minutes: 18
+updated: 2026-06-22
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, SignalDecay } from '@/components/react';
+
+Lessons 1 through 3 built the machinery: the pretrain-and-adapt bet (1), time-series foundation models (2), and how zero-shot, few-shot, and scaling laws actually behave on financial data (3). Now we point that machinery at a job. There are exactly two jobs an LLM can hold on a quant desk, and confusing them is how good teams ship bad research.
+
+A language model can be a **signal** — you feed it text, it emits a number, and that number predicts returns. Or it can be a **researcher** — it reads the literature, proposes hypotheses, writes the backtest code, and critiques the results. Same model, radically different risk profiles. A signal lives or dies on *out-of-sample predictive power*; a researcher lives or dies on whether its tireless creativity is *disciplined* or merely *prolific*. This lesson works both roles, then spends most of its energy on the failure mode the researcher role unleashes: an idea generator that can run ten thousand strategies overnight is a multiple-testing bomb with a very short fuse.
+
+Let's sort the two jobs first, then go deep on each.
+
+## Two roles: the LLM as signal vs. as researcher
+
+<MCQ
+  client:visible
+  pretest
+  question="A team uses an LLM two ways: (a) to score every earnings-call transcript for sentiment and trade the score, and (b) to brainstorm 500 candidate signals and auto-write their backtests. Which framing is right?"
+  options={[
+    { text: "(a) is the LLM as a signal — text in, a return-predicting number out; (b) is the LLM as a researcher — it generates hypotheses and code, which must then be tested skeptically", correct: true },
+    { text: "Both are signals, because both ultimately produce trades" },
+    { text: "Both are research, because an LLM is never a real-time signal" },
+    { text: "(a) is research and (b) is a signal — the brainstormer is the one being traded directly" }
+  ]}
+  explanation="Scoring text into a tradable number is the signal role; proposing ideas and writing test code is the researcher role. The danger profiles differ: a signal can be overfit, but a researcher can manufacture thousands of overfit signals at once."
+/>
+
+**The analogy.** Think of a newsroom. The *reporter* turns events into a single filed number — "sentiment: +0.7" — that goes straight onto the trading wire; if the reporter is wrong, one story is wrong. The *editor-in-chief* doesn't file stories — they assign hundreds of investigations, draft the methodology, and decide which leads to chase. A reckless editor who greenlights ten thousand investigations will, by sheer volume, surface a few that *look* like Pulitzer material purely by chance. The reporter's failure is a bad article; the editor's failure is a newsroom full of confident nonsense. An LLM can play either part, and the second part is where careers quietly end.
+
+**Precise definition.** In the **signal** role, the LLM is a function $g$ mapping unstructured text $x$ (a filing, a headline, a transcript) to a real-valued score $s = g(x)$ that enters a return forecast or a portfolio weight. It is evaluated like any alpha factor: information coefficient, out-of-sample Sharpe, turnover, capacity. In the **researcher** role, the LLM is an *agent* in a loop — propose a hypothesis $H$, generate feature code, run a backtest, read the result, revise — and it is evaluated on the *quality and honesty of the research process*, not on a single number.
+
+| | LLM as **signal** | LLM as **researcher** |
+|---|---|---|
+| What it outputs | A number $s = g(x)$ per document/asset/day | Hypotheses, feature code, backtests, critiques |
+| What you trade | The score directly | Whatever survives validation downstream |
+| How you judge it | IC, OOS Sharpe, turnover, capacity | Discipline: deflated Sharpe, point-in-time data, replication |
+| Dominant risk | Overfitting one signal; signal decay | Multiple testing across thousands of auto-generated trials |
+| Lesson where it bites | This one (sections below) | This one + lesson 5 (leakage) + Machine Learning for Alpha |
+
+<Callout variant="warning" title="Don't let the roles blur">
+The most expensive mistake is using the researcher to *generate* a signal and then forgetting to apply researcher-grade scrutiny to it. The moment an LLM proposes a factor, you owe it the full multiple-testing and point-in-time treatment — not the lighter "we found one nice factor" story. A signal that came out of a 5,000-idea firehose is not a discovery; it's a lottery ticket that happened to win the in-sample draw.
+</Callout>
+
+### When to use which
+
+Use the **signal** role when the edge is *reading text faster, cheaper, or more consistently than the market* — a stable, repeatable extraction job. Use the **researcher** role when the bottleneck is *idea throughput and engineering boilerplate* — and only if you have the validation discipline to survive your own productivity. If you can't deflate for the trials a researcher-agent runs, you are not ready to let it loose; you'll just overfit faster.
+
+<FillBlank
+  client:visible
+  question="Name the two roles."
+  text="An LLM that turns a 10-K into a sentiment number you trade is acting as a {{signal|researcher|backtest engine}}, whereas an LLM that brainstorms 500 candidate factors and writes their backtests is acting as a {{researcher|signal|data feed}}."
+  explanation="Text → tradable number is the signal role; hypothesis-and-code generation is the researcher role."
+/>
+
+## LLM as signal #1 — sentiment & event extraction
+
+<MCQ
+  client:visible
+  pretest
+  question="You score thousands of news articles for sentiment, average to a daily per-stock score, and go long the top decile / short the bottom. Empirically, how does this kind of news-sentiment alpha behave across horizons?"
+  options={[
+    { text: "It predicts mostly short-horizon returns and decays fast — over days, not months — so it's capacity- and cost-constrained", correct: true },
+    { text: "It predicts long-horizon returns and strengthens over months as the news 'sinks in'" },
+    { text: "It has no horizon structure — the edge is constant from one day to one year" },
+    { text: "It only works on horizons longer than a quarter, matching the reporting cycle" }
+  ]}
+  explanation="The well-documented pattern is fast decay: news-sentiment edges concentrate at short horizons (days) and bleed away quickly as the market prices the information. That short half-life caps how much capital the signal can carry after costs."
+/>
+
+**The analogy.** Sentiment alpha is fresh fish. Caught at dawn (the moment the news breaks), it's valuable; by lunch it's worth less; by tomorrow it stinks. The whole market is also at the dock buying the same fish, so the price of *fresh* collapses fast. You can make money trading fish, but only if you're quick, you don't overpay to transact, and you don't try to move a tanker's worth — the market is too small and too perishable for size.
+
+**Precise definition.** A sentiment-and-event signal scores documents and aggregates them into a cross-sectional factor. For each document $d$ about asset $i$ on day $t$, the LLM emits a polarity $\sigma_d \in [-1, +1]$ (and optionally an event tag — guidance cut, lawsuit, buyback). Aggregate to a daily per-asset score by averaging:
+
+$$s_{i,t} = \frac{1}{N_{i,t}} \sum_{d \in D_{i,t}} \sigma_d,$$
+
+where $D_{i,t}$ is the set of documents about asset $i$ available on day $t$ and $N_{i,t}$ is its count. Then rank assets cross-sectionally and form a dollar-neutral long-short portfolio: long the top group, short the bottom.
+
+**Worked example — a tiny long-short.** Five stocks, today's averaged sentiment scores:
+
+| Stock | Docs $N_{i,t}$ | Averaged sentiment $s_{i,t}$ | Rank |
+|---|---|---|---|
+| A | 4 | +0.80 | 1 (long) |
+| B | 6 | +0.30 | 2 (long) |
+| C | 3 | +0.05 | 3 (neutral) |
+| D | 5 | −0.40 | 4 (short) |
+| E | 2 | −0.75 | 5 (short) |
+
+Go long the top two (A, B) and short the bottom two (D, E), each leg dollar-neutral. With \$1 long and \$1 short total, weight each long name \$0.50 and each short name −\$0.50. Suppose next-day returns come in at $r_A = +1.2\%$, $r_B = +0.3\%$, $r_D = -0.6\%$, $r_E = -1.4\%$. The long leg earns $0.5(1.2\%) + 0.5(0.3\%) = 0.75\%$. The short leg earns $-0.5(-0.6\%) - 0.5(-1.4\%) = +1.0\%$. Gross long-short return: $0.75\% + 1.0\% = 1.75\%$ for the day. Now subtract costs: if a round-trip on this portfolio costs, say, 20 basis points, net is $1.75\% - 0.20\% = 1.55\%$ — still positive *here*, but notice how a few extra basis points of cost and a slightly weaker day flip the sign. That razor-thin margin is the whole story of sentiment alpha.
+
+**The decay is the constraint.** Because the edge concentrates at short horizons, you must re-trade often to keep capturing it — and re-trading repeatedly pays the round-trip cost again and again. Hold too briefly and costs eat you; hold too long and the signal is already stale. There is an *optimal holding horizon* where net-alpha-per-day peaks, and faster decay pushes that sweet spot earlier. The chart below makes the trade-off tangible: drag the decay-speed slider down (faster decay, like fresh news) and watch the optimal horizon collapse toward "trade now or not at all."
+
+<SignalDecay
+  client:visible
+  title="News-sentiment alpha: a fast-decaying signal with an optimal holding horizon"
+  caption="A sentiment score predicts the next few days, then goes stale as the market prices the news — its predictive correlation decays exponentially. But re-trading is not free: hold too briefly and you bleed the round-trip cost over and over; hold too long and you are trading on a dead signal. Net alpha per day is therefore hump-shaped. Drag the decay-speed slider toward faster decay (smaller τ) and the optimal horizon races earlier — the fresher the fish, the quicker you must sell. Raise the cost and the sweet spot pushes later, because you have to hold longer to earn back the spread."
+/>
+
+| Holding horizon | Signal still alive? | Net alpha per day | Verdict |
+|---|---|---|---|
+| Intraday → 1 day | Strong | Highest, *if* costs are low | The natural home of news sentiment |
+| 2–5 days | Fading | Positive but shrinking | Workable at modest size |
+| 1–4 weeks | Mostly gone | Near zero after costs | Marginal; capacity is tiny |
+| 1 month+ | Dead | Negative after costs | You're paying to trade noise |
+
+<Callout variant="warning" title="Fast decay means tiny capacity">
+A signal with a multi-day half-life cannot carry much capital. Every dollar you add pushes prices against your own entry, and the edge is too short-lived to amortize that impact. Teams routinely build a beautiful sentiment factor with a great in-sample IC, then discover it holds \$30 million, not \$3 billion — the alpha is real but the *capacity* is a rounding error on a large book. Always quote a sentiment edge alongside its decay half-life and its post-cost capacity, never as a standalone Sharpe.
+</Callout>
+
+### When to use it
+
+Reach for LLM sentiment when you have a *genuine, costly-to-process* stream of unstructured text (full earnings-call transcripts, dense filings, non-English news) where consistent machine reading beats the average human reader, **and** you operate at short horizons with low transaction costs and modest size. Skip it when the text is already trivially summarized by everyone (the headline number everyone reads in the same second), when your costs are high, or when you need a signal that holds size for weeks — the decay won't let it.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Information coefficient (IC)", definition: "Correlation between today's sentiment score and the forward return — the raw strength of the signal" },
+    { term: "Signal half-life", definition: "How fast the predictive correlation bleeds away as you hold; for news sentiment it's days" },
+    { term: "Optimal holding horizon", definition: "Where net-alpha-per-day peaks, balancing re-trading costs against decay" },
+    { term: "Capacity", definition: "How much capital the signal can carry before market impact erases the edge — small for fast-decaying alpha" }
+  ]}
+/>
+
+## LLM as signal #2 — multimodal price-plus-text fusion
+
+<MCQ
+  client:visible
+  pretest
+  question="A multimodal model fuses a price/time-series encoder with a text encoder so the forecast conditions on both numbers and narrative. What's the single hardest thing to get right?"
+  options={[
+    { text: "Timestamp alignment — the text must be provably available *before* the price move it's used to predict, or you've engineered look-ahead", correct: true },
+    { text: "Choosing whether to concatenate or add the two embeddings — the fusion arithmetic dominates performance" },
+    { text: "Making the text encoder larger than the price encoder" },
+    { text: "Ensuring the price series and the text are in the same language" }
+  ]}
+  explanation="Fusion mechanics matter less than data hygiene. The killer is alignment: if a single document used to predict day-t returns was actually published (or revised) after day t, the model 'knows' the future. That's the leakage minefield of lesson 5, and multimodal fusion is where it most easily sneaks in."
+/>
+
+**The analogy.** A good macro trader watches two screens at once: the price ticking on the left, the news flashing on the right, and the *interaction* between them — "the stock dropped 2% but the news is benign, so this is a flush, not a fundamental break." A multimodal model tries to be that trader: one encoder reads the numbers, another reads the narrative, and a fusion layer learns to condition each on the other. The magic is in the *joint* reading. But a human trader can't accidentally read tomorrow's newspaper; a sloppy data pipeline can.
+
+**Precise definition.** A multimodal price-plus-text model maintains two encoders. A time-series encoder $f_{\text{ts}}$ maps a window of price/volume/microstructure features to an embedding $z_{\text{ts}}$; a text encoder $f_{\text{txt}}$ (often an LLM) maps the relevant documents to an embedding $z_{\text{txt}}$. A fusion module $\phi$ combines them — concatenation, cross-attention, or gating — into a joint representation $z = \phi(z_{\text{ts}}, z_{\text{txt}})$, from which a head predicts the forward return. Cross-attention fusion lets the price embedding *query* the text ("which part of this filing explains the move I'm seeing?") and vice versa.
+
+**Worked example — what alignment actually requires.** Say you want to predict the return over the window $[t, t+1]$ (the close on day $t$ to the close on day $t+1$). Every input — every price bar *and* every document — must carry a timestamp $\le t$ (specifically, knowable at the day-$t$ close). Concretely:
+
+- A news article timestamped 4:15 PM on day $t$, after the 4:00 PM close, **cannot** be used to predict the $[t, t+1]$ return labeled at the day-$t$ close — it wasn't available yet.
+- An 8-K filing that hit the wire at 11:00 AM on day $t$ **can** be used, because it was public before the close.
+- A transcript that gets *revised* (typos fixed, redactions) the next morning must be ingested in its *original*, time-$t$ form, not the cleaned version — otherwise you've smuggled future edits backward.
+
+If even 1% of your documents violate this, your backtest inflates and your live performance collapses. The fusion architecture is the easy part; the point-in-time timestamping is the part that decides whether the result is real.
+
+<Callout variant="warning" title="Multimodal fusion is a leakage magnet (preview of lesson 5)">
+Adding a text channel multiplies the surfaces through which the future can leak in: publication timestamps, revision histories, survivorship in the document set, and an LLM text encoder that may itself have been *trained* on text describing your test period. Lesson 5 — The Leakage Minefield — is devoted to this. For now, hold one rule: a document earns its place in the day-$t$ input only if you can prove it was available at the day-$t$ decision time, in the exact form you're feeding it.
+</Callout>
+
+### When to use it
+
+Fuse price and text when the *interaction* genuinely carries signal that neither stream holds alone — when "this move plus this narrative" means something different from either in isolation — and when you can enforce airtight point-in-time discipline on every document. If you can't timestamp the text rigorously, don't add it: a clean price-only model beats a leaky multimodal one every single time, even when the leaky one's backtest looks spectacular.
+
+<Categorize
+  client:visible
+  question="For predicting the day-t-to-day-t+1 return (label set at the day-t close), sort each input as usable or look-ahead."
+  buckets={["Usable (≤ day-t close)", "Look-ahead (leaks the future)"]}
+  items={[
+    { text: "An 8-K filing released at 11 AM on day t", bucket: "Usable (≤ day-t close)" },
+    { text: "The price bar for day t-1", bucket: "Usable (≤ day-t close)" },
+    { text: "A news article timestamped 4:15 PM on day t, after the close", bucket: "Look-ahead (leaks the future)" },
+    { text: "A transcript revised the morning of day t+1, fed in its cleaned-up form", bucket: "Look-ahead (leaks the future)" }
+  ]}
+  explanation="Anything knowable at or before the day-t close is fair game; anything published or revised after the decision time leaks the future, no matter how innocuous it seems."
+/>
+
+## LLM as researcher — hypothesis & feature generation
+
+<MCQ
+  client:visible
+  pretest
+  question="An LLM agent loop proposes signals, writes backtest code, and critiques the results. Where is it genuinely strong, and where is it dangerous?"
+  options={[
+    { text: "Strong at breadth, boilerplate, and literature recall; dangerous because it will fluently invent plausible-sounding nonsense and present it with total confidence", correct: true },
+    { text: "Strong at proving which signals are real; dangerous only when the code has syntax errors" },
+    { text: "Strong at everything; the only risk is slow runtime" },
+    { text: "Weak at writing code but excellent at judging statistical significance" }
+  ]}
+  explanation="LLMs excel at coverage, scaffolding code, and recalling the literature — they're a fast research assistant. But they hallucinate: they'll fabricate a confident rationale and a clean backtest for an idea that's pure noise, with no internal alarm that anything is wrong."
+/>
+
+**The analogy.** The LLM researcher is the world's most caffeinated intern. It has skimmed every finance paper ever written, it never sleeps, it'll write a hundred backtest scripts before lunch, and it'll explain each one with breezy confidence. It is also an intern who has *never been wrong out loud* — when it doesn't know, it doesn't hesitate; it invents. Used as a tireless first-drafter under close supervision, it's a force multiplier. Used as an oracle whose output you trust, it's a machine for generating confident garbage at scale.
+
+**Precise definition.** The "AI quant" or "AI scientist" loop is an agentic pipeline: the LLM (1) **proposes** a hypothesis ("post-earnings-announcement drift is stronger for high-dispersion names"), (2) **operationalizes** it into a feature and writes the backtest code, (3) **runs** the backtest, (4) **reads** the result and either refines or proposes the next idea — iterating autonomously. The promise is throughput: hundreds of ideas explored per day instead of one per week.
+
+**What it's good at vs. bad at.**
+
+| LLM researcher is *good* at | LLM researcher is *bad* at |
+|---|---|
+| Breadth — covering a huge space of candidate ideas fast | Knowing which ideas are *true* vs. merely plausible |
+| Boilerplate — data wrangling, backtest scaffolding, plotting | Statistical honesty — it won't deflate Sharpe unless told |
+| Literature recall — surfacing relevant factors and prior work | Distinguishing recalled fact from confident fabrication |
+| Tireless iteration — never bored, never tired | Resisting the urge to "find" a result you nudged it toward |
+| Critiquing code mechanics — bugs, leakage smells | Self-policing its own multiple-testing footprint |
+
+The good column is real and valuable. The bad column is why the *next* section exists: an idea generator that is fast, fluent, and unbothered by statistical conscience is precisely the thing that detonates a data-snooping explosion.
+
+<Callout variant="warning" title="Fluency is not correctness">
+An LLM will hand you a beautifully reasoned thesis, clean code, and a Sharpe-1.8 backtest for a signal that is indistinguishable from noise — and nothing in its tone will warn you. It has no internal sense of "I made this up." Treat every LLM-proposed signal as an *unverified lead from an unreliable source*, not a finding. The confidence is free; the truth is not.
+</Callout>
+
+### When to use it
+
+Let an LLM run the researcher loop when your bottleneck is genuinely *idea and engineering throughput* and you have *industrial-strength validation* downstream — pre-registered out-of-sample windows, multiple-testing deflation, and strict point-in-time data. Don't use it as a final judge of what's real, and never trade its output un-audited. The intern drafts; the disciplined process decides.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">If the LLM can also write the *critique* step, can't it just check its own work and filter the nonsense?</summary>
+
+**Answer.** Partly, and it's worth doing — an LLM critic catches obvious leakage smells, code bugs, and unit mistakes. But it cannot rescue you from the deep problem, because the LLM critic shares the same blind spot as the LLM proposer: neither has a calibrated sense of statistical significance, and neither tracks how many ideas were tried across the *whole* session. The critique step reduces obvious errors; it does not deflate your Sharpe for the thousands of silent trials. Self-critique is a useful filter, not a substitute for an external, trial-counting validation discipline.
+
+</details>
+</Reveal>
+
+## The data-snooping explosion
+
+<MCQ
+  client:visible
+  pretest
+  question="Machine Learning for Alpha warned that testing many strategies on the same data inflates the best in-sample result by luck. What does an LLM idea-generator do to this problem?"
+  options={[
+    { text: "It detonates it — automating idea generation lets you run thousands of trials, and the best-of-N in-sample Sharpe grows with √(2 ln N), guaranteeing impressive-looking flukes", correct: true },
+    { text: "It solves it — more ideas means more independent confirmation of the real signal" },
+    { text: "It has no effect — multiple testing only matters when humans pick the strategies" },
+    { text: "It reduces it, because LLM-generated strategies are more diverse" }
+  ]}
+  explanation="More trials, more luck. With N independent noise strategies, the expected best in-sample Sharpe scales like √(2 ln N). An LLM that runs thousands of trials is industrializing the exact multiple-testing catastrophe that already sinks human researchers — now at machine speed."
+/>
+
+**The analogy.** Give one person a coin and ask for ten heads in a row — they'll almost certainly fail. Hand the same task to ten thousand people in parallel, and a few will succeed on the first try, look like wizards, and write a book about their technique. Nothing about the coin changed; you just ran enough trials that *pure luck produced a champion*. An LLM idea-generator is the ten-thousand-people machine, except it does it before your coffee gets cold — and each "champion" arrives wrapped in a confident backtest.
+
+**Precise statement — best-of-N Sharpe inflation.** Suppose you run $N$ strategies that have *zero* true edge — pure noise. Each produces an in-sample Sharpe ratio that's roughly a standard normal draw. The expected *maximum* of $N$ such draws grows like
+
+$$\mathbb{E}[\max_{1 \le j \le N} Z_j] \approx \sqrt{2 \ln N},$$
+
+so even with no real signal anywhere, the best-looking strategy of the batch has an in-sample Sharpe that climbs with the log of how many you tried. This is why you must **deflate**: judge the winner against the threshold $\sqrt{2 \ln N}$ for the $N$ trials you actually ran, not against zero.
+
+**Worked example — compute the fluke threshold.** Let's tabulate $\sqrt{2 \ln N}$ for several trial counts:
+
+| Trials $N$ | $\ln N$ | $2 \ln N$ | Expected best in-sample Sharpe $\sqrt{2 \ln N}$ |
+|---|---|---|---|
+| 10 | 2.303 | 4.605 | 2.146 |
+| 100 | 4.605 | 9.210 | 3.035 |
+| 1,000 | 6.908 | 13.816 | 3.717 |
+| 10,000 | 9.210 | 18.421 | 4.292 |
+
+Read the $N = 1{,}000$ row: try a thousand zero-edge strategies and the *best one* shows an in-sample Sharpe of about **3.7** — a number that, taken at face value, would get a strategy funded. It is entirely luck. Worked arithmetic for that row: $\ln(1000) = 6.908$, times $2$ is $13.816$, and $\sqrt{13.816} = 3.717$. So before you celebrate a backtest Sharpe of 3.7 from a search over a thousand ideas, recognize you've *exactly* reproduced the expected noise maximum — the strategy has cleared no bar at all.
+
+**Why the LLM makes it acute.** A human grinds out maybe dozens of trials before exhaustion imposes a natural limit. An LLM agent has no such limiter — it'll cheerfully test 10,000 variants overnight, and because it doesn't *track* the count for you, the deflation threshold silently climbs to 4.3 while you're still mentally comparing against zero. The tool that makes you productive is the same tool that makes your false-discovery rate explode.
+
+<Callout variant="warning" title="An LLM that proposes 10,000 signals guarantees a few spectacular backtests by pure luck">
+This is the central danger of the whole lesson. If you let an agent search ten thousand strategies, you are *statistically certain* to be handed several with in-sample Sharpes above 4 — and not one of them needs a shred of real edge to look that good. Any signal that emerges from a large automated search is presumed a fluke until it survives (a) deflation by the true trial count, (b) a pristine, never-touched out-of-sample window, and (c) point-in-time data with no leakage. Skip any of those three and you are not doing research; you are mining noise at industrial scale and calling the prettiest nugget gold.
+</Callout>
+
+### When to use it
+
+A large automated search is legitimate *only* when paired with honest deflation: log every trial the agent runs (including the ones it discarded), compare the winner against $\sqrt{2 \ln N}$ for the full $N$, and reserve a genuinely untouched holdout for final confirmation. If you can't count your trials, you can't deflate; if you can't deflate, an LLM idea-firehose is not a research accelerator — it's a false-discovery accelerator. Use breadth for *generating* leads, never for *certifying* them.
+
+<FillBlank
+  client:visible
+  question="Fill in the deflation rule."
+  text="With N zero-edge strategies, the expected best in-sample Sharpe grows like {{√(2 ln N)|N²|ln(N²)/2}}, so for N = 1000 the fluke threshold is about {{3.7|0.5|10}}, and a winning backtest must clear that bar — not zero — before you believe it."
+  explanation="√(2 ln 1000) = √13.816 ≈ 3.7. A best-of-1000 search must beat ~3.7 in-sample just to be distinguishable from luck."
+/>
+
+## A leakage preview
+
+<MCQ
+  client:visible
+  pretest
+  question="Beyond multiple testing, there's a second way an LLM can fake skill in a backtest. What is it?"
+  options={[
+    { text: "Its training text may post-date your test window, so the model can effectively 'know' outcomes it should not have known at decision time", correct: true },
+    { text: "It runs out of memory on long sequences and pads with zeros" },
+    { text: "It can only output positive sentiment, biasing every long-short" },
+    { text: "It rounds all probabilities to 0 or 1" }
+  ]}
+  explanation="A pretrained LLM has read text written after your historical test dates. Asked to 'analyze' a 2018 situation, it may lean on knowledge of how 2018 actually turned out — look-ahead baked into the weights. This temporal leakage is distinct from multiple testing and is the subject of lesson 5."
+/>
+
+There's a leakage channel unique to *pretrained* models, and it deserves a flag now even though lesson 5 — The Leakage Minefield — handles it in full. An LLM's training corpus has a cutoff date, and that date is usually *later* than the historical periods you backtest on. So when you ask the model to "read this 2019 filing and predict the next quarter," it isn't reasoning purely from the filing — it may be quietly drawing on its training knowledge of what *actually* happened next. The backtest looks prescient because the model has, in a real sense, already read the answer key. This temporal contamination is invisible in the code, doesn't show up as a leaky timestamp, and can survive even a careful point-in-time data pipeline — because the leak is in the *weights*, not the data feed. Lesson 5 dissects how to detect and defend against it; for now, just know that "the LLM was unusually good at predicting the past" is a red flag, not a triumph.
+
+## When an LLM signal or tool earns its place
+
+<MCQ
+  client:visible
+  pretest
+  question="Pulling the lesson together: under which conditions does an LLM genuinely earn its place in a quant stack, rather than just adding risk?"
+  options={[
+    { text: "Genuine costly-to-process unstructured text with a real availability timestamp, at short horizons and modest capacity, with trial-deflation and strict point-in-time discipline", correct: true },
+    { text: "Any time you can call an API — more model is always more edge" },
+    { text: "Only as an un-audited idea firehose, trusting whatever backtests it produces" },
+    { text: "Only as an oracle whose forecasts you trade directly without validation" }
+  ]}
+  explanation="An LLM earns its keep when it reads expensive text the market hasn't already digested, with provable timestamps, at horizons and sizes its fast-decaying edge can support, and inside a validation regime that deflates for trials and enforces point-in-time data. Not as an oracle; not as an un-audited firehose."
+/>
+
+**The synthesis.** Every thread of this lesson converges on one disciplined verdict. An LLM is worth its risk when *all* of the following hold, and a liability when any fails:
+
+- **Genuine, costly-to-process text.** The edge is reading unstructured material — dense filings, full transcripts, foreign-language news — that the market hasn't already trivially priced. If everyone reads the same headline in the same second, there's no edge to extract.
+- **A real availability timestamp.** Every document is provably knowable at decision time, in its original form. No post-close articles predicting pre-close labels; no revised transcripts smuggled backward; no training-cutoff contamination.
+- **Short horizon, modest capacity.** The fast decay of text-derived alpha (the sentiment section) means the signal lives in days and holds limited size. Size it to its half-life and its post-cost capacity, not to its in-sample Sharpe.
+- **Deflation for trials.** Any signal from a search — especially an LLM-driven one — is deflated against $\sqrt{2 \ln N}$ for the *full* trial count and confirmed on an untouched holdout. The firehose generates leads; the discipline certifies them.
+- **Strict point-in-time discipline.** The leakage rules (full treatment in lesson 5) are enforced end to end, in both the signal and researcher roles.
+
+Treat the LLM as neither an **oracle** (a forecaster you trade blindly) nor an **un-audited idea firehose** (a generator whose backtests you believe). It is a fast, fluent, tireless assistant whose output is *raw material* for a disciplined process — valuable exactly to the degree that the discipline around it is real.
+
+<Categorize
+  client:visible
+  question="Sort each practice as one that EARNS the LLM its place or one that turns it into a liability."
+  buckets={["Earns its place", "Turns it into a liability"]}
+  items={[
+    { text: "Extracting sentiment from full earnings transcripts the market under-reads, at short horizons", bucket: "Earns its place" },
+    { text: "Deflating every searched signal against √(2 ln N) before believing it", bucket: "Earns its place" },
+    { text: "Proving each document was available, in original form, at decision time", bucket: "Earns its place" },
+    { text: "Trading the best of 10,000 auto-generated backtests un-deflated", bucket: "Turns it into a liability" },
+    { text: "Treating an LLM forecast as an oracle and sizing it to its in-sample Sharpe", bucket: "Turns it into a liability" }
+  ]}
+  explanation="Costly-to-process text, provable timestamps, and trial-deflation earn the LLM its place; trusting un-deflated searches or treating forecasts as an oracle make it a liability."
+/>
+
+## Recap
+
+<MindMap
+  client:visible
+  title="LLMs as research tools & as signals"
+  caption="Two jobs — signal (text → tradable number) and researcher (ideas, features, code). The signal decays fast and holds little; the researcher's productivity detonates the multiple-testing problem unless every trial is counted and deflated."
+  root={{
+    label: "LLMs in a quant stack",
+    children: [
+      {
+        label: "Two roles",
+        children: [
+          { label: "Signal: text → return-predicting number" },
+          { label: "Researcher: hypotheses, features, code" },
+          { label: "Different risks; never blur them" }
+        ]
+      },
+      {
+        label: "Signal #1: sentiment & events",
+        children: [
+          { label: "Score docs → daily cross-sectional factor" },
+          { label: "Rank → long top / short bottom" },
+          { label: "Predicts short horizons, decays in days" },
+          { label: "Fast decay → tiny capacity" }
+        ]
+      },
+      {
+        label: "Signal #2: price + text fusion",
+        children: [
+          { label: "Time-series encoder + text encoder" },
+          { label: "Joint reading of numbers & narrative" },
+          { label: "Hard part: text available BEFORE the move" },
+          { label: "Leakage magnet (lesson 5)" }
+        ]
+      },
+      {
+        label: "Researcher loop",
+        children: [
+          { label: "Good: breadth, boilerplate, literature recall" },
+          { label: "Bad: invents plausible nonsense confidently" },
+          { label: "Fluency ≠ correctness" }
+        ]
+      },
+      {
+        label: "Data-snooping explosion",
+        children: [
+          { label: "N trials → best Sharpe ≈ √(2 ln N)" },
+          { label: "N = 1000 → ≈ 3.7 by pure luck" },
+          { label: "10,000 signals guarantees flukes" },
+          { label: "Must deflate by true trial count" }
+        ]
+      },
+      {
+        label: "Earns its place when",
+        children: [
+          { label: "Costly-to-process text, real timestamp" },
+          { label: "Short horizon, modest capacity" },
+          { label: "Deflation + point-in-time discipline" },
+          { label: "Not an oracle, not a firehose" }
+        ]
+      }
+    ]
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="LLMs as research tools & signals — check yourself"
+  questions={[
+    {
+      question: "A team scores 10-K filings into a daily per-stock sentiment number and trades it directly. Which role is the LLM playing, and what's its dominant risk?",
+      options: [
+        { text: "The signal role; its dominant risk is overfitting one factor and fast signal decay capping capacity", correct: true },
+        { text: "The researcher role; its dominant risk is writing buggy code" },
+        { text: "The signal role; its dominant risk is running too many trials" },
+        { text: "Neither role; scoring filings is just data cleaning" }
+      ],
+      explanation: "Text → a tradable number is the signal role. Its risks are single-factor overfitting and the fast decay that limits how much capital the edge can carry."
+    },
+    {
+      question: "Why is news-sentiment alpha capacity-constrained?",
+      options: [
+        { text: "It predicts only short horizons and decays in days, so it can't carry much capital before impact and staleness erase the edge", correct: true },
+        { text: "Because filings are copyrighted and limit trading volume" },
+        { text: "Because LLMs can only score a few documents per second" },
+        { text: "Because long-horizon sentiment is too strong to trade safely" }
+      ],
+      explanation: "A multi-day half-life means you must re-trade fast and can't hold size; market impact plus staleness cap capacity even when the in-sample IC looks great."
+    },
+    {
+      question: "You run a multimodal price-plus-text model to predict the day-t to day-t+1 return (label set at the day-t close). Which document is SAFE to include as an input?",
+      options: [
+        { text: "An 8-K that hit the wire at 11 AM on day t", correct: true },
+        { text: "A news article timestamped 4:15 PM on day t, after the close" },
+        { text: "A transcript revised the morning of day t+1, in its cleaned form" },
+        { text: "Tomorrow's analyst note, because it discusses the same stock" }
+      ],
+      explanation: "Only inputs knowable at or before the day-t close are usable. Post-close articles, next-morning revisions, and tomorrow's notes all leak the future."
+    },
+    {
+      question: "An LLM researcher agent hands you a Sharpe-1.8 strategy with a confident write-up. What's the right default stance?",
+      options: [
+        { text: "Treat it as an unverified lead — fluency isn't correctness, so it needs deflation, an untouched holdout, and point-in-time checks before you believe it", correct: true },
+        { text: "Trade it immediately; the write-up demonstrates real understanding" },
+        { text: "Reject it outright; LLM-proposed signals are never real" },
+        { text: "Accept it if the code has no syntax errors" }
+      ],
+      explanation: "LLMs produce confident, plausible nonsense with no internal alarm. Any proposed signal is an unverified lead until it survives trial-deflation, a clean holdout, and leakage checks."
+    },
+    {
+      question: "You let an agent search N = 1000 zero-edge strategies. Roughly what in-sample Sharpe should the BEST of them show by pure luck, and what must you do about it?",
+      options: [
+        { text: "About 3.7 (≈ √(2 ln 1000)); you must deflate the winner against that threshold, not against zero", correct: true },
+        { text: "About 0; with no edge, even the best one looks like noise at Sharpe 0" },
+        { text: "About 10; and you should trade it because 10 is impressive" },
+        { text: "Exactly 1.0 regardless of N; the threshold doesn't depend on trial count" }
+      ],
+      explanation: "√(2 ln 1000) = √13.816 ≈ 3.7. The best of 1000 noise strategies is expected to hit ~3.7 in-sample, so the winner must clear that deflated bar — not zero — to count as a discovery."
+    },
+    {
+      question: "Which combination genuinely EARNS an LLM its place in the stack?",
+      options: [
+        { text: "Costly-to-process text with provable timestamps, short horizon and modest capacity, plus trial-deflation and strict point-in-time discipline", correct: true },
+        { text: "An un-audited idea firehose whose prettiest backtest you trade directly" },
+        { text: "An oracle forecast sized to its in-sample Sharpe" },
+        { text: "Any API call, because larger models always mean more edge" }
+      ],
+      explanation: "The LLM earns its risk when it reads expensive text the market hasn't priced, with real timestamps, at horizons and sizes its fast-decaying edge supports, inside a deflating, point-in-time validation regime — not as an oracle and not as an un-audited firehose."
+    }
+  ]}
+/>

@@ -826,3 +826,10 @@ export type { AgentPopulationMixerProps } from '@/components/react/AgentPopulati
 
 export { EmergentStylizedFacts, default as EmergentStylizedFactsDefault } from '@/components/react/EmergentStylizedFacts';
 export type { EmergentStylizedFactsProps } from '@/components/react/EmergentStylizedFacts';
+
+// Foundation-models-for-financial-time-series islands
+export { PretrainFinetuneTimeline, default as PretrainFinetuneTimelineDefault } from '@/components/react/PretrainFinetuneTimeline';
+export type { PretrainFinetuneTimelineProps } from '@/components/react/PretrainFinetuneTimeline';
+
+export { ZeroShotVsFittedForecast, default as ZeroShotVsFittedForecastDefault } from '@/components/react/ZeroShotVsFittedForecast';
+export type { ZeroShotVsFittedForecastProps } from '@/components/react/ZeroShotVsFittedForecast';

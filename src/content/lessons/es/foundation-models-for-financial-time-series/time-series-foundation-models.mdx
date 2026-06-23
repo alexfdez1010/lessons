@@ -1,0 +1,495 @@
+---
+title: "Modelos fundacionales de series temporales: TimesFM, Chronos, Moirai y Lag-Llama"
+description: "Cómo un modelo de predicción preentrenado una sola vez sobre millones de series reemplaza el ritual de un-modelo-por-serie — tokenizar una serie continua por patching o por escalado-y-cuantización, el objetivo de preentrenamiento autorregresivo y probabilístico, y el linaje TimesFM / Chronos / Moirai / Lag-Llama, con una mirada franca a por qué sus corpus apenas se parecen a los mercados."
+topic: "es/foundation-models-for-financial-time-series"
+order: 2
+minutes: 19
+updated: 2026-06-22
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, AttentionWeightsHeatmap } from '@/components/react';
+
+La lección 1 os vendió la apuesta: *preentrena una vez sobre una montaña de datos, adáptate barato a tu problema.* Así es como un único modelo de lenguaje escribe Python, francés y quintillas sin reentrenarse para cada cosa. Esta lección cobra la apuesta para las series temporales — la maquinaria real que permite a un modelo congelado predecir una serie que nunca ha visto, **sin ningún ajuste en absoluto**.
+
+El truco es que una serie de rendimientos no es una frase. Un transformer come *tokens* — cosas discretas con embeddings — y un gráfico de precios es un flujo de reales continuos. Así que antes de cualquier magia de modelo fundacional, alguien tiene que responder a una pregunta irritantemente concreta: **¿cómo conviertes una línea ondulante en tokens?** Dos bandos la responden de forma distinta, y el resto de la lección se construye sobre esa bifurcación.
+
+Vamos a ganárnoslo.
+
+## De un-modelo-por-serie a un modelo fundacional de predicción
+
+<MCQ
+  client:visible
+  pretest
+  question="Tienes 5.000 series separadas de demanda de productos y quieres una predicción para cada una. ¿Cuál es la diferencia definitoria entre el enfoque clásico y un modelo fundacional de series temporales?"
+  options={[
+    { text: "El clásico ajusta un modelo nuevo por serie; el modelo fundacional se preentrena una vez y predice cada serie nueva sin ajuste por serie", correct: true },
+    { text: "El clásico no necesita datos; el modelo fundacional necesita etiquetas para cada serie" },
+    { text: "El modelo fundacional ajusta 5.000 modelos diminutos en paralelo, uno por serie" },
+    { text: "Son idénticos — ambos estiman coeficientes ARIMA para cada serie" }
+  ]}
+  explanation="El pipeline clásico estima parámetros por separado para cada serie (5.000 ajustes de modelo). Un modelo fundacional de series temporales se entrena una vez sobre un corpus enorme, y luego predice una serie completamente nueva en una sola pasada hacia delante — cero ajuste por serie."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+**La analogía.** El predictor clásico es un cerrajero que lima una llave nueva para cada cerradura — coeficientes ARIMA para *esta* serie, un ajuste GARCH para *aquella*, una red neuronal nueva para la siguiente. Artesanía preciosa, y totalmente inescalable: 5.000 series significan 5.000 ajustes, cada uno necesitando suficiente historia para estimar sus propios parámetros. Un **modelo fundacional** es un maestro cerrajero que ya ha abierto millones de cerraduras y ha aprendido qué *son* las cerraduras. Pásale una nueva y la abre a primera vista — ninguna llave nueva limada.
+
+**Definición precisa.** La receta clásica (el "especialista" de la lección 1) estima parámetros $\theta_s$ *por separado* para cada serie $s$: ajusta $\text{ARIMA}(p,d,q)$ aquí, $\text{GARCH}(1,1)$ allá, una red nueva en otro sitio. Cada ajuste necesita que esa serie cargue suficiente señal para fijar su propio $\theta_s$. Un **modelo fundacional de series temporales** en cambio aprende un único conjunto compartido de parámetros $\Theta$ preentrenando sobre un corpus de *millones* de series de muchos dominios, y luego predice una serie nueva $x_{1:T}$ en una sola pasada hacia delante:
+
+$$\hat{x}_{T+1:T+h} = f_\Theta(x_{1:T}),$$
+
+con $\Theta$ **congelado** — ningún paso de gradiente toca la serie nueva. Eso es predicción *zero-shot*, el truco estrella de todo el campo (la lección 3 precisa "zero-shot").
+
+**Ejemplo resuelto — el presupuesto de ajuste.** Digamos que cada ajuste ARIMA necesita al menos 100 observaciones para estimar fiablemente su puñado de coeficientes, y tienes 5.000 series.
+
+- Clásico: 5.000 estimaciones *separadas*. ¿Una serie con solo 30 puntos de historia? Apenas puedes ajustarla — demasiado pocas observaciones para sus propios parámetros. El arranque en frío es fatal.
+- Modelo fundacional: **0** estimaciones sobre tus datos. La serie de 30 puntos recibe la misma pasada hacia delante que la de 30.000; el modelo aporta la prior que aprendió de millones de *otras* series, así que la historia corta es sobrevivible.
+
+El cambio es de "cada serie enseña su propio modelo desde cero" a "un modelo ya ha aprendido la forma de las series temporales en general, y simplemente *condiciona* sobre tu historia".
+
+<Callout variant="warning" title="Zero-shot no es cero-conocimiento">
+"Sin ajuste sobre tu serie" no significa que el modelo no sepa nada sobre tu serie — significa que todo lo que sabe lo aprendió en el preentrenamiento, sobre *otros* datos. Si tu serie no se parece en nada a lo que hay en ese corpus (anticipo: los rendimientos de mercado), el zero-shot puede equivocarse con total seguridad. Sin ajuste también significa que no hay oportunidad de corregirlo por el camino.
+</Callout>
+
+### Cuándo usarlo
+
+Recurre al enfoque clásico de un-modelo-por-serie cuando cada serie sea larga, bien comportada, y tengas tiempo para cuidar ajustes individuales. Recurre a un modelo fundacional cuando tengas *muchas* series, historias *cortas*, o una necesidad de *arranque en frío* (un SKU nuevo con tres semanas de datos) — exactamente donde el ajuste por serie pasa hambre. Veremos el truco para las finanzas en concreto al final de esta lección.
+
+<FillBlank
+  client:visible
+  question="Completa la propiedad definitoria."
+  text="Un modelo fundacional de series temporales predice una serie completamente nueva con {{sin ajuste por serie — un único conjunto de parámetros congelado sirve a todas las series|un ajuste ARIMA nuevo estimado sobre esa serie|una red neuronal diminuta entrenada por serie}}, razón por la cual sobrevive al arranque en frío donde la receta clásica pasa hambre."
+  explanation="El modelo se preentrena una vez; la serie nueva recibe una sola pasada hacia delante con pesos congelados. No se estima ningún parámetro por serie."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+/>
+
+## Tokenizar una serie continua — el problema técnico central
+
+<MCQ
+  client:visible
+  pretest
+  question="¿Por qué no puedes meter un flujo crudo de floats de precios directamente en un transformer como metes palabras en un modelo de lenguaje?"
+  options={[
+    { text: "Un transformer consume tokens discretos / embeddings de tamaño fijo, no reales continuos arbitrarios, así que la serie debe convertirse primero en unidades tipo token", correct: true },
+    { text: "Los números en coma flotante son demasiado grandes para caber en memoria" },
+    { text: "Los transformers solo pueden procesar enteros entre 0 y 255" },
+    { text: "Los valores continuos hacen que el softmax sume más de 1" }
+  ]}
+  explanation="Los transformers operan sobre secuencias de vectores de embedding — cada posición de entrada debe ser un token (LM) o un embedding de tamaño fijo (series temporales). Un flujo continuo desnudo tiene que trocearse y proyectarse, o escalarse y agruparse en bins, en tales unidades primero."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+**La analogía.** Un transformer es un lector que solo entiende *palabras*. Pásale la forma de onda acústica cruda de alguien hablando y está perdido — alguien tiene que cortar primero ese sonido continuo en sílabas discretas que pueda buscar. Tokenizar una serie temporal es ese corte: convertir una línea ininterrumpida en una secuencia de unidades de bocado que el mecanismo de atención pueda atender. Las dos familias de abajo cortan la línea de dos formas muy distintas.
+
+### (a) Patching — trocear en ventanas, proyectar cada una a un embedding
+
+**Definición precisa.** Corta el contexto en ventanas contiguas de longitud fija llamadas **parches** (*patches*). Un parche de longitud $P$ es un vector en $\mathbb{R}^P$; un mapa lineal aprendido $W \in \mathbb{R}^{d \times P}$ lo proyecta a un embedding de dimensión $d$ — *un token por parche*. Un contexto de longitud $L$ con longitud de parche $P$ (sin solapamiento) produce
+
+$$n_{\text{patches}} = \left\lceil \frac{L}{P} \right\rceil$$
+
+tokens. Esta es la idea de PatchTST, adoptada por **TimesFM** y **Moirai**. El patching hace dos trabajos a la vez: encoge la longitud de secuencia que la atención $O(n^2)$ tiene que masticar (la preocupación de coste de la lección 1), y deja que cada token cargue *forma local* en lugar de un único punto solitario.
+
+**Ejemplo resuelto — un contexto de longitud 512, longitud de parche 32.** Número de tokens de parche:
+
+$$n_{\text{patches}} = \frac{512}{32} = 16.$$
+
+Así que 512 observaciones crudas colapsan a **16 tokens de parche**. Supón $d = 128$. Cada parche es un vector en $\mathbb{R}^{32}$, y la proyección $W \in \mathbb{R}^{128 \times 32}$ lo mapea a un token en $\mathbb{R}^{128}$. La atención entonces corre sobre 16 tokens, no 512 — la matriz de puntuaciones es $16 \times 16 = 256$ entradas en lugar de $512 \times 512 = 262{,}144$. Misma información, aproximadamente $1{,}000\times$ menos aritmética de atención. El modelo predice prediciendo el *siguiente parche* (un bloque de longitud 32), así que emite 32 puntos futuros por paso de salida.
+
+### (b) Escalado + cuantización en un vocabulario — la ruta Chronos
+
+**Definición precisa.** En lugar de proyectar parches de valor real, **Chronos** convierte la serie en tokens *literalmente* discretos para poder reutilizar un stack de modelo de lenguaje de fábrica (un codificador-decodificador estilo T5). Dos pasos:
+
+1. **Escalado por media** del contexto: divide cada valor por el valor absoluto medio del contexto, $s = \tfrac{1}{L}\sum_{t=1}^{L} |x_t|$, dando valores escalados $\tilde{x}_t = x_t / s$. Esto hace que una serie de millones y una serie de decimales parezcan comparables.
+2. **Cuantiza** cada valor escalado en uno de $B$ bins (Chronos usa $B = 4096$) que abarcan un rango fijo. El *índice* del bin es el token — un entero en $\{1, \dots, B\}$ — exactamente como un ID de palabra en un vocabulario.
+
+Ahora una serie de precios es una frase de enteros, y un modelo de lenguaje T5 corriente puede entrenarse sobre ella sin cirugía arquitectónica. La predicción muestrea IDs del siguiente token, que descuantizas (de vuelta al centro de un bin) y desescalas (multiplicando por $s$).
+
+**Ejemplo resuelto — escala luego agrupa en bins una ventana diminuta.** Contexto $x = [2, 4, 6, 8]$. Valor absoluto medio:
+
+$$s = \frac{|2| + |4| + |6| + |8|}{4} = \frac{20}{4} = 5.$$
+
+Contexto escalado: $\tilde{x} = [0.4,\ 0.8,\ 1.2,\ 1.6]$. Ahora supón que la rejilla de bins es uniforme sobre $[-10, 10]$ con $B = 4096$ bins, así que cada bin tiene ancho
+
+$$w = \frac{10 - (-10)}{4096} = \frac{20}{4096} \approx 0.004883.$$
+
+El valor escalado $1.2$ cae en el índice de bin
+
+$$\left\lfloor \frac{1.2 - (-10)}{w} \right\rfloor + 1 = \left\lfloor \frac{11.2}{0.004883} \right\rfloor + 1 = \lfloor 2293.4 \rfloor + 1 = 2294.$$
+
+Así que el valor $6$ se convierte en el token **2294**. La ventana entera se convierte en una cadena corta de tales enteros, y el stack T5 la trata exactamente como texto.
+
+<Callout variant="warning" title="La normalización global ingenua FILTRA el futuro">
+El pecado capital aquí: calcular la escala $s$ (o cualquier media / desviación típica / mín-máx) sobre la *serie entera* — incluida la parte que intentas predecir. Eso sangra información futura hacia las entradas, y tu "predicción" zero-shot está secretamente espiando. **Escala usando solo la ventana de contexto** que el modelo tiene permitido ver, nunca el horizonte de test y nunca estadísticas globales que lo abarquen. Esta es la misma trampa de fuga que la lección 5 disecciona en profundidad — y es la forma número uno en que un resultado publicado de FM de series temporales resulta ser ficción.
+</Callout>
+
+### Cuándo usar cada uno
+
+El patching mantiene los valores continuos (sin error de cuantización) y encoge la longitud de secuencia — genial cuando quieres fidelidad y un stack hecho a medida. Tokenizar en un vocabulario tira algo de precisión (cada valor se redondea al centro de un bin) pero te deja heredar gratis toda la cadena de herramientas madura de los modelos de lenguaje. El patching cambia esfuerzo de ingeniería por precisión; la cuantización cambia precisión por reutilización.
+
+<Categorize
+  client:visible
+  question="Clasifica cada propiedad bajo la familia de tokenización que describe."
+  buckets={["Patching (TimesFM, Moirai)", "Escalado + cuantización (Chronos)"]}
+  items={[
+    { text: "Trocea el contexto en ventanas de longitud fija, un embedding por ventana", bucket: "Patching (TimesFM, Moirai)" },
+    { text: "Proyecta linealmente cada ventana a un token de dimensión d, manteniendo los valores continuos", bucket: "Patching (TimesFM, Moirai)" },
+    { text: "Agrupa en bins valores escalados en un vocabulario fijo para que un stack de lenguaje T5 pueda reutilizarse", bucket: "Escalado + cuantización (Chronos)" },
+    { text: "Introduce error de redondeo porque cada valor se ajusta al centro de un bin", bucket: "Escalado + cuantización (Chronos)" }
+  ]}
+  explanation="El patching proyecta ventanas continuas en tokens (sin redondeo); la cuantización discretiza valores escalados en un vocabulario, cambiando precisión por la capacidad de reutilizar un modelo de lenguaje al completo."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+## El objetivo de preentrenamiento — autorregresivo y probabilístico
+
+<MCQ
+  client:visible
+  pretest
+  question="Un modelo fundacional de series temporales se entrena de forma autosupervisada. ¿De dónde salen las etiquetas de entrenamiento?"
+  options={[
+    { text: "De los propios datos — el modelo predice el siguiente parche / token, y el futuro real de la ventana ES la etiqueta", correct: true },
+    { text: "De anotadores humanos que etiquetan a mano cada serie como sube o baja" },
+    { text: "De un dataset supervisado aparte de predicciones compradas a analistas" },
+    { text: "No hay etiquetas; el modelo se entrena puramente por clustering" }
+  ]}
+  explanation="Es la misma autosupervisión que un modelo de lenguaje: enmascara o reserva la continuación, predícela, y el futuro reservado suministra la etiqueta gratis. No se requiere etiquetado humano."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+**La analogía.** Es el truco del modelo de lenguaje, portado a números. Un modelo de lenguaje aprende tapando la siguiente palabra y adivinándola; la palabra que tapó *es* la clave de respuestas, así que el texto se etiqueta a sí mismo. Un modelo fundacional de series temporales tapa el siguiente **parche** (o el siguiente **token** cuantizado) y lo adivina — el futuro de la ventana es su propia etiqueta gratuita. Entrena sobre millones de series así y el modelo absorbe la gramática de las series temporales: tendencia, estacionalidad, reversión a la media, saltos de nivel.
+
+**Definición precisa — siguiente paso autorregresivo.** Factoriza la verosimilitud de la secuencia de izquierda a derecha y maximízala:
+
+$$\log p_\Theta(x_{1:T}) = \sum_{t} \log p_\Theta(x_{t} \mid x_{<t}),$$
+
+donde cada "paso" es un parche (TimesFM, Moirai) o un token de vocabulario (Chronos). Como una posición solo puede condicionar sobre el pasado $x_{<t}$, la atención es **causal** — exactamente la atención enmascarada, triangular inferior, del curso de deep learning. Cada token de parche atiende solo a tokens de parche anteriores.
+
+**Definición precisa — probabilístico, no puntual.** Un buen predictor no solo adivina un número; adivina una *distribución*, porque "el siguiente rendimiento es +0,3% más o menos 2%" es mucho más útil que un escueto "+0,3%". Dos formas en que los modelos fundacionales entregan una distribución:
+
+- **Cabezas de cuantil** (TimesFM): el modelo emite varios cuantiles a la vez — p. ej. los percentiles 10, 50 y 90 — entrenados con la pérdida *pinball* (de cuantil). Para un nivel de cuantil $\tau$ y predicción $\hat{q}$, la pérdida pinball sobre el resultado $y$ es
+
+$$\rho_\tau(y, \hat{q}) = \max\big(\tau(y - \hat{q}),\ (\tau - 1)(y - \hat{q})\big).$$
+
+- **Trayectorias muestreadas** (Chronos): como la salida es una distribución de probabilidad sobre el siguiente *token*, puedes muestrear muchos posibles siguientes tokens, hacer rodar cada uno hacia delante autorregresivamente, y leer percentiles de la nube de futuros muestreados — una distribución predictiva de Monte-Carlo. (Lag-Llama en cambio encabeza una distribución **t de Student** paramétrica, capturando colas gruesas directamente.)
+
+**Ejemplo resuelto — la pérdida pinball distingue la mediana del percentil 90.** Resultado real $y = 12$.
+
+- Predicción de mediana ($\tau = 0.5$), predicción $\hat{q} = 10$: error $y - \hat{q} = 2 > 0$, así que $\rho_{0.5} = 0.5 \times 2 = 1.0$.
+- Predicción de percentil 90 ($\tau = 0.9$), misma predicción $\hat{q} = 10$: $\rho_{0.9} = 0.9 \times 2 = 1.8$.
+
+La cabeza de $\tau$ alto se castiga *más duro* por quedarse corta (se supone que debe situarse por encima de la mayoría de los resultados), así que el entrenamiento empuja la predicción del percentil 90 *hacia arriba* respecto a la mediana. Esa asimetría es exactamente cómo una sola red aprende todo un abanico de cuantiles en lugar de un único punto — el abanico *es* la estimación de incertidumbre.
+
+<AttentionWeightsHeatmap
+  client:visible
+  caption="El objetivo de preentrenamiento hecho visual: un predictor solo-decodificador atiende causalmente sobre TOKENS DE PARCHE PASADOS. Cada fila es un token de parche preguntando '¿qué parches anteriores me importan?'; los pesos softmax de esa fila suman 1, y el triángulo superior está enmascarado — un token de parche puede atender a sí mismo y a tokens de parche anteriores solamente, nunca a parches futuros (eso filtraría justo lo que debe predecir). Alterna entre un patrón 'Reciente (momentum)' que abraza la diagonal, un patrón 'Dirigido por eventos' que se clava en un parche anterior (un shock de régimen), y un patrón 'Difuso' que promedia el pasado; arrastra el deslizador de temperatura para ver cuántos parches anteriores agrupa efectivamente cada token."
+  queryAxisLabel="Consulta — token de parche i"
+  keyAxisLabel="Clave — token de parche anterior j"
+/>
+
+<Callout variant="warning" title="Una predicción puntual oculta lo único que importa en finanzas">
+Si un modelo solo emite un único número, no tienes ni idea de si es "+0,3% con confianza" o "ni idea, en algún punto de ±5%". En finanzas el *abanico* es el producto — el dimensionamiento de posiciones, el VaR, la valoración de opciones, todos viven en la distribución, no en la media. Prefiere siempre la salida probabilística (cuantiles o trayectorias muestreadas), y desconfía de cualquier benchmark que puntúe estos modelos solo por error puntual (MAE/MSE). Un modelo puede clavar la mediana y aun así ser inútilmente sobreconfiado sobre las colas.
+</Callout>
+
+### Cuándo usarlo
+
+Apóyate en la salida probabilística siempre que necesites incertidumbre calibrada — límites de riesgo, abanicos de escenarios, cualquier cosa donde estar *equivocado sobre cuán equivocado podrías estar* sea caro. La estructura autorregresiva es el sesgo inductivo correcto cuando el futuro genuinamente depende del pasado de forma causal, de izquierda a derecha (casi toda predicción). El único régimen donde este objetivo lucha es precisamente el dato de baja señal: si "predecir el siguiente paso" es casi imposible (rendimientos de mercado eficiente), el objetivo aun así entrena tan contento — simplemente aprende a emitir una distribución ancha y casi trivial, lo cual las lecciones 3 y 6 mostrarán que a menudo es la respuesta honesta.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Objetivo autorregresivo", definition: "Predecir el siguiente parche/token; el futuro reservado de la ventana es la etiqueta autosupervisada" },
+    { term: "Atención causal", definition: "Un token de parche solo puede atender a sí mismo y a tokens de parche anteriores, nunca al futuro que debe predecir" },
+    { term: "Cabeza de cuantil (pérdida pinball)", definition: "Emitir varios percentiles a la vez para que el propio abanico se convierta en la estimación de incertidumbre" },
+    { term: "Trayectorias muestreadas", definition: "Extraer muchos rollouts del siguiente token y leer percentiles de la nube de futuros simulados" }
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+## El linaje — TimesFM, Chronos, Moirai, Lag-Llama
+
+<MCQ
+  client:visible
+  pretest
+  question="¿Qué elección de diseño distingue más a Moirai de los otros tres modelos estrella de abajo?"
+  options={[
+    { text: "Está construido para entrada de cualquier-variable / multivariante y usa múltiples tamaños de parche, vía un codificador enmascarado", correct: true },
+    { text: "Es el único que es probabilístico" },
+    { text: "Se niega a usar atención en absoluto" },
+    { text: "Es el único entrenado de forma autosupervisada" }
+  ]}
+  explanation="Los cuatro son probabilísticos, basados en atención y autosupervisados. La firma de Moirai es el soporte multivariante nativo ('cualquier-variable') con múltiples tamaños de parche y un diseño de codificador enmascarado — los otros son principalmente decodificadores univariantes."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+**La analogía.** Piensa en estos cuatro como estilos de casa rivales para el mismo instrumento. Todos tocan "predecir el futuro desde el pasado", pero difieren en *cómo leen la partitura* (tokenización), *cómo está dispuesta la banda* (arquitectura), si tocan *una voz o muchas a la vez* (uni- vs multivariante), y si te entregan una sola nota o un acorde entero de posibilidades (salida probabilística).
+
+**Comparación precisa.**
+
+| Modelo (lab) | Tokenización | Arquitectura | Univariante vs multivariante | ¿Probabilístico? |
+|---|---|---|---|---|
+| **TimesFM** (Google) | Patching (parches proyectados linealmente) | Solo-decodificador | Univariante | Sí — cabezas puntual + cuantil |
+| **Chronos** (Amazon) | Escala + cuantiza en un vocabulario fijo | Estilo T5 (stack LM codificador-decodificador) | Univariante | Sí — vía muestreo de rollouts del siguiente token |
+| **Moirai** (Salesforce) | Patching, múltiples tamaños de parche | Codificador enmascarado | Cualquier-variable / multivariante | Sí — cabeza distribucional |
+| **Lag-Llama** (abierto / académico) | Características rezagadas como entradas | Solo-decodificador | Univariante | Sí — cabeza t de Student paramétrica |
+
+Unas cuantas cosas para leer de la tabla. **TimesFM** y **Lag-Llama** son ambos solo-decodificador (el stack causal estilo GPT), pero TimesFM hace patching de la serie cruda mientras Lag-Llama alimenta *características rezagadas* (el valor en el rezago 1, 7, 30, …) — metiendo la estacionalidad directamente en la entrada, y luego encabezando una t de Student para capturar colas gruesas. **Chronos** es el bicho raro: al cuantizar en un vocabulario llega a *ser* un modelo de lenguaje, heredando todo ese ecosistema, al precio del error de redondeo. **Moirai** es el especialista multivariante — puede atender a través de varias variables a la vez y elige entre tamaños de parche, lo cual importa cuando tus series vienen a frecuencias distintas.
+
+**Ejemplo resuelto — eligiendo del linaje.** Debes predecir 200 series de materias primas correlacionadas conjuntamente, donde el movimiento de una serie informa al de otra. TimesFM/Chronos/Lag-Llama univariantes predecirían cada una en aislamiento, ignorando la estructura entre series. El diseño de cualquier-variable de **Moirai** está construido precisamente para atender a través de las 200 series juntas — la elección natural. Dale la vuelta a la tarea hacia una sola serie muy larga, de colas gruesas, donde te importa el riesgo de cola, y la cabeza t de Student de **Lag-Llama** se gana su sitio.
+
+<Callout variant="warning" title="Misma familia, superficies de fallo muy distintas">
+No los trates como intercambiables solo porque comparten una nota de prensa. La cuantización de Chronos limita su precisión y puede destrozar valores muy fuera de su rango de bins; un modelo univariante literalmente no puede ver el contagio entre series; las características de rezago de Lag-Llama hornean suposiciones sobre qué estacionalidades importan. Una victoria de benchmark para uno dice poco sobre otro en *tus* datos — y (siguiente sección) dice aún menos cuando tus datos son financieros.
+</Callout>
+
+### Cuándo usar cuál
+
+Usa **TimesFM** como una base univariante general sólida con cuantiles limpios; **Chronos** cuando quieras cabalgar la cadena de herramientas de modelos de lenguaje y tolerar la cuantización; **Moirai** cuando el problema sea genuinamente multivariante o multi-frecuencia; **Lag-Llama** cuando la estacionalidad sea fuerte y las colas gruesas y quieras un modelo abierto, t de Student. Ninguna de estas elecciones, ojo, cambia el hecho incómodo que viene a continuación: en qué fueron *entrenados*.
+
+<FillBlank
+  client:visible
+  question="Completa la distinción del linaje."
+  text="Entre los modelos estrella, {{Moirai es el de cualquier-variable / multivariante|Chronos es el único multivariante|TimesFM es el único multivariante}}, usando múltiples tamaños de parche y un codificador enmascarado, mientras TimesFM, Chronos y Lag-Llama son principalmente univariantes."
+  explanation="Moirai es el modelo de cualquier-variable de Salesforce — soporte multivariante nativo con múltiples tamaños de parche y un diseño de codificador enmascarado. Los otros predicen una serie a la vez."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+/>
+
+## Los corpus de preentrenamiento — miles de millones de puntos, casi ninguno parecido a un mercado
+
+<MCQ
+  client:visible
+  pretest
+  question="Los corpus de preentrenamiento detrás de estos modelos suman miles de millones de puntos temporales. Para predecir rendimientos financieros, ¿cuál es la preocupación central?"
+  options={[
+    { text: "Los corpus están dominados por dominios de alta señal (energía, clima, tráfico, demanda); muy poco se parece a un mercado, y la parte parecida a un mercado tiene baja relación señal-ruido — así que la transferencia a rendimientos es dudosa", correct: true },
+    { text: "Los corpus son demasiado pequeños para entrenar un modelo grande" },
+    { text: "Los datos financieros son ilegales de incluir, así que los modelos nunca han visto precios" },
+    { text: "Los corpus contienen solo datos de mercado, haciendo que los modelos se sobreajusten a las finanzas" }
+  ]}
+  explanation="Estos corpus son enormes pero desequilibrados hacia dominios bien comportados, de alta SNR. Los mercados apenas están representados, y los rendimientos que sí están presentes son ruido casi impredecible — así que la prior preentrenada puede no transferirse en absoluto a la predicción financiera."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+**La analogía.** Imagina entrenar a un sumiller campeón haciéndole catar millones de vasos de — agua. Agua mineral, agua con gas, agua del grifo de cuarenta ciudades. Se volverá *extraordinario* distinguiendo aguas. Luego le pides que califique un Burdeos. La habilidad que construyó es real y profunda, pero se construyó sobre la distribución equivocada. Los corpus de modelos fundacionales son océanos de series *bien comportadas* — y los rendimientos son el Burdeos.
+
+**Enunciado preciso.** Los corpus de preentrenamiento (piensa en las mezclas estilo LOTSA / Chronos) agregan **miles de millones** de puntos temporales a través de **energía** (carga eléctrica), **clima**, **tráfico**, **demanda minorista/web**, transporte, y una pizca de **finanzas**. La propiedad definitoria de la mayoría de estos dominios es la **alta relación señal-ruido**: la carga eléctrica tiene una estacionalidad diaria-y-semanal atronadora que puedes predecir dormido; el tráfico y la demanda están fuertemente autocorrelacionados y son regulares. Los **rendimientos** financieros son lo contrario — casi eficientes, dominados por ruido impredecible, no estacionarios entre regímenes (el brutal régimen de baja SNR del curso de deep learning). Así que dos problemas se apilan:
+
+1. **Cobertura:** las series parecidas a un mercado son una rebanada diminuta del corpus, así que el modelo gastó casi nada de su capacidad aprendiendo sus dinámicas.
+2. **Incluso donde están presentes, baja SNR:** la fracción financiera es el dato más difícil posible del que extraer un patrón transferible — a menudo *no hay* un patrón estable que aprender.
+
+**Ejemplo resuelto — la mezcla está desequilibrada.** Supón que un corpus tiene 10 mil millones de puntos, repartidos aproximadamente: energía 35%, tráfico 20%, clima 15%, demanda/web 25%, finanzas 5%. Eso son $0.05 \times 10\text{B} = 500$ millones de puntos financieros — suena enorme. Pero "financiero" aquí es mayormente *precios*, mucho de ello de baja frecuencia, y los *rendimientos* que de verdad te importan cargan casi ninguna señal predecible por punto. Así que la fracción *efectiva*, relevante para el mercado y portadora de señal, de la que el modelo aprendió es mucho menor que el 5% — y lo poco que vio puede enseñar las lecciones equivocadas (una muestra de cripto en tendencia no es una ley estacionaria). Contrasta con 3,5 mil millones de puntos de carga eléctrica metronómica, donde cada punto refuerza una prior estacional limpia.
+
+<Callout variant="warning" title="Una prior preentrenada de series limpias puede dañar en rendimientos">
+La suposición silenciosa del transfer learning es que las distribuciones de origen y destino *comparten estructura*. Cuando no lo hacen, la prior no es neutral — engaña activamente. Un modelo que aprendió "las series tienen estacionalidad recurrente fuerte" puede alucinar estacionalidad en rendimientos que no existe, o subestimar el riesgo de cola porque sus dominios de entrenamiento rara vez tenían colas gruesas. Por eso un benchmark deslumbrante sobre datos de energía/tráfico te dice casi nada sobre la predicción financiera — y las lecciones 3 y 6 medirán exactamente cuánto (a menudo: no mucho) sobrevive al salto a los mercados.
+</Callout>
+
+### Cuándo importa más el desajuste de corpus
+
+Si tu serie objetivo *se parece* al corpus — una predicción de demanda, una curva de carga, una métrica de negocio estacional bien comportada — el desajuste apenas muerde y la transferencia zero-shot puede ser excelente. Si tu objetivo es una sola serie de rendimientos adversarial, el desajuste de corpus es máximo y la prior preentrenada está en su terreno más débil. La regla de decisión es contundente: **cuanto más se parezca tu serie a los dominios de entrenamiento, más deberías confiar en el modelo; cuanto más se parezca a rendimientos, más deberías testear antes de creer nada.**
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Si los corpus contienen cientos de millones de puntos financieros, ¿por qué sigue siendo dudosa la transferencia a rendimientos?</summary>
+
+**Respuesta.** Dos razones se componen. Primera, *la cantidad no es cobertura de lo correcto*: la mayoría de los datos "financieros" son precios y de baja frecuencia, mientras que la señal predecible en los **rendimientos** es minúscula por punto — puedes tener mil millones de puntos ruidosos y aun así casi ninguna estructura aprendible. Segunda, el corpus está dominado por dominios de *alta SNR, fuertemente estacionales*, así que la prior aprendida del modelo espera patrones recurrentes limpios. Los rendimientos violan esa prior (casi eficientes, no estacionarios, de colas gruesas), así que el conocimiento transferido puede engañar en lugar de ayudar. Muchos datos sobre la distribución equivocada no hacen una buena prior para los rendimientos.
+
+</details>
+</Reveal>
+
+## Cuándo un modelo fundacional de series temporales es la herramienta correcta
+
+<MCQ
+  client:visible
+  pretest
+  question="Dado todo lo anterior, ¿dónde se gana más claramente su sueldo un modelo fundacional de series temporales?"
+  options={[
+    { text: "Como una base zero-shot / de arranque en frío sólida sobre una serie bien comportada, parecida al corpus", correct: true },
+    { text: "Como generador de alfa garantizado sobre una sola serie de rendimientos ruidosa" },
+    { text: "Solo cuando puedes afinarlo sobre millones de tus propios puntos de rendimientos" },
+    { text: "En cualquier sitio — el preentrenamiento hace que la distribución de origen sea irrelevante" }
+  ]}
+  explanation="Su punto dulce es el arranque en frío y la base zero-shot sobre series que se parecen a sus dominios de entrenamiento de alta SNR. Sobre una sola serie de rendimientos adversarial, de baja SNR, el desajuste de corpus socava la mismísima transferencia en la que se apoya."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+**El compromiso, dicho llanamente.** Un modelo fundacional de series temporales es una magnífica **base de arranque en frío**: pásale una serie nueva, bien comportada, con poca historia y produce una predicción calibrada, probabilística, en una pasada hacia delante, sin ajuste, sin cuidados. Eso es genuinamente útil y genuinamente nuevo. Pero la misma máquina, apuntada a una sola serie de rendimientos de baja SNR, se apoya en una prior construida desde la distribución equivocada — y "sin ajuste" ahora significa "sin oportunidad de adaptarse a cuán diferente del corpus es tu serie".
+
+| Escenario | Veredicto del modelo fundacional | Por qué |
+|---|---|---|
+| SKU nuevo, 3 semanas de historia de demanda | Sólido | Arranque en frío + estacionalidad parecida al corpus; el zero-shot brilla |
+| 200 curvas de carga correlacionadas | Sólido (usa Moirai) | Alta SNR, multivariante, se parece a los datos de entrenamiento |
+| Rendimientos diarios de una sola acción | Dudoso | Baja SNR + desajuste de corpus; la prior puede engañar |
+| Riesgo de cola en una serie de rendimientos de colas gruesas | Testea duro primero | La t de Student de Lag-Llama ayuda, pero la transferencia no está probada |
+
+**Ejemplo resuelto — eligiendo en dos mesas.** La Mesa A predice la demanda eléctrica de la próxima semana para 5.000 subestaciones, la mayoría con menos de dos meses de datos. Un modelo fundacional es casi ideal: parecido al corpus, arranque en frío, muchas series — exactamente sus fortalezas de la primera sección. La Mesa B predice el rendimiento de mañana para una acción de gran capitalización. Mismo modelo, terreno opuesto: una serie, SNR brutal, una prior entrenada sobre agua intentando calificar un Burdeos. La Mesa A debería desplegar la base zero-shot hoy; la Mesa B debería tratar cualquier backtest impresionante como culpable-hasta-que-se-demuestre-lo-contrario (el campo de minas de fuga de la lección 5, la evaluación honesta de la lección 6).
+
+<Callout variant="warning" title="Una victoria zero-shot sobre datos limpios no es una licencia para los mercados">
+El error más caro de todo este campo es generalizar un benchmark. "TimesFM batió a ARIMA en las competiciones M" es cierto e irrelevante para si predice rendimientos. El desajuste de corpus y la baja SNR de los rendimientos significan que un predictor general fuerte puede ser un predictor de mercado *terrible* — y solo lo descubres evaluando honestamente sobre tu propia serie, fuera de muestra, con la fuga controlada. Hasta entonces, trata las afirmaciones de alfa de modelos fundacionales como no probadas por defecto.
+</Callout>
+
+### Cuándo usarlo
+
+Usa un modelo fundacional de series temporales como tu *primera*, *barata*, *zero-shot* base siempre que tengas muchas series, historias cortas, o un arranque en frío — y especialmente cuando esas series se parezcan a los dominios estacionales, de alta SNR, en que fue entrenado. Sé profundamente escéptico con él como predictor autónomo de rendimientos de mercado sobre una sola serie adversarial; ahí el desajuste de corpus y el suelo de ruido conspiran contra la mismísima transferencia que lo hace poderoso en otros lugares. La siguiente lección precisa "zero-shot vs few-shot" y se pregunta si las leyes de escalado que elevan estos modelos sobre datos limpios los elevan sobre los mercados en absoluto.
+
+<Categorize
+  client:visible
+  question="Clasifica cada situación según si un modelo fundacional de series temporales es un encaje sólido o uno dudoso."
+  buckets={["Encaje sólido", "Encaje dudoso"]}
+  items={[
+    { text: "Predicción de demanda en arranque en frío para un producto completamente nuevo con semanas de historia", bucket: "Encaje sólido" },
+    { text: "Muchas curvas de carga correlacionadas, de alta SNR, predichas conjuntamente", bucket: "Encaje sólido" },
+    { text: "Alfa autónomo de los rendimientos diarios de una sola acción, zero-shot", bucket: "Encaje dudoso" },
+    { text: "Una sola serie de rendimientos adversarial, de baja SNR, sin análogo en el corpus", bucket: "Encaje dudoso" }
+  ]}
+  explanation="El arranque en frío y las series de alta SNR parecidas al corpus juegan a favor de las fortalezas del modelo; las series individuales de rendimientos de baja SNR se sitúan justo donde el desajuste de corpus y el suelo de ruido socavan la transferencia."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+## Repaso
+
+<MindMap
+  client:visible
+  title="Modelos fundacionales de series temporales"
+  caption="Preentrena una vez sobre millones de series, tokeniza la línea continua, predice una serie nueva zero-shot — potente sobre datos parecidos al corpus, dudoso sobre rendimientos adversariales."
+  root={{
+    label: "Modelos fundacionales de series temporales",
+    children: [
+      {
+        label: "Un modelo, no uno-por-serie",
+        children: [
+          { label: "Clásico: ajusta ARIMA/GARCH/red por serie" },
+          { label: "FM: preentrena una vez, predice serie nueva zero-shot" },
+          { label: "Sobrevive al arranque en frío / historia corta" }
+        ]
+      },
+      {
+        label: "Tokenizar la línea",
+        children: [
+          { label: "Patching: trocea en ventanas → embed (TimesFM, Moirai)" },
+          { label: "512 / 32 = 16 tokens de parche" },
+          { label: "Cuantizar: escala + bin en un vocab (Chronos)" },
+          { label: "Escala solo sobre el CONTEXTO — lo global filtra" }
+        ]
+      },
+      {
+        label: "Objetivo de preentrenamiento",
+        children: [
+          { label: "Autorregresivo siguiente parche/token; futuro = etiqueta" },
+          { label: "Atención causal sobre tokens de parche pasados" },
+          { label: "Probabilístico: cuantiles o trayectorias muestreadas" }
+        ]
+      },
+      {
+        label: "El linaje",
+        children: [
+          { label: "TimesFM — decodificador, con patching, cuantiles" },
+          { label: "Chronos — tokens de vocab, T5, muestreo" },
+          { label: "Moirai — cualquier-variable, multi tamaño de parche, codificador" },
+          { label: "Lag-Llama — decodificador, características de rezago, t de Student" }
+        ]
+      },
+      {
+        label: "Corpus y el truco",
+        children: [
+          { label: "Miles de millones de puntos: energía, clima, tráfico, demanda" },
+          { label: "Poco se parece a un mercado; los rendimientos son baja SNR" },
+          { label: "Base de arranque en frío sólida; dudosa sobre rendimientos" }
+        ]
+      }
+    ]
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Modelos fundacionales de series temporales — ponte a prueba"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  nextLabel="Siguiente pregunta"
+  backLabel="Atrás"
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  seeResultsLabel="Ver resultados"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  gateLabel="Comprueba tu respuesta para continuar."
+  questions={[
+    {
+      question: "Un contexto de longitud 512 se trocea con longitud de parche 64 (sin solapamiento). ¿Sobre cuántos tokens de parche atiende el transformer?",
+      options: [
+        { text: "8", correct: true },
+        { text: "64" },
+        { text: "512" },
+        { text: "448" }
+      ],
+      explanation: "n_patches = ceil(L / P) = 512 / 64 = 8. El patching colapsa 512 puntos crudos en 8 tokens, recortando el coste de atención O(n²)."
+    },
+    {
+      question: "Chronos escala por media un contexto, luego cuantiza. Para la ventana [3, 6, 9], ¿cuál es la escala de media-absoluta s usada antes de agrupar en bins?",
+      options: [
+        { text: "6", correct: true },
+        { text: "18" },
+        { text: "9" },
+        { text: "3" }
+      ],
+      explanation: "s = (|3| + |6| + |9|) / 3 = 18 / 3 = 6. Cada valor se divide por s antes de mapearse a un índice de bin."
+    },
+    {
+      question: "¿Qué afirmaciones sobre el objetivo de preentrenamiento y las salidas son correctas?",
+      allowMultiple: true,
+      options: [
+        { text: "Es autosupervisado: el futuro reservado de la ventana es la etiqueta", correct: true },
+        { text: "La atención es causal — un token de parche atiende solo a sí mismo y a tokens de parche anteriores", correct: true },
+        { text: "Las cabezas de cuantil y las trayectorias muestreadas ambas producen una distribución, no solo un punto", correct: true },
+        { text: "El modelo debe ser etiquetado a mano por analistas antes del entrenamiento" }
+      ],
+      explanation: "El objetivo es autosupervisión autorregresiva con atención causal, y las salidas probabilísticas (cuantiles o rollouts muestreados) dan una distribución completa. No hay etiquetado humano involucrado."
+    },
+    {
+      question: "¿Qué modelo del linaje es la elección natural para predecir 200 series correlacionadas conjuntamente, explotando la estructura entre series?",
+      options: [
+        { text: "Moirai — su diseño de cualquier-variable / multivariante atiende a través de las series", correct: true },
+        { text: "TimesFM — solo-decodificador y univariante" },
+        { text: "Chronos — stack T5 univariante cuantizado" },
+        { text: "Lag-Llama — univariante con una cabeza t de Student" }
+      ],
+      explanation: "Moirai es el especialista multivariante ('cualquier-variable') con múltiples tamaños de parche. Los otros tres predicen una serie a la vez e ignorarían el contagio entre series."
+    },
+    {
+      question: "¿Por qué es dudosa la transferencia a rendimientos financieros pese a que los corpus contienen miles de millones de puntos?",
+      options: [
+        { text: "Los corpus están dominados por dominios de alta SNR, estacionales; los mercados apenas están representados y los rendimientos son baja SNR, así que la prior aprendida puede engañar", correct: true },
+        { text: "Los corpus son demasiado pequeños para aprender algo útil" },
+        { text: "Los rendimientos tienen mayor SNR que la carga eléctrica, así que el modelo reacciona de menos" },
+        { text: "Los datos financieros están excluidos por ley, así que el modelo no ha visto precios en absoluto" }
+      ],
+      explanation: "La energía, el clima, el tráfico y la demanda dominan la mezcla y son altamente predecibles; los rendimientos son una rebanada diminuta, casi impredecible, así que una prior construida sobre series estacionales limpias se transfiere mal — y puede engañar activamente."
+    },
+    {
+      question: "Un profesional calcula el factor de escalado usando estadísticas sobre la serie ENTERA, incluido el horizonte de predicción. ¿Qué está mal?",
+      options: [
+        { text: "Filtra información futura hacia las entradas — el escalado debe usar solo la ventana de contexto que el modelo tiene permitido ver", correct: true },
+        { text: "Nada; el escalado global es el procedimiento Chronos recomendado" },
+        { text: "Hace los bins demasiado estrechos para ser útiles" },
+        { text: "Solo importa para modelos de patching, no de cuantización" }
+      ],
+      explanation: "Cualquier estadística que abarque el futuro (media, desviación típica, mín-máx) sangra la respuesta hacia las entradas. Escala solo sobre la ventana de contexto — la trampa de fuga que la lección 5 disecciona al completo."
+    }
+  ]}
+/>

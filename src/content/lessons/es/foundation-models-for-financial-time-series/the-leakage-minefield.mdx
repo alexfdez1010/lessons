@@ -1,0 +1,527 @@
+---
+title: "El campo de minas de las fugas"
+description: "Por qué los foundation models empeoran la fuga de datos como ningún modelo anterior — contaminación del preentrenamiento, la trampa del knowledge cutoff, solapamiento con benchmarks, fugas point-in-time y por supervivencia — más una checklist concreta de cuándo se puede confiar de verdad en un backtest zero-shot de un foundation model."
+topic: "es/foundation-models-for-financial-time-series"
+order: 5
+minutes: 18
+updated: 2026-06-22
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, PurgedCvSplit } from '@/components/react';
+
+Las lecciones 1 a 4 os vendieron la cara buena: preentrenar sobre un corpus gigante y luego adaptar (lección 1), predecir series temporales en zero-shot (lección 2), surfear las scaling laws (lección 3) e incluso exprimir un LLM para investigación y señales (lección 4). Cada uno de esos superpoderes comparte un secreto sucio, y esta lección es donde lo sacamos a la luz.
+
+El secreto: **un foundation model ya ha leído una porción enorme del pasado — posiblemente incluyendo el mismísimo futuro que vuestro backtest intenta "predecir".** Los modelos clásicos solo saben lo que les dais de comer. Un modelo preentrenado entra por la puerta sabiendo cosas, y normalmente no tenéis ni idea de cuáles. Eso convierte una tarea de modelado normal en un campo de minas, donde un solo paso en falso hace estallar toda vuestra conclusión de investigación sin hacer ruido.
+
+Vamos a aprender dónde están enterradas las minas.
+
+## Por qué los foundation models empeoran la fuga
+
+<MCQ
+  client:visible
+  pretest
+  question="Antes de cualquier definición: ¿qué hace que un foundation model preentrenado sea singularmente peligroso para el backtesting, comparado con un modelo que entrenáis desde cero con vuestros propios datos?"
+  options={[
+    { text: "Su corpus de preentrenamiento puede contener ya información del futuro relativa a vuestra ventana de backtest, así que 'recuerda' resultados que se supone que debe predecir", correct: true },
+    { text: "Tiene más parámetros, así que siempre es más lento de evaluar" },
+    { text: "Solo se puede ejecutar en zero-shot, lo cual es intrínsecamente menos preciso" },
+    { text: "Usa atención, que es numéricamente inestable con datos financieros" }
+  ]}
+  explanation="El peligro singular es temporal: el corpus sobre el que se preentrenó el modelo puede solaparse o incluso ser posterior a vuestro periodo de test, así que una 'predicción' puede ser en secreto un recuerdo de resultados memorizados. El número de parámetros, el modo zero-shot y la estabilidad de la atención son preocupaciones reales en otros contextos — ninguna es el problema central de la fuga."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+**La analogía.** Imaginad contratar a un analista para predecir el mercado de hoy y luego descubrir que se pasó anoche leyendo el periódico de *mañana*. Pedidle que "prediga" y os deslumbrará — pero está recitando, no razonando. Un foundation model preentrenado con datos hasta 2024 y apuntado a un backtest de 2020 es exactamente ese analista. La brillantez que medís es memoria disfrazada de predicción.
+
+**Tres términos precisos.** La fuga en los foundation models viene en tres sabores con nombre propio, y necesitáis los tres en vuestro vocabulario:
+
+- **Sesgo de anticipación (lookahead bias).** Usar, en el momento de decisión $t$, cualquier información que no estuvo realmente disponible hasta después de $t$. La versión clásica es un bug de código (indexasteis el precio de mañana). La versión foundation-model está cocida dentro de los *pesos*: el modelo vio el futuro durante el preentrenamiento, así que el sesgo de anticipación llega gratis, de forma invisible.
+- **Contaminación de los datos de preentrenamiento.** Vuestros datos de evaluación — o sus resultados — estaban dentro del corpus usado para preentrenar el modelo. El modelo no está generalizando a vuestro conjunto de test; está en parte *recordándolo*.
+- **Memorización.** Los modelos grandes almacenan demostrablemente trozos literales de sus datos de entrenamiento. Así que la contaminación no es solo "se vieron ejemplos parecidos" — se pueden reproducir de memoria valores, secuencias o eventos concretos.
+
+**Por qué es peor que nunca.** Con un modelo desde cero controláis las entradas exactamente: la fuga es un bug que podéis auditar línea a línea. Con un foundation model, la fuga está aguas arriba, es opaca y enorme. Normalmente no podéis inspeccionar el corpus, no podéis enumerar qué memorizó y no podéis dejar de ver lo que vio. La fuga ya está en la caja antes de que la abráis.
+
+| Fallo | Modelo desde cero | Foundation model |
+|---|---|---|
+| Origen de la info futura | Un bug en *vuestra* tubería | Cocido en los *pesos preentrenados* |
+| Auditabilidad | Alta — leéis vuestro propio código | Baja — el corpus suele ser secreto |
+| Estado por defecto | Sin fuga hasta que metáis un bug | Posiblemente ya contaminado |
+| Solución | Parchear el bug | Restringir la *ventana de evaluación* |
+
+<Callout variant="warning" title="No se puede hacer grep a la memoria de un modelo">
+El instinto del ML clásico es "ya comprobaré yo mis features buscando anticipación". Ese instinto falla aquí: la información peligrosa vive en miles de millones de pesos congelados, no en vuestra matriz de features. Una tubería de features limpia no implica una evaluación limpia cuando el modelo en sí llegó precargado con el futuro. Cazar fugas en foundation models va de la *frontera en el tiempo* entre lo que el modelo sabía y aquello sobre lo que testeáis — no de vuestras columnas.
+</Callout>
+
+### Cuándo usarlo
+
+Tratad cada modelo preentrenado como culpable-hasta-que-se-demuestre-inocente de contaminación *siempre que su supuesta habilidad se mida sobre el pasado*. Si solo lo ejecutáis hacia delante sobre datos genuinamente no vistos, posteriores al despliegue, la preocupación se encoge. En el momento en que hacéis backtest — en el momento en que lo puntuáis sobre la historia — asumid que el corpus puede haber tocado esa historia y diseñad alrededor de ello. El resto de esta lección es la parte de "diseñar alrededor de ello".
+
+<FillBlank
+  client:visible
+  question="Rellena la distinción central."
+  text="En un modelo desde cero, la fuga suele ser un bug en tu propia tubería; en un foundation model, el futuro puede estar cocido en los {{pesos preentrenados|función de pérdida|programa de learning rate}}, que normalmente no puedes inspeccionar."
+  explanation="El peligro que define a los foundation models es que la información futura vive en los pesos preentrenados congelados — opacos e inauditables — en lugar de en código que escribisteis vosotros."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+/>
+
+## Fuga n.º 1 — contaminación temporal (el knowledge cutoff)
+
+<MCQ
+  client:visible
+  pretest
+  question="Un foundation model de series temporales tiene un knowledge cutoff de 2024. Lo ejecutáis en 'zero-shot' para predecir el mercado de 2020. ¿Qué estáis midiendo en realidad?"
+  options={[
+    { text: "Cómo de bien recuerda 2020 — un resultado que ya está dentro de su ventana de preentrenamiento — no cómo de bien predice lo desconocido", correct: true },
+    { text: "Habilidad de predicción genuina fuera de muestra, porque no hicisteis fine-tuning sobre 2020" },
+    { text: "Nada útil, porque los cutoffs no afectan a la inferencia zero-shot" },
+    { text: "Puro ruido, ya que 2020 es anterior a la existencia del modelo" }
+  ]}
+  explanation="Un cutoff de 2024 significa que 2020 está en el pasado que el modelo ya absorbió. 'Zero-shot' se refiere a no hacer fine-tuning — no dice nada sobre si el periodo de test es anterior al cutoff. Testear dentro del cutoff mide memoria, no clarividencia."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+**La analogía.** El knowledge cutoff es la fecha pasada la cual el modelo no ha leído nada. Todo lo *anterior* al cutoff es a libro abierto; todo lo *posterior* es a libro cerrado. Hacer backtest antes del cutoff es ponerle al modelo un examen sobre capítulos que ya tiene memorizados.
+
+**Definición precisa.** El **knowledge cutoff** de un modelo es la fecha más reciente representada en su corpus de preentrenamiento. La **contaminación temporal** ocurre cuando vuestra ventana de evaluación cae (entera o parcialmente) *antes* del cutoff, de modo que los resultados que puntuáis estaban disponibles para el modelo durante el preentrenamiento. Una "predicción" de un periodo previo al cutoff es por tanto un **test de memoria**, no una predicción — el modelo está, en el mejor caso, interpolando datos que ya ha visto y, en el peor, regurgitándolos.
+
+**Ejemplo resuelto — un backtest que en secreto es un test de memoria.** Supongamos que un proveedor lanza un foundation model con un knowledge cutoff declarado del **31 de diciembre de 2024**. Lo evaluáis sobre un backtest que abarca **2015–2023** y reportáis un Sharpe fuera de muestra precioso.
+
+- Cada día de negociación de 2015–2023 es *anterior* al cutoff de 2024.
+- Así que el 100% de vuestra ventana "fuera de muestra" está dentro del horizonte de preentrenamiento del modelo.
+- El modelo podría haber memorizado la trayectoria de precios de 2015–2023 literalmente; nada lo impide estructuralmente.
+- Vuestro Sharpe mide *fidelidad de recuerdo*, no habilidad predictiva. No sobrevivirá al contacto con datos genuinamente futuros.
+
+Ahora contrastad con un diseño limpio. Mismo modelo, mismo cutoff de 2024, pero evaluáis solo sobre **2025 en adelante** — fechas que el modelo demostrablemente no pudo haber visto. Esa ventana no pudo haber filtrado nada a través del cutoff (es posterior al corpus por completo), así que un buen Sharpe ahí es al menos *elegible* para ser real.
+
+| Ventana de backtest | Knowledge cutoff | Qué medís en realidad |
+|---|---|---|
+| 2015–2023 | 2024 | Memoria del pasado (contaminado) |
+| 2024 a caballo | 2024 | Mixto — parte memoria, parte predicción |
+| 2025 en adelante | 2024 | Genuino fuera de muestra (elegible para ser real) |
+
+**La solución.** Haced backtest **solo sobre datos estrictamente posteriores al knowledge cutoff.** Esa única regla mata la contaminación temporal de raíz. Es brutal — puede dejaros con una ventana de evaluación dolorosamente corta — pero una ventana corta y honesta gana siempre a una larga y contaminada.
+
+<Callout variant="warning" title="'Zero-shot' no significa 'sin fugas'">
+La gente oye "zero-shot" y se relaja, como si no hacer fine-tuning significara que no se ha filtrado nada. Zero-shot solo describe el paso de *adaptación* — no entrenasteis sobre la tarea objetivo. No dice nada sobre si el *periodo* objetivo es anterior al cutoff. Una evaluación zero-shot sobre una ventana previa al cutoff está totalmente contaminada. Desacoplad las dos ideas: zero-shot va de etiquetas que no ajustasteis; el cutoff va de tiempo que no podéis dejar de ver.
+</Callout>
+
+### Cuándo usarlo
+
+Aplicad la regla del estrictamente-posterior-al-cutoff siempre que los datos de entrenamiento del modelo tengan fecha y vuestra evaluación toque la historia. Si el proveedor no revela un cutoff, no podéis establecer una ventana limpia en absoluto — tratad todo el backtest como sospechoso. La única evaluación plenamente segura de un modelo con fecha es **hacia delante**, sobre datos creados después de que congelarais el modelo. Todo lo demás es una negociación con la contaminación.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Knowledge cutoff", definition: "La fecha más reciente presente en el corpus de preentrenamiento del modelo; la frontera libro-abierto / libro-cerrado" },
+    { term: "Contaminación temporal", definition: "Evaluar sobre una ventana anterior al cutoff, de modo que los resultados puntuados ya estaban en el preentrenamiento" },
+    { term: "Test de memoria", definition: "Una 'predicción' previa al cutoff que en realidad mide recuerdo, no clarividencia" },
+    { term: "Backtest estrictamente posterior al cutoff", definition: "Puntuar solo sobre fechas posteriores al cutoff — la única regla que mata la contaminación temporal" }
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+## Fuga n.º 2 — contaminación del benchmark / conjunto de test
+
+<MCQ
+  client:visible
+  pretest
+  question="Un foundation model de series temporales encabeza la clasificación en un famoso benchmark público de predicción. ¿Por qué esa victoria podría exagerar su verdadera habilidad zero-shot?"
+  options={[
+    { text: "Los datos del benchmark probablemente están dentro de la mezcla de preentrenamiento, así que el modelo puede estar recordando el benchmark en lugar de generalizar a él", correct: true },
+    { text: "Los benchmarks públicos siempre son demasiado fáciles, sea cual sea el modelo" },
+    { text: "Las clasificaciones nunca usan datos reservados, por definición" },
+    { text: "Los modelos zero-shot no se pueden evaluar en benchmarks en absoluto" }
+  ]}
+  explanation="Los datasets públicos populares son exactamente el tipo de datos que acaban raspados dentro de corpus de preentrenamiento gigantes. Si el benchmark está en la mezcla de entrenamiento, una puntuación alta puede reflejar memorización de ese dataset concreto, no habilidad de predicción transferible."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+**La analogía.** Es una red de copieteo a ojos vista: las preguntas del examen llevaban años publicadas en internet, y el modelo estudió de un corpus que raspó toda la red. Por supuesto que clava el examen — *ha visto este examen exacto*. Una victoria en la clasificación bajo esas condiciones os dice que el modelo memorizó el test, no que sea listo.
+
+**Definición precisa.** La **contaminación del benchmark** (contaminación del conjunto de test) es el caso especial de la contaminación del preentrenamiento donde el material filtrado es un *dataset público de evaluación*. Los benchmarks clásicos de series temporales — la serie de competiciones M (M3, M4, M5) y los repositorios abiertos de predicción comunes con los que todo el mundo entrena y testea — están ampliamente replicados, blogueados y empaquetados. Eso los convierte en candidatos de primera para ser barridos a un corpus de preentrenamiento a escala web. Un modelo que ha memorizado de hecho M4 parecerá sobrehumano en M4 y meramente humano en todo lo demás.
+
+**Ejemplo resuelto — el espejismo de la clasificación.** Dos modelos reportan resultados sobre un benchmark público:
+
+- Modelo A: error reportado (sMAPE) de **9.8** en el benchmark público; sobre un dataset *fresco, nunca publicado* del mismo tipo, **14.5**.
+- Modelo B: error reportado de **11.0** en el benchmark público; sobre el mismo dataset fresco, **11.3**.
+
+Leído ingenuamente, el Modelo A "gana" la clasificación. Pero el error del Modelo A *salta un 48%* en el instante en que os movéis a datos que no pudieron estar en el corpus, mientras que el Modelo B apenas se inmuta. La ventaja del Modelo A en la clasificación es contaminación; el Modelo B es el que de verdad generaliza. La clasificación los ordenó al revés.
+
+**Cómo sondear en su busca.** Rara vez podéis leer el corpus, así que lo testeáis de forma conductual:
+
+1. **Datos reservados por construcción.** Evaluad sobre un dataset privado que generasteis o licenciasteis *después* del cutoff del modelo. Una gran brecha de error (público vs. privado) es una huella de contaminación.
+2. **Tests de perturbación.** Alterad ligeramente la serie pública (desplazar, reescalar, enmascarar un trozo) y reevaluad. Un modelo que *generaliza* se degrada con elegancia; un modelo que *memorizó* se desmorona cuando cambia la forma superficial.
+3. **Sondeo por compleción.** Dad al modelo la *parte delantera* de una serie pública conocida y pedidle que la continúe. Si reproduce la cola reservada con una precisión inquietante, ha memorizado esa serie.
+
+| Síntoma | Modelo que generaliza | Modelo contaminado |
+|---|---|---|
+| Brecha de error público vs. datos frescos | Pequeña | Grande |
+| Sensibilidad a una perturbación inofensiva | Degradación elegante | Colapso brusco |
+| Continuación literal de una serie pública | No | Sí |
+
+<Callout variant="warning" title="Un puesto en la clasificación es una hipótesis, no un resultado">
+Tratad cualquier número de benchmark público sobre un foundation model como una *afirmación a falsar*, no como un hecho. Hasta que no hayáis reproducido la victoria sobre datos que demostrablemente no pudieron estar en la mezcla de preentrenamiento, no habéis medido generalización — habéis medido el solapamiento entre el benchmark y el corpus. A los proveedores les encantan las tablas de benchmarks precisamente porque favorecen a los modelos contaminados. Exigid el número con datos frescos.
+</Callout>
+
+### Cuándo usarlo
+
+Ejecutad sondeos de contaminación del benchmark siempre que una afirmación sobre un foundation model se apoye en el rendimiento sobre datasets públicos — lo cual es casi siempre, ya que así es como se comercializan estos modelos. Saltáoslo solo cuando toda vuestra evaluación ya corre sobre datos privados y posteriores al cutoff (en cuyo caso ya habéis esquivado el problema). En la duda, el sondeo por compleción y la brecha público-vs-privado son las dos pistas más baratas.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Si no puedo ver el corpus de preentrenamiento, ¿cómo puedo afirmar jamás que un resultado de benchmark no está contaminado?</summary>
+
+**Respuesta.** No podéis *demostrar* un negativo sobre un corpus que no podéis leer — pero sí podéis hacer la contaminación inverosímil por construcción. Evaluad sobre datos que *no existían* cuando el modelo se congeló (posteriores al cutoff, recién generados o licenciados de forma privada tras la fecha de cutoff). Si esos datos no pudieron ser raspados, una puntuación fuerte ahí es evidencia de habilidad real. La carga se invierte: en lugar de demostrar que el corpus está limpio, construís un conjunto de evaluación que el corpus *no pudo* haber contenido. Ese es el único camino honesto cuando el corpus es una caja negra.
+
+</details>
+</Reveal>
+
+## Fuga n.º 3 — fugas point-in-time, de revisión y por supervivencia
+
+<MCQ
+  client:visible
+  pretest
+  question="En el Q1 una empresa reporta por primera vez un beneficio por acción de $1.20. Tres meses después corrige la cifra al alza hasta $1.45. ¿Qué valor podéis usar como feature para una operación fechada en el Q1?"
+  options={[
+    { text: "1.20 — el valor realmente conocido y publicado en el momento de la operación", correct: true },
+    { text: "1.45 — la cifra final y correcta, porque la precisión es lo que más importa" },
+    { text: "La media de 1.20 y 1.45, para cubrir la incertidumbre" },
+    { text: "Cualquiera de los dos; las revisiones son demasiado pequeñas para afectar a un backtest" }
+  ]}
+  explanation="Un backtest point-in-time solo puede usar lo que era cognoscible en la fecha de decisión. En el Q1 el mundo conocía 1.20; la corrección de 1.45 aún no existía. Entrenar sobre 1.45 filtra una revisión futura a una decisión pasada — anticipación clásica."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+**La analogía.** Usar el número revisado es como calificar el parte meteorológico de ayer con los datos de satélite corregidos de hoy y luego afirmar que el meteorólogo era clarividente. El meteorólogo solo tenía los datos chapuceros y a punto de ser revisados del momento — y lo mismo tenía el trader.
+
+**Definiciones precisas.** Dos relojes gobiernan cada dato:
+
+- **Tiempo del evento** — cuándo *sucedió* la cosa (el trimestre que cubren los beneficios, el mes que mide el PIB).
+- **Tiempo de disponibilidad (tiempo cognoscible)** — cuándo el valor se hizo *conocido al público* por primera vez (la fecha de publicación, a menudo semanas después del evento; las revisiones llegan aún más tarde).
+
+Un dataset **point-in-time (PIT)** sella cada valor con su tiempo de disponibilidad y preserva la **vintage** — el valor exacto tal como se publicó por primera vez, antes de cualquier corrección. Usar el valor *revisado más reciente* en una fecha de decisión pasada es una **fuga de revisión**: inyectasteis información que aún no existía. Dos primas completan la familia:
+
+- **Sesgo de supervivencia** — construir un universo a partir de los nombres supervivientes de *hoy* (p. ej. los miembros actuales del índice), borrando en silencio las firmas que quebraron o fueron excluidas de cotización. Vuestro backtest solo "compra" empresas que ya sabéis que sobrevivieron.
+- **Fuga de pertenencia al índice / de constituyentes** — usar la composición del índice de *hoy* para una fecha *pasada*. Una acción añadida al índice en 2022 no era miembro en 2018; fingir que lo era filtra el futuro.
+
+**Ejemplo resuelto — la revisión que favorece a una estrategia.** Una regla de "comprar con beneficios fuertes" se basa en el BPA:
+
+| Campo | Vintage (conocido en el Q1) | Valor revisado más reciente |
+|---|---|---|
+| BPA reportado | \$1.20 | \$1.45 |
+| Fecha de decisión | Fecha de publicación del Q1 | (Corrección del Q2) |
+| ¿Señal disparada? | Quizá (1.20 es regulero) | Sí (1.45 pinta genial) |
+
+Entrenad sobre el \$1.45 revisado y vuestra regla "sabía" que la firma batiría expectativas *antes de que se anunciara el batacazo positivo*. El backtest se ilumina con operaciones que era imposible colocar. Cambiad al vintage \$1.20 y muchas de esas operaciones se esfuman — porque en el Q1 real, la señal era tibia. El backtest con datos revisados es ficción; el backtest con vintage es lo que de verdad podríais haber operado.
+
+**Dónde añaden los foundation models un nuevo matiz.** Un modelo preentrenado no solo arriesga *vuestro* bug PIT — puede haber absorbido los valores *revisados* durante el preentrenamiento y no tener concepto alguno de vintage. Así que incluso una tubería de features perfectamente limpia en PIT puede verse socavada por un modelo que "sabe" internamente la cifra corregida. Ahora tenéis que respetar **tres** fronteras a la vez: purgar el solapamiento de etiquetas, hacer embargo tras el bloque de test **y** restringir la evaluación a posterior al knowledge cutoff del modelo. La isla de abajo hace visibles las dos primeras; añadid mentalmente el cutoff como tercer muro a la derecha.
+
+<PurgedCvSplit
+  client:visible
+  title="Tres muros contra la fuga: purga, embargo y el knowledge cutoff del modelo"
+  caption="La etiqueta de una muestra se realiza a lo largo de una ventana hacia delante, así que una celda de entrenamiento cuyo horizonte de etiqueta se solapa con el fold de test filtra la respuesta. La purga elimina las celdas cuyo horizonte de etiqueta (el deslizador) se solapa con el bloque de test por cualquiera de los lados; el embargo elimina unas pocas más justo después, donde la correlación serial deja que las features se cuelen hacia delante. Para un foundation model, añade un tercer muro conceptual: incluso tras purga y embargo, tu fold de test debe situarse estrictamente DESPUÉS del knowledge cutoff del modelo y usar valores point-in-time (vintage), o los pesos preentrenados filtran el futuro por muy limpia que parezca la geometría del fold."
+  trainLabel="Entrenamiento"
+  testLabel="Fold de test"
+  purgeLabel="Purgado (solapamiento de etiqueta)"
+  embargoLabel="Embargo"
+  positionLabel="Posición del fold de test"
+  embargoSliderLabel="Embargo (celdas)"
+  labelSpanLabel="Horizonte de etiqueta (celdas)"
+/>
+
+<Callout variant="warning" title="La supervivencia es una fuga que no se ve en el código">
+Las fugas de revisión al menos aparecen como una columna que elegisteis mal. La supervivencia es más solapada: es la *ausencia* de las firmas que fracasaron. Construid un backtest de 2010 a partir del índice de 2026 y habréis excluido en silencio toda empresa que se fue a cero por el camino — vuestra estrategia parece robusta porque todas sus posibles bajas se borraron antes de que empezara el test. Un foundation model entrenado sobre "las empresas que existen hoy" hereda el mismo punto ciego. Reconstruid siempre el universo tal como estaba *en cada punto del tiempo*, no como está ahora.
+</Callout>
+
+### Cuándo usarlo
+
+Insistid en datos point-in-time, vintage, siempre que vuestras features toquen cualquier cosa que se *revise* (publicaciones macro, beneficios, fundamentales) o cualquier cosa definida por *pertenencia* (constituyentes de índices, clasificaciones sectoriales, ratings de crédito). Para series solo-precio, nunca revisadas, la fuga de revisión es menor — pero la supervivencia y la exclusión de cotización siguen mordiendo. Con un foundation model en el bucle, asumid que absorbió datos revisados y solo-supervivientes, y apoyaos aún más en una ventana estrictamente posterior al cutoff donde su "conocimiento" interno no pueda llegar.
+
+<FillBlank
+  client:visible
+  question="Rellena los dos relojes."
+  text="El {{tiempo de disponibilidad|tiempo del evento|tiempo de liquidación}} es cuando un valor se hizo público por primera vez, lo que puede retrasarse semanas respecto al evento; un dataset point-in-time sella cada valor con él y preserva el vintage original antes de cualquier revisión."
+  explanation="El tiempo del evento es cuando sucedió la cosa; el tiempo de disponibilidad (cognoscible) es cuando se hizo público. Los datos PIT se indexan por el tiempo de disponibilidad y guardan el vintage tal-como-se-publicó-primero para prevenir fugas de revisión."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+/>
+
+## Cómo testear la contaminación
+
+<MCQ
+  client:visible
+  pretest
+  question="Queréis saber si el foundation model de un proveedor está 'haciendo trampas' en vuestro backtest. ¿Qué única comparación es la primera jugada más diagnóstica?"
+  options={[
+    { text: "Comparar el knowledge cutoff declarado del modelo con vuestro periodo de test — cualquier solapamiento es una bandera roja antes de ejecutar nada", correct: true },
+    { text: "Medir cuántos parámetros tiene el modelo" },
+    { text: "Comprobar si el modelo usa codificaciones posicionales sinusoidales o aprendidas" },
+    { text: "Comparar su velocidad de inferencia con una baseline" }
+  ]}
+  explanation="La comprobación más barata y de mayor señal es el calendario: alinead el cutoff con la ventana de test. Si vuestro backtest es anterior al cutoff, ya sabéis que está contaminado — sin experimento caro alguno. Los detalles de arquitectura y la velocidad son irrelevantes para la fuga."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+**La analogía.** Antes de auditar el testimonio de un testigo línea a línea, comprobáis una cosa: *¿pudo haber estado en la escena?* El knowledge cutoff es la comprobación de coartada. Si el modelo "estuvo allí" durante vuestro periodo de test, nada de lo que diga sobre ese periodo es de fiar.
+
+**Una batería de tests de contaminación.** Apilad estos de más barato a más exhaustivo:
+
+1. **Comprobación cutoff-vs-ventana (gratis).** Poned el knowledge cutoff declarado junto a vuestras fechas de evaluación. Cualquier solapamiento = contaminado, punto. Negaos a ejecutar el backtest hasta que la ventana sea estrictamente posterior al cutoff.
+2. **Sondeo de eventos futuros.** Preguntad al modelo por eventos *posteriores* a su supuesto cutoff. Si "sabe" algo que no debería — un resultado, un nivel de precio, un titular posterior al cutoff declarado — el cutoff real es más tardío que el anunciado, y vuestra ventana "limpia" puede no estarlo.
+3. **Brecha público-vs-privado.** Puntuad sobre un benchmark público y sobre un dataset privado, posterior al cutoff. Una gran brecha es la huella de contaminación de la Fuga n.º 2.
+4. **Replay point-in-time.** Reejecutad con features estrictamente vintage y universos reconstruidos a fecha de. Si la ventaja se evapora, vivía en fugas de revisión/supervivencia, no en habilidad.
+5. **Deflación por intentos.** Lo que sobreviva, deflactad el Sharpe reportado por el número de variantes de modelo, prompts y ventanas que probasteis — la misma disciplina de testeo múltiple de las lecciones de investigación de alfa.
+
+| Test | Coste | Qué caza |
+|---|---|---|
+| Cutoff vs. ventana | Gratis | Contaminación temporal (Fuga n.º 1) |
+| Sondeo de eventos futuros | Bajo | Un cutoff real mal declarado / más tardío |
+| Brecha público vs. privado | Medio | Contaminación del benchmark (Fuga n.º 2) |
+| Replay point-in-time | Alto | Fugas de revisión / supervivencia (Fuga n.º 3) |
+| Deflación por intentos | Bajo | Falso descubrimiento por sobrebúsqueda |
+
+<Callout variant="warning" title="Un backtest a caballo del knowledge cutoff no es un backtest">
+Si parte de vuestra ventana de evaluación se sitúa antes del cutoff y parte después, no habéis ejecutado un backtest — habéis ejecutado una mezcla de un test de memoria y una predicción, y no podéis saber qué operaciones vinieron de cuál. La porción previa al cutoff puede inflar todo el resultado, y promediar contamina la parte honesta. Cortad la ventana en el cutoff y reportad *solo* el segmento estrictamente posterior al cutoff. Medio backtest limpio vale más que uno entero sucio.
+</Callout>
+
+### Cuándo usarlo
+
+Ejecutad la batería completa antes de apostar cualquier decisión — capital, una afirmación de investigación, una publicación — sobre un resultado de foundation model. Para exploración interna rápida, la comprobación gratuita cutoff-vs-ventana es el mínimo innegociable; el costoso replay point-in-time puede esperar hasta que un resultado parezca prometedor suficiente para merecerlo. Pero nunca presentéis un número externamente sin al menos la comprobación de cutoff y una salvedad de deflación por intentos.
+
+<Categorize
+  client:visible
+  question="Empareja cada diagnóstico con la fuga concreta que está diseñado para exponer."
+  buckets={["Contaminación temporal (cutoff)", "Contaminación del benchmark", "Point-in-time / supervivencia"]}
+  items={[
+    { text: "Comparar el knowledge cutoff declarado con la ventana de test", bucket: "Contaminación temporal (cutoff)" },
+    { text: "Sondear si el modelo conoce eventos posteriores a su cutoff declarado", bucket: "Contaminación temporal (cutoff)" },
+    { text: "Medir la brecha de error público-vs-privado sobre datos frescos", bucket: "Contaminación del benchmark" },
+    { text: "Pedir al modelo que continúe una serie pública conocida y vigilar el recuerdo literal", bucket: "Contaminación del benchmark" },
+    { text: "Reejecutar usando valores estrictamente vintage y pertenencia al índice a fecha de", bucket: "Point-in-time / supervivencia" },
+    { text: "Reconstruir el universo para incluir firmas que luego salieron de cotización", bucket: "Point-in-time / supervivencia" }
+  ]}
+  explanation="La comparación de cutoff y el sondeo de eventos futuros apuntan a la contaminación temporal; las brechas público-vs-privado y el sondeo por compleción apuntan al solapamiento con benchmarks; el replay vintage y la reconstrucción del universo apuntan a las fugas de revisión y supervivencia."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+## Cuándo se puede confiar en un backtest zero-shot de un foundation model
+
+<MCQ
+  client:visible
+  pretest
+  question="¿Qué única condición es necesaria (aunque no suficiente) para que un backtest zero-shot de un foundation model sea fiable?"
+  options={[
+    { text: "Toda la ventana de evaluación se sitúa estrictamente después del knowledge cutoff del modelo", correct: true },
+    { text: "El modelo logró una puntuación alta en al menos un benchmark público" },
+    { text: "El modelo tiene más de mil millones de parámetros" },
+    { text: "El backtest cubre al menos diez años de historia" }
+  ]}
+  explanation="La evaluación estrictamente posterior al cutoff es el cimiento necesario — sin él, todo lo de aguas abajo está contaminado. No es suficiente por sí sola (aún necesitáis datos point-in-time, ningún solapamiento con benchmarks, deflación por intentos y costes realistas), pero nada más puede rescatar una ventana previa al cutoff. Las puntuaciones de benchmark, el número de parámetros y la longitud de la historia no abordan la fuga."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+Entonces, ¿cuándo *podéis* creeros el número? Solo cuando un backtest supera todos los muros a la vez. Aquí está la checklist concreta — tratadla como una barrera, donde fallar cualquier ítem devuelve todo el resultado a "contaminado hasta que se arregle".
+
+**La checklist de confianza.**
+
+1. **Ventana estrictamente posterior al cutoff.** Toda fecha de evaluación es posterior al knowledge cutoff del modelo. Sin caballeo. (Necesaria; todo lo demás es irrelevante sin ella.)
+2. **Features point-in-time, vintage.** Cada feature lleva una marca temporal de disponibilidad; usáis el valor tal-como-se-publicó-primero, y el universo se reconstruye a fecha de cada día (sin supervivencia, sin pertenencia futura al índice).
+3. **Sin solapamiento con benchmark público.** La evaluación corre sobre datos privados o recién generados que demostrablemente no pudieron estar en el corpus de preentrenamiento; se ha comprobado la brecha público-vs-privado.
+4. **Deflactado por intentos.** El Sharpe reportado se ajusta por el número de variantes, prompts y ventanas que buscasteis — sin la mejor corrida elegida a dedo.
+5. **Costes y capacidad modelados.** Costes de transacción, slippage, latencia y capacidad de la estrategia están restados; la "ventaja" sobrevive a fricciones realistas y no es un artefacto de papel.
+
+| Ítem de la checklist | Fuga que cierra | Modo de fallo si se omite |
+|---|---|---|
+| Ventana estrictamente posterior al cutoff | Contaminación temporal | Test de memoria haciéndose pasar por predicción |
+| Features point-in-time vintage | Revisión / supervivencia | Se iluminan operaciones imposibles de colocar |
+| Sin solapamiento con benchmark público | Contaminación del benchmark | Espejismo de la clasificación |
+| Deflactado por intentos | Sobrebúsqueda | La mejor corrida con suerte reportada como habilidad |
+| Costes y capacidad modelados | Fantasía sin fricción | Ventaja inoperable |
+
+**Ejemplo resuelto — pasando la barrera.** Un equipo reporta una estrategia zero-shot con Sharpe 1.8.
+
+- Ventana: 2025–2026, cutoff del modelo 2024 → **pasa** el ítem 1 (estrictamente posterior al cutoff).
+- Features: publicaciones macro usadas a valores *revisados* → **falla** el ítem 2. Alto. Reejecutad con datos vintage; el Sharpe cae a 1.1.
+- Recomprobado: datos privados, sin solapamiento con benchmark → pasa el ítem 3.
+- Intentos: 30 combinaciones de prompt/variante buscadas, deflactar → Sharpe efectivo ~0.7.
+- Costes: tras comisiones y slippage → ~0.5.
+
+El titular de 1.8 era aritmética real sobre un montaje falso. Pasadlo por la barrera y el número honesto, elegible-para-ser-verdad, es ~0.5 — aún posiblemente digno de operar, pero una decisión completamente distinta. La checklist no destruyó valor; reveló cuánto del titular era fuga y suerte.
+
+<Callout variant="warning" title="La checklist es un AND, no un OR">
+Cada ítem es un muro, y los muros no se promedian. Un backtest que clava cuatro ítems y suspende uno no es "fiable al 80%" — está contaminado, porque el único fallo puede fabricar toda la ventaja. Resistíos al impulso de dar el visto bueno a un resultado porque está *casi* limpio. O supera las cinco barreras o vuelve al banco. La lección 6 construye el protocolo de evaluación honesta que convierte esta checklist en un proceso permanente.
+</Callout>
+
+### Cuándo usarlo
+
+Ejecutad la barrera completa antes de cualquier decisión de seguir/no seguir sobre capital real o cualquier afirmación externa. Para el triaje de etapa temprana podéis fallar rápido en las barreras baratas primero (cutoff, luego número de intentos) y solo pagar el replay con datos vintage y el modelado de costes una vez que un candidato sobrevive. Pero en el momento en que hay dinero o reputación en juego, los cinco muros se mantienen — sin excepciones, sin promedios.
+
+<Categorize
+  client:visible
+  question="Clasifica cada montaje en un diseño fiable que supera la barrera o uno contaminado."
+  buckets={["Montaje fiable", "Montaje contaminado"]}
+  items={[
+    { text: "Evaluar solo sobre 2025–2026 con un cutoff de modelo de 2024, usando features vintage", bucket: "Montaje fiable" },
+    { text: "Usar datos privados posteriores al cutoff, deflactar el Sharpe por 30 intentos, restar costes", bucket: "Montaje fiable" },
+    { text: "Reconstruir el universo a fecha de cada día, incluyendo firmas que luego salieron de cotización", bucket: "Montaje fiable" },
+    { text: "Hacer backtest sobre 2015–2023 en un modelo con cutoff de 2024", bucket: "Montaje contaminado" },
+    { text: "Reportar la mejor de 40 variantes de prompt sin deflación", bucket: "Montaje contaminado" },
+    { text: "Construir el universo a partir de los miembros del índice de hoy y usar beneficios revisados", bucket: "Montaje contaminado" }
+  ]}
+  explanation="Los diseños fiables son estrictamente posteriores al cutoff, point-in-time, con datos privados, deflactados por intentos y conscientes de costes. Los diseños contaminados van a caballo o son anteriores al cutoff, eligen intentos a dedo o usan datos revisados/solo-supervivientes."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+## Recapitulación
+
+<MindMap
+  client:visible
+  title="El campo de minas de las fugas"
+  caption="Los foundation models pueden llevar el futuro en sus pesos — así que una tubería de features limpia no basta. Cortad la ventana en el cutoff, usad datos point-in-time y poned barrera a cada resultado."
+  root={{
+    label: "El campo de minas de las fugas",
+    children: [
+      {
+        label: "Por qué es peor ahora",
+        children: [
+          { label: "Futuro cocido en los pesos preentrenados" },
+          { label: "Anticipación, contaminación, memorización" },
+          { label: "El corpus es una caja negra — no se hace grep a la memoria" },
+          { label: "Analogía: analista leyó el periódico de mañana" }
+        ]
+      },
+      {
+        label: "Fuga n.º 1 — temporal / cutoff",
+        children: [
+          { label: "Backtest previo al cutoff = test de memoria" },
+          { label: "2015–2023 sobre cutoff de 2024 está contaminado" },
+          { label: "Solución: backtest estrictamente posterior al cutoff" },
+          { label: "Zero-shot ≠ sin fugas" }
+        ]
+      },
+      {
+        label: "Fuga n.º 2 — solapamiento con benchmark",
+        children: [
+          { label: "Las competiciones M están en el corpus" },
+          { label: "La victoria en la clasificación exagera la habilidad real" },
+          { label: "Sondeo: brecha público-vs-privado, test de compleción" }
+        ]
+      },
+      {
+        label: "Fuga n.º 3 — point-in-time",
+        children: [
+          { label: "Tiempo del evento vs tiempo de disponibilidad" },
+          { label: "Valores vintage vs revisados" },
+          { label: "Fugas de supervivencia y pertenencia al índice" },
+          { label: "Purga + embargo + cutoff = tres muros" }
+        ]
+      },
+      {
+        label: "Checklist de confianza (AND)",
+        children: [
+          { label: "Ventana estrictamente posterior al cutoff" },
+          { label: "Features point-in-time vintage" },
+          { label: "Sin solapamiento con benchmark público" },
+          { label: "Deflactado por intentos" },
+          { label: "Costes y capacidad modelados" }
+        ]
+      }
+    ]
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="El campo de minas de las fugas — ponte a prueba"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  nextLabel="Siguiente pregunta"
+  backLabel="Atrás"
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  seeResultsLabel="Ver resultados"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  gateLabel="Comprueba tu respuesta para continuar."
+  questions={[
+    {
+      question: "Un foundation model tiene un knowledge cutoff de 2024. ¿Sobre qué ventana puede un backtest zero-shot ser elegible para reflejar habilidad de predicción genuina?",
+      options: [
+        { text: "2025 en adelante — estrictamente después del cutoff", correct: true },
+        { text: "2015–2023 — una historia larga lo hace robusto" },
+        { text: "Una ventana a caballo de 2024, para captar la transición" },
+        { text: "Cualquier ventana, porque zero-shot significa sin fugas" }
+      ],
+      explanation: "Solo una ventana estrictamente posterior al cutoff (2025+) no pudo haber estado en el corpus de preentrenamiento. Las ventanas previas al cutoff o a caballo están contaminadas, y zero-shot describe la adaptación, no la limpieza temporal."
+    },
+    {
+      question: "¿Por qué un resultado que encabeza las listas en un benchmark público de series temporales puede exagerar la habilidad real de un foundation model?",
+      options: [
+        { text: "El benchmark probablemente está dentro del corpus de preentrenamiento, así que la puntuación puede reflejar memorización en lugar de generalización", correct: true },
+        { text: "Los benchmarks públicos se corrompen deliberadamente para engañar a los proveedores" },
+        { text: "Las clasificaciones nunca usan métricas de error, solo accuracy" },
+        { text: "Los foundation models no se pueden testear en zero-shot sobre benchmarks" }
+      ],
+      explanation: "Datasets ampliamente replicados como las competiciones M son candidatos de primera para ser raspados a corpus a escala web. Una puntuación alta ahí puede ser recuerdo de un benchmark memorizado, por eso importa la brecha público-vs-privado."
+    },
+    {
+      question: "Una firma reporta por primera vez un BPA de $1.20, luego corregido a $1.45. Para una operación fechada en la publicación original, entrenar sobre $1.45 es un ejemplo de qué?",
+      options: [
+        { text: "Una fuga de revisión — usar un valor que no existía en la fecha de decisión", correct: true },
+        { text: "Sesgo de supervivencia — excluir firmas fracasadas" },
+        { text: "Contaminación del benchmark — un dataset público en el corpus" },
+        { text: "Una diferencia puramente cosmética sin impacto en el backtest" }
+      ],
+      explanation: "Usar el $1.45 revisado más tarde en una fecha en que solo $1.20 era cognoscible inyecta información futura — una fuga de revisión. Los datos point-in-time preservan el vintage original para prevenir exactamente esto."
+    },
+    {
+      question: "¿Qué afirmaciones sobre diagnosticar fugas en foundation models son correctas?",
+      allowMultiple: true,
+      options: [
+        { text: "Comparar el knowledge cutoff con la ventana de test es una comprobación inicial gratuita y de alta señal", correct: true },
+        { text: "Que un modelo 'conozca' eventos posteriores a su cutoff declarado sugiere que el cutoff real es más tardío", correct: true },
+        { text: "Un backtest a caballo del cutoff es un backtest válido si es lo bastante largo", correct: false },
+        { text: "Pedir al modelo que continúe una serie pública conocida puede revelar memorización", correct: true }
+      ],
+      explanation: "La comparación cutoff-vs-ventana, el sondeo de eventos futuros y el sondeo por compleción son todos detectores de fuga válidos. Una ventana a caballo nunca es un backtest válido — mezcla un test de memoria con una predicción."
+    },
+    {
+      question: "Un equipo reporta Sharpe 1.8 zero-shot, posterior al cutoff, pero usa valores macro revisados, elige la mejor de 40 intentos e ignora los costes. ¿Cuál es la conclusión correcta?",
+      options: [
+        { text: "El resultado está contaminado — datos vintage, deflación por intentos y costes deben aplicarse todos antes de fiarse de cualquier número", correct: true },
+        { text: "Es fiable, porque la ventana es posterior al cutoff" },
+        { text: "Es fiable, porque 1.8 es un Sharpe alto" },
+        { text: "Los costes y los intentos son menores y se pueden ignorar por encima de Sharpe 1.5" }
+      ],
+      explanation: "La checklist de confianza es un AND. Pasar la barrera del cutoff no excusa las features revisadas, los intentos sin deflactar ni los costes sin modelar — cada uno puede fabricar la ventaja. Pasadlo por cada barrera y el número honesto es mucho más bajo."
+    },
+    {
+      question: "¿Por qué la lección dice que una tubería de features limpia es insuficiente para un foundation model?",
+      options: [
+        { text: "El modelo puede haber absorbido información futura/revisada durante el preentrenamiento, así que la fuga vive en sus pesos congelados sin importar vuestras columnas", correct: true },
+        { text: "Las tuberías de features no se pueden limpiar para datos de series temporales" },
+        { text: "Los foundation models ignoran las features que les proporcionáis" },
+        { text: "Las tuberías limpias siempre introducen sesgo de supervivencia" }
+      ],
+      explanation: "La caza de fugas clásica audita vuestras entradas, pero un foundation model llega precargado con lo que vio en el preentrenamiento. No podéis hacer grep a su memoria, así que debéis restringir la ventana de evaluación en el tiempo en lugar de solo limpiar vuestras features."
+    }
+  ]}
+/>

@@ -1,0 +1,455 @@
+---
+title: "Time-Series Foundation Models: TimesFM, Chronos, Moirai & Lag-Llama"
+description: "How a forecasting model pretrained once on millions of series replaces the one-model-per-series ritual — tokenizing a continuous series by patching or by scaling-and-quantizing, the autoregressive probabilistic pretraining objective, and the TimesFM / Chronos / Moirai / Lag-Llama lineage, with a frank look at why their corpora barely resemble markets."
+topic: "en/foundation-models-for-financial-time-series"
+order: 2
+minutes: 19
+updated: 2026-06-22
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, AttentionWeightsHeatmap } from '@/components/react';
+
+Lesson 1 sold you the bet: *pretrain once on a mountain of data, adapt cheaply to your problem.* That's how a single language model writes Python, French and limericks without being retrained for each. This lesson cashes the bet out for time series — the actual machinery that lets one frozen model forecast a series it has never seen, with **no fitting at all**.
+
+The catch is that a series of returns is not a sentence. A transformer eats *tokens* — discrete things with embeddings — and a price chart is a stream of continuous reals. So before any of the foundation-model magic, somebody has to answer an annoyingly concrete question: **how do you turn a wiggly line into tokens?** Two camps answer it differently, and the rest of the lesson is built on that fork.
+
+Let's earn it.
+
+## From one-model-per-series to a forecasting foundation model
+
+<MCQ
+  client:visible
+  pretest
+  question="You have 5,000 separate product-demand series and want a forecast for each. What's the defining difference between the classical approach and a time-series foundation model?"
+  options={[
+    { text: "Classical fits a fresh model per series; the foundation model is pretrained once and forecasts each new series with no per-series fitting", correct: true },
+    { text: "Classical needs no data; the foundation model needs labels for every series" },
+    { text: "The foundation model fits 5,000 tiny models in parallel, one per series" },
+    { text: "They are identical — both estimate ARIMA coefficients for each series" }
+  ]}
+  explanation="The classical pipeline estimates parameters separately for every series (5,000 model fits). A time-series foundation model is trained once on a huge corpus, then forecasts a brand-new series in a single forward pass — zero per-series fitting."
+/>
+
+**The analogy.** The classical forecaster is a locksmith who files a brand-new key for every single lock — ARIMA coefficients for *this* series, a GARCH fit for *that* one, a fresh neural net for the next. Beautiful craftsmanship, and utterly un-scalable: 5,000 series means 5,000 fits, each needing enough history to estimate its own parameters. A **foundation model** is a master locksmith who has already opened millions of locks and learned what locks *are*. Hand it a new one and it opens it on sight — no new key filed.
+
+**Precise definition.** The classical recipe (lesson 1's "specialist") estimates parameters $\theta_s$ *separately* for each series $s$: fit $\text{ARIMA}(p,d,q)$ here, $\text{GARCH}(1,1)$ there, a fresh net somewhere else. Each fit needs that series to carry enough signal to pin down its own $\theta_s$. A **time-series foundation model** instead learns one shared parameter set $\Theta$ by pretraining on a corpus of *millions* of series across many domains, then forecasts a new series $x_{1:T}$ in a single forward pass:
+
+$$\hat{x}_{T+1:T+h} = f_\Theta(x_{1:T}),$$
+
+with $\Theta$ **frozen** — no gradient step touches the new series. That's *zero-shot* forecasting, the headline trick of the whole field (lesson 3 makes "zero-shot" precise).
+
+**Worked example — the fitting budget.** Say each ARIMA fit needs at least 100 observations to estimate its handful of coefficients reliably, and you have 5,000 series.
+
+- Classical: 5,000 *separate* estimations. A series with only 30 points of history? You can barely fit it — too few observations for its own parameters. Cold-start is fatal.
+- Foundation model: **0** estimations on your data. The 30-point series gets the same forward pass as the 30,000-point one; the model brings the prior it learned from millions of *other* series, so short history is survivable.
+
+The shift is from "every series teaches its own model from scratch" to "one model has already learned the shape of time series in general, and merely *conditions* on your history."
+
+<Callout variant="warning" title="Zero-shot is not zero-knowledge">
+"No fitting on your series" does not mean the model knows nothing about your series — it means everything it knows was learned at pretraining, on *other* data. If your series looks nothing like anything in that corpus (foreshadowing: market returns), zero-shot can be confidently wrong. No fitting also means no chance to correct it on the way in.
+</Callout>
+
+### When to use it
+
+Reach for the one-model-per-series classical approach when each series is long, well-behaved, and you have time to babysit individual fits. Reach for a foundation model when you have *many* series, *short* histories, or a *cold-start* need (a brand-new SKU with three weeks of data) — exactly where per-series fitting starves. We'll see the catch for finance specifically by the end of this lesson.
+
+<FillBlank
+  client:visible
+  question="Fill in the defining property."
+  text="A time-series foundation model forecasts a brand-new series with {{no per-series fitting — one frozen parameter set serves all series|a fresh ARIMA fit estimated on that series|one tiny neural net trained per series}}, which is why it survives cold-start where the classical recipe starves."
+  explanation="The model is pretrained once; the new series gets a single forward pass with frozen weights. No per-series parameters are estimated."
+/>
+
+## Tokenizing a continuous series — the core technical problem
+
+<MCQ
+  client:visible
+  pretest
+  question="Why can't you feed a raw stream of price floats straight into a transformer the way you feed words into a language model?"
+  options={[
+    { text: "A transformer consumes discrete tokens / fixed-size embeddings, not arbitrary continuous reals, so the series must first be turned into token-like units", correct: true },
+    { text: "Floating-point numbers are too large to fit in memory" },
+    { text: "Transformers can only process integers between 0 and 255" },
+    { text: "Continuous values make the softmax sum to more than 1" }
+  ]}
+  explanation="Transformers operate on sequences of embedding vectors — each input position must be a token (LM) or a fixed-size embedding (time series). A bare continuous stream has to be chopped and projected, or scaled and binned, into such units first."
+/>
+
+**The analogy.** A transformer is a reader who only understands *words*. Hand it the raw acoustic waveform of someone speaking and it's helpless — somebody has to first cut that continuous sound into discrete syllables it can look up. Tokenizing a time series is that cut: turning an unbroken line into a sequence of bite-sized units the attention mechanism can attend over. The two families below cut the line in two very different ways.
+
+### (a) Patching — chop into windows, project each to an embedding
+
+**Precise definition.** Slice the context into contiguous, fixed-length windows called **patches**. A patch of length $P$ is a vector in $\mathbb{R}^P$; a learned linear map $W \in \mathbb{R}^{d \times P}$ projects it to a $d$-dimensional embedding — *one token per patch*. A context of length $L$ with patch length $P$ (non-overlapping) yields
+
+$$n_{\text{patches}} = \left\lceil \frac{L}{P} \right\rceil$$
+
+tokens. This is the PatchTST idea, adopted by **TimesFM** and **Moirai**. Patching does two jobs at once: it shrinks the sequence length the $O(n^2)$ attention has to chew (lesson 1's cost worry), and it lets each token carry *local shape* instead of a single lonely point.
+
+**Worked example — a length-512 context, patch length 32.** Number of patch tokens:
+
+$$n_{\text{patches}} = \frac{512}{32} = 16.$$
+
+So 512 raw observations collapse to **16 patch tokens**. Suppose $d = 128$. Each patch is a vector in $\mathbb{R}^{32}$, and the projection $W \in \mathbb{R}^{128 \times 32}$ maps it to a token in $\mathbb{R}^{128}$. The attention then runs over 16 tokens, not 512 — the score matrix is $16 \times 16 = 256$ entries instead of $512 \times 512 = 262{,}144$. Same information, roughly $1{,}000\times$ less attention arithmetic. The model forecasts by predicting the *next patch* (a length-32 block), so it emits 32 future points per output step.
+
+### (b) Scaling + quantization into a vocabulary — the Chronos route
+
+**Precise definition.** Instead of projecting real-valued patches, **Chronos** turns the series into *literal* discrete tokens so it can reuse an off-the-shelf language-model stack (a T5-style encoder-decoder). Two steps:
+
+1. **Mean-scale** the context: divide every value by the mean absolute value of the context, $s = \tfrac{1}{L}\sum_{t=1}^{L} |x_t|$, giving scaled values $\tilde{x}_t = x_t / s$. This makes a series of millions and a series of decimals look comparable.
+2. **Quantize** each scaled value into one of $B$ bins (Chronos uses $B = 4096$) spanning a fixed range. The bin *index* is the token — an integer in $\{1, \dots, B\}$ — exactly like a word ID in a vocabulary.
+
+Now a price series is a sentence of integers, and a vanilla T5 language model can be trained on it with no architectural surgery. Forecasting samples next-token IDs, which you de-quantize (back to a bin centre) and un-scale (multiply by $s$).
+
+**Worked example — scale then bin a tiny window.** Context $x = [2, 4, 6, 8]$. Mean absolute value:
+
+$$s = \frac{|2| + |4| + |6| + |8|}{4} = \frac{20}{4} = 5.$$
+
+Scaled context: $\tilde{x} = [0.4,\ 0.8,\ 1.2,\ 1.6]$. Now suppose the bin grid is uniform on $[-10, 10]$ with $B = 4096$ bins, so each bin has width
+
+$$w = \frac{10 - (-10)}{4096} = \frac{20}{4096} \approx 0.004883.$$
+
+The scaled value $1.2$ lands in bin index
+
+$$\left\lfloor \frac{1.2 - (-10)}{w} \right\rfloor + 1 = \left\lfloor \frac{11.2}{0.004883} \right\rfloor + 1 = \lfloor 2293.4 \rfloor + 1 = 2294.$$
+
+So the value $6$ becomes token **2294**. The whole window becomes a short string of such integers, and the T5 stack treats it exactly like text.
+
+<Callout variant="warning" title="Naive global normalization LEAKS the future">
+The cardinal sin here: computing the scale $s$ (or any mean / std / min-max) over the *whole* series — including the part you're trying to forecast. That bleeds future information into the inputs, and your zero-shot "forecast" is secretly peeking. **Scale using only the context window** the model is allowed to see, never the test horizon and never global statistics that span it. This is the same leakage trap lesson 5 dissects at length — and it's the single most common way a published time-series-FM result turns out to be fiction.
+</Callout>
+
+### When to use each
+
+Patching keeps values continuous (no quantization error) and shrinks sequence length — great when you want fidelity and a purpose-built stack. Tokenizing into a vocabulary throws away some precision (every value is rounded to a bin centre) but lets you inherit the entire mature language-model toolchain for free. Patching trades engineering effort for accuracy; quantization trades accuracy for reuse.
+
+<Categorize
+  client:visible
+  question="Sort each property under the tokenization family it describes."
+  buckets={["Patching (TimesFM, Moirai)", "Scaling + quantization (Chronos)"]}
+  items={[
+    { text: "Chops the context into fixed-length windows, one embedding per window", bucket: "Patching (TimesFM, Moirai)" },
+    { text: "Linearly projects each window to a d-dimensional token, keeping values continuous", bucket: "Patching (TimesFM, Moirai)" },
+    { text: "Bins scaled values into a fixed vocabulary so a T5 language stack can be reused", bucket: "Scaling + quantization (Chronos)" },
+    { text: "Introduces rounding error because every value snaps to a bin centre", bucket: "Scaling + quantization (Chronos)" }
+  ]}
+  explanation="Patching projects continuous windows into tokens (no rounding); quantization discretizes scaled values into a vocabulary, trading precision for the ability to reuse a language model wholesale."
+/>
+
+## The pretraining objective — autoregressive and probabilistic
+
+<MCQ
+  client:visible
+  pretest
+  question="A time-series foundation model is trained self-supervised. Where do the training labels come from?"
+  options={[
+    { text: "From the data itself — the model predicts the next patch / token, and the actual future of the window IS the label", correct: true },
+    { text: "From human annotators who hand-label each series as up or down" },
+    { text: "From a separate supervised dataset of forecasts bought from analysts" },
+    { text: "There are no labels; the model is trained purely by clustering" }
+  ]}
+  explanation="It's the same self-supervision as a language model: mask or hold out the continuation, predict it, and the held-out future supplies the label for free. No human labeling required."
+/>
+
+**The analogy.** It's the language-model trick, ported to numbers. A language model learns by covering the next word and guessing it; the word it covered *is* the answer key, so the text labels itself. A time-series foundation model covers the next **patch** (or next quantized **token**) and guesses it — the future of the window is its own free label. Train on millions of series this way and the model absorbs the grammar of time series: trend, seasonality, mean-reversion, level shifts.
+
+**Precise definition — autoregressive next-step.** Factor the sequence likelihood left-to-right and maximize it:
+
+$$\log p_\Theta(x_{1:T}) = \sum_{t} \log p_\Theta(x_{t} \mid x_{<t}),$$
+
+where each "step" is a patch (TimesFM, Moirai) or a vocabulary token (Chronos). Because a position may only condition on the past $x_{<t}$, attention is **causal** — exactly the masked, lower-triangular attention from the deep-learning course. Each patch token attends only to earlier patch tokens.
+
+**Precise definition — probabilistic, not point.** A good forecaster doesn't just guess a number; it guesses a *distribution*, because "the next return is +0.3% give or take 2%" is far more useful than a bare "+0.3%". Two ways foundation models deliver a distribution:
+
+- **Quantile heads** (TimesFM): the model outputs several quantiles at once — e.g. the 10th, 50th and 90th percentiles — trained with the *pinball* (quantile) loss. For a quantile level $\tau$ and prediction $\hat{q}$, the pinball loss on outcome $y$ is
+
+$$\rho_\tau(y, \hat{q}) = \max\big(\tau(y - \hat{q}),\ (\tau - 1)(y - \hat{q})\big).$$
+
+- **Sampled trajectories** (Chronos): because the output is a probability distribution over the next *token*, you can sample many possible next tokens, roll each forward autoregressively, and read percentiles off the cloud of sampled futures — a Monte-Carlo predictive distribution. (Lag-Llama instead heads a parametric **Student-t** distribution, capturing fat tails directly.)
+
+**Worked example — pinball loss tells the median from the 90th.** True outcome $y = 12$.
+
+- Median forecast ($\tau = 0.5$), prediction $\hat{q} = 10$: error $y - \hat{q} = 2 > 0$, so $\rho_{0.5} = 0.5 \times 2 = 1.0$.
+- 90th-percentile forecast ($\tau = 0.9$), same prediction $\hat{q} = 10$: $\rho_{0.9} = 0.9 \times 2 = 1.8$.
+
+The high-$\tau$ head is punished *harder* for under-shooting (it's supposed to sit above most outcomes), so training pushes the 90th-percentile prediction *upward* relative to the median. That asymmetry is exactly how one network learns a whole spread of quantiles instead of a single point — the spread *is* the uncertainty estimate.
+
+<AttentionWeightsHeatmap
+  client:visible
+  caption="The pretraining objective made visual: a decoder-only forecaster attends causally over PAST PATCH TOKENS. Each row is one patch token asking 'which earlier patches matter to me?'; the softmax weights in that row sum to 1, and the upper triangle is masked — a patch token can attend to itself and earlier patch tokens only, never to future patches (that would leak the very thing it must predict). Flip between a 'Recent (momentum)' pattern that hugs the diagonal, an 'Event-driven' pattern that pins onto one earlier patch (a regime shock), and a 'Diffuse' pattern that averages the past; drag the temperature slider to watch how many earlier patches each token effectively pools over."
+  queryAxisLabel="Query — patch token i"
+  keyAxisLabel="Key — earlier patch token j"
+/>
+
+<Callout variant="warning" title="A point forecast hides the only thing that matters in finance">
+If a model only emits a single number, you have no idea whether it's "confidently +0.3%" or "haven't a clue, somewhere in ±5%." In finance the *spread* is the product — position sizing, VaR, option pricing all live on the distribution, not the mean. Always prefer the probabilistic output (quantiles or sampled trajectories), and be suspicious of any benchmark that scores these models on point error (MAE/MSE) alone. A model can nail the median and still be uselessly overconfident about the tails.
+</Callout>
+
+### When to use it
+
+Lean on the probabilistic output whenever you need calibrated uncertainty — risk limits, scenario fans, anything where being *wrong about how wrong you might be* is expensive. The autoregressive structure is the right inductive bias when the future genuinely depends on the past in a causal, left-to-right way (almost all forecasting). The one regime where this objective struggles is precisely low-signal data: if "predict the next step" is near-impossible (efficient-market returns), the objective still trains happily — it just learns to output a wide, near-trivial distribution, which lessons 3 and 6 will show is often the honest answer.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Autoregressive objective", definition: "Predict the next patch/token; the held-out future of the window is the self-supervised label" },
+    { term: "Causal attention", definition: "A patch token may attend only to itself and earlier patch tokens, never the future it must predict" },
+    { term: "Quantile head (pinball loss)", definition: "Emit several percentiles at once so the spread itself becomes the uncertainty estimate" },
+    { term: "Sampled trajectories", definition: "Draw many next-token rollouts and read percentiles off the cloud of simulated futures" }
+  ]}
+/>
+
+## The lineage — TimesFM, Chronos, Moirai, Lag-Llama
+
+<MCQ
+  client:visible
+  pretest
+  question="Which design choice most distinguishes Moirai from the other three flagship models below?"
+  options={[
+    { text: "It is built for any-variate / multivariate input and uses multiple patch sizes, via a masked encoder", correct: true },
+    { text: "It is the only one that is probabilistic" },
+    { text: "It refuses to use attention at all" },
+    { text: "It is the only one trained self-supervised" }
+  ]}
+  explanation="All four are probabilistic and attention-based and self-supervised. Moirai's signature is native multivariate ('any-variate') support with multiple patch sizes and a masked-encoder design — the others are primarily univariate decoders."
+/>
+
+**The analogy.** Think of these four as rival house styles for the same instrument. They all play "forecast the future from the past," but they differ in *how they read the sheet music* (tokenization), *how the band is arranged* (architecture), whether they play *one voice or many at once* (uni- vs multivariate), and whether they hand you a single note or a whole chord of possibilities (probabilistic output).
+
+**Precise comparison.**
+
+| Model (lab) | Tokenization | Architecture | Univariate vs multivariate | Probabilistic? |
+|---|---|---|---|---|
+| **TimesFM** (Google) | Patching (linear-projected patches) | Decoder-only | Univariate | Yes — point + quantile heads |
+| **Chronos** (Amazon) | Scale + quantize into a fixed vocabulary | T5-style (encoder-decoder LM stack) | Univariate | Yes — via sampling next-token rollouts |
+| **Moirai** (Salesforce) | Patching, multiple patch sizes | Masked encoder | Any-variate / multivariate | Yes — distributional head |
+| **Lag-Llama** (open / academic) | Lagged features as inputs | Decoder-only | Univariate | Yes — parametric Student-t head |
+
+A few things to read off the table. **TimesFM** and **Lag-Llama** are both decoder-only (the GPT-style causal stack), but TimesFM patches the raw series while Lag-Llama feeds *lagged features* (the value at lag 1, 7, 30, …) — engineering seasonality straight into the input, then heading a Student-t to capture fat tails. **Chronos** is the odd one out: by quantizing into a vocabulary it gets to *be* a language model, inheriting that whole ecosystem, at the price of rounding error. **Moirai** is the multivariate specialist — it can attend across several variates at once and chooses among patch sizes, which matters when your series come at different frequencies.
+
+**Worked example — picking from the lineage.** You must forecast 200 correlated commodity series jointly, where one series' move informs another's. Univariate TimesFM/Chronos/Lag-Llama would forecast each in isolation, ignoring the cross-series structure. **Moirai's** any-variate design is built precisely to attend across the 200 series together — the natural pick. Flip the task to a single, very long, fat-tailed series where you care about tail risk, and **Lag-Llama's** Student-t head earns its place.
+
+<Callout variant="warning" title="Same family, very different failure surfaces">
+Don't treat these as interchangeable just because they share a press release. Chronos's quantization caps its precision and can mangle values far outside its bin range; a univariate model literally cannot see cross-series contagion; Lag-Llama's lag features bake in assumptions about which seasonalities matter. A benchmark win for one says little about another on *your* data — and (next section) says even less when your data is financial.
+</Callout>
+
+### When to use which
+
+Use **TimesFM** as a strong general univariate baseline with clean quantiles; **Chronos** when you want to ride the language-model toolchain and tolerate quantization; **Moirai** when the problem is genuinely multivariate or multi-frequency; **Lag-Llama** when seasonality is strong and tails are fat and you want an open, Student-t model. None of these choices, note, changes the uncomfortable fact coming next: what they were *trained on*.
+
+<FillBlank
+  client:visible
+  question="Fill in the lineage distinction."
+  text="Among the flagship models, {{Moirai is the any-variate / multivariate one|Chronos is the only multivariate one|TimesFM is the only multivariate one}}, using multiple patch sizes and a masked encoder, while TimesFM, Chronos and Lag-Llama are primarily univariate."
+  explanation="Moirai is Salesforce's any-variate model — native multivariate support with multiple patch sizes and a masked-encoder design. The others forecast one series at a time."
+/>
+
+## The pretraining corpora — billions of points, almost none of them market-like
+
+<MCQ
+  client:visible
+  pretest
+  question="The pretraining corpora behind these models run to billions of time points. For forecasting financial returns, what's the central worry?"
+  options={[
+    { text: "The corpora are dominated by high-signal domains (energy, weather, traffic, demand); very little is market-like, and the market-like part is low signal-to-noise — so transfer to returns is doubtful", correct: true },
+    { text: "The corpora are too small to train a large model" },
+    { text: "Financial data is illegal to include, so the models have never seen any prices" },
+    { text: "The corpora contain only market data, making the models overfit to finance" }
+  ]}
+  explanation="These corpora are huge but lopsided toward well-behaved, high-SNR domains. Markets are barely represented, and the returns that are present are near-unforecastable noise — so the pretrained prior may not transfer to financial forecasting at all."
+/>
+
+**The analogy.** Imagine training a champion sommelier by having them taste millions of glasses of — water. Mineral water, sparkling water, tap water from forty cities. They'll become *extraordinary* at distinguishing waters. Then you ask them to grade a Bordeaux. The skill they built is real and deep, but it was built on the wrong distribution. The foundation-model corpora are oceans of *well-behaved* series — and returns are the Bordeaux.
+
+**Precise statement.** The pretraining corpora (think the LOTSA / Chronos-style mixtures) aggregate **billions** of time points across **energy** (electricity load), **weather**, **traffic**, **retail/web demand**, transport, and a sprinkling of **finance**. The defining property of most of these domains is **high signal-to-noise**: electricity load has a thundering daily-and-weekly seasonality you can forecast in your sleep; traffic and demand are strongly autocorrelated and regular. Financial **returns** are the opposite — near-efficient, dominated by unforecastable noise, non-stationary across regimes (the brutal-low-SNR regime from the deep-learning course). So two problems stack:
+
+1. **Coverage:** market-like series are a tiny slice of the corpus, so the model spent almost none of its capacity learning their dynamics.
+2. **Even where present, low SNR:** the financial fraction is the hardest possible data to extract a transferable pattern from — there often *isn't* a stable pattern to learn.
+
+**Worked example — the mix is lopsided.** Suppose a corpus holds 10 billion points, split roughly: energy 35%, traffic 20%, weather 15%, demand/web 25%, finance 5%. That's $0.05 \times 10\text{B} = 500$ million financial points — sounds enormous. But "financial" here is mostly *prices*, much of it low-frequency, and the *returns* you actually care about carry almost no forecastable signal per point. So the *effective* market-relevant, signal-bearing fraction the model learned from is far smaller than 5% — and what little it saw may teach the wrong lessons (a trending crypto sample is not a stationary law). Contrast 3.5 billion points of metronomic electricity load, where every point reinforces a clean seasonal prior.
+
+<Callout variant="warning" title="A pretrained prior from clean series can hurt on returns">
+Transfer learning's quiet assumption is that the source and target distributions *share structure*. When they don't, the prior isn't neutral — it actively misleads. A model that learned "series have strong recurring seasonality" may hallucinate seasonality in returns that isn't there, or under-state tail risk because its training domains rarely had fat tails. This is why a glittering benchmark on energy/traffic data tells you almost nothing about financial forecasting — and lessons 3 and 6 will measure exactly how much (often: not much) survives the jump to markets.
+</Callout>
+
+### When the corpus mismatch matters most
+
+If your target series *resembles* the corpus — a demand forecast, a load curve, a well-behaved seasonal business metric — the mismatch barely bites and zero-shot transfer can be excellent. If your target is a single adversarial return series, the corpus mismatch is maximal and the pretrained prior is on its weakest footing. The decision rule is blunt: **the more your series looks like the training domains, the more you should trust the model; the more it looks like returns, the more you should test before believing anything.**
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">If the corpora hold hundreds of millions of financial points, why is transfer to returns still doubtful?</summary>
+
+**Answer.** Two reasons compound. First, *quantity isn't coverage of the right thing*: most "financial" data is prices and low-frequency, while the forecastable signal in **returns** is vanishingly small per point — you can have a billion noisy points and still have almost no learnable structure. Second, the corpus is dominated by *high-SNR, strongly-seasonal* domains, so the model's learned prior expects clean recurring patterns. Returns violate that prior (near-efficient, non-stationary, fat-tailed), so the transferred knowledge can mislead rather than help. Lots of data about the wrong distribution does not make a good prior for returns.
+
+</details>
+</Reveal>
+
+## When a time-series foundation model is the right tool
+
+<MCQ
+  client:visible
+  pretest
+  question="Given everything above, where does a time-series foundation model most clearly earn its keep?"
+  options={[
+    { text: "As a strong zero-shot / cold-start baseline on a well-behaved, corpus-like series", correct: true },
+    { text: "As a guaranteed alpha generator on a single noisy return series" },
+    { text: "Only when you can fine-tune it on millions of your own return points" },
+    { text: "Anywhere — the pretraining makes the source distribution irrelevant" }
+  ]}
+  explanation="Its sweet spot is cold-start and zero-shot baselining on series that resemble its high-SNR training domains. On a single adversarial, low-SNR return series, the corpus mismatch undercuts the very transfer it relies on."
+/>
+
+**The trade-off, stated plainly.** A time-series foundation model is a magnificent **cold-start baseline**: hand it a new, well-behaved series with little history and it produces a calibrated, probabilistic forecast in one forward pass, no fitting, no babysitting. That is genuinely useful and genuinely new. But the same machine, pointed at a single low-SNR return series, is leaning on a prior built from the wrong distribution — and "no fitting" now means "no chance to adapt to how unlike-the-corpus your series is."
+
+| Scenario | Foundation model verdict | Why |
+|---|---|---|
+| New SKU, 3 weeks of demand history | Strong | Cold-start + corpus-like seasonality; zero-shot shines |
+| 200 correlated load curves | Strong (use Moirai) | High-SNR, multivariate, looks like training data |
+| Single equity's daily returns | Doubtful | Low-SNR + corpus mismatch; prior may mislead |
+| Tail-risk on a fat-tailed return series | Test hard first | Lag-Llama's Student-t helps, but transfer is unproven |
+
+**Worked example — choosing on two desks.** Desk A forecasts next-week electricity demand for 5,000 substations, most with under two months of data. A foundation model is close to ideal: corpus-like, cold-start, many series — exactly its strengths from the first section. Desk B forecasts tomorrow's return for one large-cap stock. Same model, opposite footing: one series, brutal SNR, a prior trained on water trying to grade a Bordeaux. Desk A should ship the zero-shot baseline today; Desk B should treat any impressive backtest as guilty-until-proven-innocent (lesson 5's leakage minefield, lesson 6's honest evaluation).
+
+<Callout variant="warning" title="A zero-shot win on clean data is not a license for markets">
+The most expensive mistake in this whole field is generalizing a benchmark. "TimesFM beat ARIMA on the M-competitions" is true and irrelevant to whether it predicts returns. The corpus mismatch and the low SNR of returns mean a strong general forecaster can be a *terrible* market forecaster — and you only find out by evaluating honestly on your own series, out of sample, with leakage controlled. Until then, treat foundation-model alpha claims as unproven by default.
+</Callout>
+
+### When to use it
+
+Use a time-series foundation model as your *first*, *cheap*, *zero-shot* baseline whenever you have many series, short histories, or a cold-start — and especially when those series resemble the high-SNR, seasonal domains it was trained on. Be deeply skeptical of it as a standalone market-return forecaster on a single adversarial series; there the corpus mismatch and the noise floor conspire against the very transfer that makes it powerful elsewhere. The next lesson makes "zero-shot vs few-shot" precise and asks whether the scaling laws that lift these models on clean data lift them on markets at all.
+
+<Categorize
+  client:visible
+  question="Sort each situation by whether a time-series foundation model is a strong fit or a doubtful one."
+  buckets={["Strong fit", "Doubtful fit"]}
+  items={[
+    { text: "Cold-start demand forecast for a brand-new product with weeks of history", bucket: "Strong fit" },
+    { text: "Many correlated, high-SNR load curves forecast jointly", bucket: "Strong fit" },
+    { text: "Standalone alpha from one stock's daily returns, zero-shot", bucket: "Doubtful fit" },
+    { text: "A single, adversarial, low-SNR return series with no corpus analogue", bucket: "Doubtful fit" }
+  ]}
+  explanation="Cold-start and corpus-like, high-SNR series play to the model's strengths; single low-SNR return series sit exactly where the corpus mismatch and noise floor undercut transfer."
+/>
+
+## Recap
+
+<MindMap
+  client:visible
+  title="Time-series foundation models"
+  caption="Pretrain once on millions of series, tokenize the continuous line, forecast a new series zero-shot — powerful on corpus-like data, doubtful on adversarial returns."
+  root={{
+    label: "Time-series foundation models",
+    children: [
+      {
+        label: "One model, not one-per-series",
+        children: [
+          { label: "Classical: fit ARIMA/GARCH/net per series" },
+          { label: "FM: pretrain once, forecast new series zero-shot" },
+          { label: "Survives cold-start / short history" }
+        ]
+      },
+      {
+        label: "Tokenizing the line",
+        children: [
+          { label: "Patching: chop into windows → embed (TimesFM, Moirai)" },
+          { label: "512 / 32 = 16 patch tokens" },
+          { label: "Quantize: scale + bin into a vocab (Chronos)" },
+          { label: "Scale on CONTEXT only — global leaks" }
+        ]
+      },
+      {
+        label: "Pretraining objective",
+        children: [
+          { label: "Autoregressive next patch/token; future = label" },
+          { label: "Causal attention over past patch tokens" },
+          { label: "Probabilistic: quantiles or sampled trajectories" }
+        ]
+      },
+      {
+        label: "The lineage",
+        children: [
+          { label: "TimesFM — decoder, patched, quantiles" },
+          { label: "Chronos — vocab tokens, T5, sampling" },
+          { label: "Moirai — any-variate, multi patch size, encoder" },
+          { label: "Lag-Llama — decoder, lag features, Student-t" }
+        ]
+      },
+      {
+        label: "Corpora & the catch",
+        children: [
+          { label: "Billions of points: energy, weather, traffic, demand" },
+          { label: "Little is market-like; returns are low-SNR" },
+          { label: "Strong cold-start baseline; doubtful on returns" }
+        ]
+      }
+    ]
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Time-series foundation models — check yourself"
+  questions={[
+    {
+      question: "A context of length 512 is patched with patch length 64 (non-overlapping). How many patch tokens does the transformer attend over?",
+      options: [
+        { text: "8", correct: true },
+        { text: "64" },
+        { text: "512" },
+        { text: "448" }
+      ],
+      explanation: "n_patches = ceil(L / P) = 512 / 64 = 8. Patching collapses 512 raw points into 8 tokens, slashing the O(n²) attention cost."
+    },
+    {
+      question: "Chronos mean-scales a context, then quantizes. For the window [3, 6, 9], what is the mean-absolute scale s used before binning?",
+      options: [
+        { text: "6", correct: true },
+        { text: "18" },
+        { text: "9" },
+        { text: "3" }
+      ],
+      explanation: "s = (|3| + |6| + |9|) / 3 = 18 / 3 = 6. Each value is divided by s before being mapped to a bin index."
+    },
+    {
+      question: "Which statements about the pretraining objective and outputs are correct?",
+      allowMultiple: true,
+      options: [
+        { text: "It is self-supervised: the held-out future of the window is the label", correct: true },
+        { text: "Attention is causal — a patch token attends only to itself and earlier patch tokens", correct: true },
+        { text: "Quantile heads and sampled trajectories both yield a distribution, not just a point", correct: true },
+        { text: "The model must be hand-labeled by analysts before training" }
+      ],
+      explanation: "The objective is autoregressive self-supervision with causal attention, and the probabilistic outputs (quantiles or sampled rollouts) give a full distribution. No human labeling is involved."
+    },
+    {
+      question: "Which model in the lineage is the natural pick for forecasting 200 correlated series jointly, exploiting cross-series structure?",
+      options: [
+        { text: "Moirai — its any-variate / multivariate design attends across series", correct: true },
+        { text: "TimesFM — decoder-only and univariate" },
+        { text: "Chronos — quantized univariate T5 stack" },
+        { text: "Lag-Llama — univariate with a Student-t head" }
+      ],
+      explanation: "Moirai is the multivariate ('any-variate') specialist with multiple patch sizes. The other three forecast one series at a time and would ignore cross-series contagion."
+    },
+    {
+      question: "Why is transfer to financial returns doubtful despite the corpora holding billions of points?",
+      options: [
+        { text: "The corpora are dominated by high-SNR, seasonal domains; markets are barely represented and returns are low-SNR, so the learned prior may mislead", correct: true },
+        { text: "The corpora are too small to learn anything useful" },
+        { text: "Returns are higher-SNR than electricity load, so the model under-reacts" },
+        { text: "Financial data is excluded by law, so the model has seen no prices at all" }
+      ],
+      explanation: "Energy, weather, traffic and demand dominate the mix and are highly forecastable; returns are a tiny, near-unforecastable slice, so a prior built on clean seasonal series transfers poorly — and can actively mislead."
+    },
+    {
+      question: "A practitioner computes the scaling factor using statistics over the ENTIRE series, including the forecast horizon. What's wrong?",
+      options: [
+        { text: "It leaks future information into the inputs — scaling must use only the context window the model is allowed to see", correct: true },
+        { text: "Nothing; global scaling is the recommended Chronos procedure" },
+        { text: "It makes the bins too narrow to be useful" },
+        { text: "It only matters for patching models, not quantization" }
+      ],
+      explanation: "Any statistic that spans the future (mean, std, min-max) bleeds the answer into the inputs. Scale on the context window only — the leakage trap lesson 5 dissects in full."
+    }
+  ]}
+/>

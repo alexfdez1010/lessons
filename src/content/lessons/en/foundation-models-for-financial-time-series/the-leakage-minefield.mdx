@@ -1,0 +1,487 @@
+---
+title: "The Leakage Minefield"
+description: "Why foundation models make data leakage worse than any model before — pretraining contamination, the knowledge-cutoff trap, benchmark overlap, point-in-time and survivorship leaks — plus a concrete checklist for when a zero-shot foundation-model backtest can actually be trusted."
+topic: "en/foundation-models-for-financial-time-series"
+order: 5
+minutes: 18
+updated: 2026-06-22
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, PurgedCvSplit } from '@/components/react';
+
+Lessons 1 through 4 sold you on the upside: pretrain on a giant corpus, then adapt (lesson 1), forecast time series zero-shot (lesson 2), ride the scaling laws (lesson 3), and even mine an LLM for research and signals (lesson 4). Every one of those superpowers shares a dirty secret, and this lesson is where we drag it into the light.
+
+The secret: **a foundation model has already read an enormous slice of the past — possibly including the very future your backtest is trying to "predict."** Classical models only know what you feed them. A pretrained model walks in already knowing things, and you usually have no idea what. That turns a normal modeling chore into a minefield, where one wrong step blows up your entire research conclusion without making a sound.
+
+Let's learn where the mines are buried.
+
+## Why foundation models make leakage worse
+
+<MCQ
+  client:visible
+  pretest
+  question="Before any definitions: what makes a pretrained foundation model uniquely dangerous for backtesting, compared with a model you train from scratch on your own data?"
+  options={[
+    { text: "Its pretraining corpus can already contain information from the future relative to your backtest window, so it 'remembers' outcomes it's supposed to predict", correct: true },
+    { text: "It has more parameters, so it is always slower to evaluate" },
+    { text: "It can only be run zero-shot, which is inherently less accurate" },
+    { text: "It uses attention, which is numerically unstable on financial data" }
+  ]}
+  explanation="The unique hazard is temporal: the corpus the model was pretrained on may overlap or even postdate your test period, so a 'forecast' can secretly be a recall of memorized outcomes. Parameter count, zero-shot mode, and attention stability are real concerns elsewhere — none is the core leakage problem."
+/>
+
+**The analogy.** Imagine hiring an analyst to predict today's market, then discovering they spent last night reading *tomorrow's* newspaper. Ask them to "forecast" and they'll dazzle you — but they're reciting, not reasoning. A foundation model pretrained on data through 2024 and pointed at a 2020 backtest is exactly that analyst. The brilliance you measure is memory wearing a forecasting costume.
+
+**Three precise terms.** Leakage in foundation models comes in three named flavors, and you need all three in your vocabulary:
+
+- **Lookahead bias (look-ahead bias).** Using, at decision time $t$, any information that was not actually available until after $t$. The classic version is a coding bug (you indexed tomorrow's price). The foundation-model version is baked into the *weights*: the model saw the future during pretraining, so lookahead arrives for free, invisibly.
+- **Pretraining-data contamination.** Your evaluation data — or its outcomes — sat inside the corpus used to pretrain the model. The model isn't generalizing to your test set; it's partly *recalling* it.
+- **Memorization.** Large models provably store verbatim chunks of their training data. So contamination isn't just "similar examples were seen" — specific values, sequences, or events can be reproduced from memory.
+
+**Why it is worse than ever.** With a from-scratch model you control the inputs exactly: leakage is a bug you can audit line by line. With a foundation model, the leak is upstream, opaque, and enormous. You typically cannot inspect the corpus, cannot enumerate what it memorized, and cannot un-see what it saw. The leak is in the box before you open it.
+
+| Failure | From-scratch model | Foundation model |
+|---|---|---|
+| Source of future info | A bug in *your* pipeline | Baked into *pretrained weights* |
+| Auditability | High — read your own code | Low — corpus often undisclosed |
+| Default state | Leakage-free until you add a bug | Possibly already contaminated |
+| Fix | Patch the bug | Constrain the *evaluation window* |
+
+<Callout variant="warning" title="You cannot grep a model's memory">
+The instinct from classical ML is "I'll just check my features for lookahead." That instinct fails here: the dangerous information lives in billions of frozen weights, not in your feature matrix. A clean feature pipeline does not imply a clean evaluation when the model itself arrived pre-loaded with the future. Leakage hunting for foundation models is about the *boundary in time* between what the model knew and what you test on — not about your columns.
+</Callout>
+
+### When to use it
+
+Treat every pretrained model as guilty-until-proven-innocent of contamination *whenever its claimed skill is being measured on the past*. If you are only ever running it forward on genuinely unseen, post-deployment data, the worry shrinks. The moment you backtest — the moment you score it on history — assume the corpus may have touched that history and design around it. The rest of this lesson is the "designing around it" part.
+
+<FillBlank
+  client:visible
+  question="Fill in the core distinction."
+  text="In a from-scratch model, leakage is typically a bug in your own pipeline; in a foundation model, the future can be baked into the {{pretrained weights|loss function|learning rate schedule}}, which you usually cannot inspect."
+  explanation="The defining hazard of foundation models is that future information lives in the frozen pretrained weights — opaque and un-auditable — rather than in code you wrote."
+/>
+
+## Leak #1 — temporal contamination (the knowledge cutoff)
+
+<MCQ
+  client:visible
+  pretest
+  question="A time-series foundation model has a knowledge cutoff of 2024. You run it 'zero-shot' to forecast the 2020 market. What are you actually measuring?"
+  options={[
+    { text: "How well it recalls 2020 — an outcome already inside its pretraining window — not how well it forecasts the unknown", correct: true },
+    { text: "Genuine out-of-sample forecasting skill, because you didn't fine-tune on 2020" },
+    { text: "Nothing useful, because cutoffs don't affect zero-shot inference" },
+    { text: "Pure noise, since 2020 is before the model existed" }
+  ]}
+  explanation="A 2024 cutoff means 2020 is in the past the model already absorbed. 'Zero-shot' refers to not fine-tuning — it says nothing about whether the test period predates the cutoff. Testing inside the cutoff measures memory, not foresight."
+/>
+
+**The analogy.** Knowledge cutoff is the date past which the model has read nothing. Everything *before* the cutoff is open-book; everything *after* is closed-book. Backtesting before the cutoff is handing the model an exam on chapters it already memorized.
+
+**Precise definition.** A model's **knowledge cutoff** is the latest date represented in its pretraining corpus. **Temporal contamination** occurs when your evaluation window falls (wholly or partly) *before* the cutoff, so the outcomes you score were available to the model during pretraining. A "forecast" of a pre-cutoff period is therefore a **memory test**, not a forecast — the model is, at best, interpolating data it has already seen and, at worst, regurgitating it.
+
+**Worked example — a backtest that is secretly a memory test.** Suppose a vendor ships a foundation model with a stated knowledge cutoff of **31 December 2024**. You evaluate it on a backtest spanning **2015–2023** and report a beautiful out-of-sample Sharpe.
+
+- Every single trading day in 2015–2023 is *before* the 2024 cutoff.
+- So 100% of your "out-of-sample" window is inside the model's pretraining horizon.
+- The model could have memorized the 2015–2023 price path verbatim; nothing structurally prevents it.
+- Your Sharpe measures *recall fidelity*, not predictive skill. It will not survive contact with truly future data.
+
+Now contrast a clean design. Same model, same 2024 cutoff, but you evaluate only on **2025 onward** — dates the model provably could not have seen. That window can have leaked nothing through the cutoff (it postdates the corpus entirely), so a good Sharpe there is at least *eligible* to be real.
+
+| Backtest window | Knowledge cutoff | What you actually measure |
+|---|---|---|
+| 2015–2023 | 2024 | Memory of the past (contaminated) |
+| 2024 straddling | 2024 | Mixed — partly memory, partly forecast |
+| 2025 onward | 2024 | Genuine out-of-sample (eligible to be real) |
+
+**The fix.** Backtest **only on data strictly after the knowledge cutoff.** That single rule kills temporal contamination outright. It is brutal — it can leave you with a painfully short evaluation window — but a short honest window beats a long contaminated one every time.
+
+<Callout variant="warning" title="'Zero-shot' does not mean 'leakage-free'">
+People hear "zero-shot" and relax, as if not fine-tuning means nothing leaked. Zero-shot only describes the *adaptation* step — you didn't train on the target task. It says nothing about whether the target *period* predates the cutoff. A zero-shot evaluation on a pre-cutoff window is fully contaminated. Decouple the two ideas: zero-shot is about labels you didn't fit; cutoff is about time you can't un-see.
+</Callout>
+
+### When to use it
+
+Apply the strictly-post-cutoff rule any time the model's training data is dated and your evaluation touches history. If the vendor won't disclose a cutoff, you cannot establish a clean window at all — treat the whole backtest as suspect. The only fully safe evaluation of a dated model is **forward**, on data created after you froze the model. Everything else is a negotiation with contamination.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Knowledge cutoff", definition: "The latest date present in the model's pretraining corpus; the open-book / closed-book boundary" },
+    { term: "Temporal contamination", definition: "Evaluating on a window before the cutoff, so scored outcomes were already in pretraining" },
+    { term: "Memory test", definition: "A pre-cutoff 'forecast' that really measures recall, not foresight" },
+    { term: "Strictly-post-cutoff backtest", definition: "Scoring only on dates after the cutoff — the one rule that kills temporal contamination" }
+  ]}
+/>
+
+## Leak #2 — benchmark / test-set contamination
+
+<MCQ
+  client:visible
+  pretest
+  question="A time-series foundation model tops the leaderboard on a famous public forecasting benchmark. Why might that win overstate its true zero-shot skill?"
+  options={[
+    { text: "The benchmark's data likely sits inside the pretraining mix, so the model may be recalling the benchmark rather than generalizing to it", correct: true },
+    { text: "Public benchmarks are always too easy, regardless of the model" },
+    { text: "Leaderboards never use held-out data, by definition" },
+    { text: "Zero-shot models cannot be evaluated on benchmarks at all" }
+  ]}
+  explanation="Popular public datasets are exactly the kind of data that ends up scraped into giant pretraining corpora. If the benchmark is in the training mix, a high score may reflect memorization of that specific dataset, not transferable forecasting skill."
+/>
+
+**The analogy.** It's an open-secret cheating ring: the exam questions were published online for years, and the model studied from a corpus that scraped the whole internet. Of course it aces the exam — it has *seen this exact exam*. A leaderboard win under those conditions tells you the model memorized the test, not that it's smart.
+
+**Precise definition.** **Benchmark contamination** (test-set contamination) is the special case of pretraining contamination where the leaked material is a *public evaluation dataset*. The classic time-series benchmarks — the M-competition series (M3, M4, M5), and the common open forecasting repositories everyone trains and tests on — are widely mirrored, blogged, and packaged. That makes them prime candidates to be swept into a web-scale pretraining corpus. A model that has effectively memorized M4 will look superhuman on M4 and merely human everywhere else.
+
+**Worked example — the leaderboard mirage.** Two models report results on a public benchmark:
+
+- Model A: reported error (sMAPE) of **9.8** on the public benchmark; on a *fresh, never-published* dataset of the same kind, **14.5**.
+- Model B: reported error of **11.0** on the public benchmark; on the same fresh dataset, **11.3**.
+
+Read naively, Model A "wins" the leaderboard. But Model A's error *jumps 48%* the instant you move to data that couldn't be in the corpus, while Model B barely budges. Model A's leaderboard edge is contamination; Model B is the one that actually generalizes. The leaderboard ranked them backwards.
+
+**How to probe for it.** You rarely get to read the corpus, so you test behaviorally:
+
+1. **Held-out-by-construction data.** Evaluate on a private dataset you generated or licensed *after* the model's cutoff. A big error gap (public vs. private) is a contamination fingerprint.
+2. **Perturbation tests.** Slightly alter the public series (shift, rescale, mask a chunk) and re-evaluate. A model that *generalizes* degrades gracefully; a model that *memorized* collapses when the surface form changes.
+3. **Completion probing.** Give the model the *front* of a known public series and ask it to continue. If it reproduces the held-out tail with eerie precision, it has memorized that series.
+
+| Symptom | Generalizing model | Contaminated model |
+|---|---|---|
+| Public vs. fresh-data error gap | Small | Large |
+| Sensitivity to harmless perturbation | Graceful degradation | Sharp collapse |
+| Verbatim continuation of public series | No | Yes |
+
+<Callout variant="warning" title="A leaderboard rank is a hypothesis, not a result">
+Treat any public-benchmark number on a foundation model as a *claim to be falsified*, not a fact. Until you've reproduced the win on data that demonstrably could not be in the pretraining mix, you have not measured generalization — you've measured the overlap between the benchmark and the corpus. Vendors love benchmark tables precisely because they flatter contaminated models. Demand the fresh-data number.
+</Callout>
+
+### When to use it
+
+Run benchmark-contamination probes whenever a foundation-model claim leans on public-dataset performance — which is almost always, since that's how these models are marketed. Skip it only when your entire evaluation already runs on private, post-cutoff data (in which case you've sidestepped the problem). When in doubt, the completion-probe and the public-vs-private gap are the two cheapest tells.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">If I can't see the pretraining corpus, how can I ever claim a benchmark result is uncontaminated?</summary>
+
+**Answer.** You can't *prove* a negative about a corpus you can't read — but you can make contamination implausible by construction. Evaluate on data that *did not exist* when the model was frozen (post-cutoff, freshly generated, or privately licensed after the cutoff date). If that data couldn't have been scraped, a strong score there is evidence of real skill. The burden flips: instead of proving the corpus is clean, you build an evaluation set the corpus *cannot* have contained. That's the only honest path when the corpus is a black box.
+
+</details>
+</Reveal>
+
+## Leak #3 — point-in-time, revision & survivorship leaks
+
+<MCQ
+  client:visible
+  pretest
+  question="In Q1 a company first reports earnings per share of $1.20. Three months later it restates the figure up to $1.45. Which value may you use as a feature for a trade dated in Q1?"
+  options={[
+    { text: "1.20 — the value actually known and published at the time of the trade", correct: true },
+    { text: "1.45 — the final, correct figure, because accuracy matters most" },
+    { text: "The average of 1.20 and 1.45, to hedge the uncertainty" },
+    { text: "Either one; revisions are too small to affect a backtest" }
+  ]}
+  explanation="A point-in-time backtest may only use what was knowable at the decision date. In Q1 the world knew 1.20; the 1.45 restatement didn't exist yet. Training on 1.45 leaks a future revision into a past decision — classic lookahead."
+/>
+
+**The analogy.** Using the revised number is like grading yesterday's weather forecast with today's corrected satellite data and then claiming the forecaster was clairvoyant. The forecaster only had the messy, soon-to-be-revised data of the moment — and so did the trader.
+
+**Precise definitions.** Two clocks govern every data point:
+
+- **Event time** — when the thing *happened* (the quarter the earnings cover, the month the GDP measures).
+- **Availability time (knowable time)** — when the value first became *known to the public* (the release date, often weeks after the event; revisions arrive later still).
+
+A **point-in-time (PIT)** dataset stamps each value with its availability time and preserves the **vintage** — the exact value as first published, before any restatement. Using the *latest revised* value at a past decision date is a **revision leak**: you injected information that didn't exist yet. Two cousins complete the family:
+
+- **Survivorship bias** — building a universe from *today's* surviving names (e.g. current index members), silently deleting the firms that went bankrupt or were delisted. Your backtest only ever "buys" companies you already know survived.
+- **Index-membership / constituent leak** — using *today's* index composition for a *past* date. A stock added to the index in 2022 was not a member in 2018; pretending it was leaks the future.
+
+**Worked example — the revision that flatters a strategy.** A "buy on strong earnings" rule keys off EPS:
+
+| Field | Vintage (known in Q1) | Latest revised value |
+|---|---|---|
+| Reported EPS | \$1.20 | \$1.45 |
+| Decision date | Q1 release date | (Q2 restatement) |
+| Signal fired? | Maybe (1.20 is so-so) | Yes (1.45 looks great) |
+
+Train on the revised \$1.45 and your rule "knew" the firm would beat *before the beat was announced*. The backtest lights up with trades that were impossible to place. Swap to the vintage \$1.20 and many of those trades vanish — because in the real Q1, the signal was lukewarm. The revised-data backtest is fiction; the vintage backtest is what you could have actually traded.
+
+**Where foundation models add a new wrinkle.** A pretrained model doesn't just risk *your* PIT bug — it may have absorbed the *revised* values during pretraining and have no concept of vintage at all. So even a perfectly PIT-clean feature pipeline can be undermined by a model that internally "knows" the restated figure. You now have to respect **three** boundaries at once: purge label-overlap, embargo after the test block, **and** restrict evaluation to after the model's knowledge cutoff. The island below makes the first two visible; mentally add the cutoff as a third wall on the right.
+
+<PurgedCvSplit
+  client:visible
+  title="Three walls against leakage: purge, embargo, and the model's knowledge cutoff"
+  caption="A sample's label is realized over a forward window, so a training cell whose label horizon overlaps the test fold leaks the answer. Purging drops the cells whose label horizon (the slider) overlaps the test block on either side; the embargo drops a few more right after it, where serial correlation lets features bleed forward. For a foundation model, add a conceptual third wall: even after purge and embargo, your test fold must sit strictly AFTER the model's knowledge cutoff and use point-in-time (vintage) values, or the pretrained weights leak the future no matter how clean the fold geometry looks."
+  trainLabel="Train"
+  testLabel="Test fold"
+  purgeLabel="Purged (label overlap)"
+  embargoLabel="Embargo"
+  positionLabel="Test fold position"
+  embargoSliderLabel="Embargo (cells)"
+  labelSpanLabel="Label horizon (cells)"
+/>
+
+<Callout variant="warning" title="Survivorship is leakage you can't see in the code">
+Revision leaks at least show up as a column you chose wrong. Survivorship is sneakier: it's the *absence* of the firms that failed. Build a 2010 backtest from the 2026 index and you've quietly excluded every company that went to zero in between — your strategy looks robust because all its potential casualties were deleted before the test began. A foundation model trained on "the companies that exist today" inherits the same blind spot. Always reconstruct the universe as it stood *at each point in time*, not as it stands now.
+</Callout>
+
+### When to use it
+
+Insist on point-in-time, vintage data whenever your features touch anything that gets *revised* (macro releases, earnings, fundamentals) or anything defined by *membership* (index constituents, sector classifications, credit ratings). For pure price-only, never-revised series the revision leak is smaller — but survivorship and delisting still bite. With a foundation model in the loop, assume it absorbed revised, survivor-only data and lean even harder on a strictly-post-cutoff window where its internal "knowledge" can't reach.
+
+<FillBlank
+  client:visible
+  question="Fill in the two clocks."
+  text="The {{availability time|event time|settlement time}} is when a value first became publicly known, which can lag the event by weeks; a point-in-time dataset stamps each value with it and preserves the original vintage before any revision."
+  explanation="Event time is when the thing happened; availability (knowable) time is when it became public. PIT data keys on availability time and stores the as-first-published vintage to prevent revision leaks."
+/>
+
+## How to test for contamination
+
+<MCQ
+  client:visible
+  pretest
+  question="You want to know whether a vendor's foundation model is 'cheating' on your backtest. Which single comparison is the most diagnostic first move?"
+  options={[
+    { text: "Compare the model's stated knowledge cutoff against your test period — any overlap is a red flag before you run anything", correct: true },
+    { text: "Measure how many parameters the model has" },
+    { text: "Check whether the model uses sinusoidal or learned positional encodings" },
+    { text: "Compare its inference speed against a baseline" }
+  ]}
+  explanation="The cheapest, highest-signal check is the calendar: line up the cutoff against the test window. If your backtest predates the cutoff, you already know it's contaminated — no expensive experiment required. Architecture details and speed are irrelevant to leakage."
+/>
+
+**The analogy.** Before you audit a witness's testimony line by line, you check one thing: *could they have been at the scene?* The knowledge cutoff is the alibi check. If the model "was there" for your test period, nothing else it says about that period can be trusted.
+
+**A contamination test battery.** Stack these from cheapest to most thorough:
+
+1. **Cutoff-vs-window check (free).** Put the stated knowledge cutoff next to your evaluation dates. Any overlap = contaminated, full stop. Refuse to run the backtest until the window is strictly post-cutoff.
+2. **Future-event probing.** Ask the model about events *after* its supposed cutoff. If it "knows" something it shouldn't — a result, a price level, a headline from after the claimed cutoff — the real cutoff is later than advertised, and your "clean" window may not be clean.
+3. **Public-vs-private gap.** Score on a public benchmark and on a private, post-cutoff dataset. A large gap is the contamination fingerprint from Leak #2.
+4. **Point-in-time replay.** Re-run with strictly vintage features and reconstructed as-of-date universes. If the edge evaporates, it lived in revision/survivorship leaks, not skill.
+5. **Trial deflation.** Whatever survives, deflate the reported Sharpe for the number of model variants, prompts, and windows you tried — the same multiple-testing discipline from the alpha-research lessons.
+
+| Test | Cost | What it catches |
+|---|---|---|
+| Cutoff vs. window | Free | Temporal contamination (Leak #1) |
+| Future-event probe | Low | A mis-stated / later real cutoff |
+| Public vs. private gap | Medium | Benchmark contamination (Leak #2) |
+| Point-in-time replay | High | Revision / survivorship leaks (Leak #3) |
+| Trial deflation | Low | False discovery from over-searching |
+
+<Callout variant="warning" title="A backtest that straddles the knowledge cutoff is not a backtest">
+If part of your evaluation window sits before the cutoff and part after, you have not run a backtest — you've run a blend of a memory test and a forecast, and you cannot tell which trades came from which. The pre-cutoff portion can inflate the whole result, and averaging contaminates the honest part. Cut the window at the cutoff and report *only* the strictly-post-cutoff segment. Half a clean backtest is worth more than a whole dirty one.
+</Callout>
+
+### When to use it
+
+Run the full battery before you stake any decision — capital, a research claim, a publication — on a foundation-model result. For quick internal exploration the free cutoff-vs-window check is the non-negotiable minimum; the expensive point-in-time replay can wait until a result looks promising enough to deserve it. But never present a number externally without at least the cutoff check and a trial-deflation caveat.
+
+<Categorize
+  client:visible
+  question="Match each diagnostic to the specific leak it's designed to expose."
+  buckets={["Temporal contamination (cutoff)", "Benchmark contamination", "Point-in-time / survivorship"]}
+  items={[
+    { text: "Compare the stated knowledge cutoff against the test window", bucket: "Temporal contamination (cutoff)" },
+    { text: "Probe whether the model knows events after its claimed cutoff", bucket: "Temporal contamination (cutoff)" },
+    { text: "Measure the public-vs-private error gap on fresh data", bucket: "Benchmark contamination" },
+    { text: "Ask the model to continue a known public series and watch for verbatim recall", bucket: "Benchmark contamination" },
+    { text: "Replay using strictly vintage values and as-of-date index membership", bucket: "Point-in-time / survivorship" },
+    { text: "Rebuild the universe to include firms that later delisted", bucket: "Point-in-time / survivorship" }
+  ]}
+  explanation="Cutoff comparison and future-event probing target temporal contamination; public-vs-private gaps and completion probing target benchmark overlap; vintage replay and universe reconstruction target revision and survivorship leaks."
+/>
+
+## When you can trust a zero-shot foundation-model backtest
+
+<MCQ
+  client:visible
+  pretest
+  question="Which single condition is necessary (though not sufficient) for a zero-shot foundation-model backtest to be trustworthy?"
+  options={[
+    { text: "The entire evaluation window lies strictly after the model's knowledge cutoff", correct: true },
+    { text: "The model achieved a high score on at least one public benchmark" },
+    { text: "The model has more than a billion parameters" },
+    { text: "The backtest covers at least ten years of history" }
+  ]}
+  explanation="Strictly-post-cutoff evaluation is the necessary foundation — without it, everything downstream is contaminated. It is not sufficient on its own (you still need point-in-time data, no benchmark overlap, trial deflation, and realistic costs), but nothing else can rescue a pre-cutoff window. Benchmark scores, parameter count, and history length don't address leakage."
+/>
+
+So when *can* you believe the number? Only when a backtest clears every wall at once. Here is the concrete checklist — treat it as a gate, where failing any one item sends the whole result back to "contaminated until fixed."
+
+**The trust checklist.**
+
+1. **Strictly post-cutoff window.** Every evaluation date is after the model's knowledge cutoff. No straddling. (Necessary; everything else is moot without it.)
+2. **Point-in-time, vintage features.** Each feature carries an availability timestamp; you use the as-first-published value, and the universe is reconstructed as of each date (no survivorship, no future index membership).
+3. **No public-benchmark overlap.** Evaluation runs on private or freshly generated data that demonstrably could not be in the pretraining corpus; the public-vs-private gap has been checked.
+4. **Deflated for trials.** The reported Sharpe is adjusted for the number of variants, prompts, and windows you searched — no cherry-picked best run.
+5. **Costs and capacity modeled.** Transaction costs, slippage, latency, and strategy capacity are subtracted; the "edge" survives realistic frictions and isn't a paper artifact.
+
+| Checklist item | Leak it closes | Fail mode if skipped |
+|---|---|---|
+| Strictly post-cutoff window | Temporal contamination | Memory test masquerading as forecast |
+| Point-in-time vintage features | Revision / survivorship | Impossible-to-place trades light up |
+| No public-benchmark overlap | Benchmark contamination | Leaderboard mirage |
+| Deflated for trials | Over-searching | Lucky best-run reported as skill |
+| Costs and capacity modeled | Frictionless fantasy | Untradeable edge |
+
+**Worked example — running the gate.** A team reports a zero-shot strategy with Sharpe 1.8.
+
+- Window: 2025–2026, model cutoff 2024 → **passes** item 1 (strictly post-cutoff).
+- Features: macro releases used at *revised* values → **fails** item 2. Stop. Re-run with vintage data; Sharpe falls to 1.1.
+- Re-checked: private data, no benchmark overlap → passes item 3.
+- Trials: 30 prompt/variant combinations searched, deflate → effective Sharpe ~0.7.
+- Costs: after fees and slippage → ~0.5.
+
+The headline 1.8 was real arithmetic on a fake setup. Walk it through the gate and the honest, eligible-to-be-true number is ~0.5 — still possibly worth trading, but a different decision entirely. The checklist didn't destroy value; it revealed how much of the headline was leakage and luck.
+
+<Callout variant="warning" title="The checklist is an AND, not an OR">
+Every item is a wall, and walls don't average. A backtest that nails four items and flunks one is not "80% trustworthy" — it's contaminated, because the one failure can fabricate the entire edge. Resist the urge to wave through a result because it's *mostly* clean. Either it clears all five gates or it goes back to the bench. Lesson 6 builds the honest-evaluation protocol that turns this checklist into a standing process.
+</Callout>
+
+### When to use it
+
+Run the full gate before any go/no-go decision on real capital or any external claim. For early-stage triage you can fail-fast on the cheap gates first (cutoff, then trial count) and only pay for vintage-data replay and cost modeling once a candidate survives. But the moment money or reputation is on the line, all five walls stand — no exceptions, no averaging.
+
+<Categorize
+  client:visible
+  question="Sort each setup into a trustworthy gate-passing design or a contaminated one."
+  buckets={["Trustworthy setup", "Contaminated setup"]}
+  items={[
+    { text: "Evaluate only on 2025–2026 with a 2024 model cutoff, using vintage features", bucket: "Trustworthy setup" },
+    { text: "Use private post-cutoff data, deflate Sharpe for 30 trials, subtract costs", bucket: "Trustworthy setup" },
+    { text: "Reconstruct the universe as of each date, including later-delisted firms", bucket: "Trustworthy setup" },
+    { text: "Backtest 2015–2023 on a model with a 2024 cutoff", bucket: "Contaminated setup" },
+    { text: "Report the best of 40 prompt variants with no deflation", bucket: "Contaminated setup" },
+    { text: "Build the universe from today's index members and use revised earnings", bucket: "Contaminated setup" }
+  ]}
+  explanation="Trustworthy designs are strictly post-cutoff, point-in-time, private-data, trial-deflated, and cost-aware. Contaminated designs straddle or predate the cutoff, cherry-pick trials, or use revised/survivor-only data."
+/>
+
+## Recap
+
+<MindMap
+  client:visible
+  title="The leakage minefield"
+  caption="Foundation models can carry the future in their weights — so a clean feature pipeline isn't enough. Cut the window at the cutoff, use point-in-time data, and gate every result."
+  root={{
+    label: "The Leakage Minefield",
+    children: [
+      {
+        label: "Why it's worse now",
+        children: [
+          { label: "Future baked into pretrained weights" },
+          { label: "Lookahead, contamination, memorization" },
+          { label: "Corpus is a black box — can't grep memory" },
+          { label: "Analogy: analyst read tomorrow's paper" }
+        ]
+      },
+      {
+        label: "Leak #1 — temporal / cutoff",
+        children: [
+          { label: "Pre-cutoff backtest = memory test" },
+          { label: "2015–2023 on 2024 cutoff is contaminated" },
+          { label: "Fix: backtest strictly after the cutoff" },
+          { label: "Zero-shot ≠ leakage-free" }
+        ]
+      },
+      {
+        label: "Leak #2 — benchmark overlap",
+        children: [
+          { label: "M-competitions sit in the corpus" },
+          { label: "Leaderboard win overstates true skill" },
+          { label: "Probe: public-vs-private gap, completion test" }
+        ]
+      },
+      {
+        label: "Leak #3 — point-in-time",
+        children: [
+          { label: "Event time vs availability time" },
+          { label: "Vintage vs revised values" },
+          { label: "Survivorship & index-membership leaks" },
+          { label: "Purge + embargo + cutoff = three walls" }
+        ]
+      },
+      {
+        label: "Trust checklist (AND)",
+        children: [
+          { label: "Strictly post-cutoff window" },
+          { label: "Point-in-time vintage features" },
+          { label: "No public-benchmark overlap" },
+          { label: "Deflated for trials" },
+          { label: "Costs & capacity modeled" }
+        ]
+      }
+    ]
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="The leakage minefield — check yourself"
+  questions={[
+    {
+      question: "A foundation model has a knowledge cutoff of 2024. On which window can a zero-shot backtest be eligible to reflect genuine forecasting skill?",
+      options: [
+        { text: "2025 onward — strictly after the cutoff", correct: true },
+        { text: "2015–2023 — a long history makes it robust" },
+        { text: "A window straddling 2024, to capture the transition" },
+        { text: "Any window, because zero-shot means no leakage" }
+      ],
+      explanation: "Only a strictly-post-cutoff window (2025+) could not have been in the pretraining corpus. Pre-cutoff or straddling windows are contaminated, and zero-shot describes adaptation, not temporal cleanliness."
+    },
+    {
+      question: "Why can a chart-topping result on a public time-series benchmark overstate a foundation model's real skill?",
+      options: [
+        { text: "The benchmark is likely inside the pretraining corpus, so the score may reflect memorization rather than generalization", correct: true },
+        { text: "Public benchmarks are deliberately corrupted to mislead vendors" },
+        { text: "Leaderboards never use error metrics, only accuracy" },
+        { text: "Foundation models can't be tested zero-shot on benchmarks" }
+      ],
+      explanation: "Widely mirrored datasets like the M-competitions are prime candidates for scraping into web-scale corpora. A high score there may be recall of a memorized benchmark, which is why the public-vs-private gap matters."
+    },
+    {
+      question: "A firm first reports EPS of $1.20, later restated to $1.45. For a trade dated at the original release, training on $1.45 is an example of what?",
+      options: [
+        { text: "A revision leak — using a value that did not exist at the decision date", correct: true },
+        { text: "Survivorship bias — excluding failed firms" },
+        { text: "Benchmark contamination — a public dataset in the corpus" },
+        { text: "A purely cosmetic difference with no backtest impact" }
+      ],
+      explanation: "Using the later-revised $1.45 at a date when only $1.20 was knowable injects future information — a revision leak. Point-in-time data preserves the original vintage to prevent exactly this."
+    },
+    {
+      question: "Which statements about diagnosing foundation-model leakage are correct?",
+      allowMultiple: true,
+      options: [
+        { text: "Comparing the knowledge cutoff to the test window is a free, high-signal first check", correct: true },
+        { text: "A model 'knowing' events after its claimed cutoff suggests the real cutoff is later", correct: true },
+        { text: "A backtest straddling the cutoff is a valid backtest if it's long enough", correct: false },
+        { text: "Asking the model to continue a known public series can reveal memorization", correct: true }
+      ],
+      explanation: "Cutoff-vs-window comparison, future-event probing, and completion probing are all valid leak detectors. A straddling window is never a valid backtest — it blends a memory test with a forecast."
+    },
+    {
+      question: "A team reports Sharpe 1.8 zero-shot, post-cutoff, but uses revised macro values, picks the best of 40 trials, and ignores costs. What's the right conclusion?",
+      options: [
+        { text: "The result is contaminated — vintage data, trial deflation, and costs must all be applied before any number is trusted", correct: true },
+        { text: "It's trustworthy, because the window is post-cutoff" },
+        { text: "It's trustworthy, because 1.8 is a high Sharpe" },
+        { text: "Costs and trials are minor and can be ignored above Sharpe 1.5" }
+      ],
+      explanation: "The trust checklist is an AND. Passing the cutoff gate doesn't excuse revised features, un-deflated trials, or unmodeled costs — each can fabricate the edge. Walk it through every gate and the honest number is far lower."
+    },
+    {
+      question: "Why does the lesson call a clean feature pipeline insufficient for a foundation model?",
+      options: [
+        { text: "The model may have absorbed future/revised information during pretraining, so leakage lives in its frozen weights regardless of your columns", correct: true },
+        { text: "Feature pipelines can't be cleaned for time-series data" },
+        { text: "Foundation models ignore the features you provide" },
+        { text: "Clean pipelines always introduce survivorship bias" }
+      ],
+      explanation: "Classical leakage hunting audits your inputs, but a foundation model arrives pre-loaded with whatever it saw in pretraining. You can't grep its memory, so you must constrain the evaluation window in time rather than just cleaning your features."
+    }
+  ]}
+/>

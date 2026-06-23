@@ -1,0 +1,410 @@
+---
+title: "The Pretrain-and-Adapt Bet"
+description: "What a foundation model actually is, the amortization economics that make 'pretrain once, adapt cheaply' worth it, why the recipe conquered language, vision and weather — and the central, unresolved tension when you point it at non-stationary, adversarial, low-signal financial markets."
+topic: "en/foundation-models-for-financial-time-series"
+order: 1
+minutes: 17
+updated: 2026-06-22
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, PretrainFinetuneTimeline } from '@/components/react';
+
+For a decade, the machine-learning recipe in finance read like a craft project: pick one task, hand-label a dataset for *exactly* that task, train a model from scratch, ship it, and start over from zero for the next task. Want to forecast volatility? Build a vol model. Want to classify regimes? Build a regime model. Nothing carried over. Every problem was an island, and you paid full freight to settle each one.
+
+Then language, vision, and weather quietly switched to a different recipe — **pretrain a single big model on a mountain of broad data once, then adapt that one model cheaply to dozens of downstream tasks.** It worked so spectacularly that "foundation model" became the default way to build. This course asks the only question that matters for us: **does that bet pay off when the downstream task is a financial market?** This first lesson sets up the wager — what a foundation model is, why the economics are seductive, and exactly which assumption markets are poised to violate. Lessons 2–6 then stress-test it with real models (Chronos, TimesFM, Moirai, Lag-Llama), scaling laws, leakage traps, and honest evaluation.
+
+Let's define the bet before we grade it.
+
+## What a foundation model actually is
+
+<MCQ
+  client:visible
+  pretest
+  question="Before any definitions: what single property most distinguishes a 'foundation model' from a classic task-specific model?"
+  options={[
+    { text: "It's pretrained once on broad data, then adapted to many different downstream tasks", correct: true },
+    { text: "It always has more than a billion parameters" },
+    { text: "It only ever runs on GPUs" },
+    { text: "It guarantees better accuracy than a model trained from scratch on each task" }
+  ]}
+  explanation="The defining trait is the pretrain-once-then-adapt-to-many recipe, not a parameter count, hardware, or any accuracy guarantee. Bommasani et al. (Stanford, 2021) coined the term precisely around 'trained on broad data, adaptable to a wide range of downstream tasks.'"
+/>
+
+**The analogy.** The old recipe is hiring a fresh specialist for every disease that walks through the door — a cardiologist for chest pain, a separate dermatologist for a rash, each trained from zero on just their slice. A foundation model is the seasoned generalist resident who has rotated through every ward and seen tens of thousands of cases. They don't know *your* patient yet, but they walk in carrying a vast, transferable sense of how bodies work — and a short briefing ("here's this patient's chart") is enough to put them to work. The expensive education happened once; each new case is a cheap adaptation.
+
+**Precise definition.** The term comes from Bommasani et al. (Stanford, 2021): a **foundation model** is a model *trained on broad data at scale* (typically with self-supervision) that can be *adapted* — fine-tuned, prompted, or used zero-shot — *to a wide range of downstream tasks*. Two clauses do all the work: **broad pretraining** (one model, lots of generic data, no specific task in mind) and **adaptation** (cheaply specializing that one model to many concrete tasks).
+
+**The two recipes, side by side.** The shift is from *one labeled dataset → one model → one task* to *one giant pretraining run → one shared model → many tasks*:
+
+| | Old recipe (task-specific) | New recipe (pretrain → adapt) |
+|---|---|---|
+| Data per task | A bespoke labeled set for that task | One broad corpus, shared across all tasks |
+| Training | From scratch, every task | Pretrain once, then cheap adaptation |
+| Labels | Hand-labeled, expensive | Self-supervised (labels for free, see below) |
+| Knowledge reuse | None — every task an island | Shared representation carries across tasks |
+| Cost shape | Linear in number of tasks | Big fixed cost + tiny per-task cost |
+
+The phrase "foundation" is deliberate: the pretrained model is meant to be the *base layer* everything else is built on, not the finished building.
+
+<Callout variant="warning" title="'Foundation model' is not a synonym for 'large' or 'LLM'">
+A foundation model need not be enormous, need not be a language model, and need not be a neural net the size of a small country. A modest time-series model pretrained on many series and then adapted to a new one is a foundation model; a 70-billion-parameter network trained from scratch on a single task is *not*. The defining feature is the **pretrain-broadly-then-adapt** recipe, not the parameter count. Confusing "foundation model" with "biggest possible LLM" will lead you to the wrong lessons in this course.
+</Callout>
+
+### When to use it
+
+The pretrain-and-adapt framing earns its place when you face **many related tasks that plausibly share structure**, and labeled data for any single task is scarce or expensive. If you only ever have *one* task and you have abundant clean labels for it, a focused from-scratch model is simpler and you skip the whole bet. The framing's value scales with task count and shared structure — which is exactly the economics we make precise next.
+
+<FillBlank
+  client:visible
+  question="Fill in the definition."
+  text="A foundation model is trained on {{broad data at scale, then adapted to many downstream tasks|one narrow labeled dataset for a single task|reinforcement signals from a live trading account}}, which is why one pretraining run can serve dozens of jobs."
+  explanation="Bommasani et al.'s definition: broad pretraining at scale, then adaptation to a wide range of downstream tasks. The other options describe the old task-specific recipe or an unrelated training paradigm."
+/>
+
+## The two-phase economics: amortization
+
+<MCQ
+  client:visible
+  pretest
+  question="From-scratch training costs 10 units per task. A foundation model costs 40 units to pretrain (paid once) plus 1 unit to adapt per task. With just 2 downstream tasks, which is cheaper?"
+  options={[
+    { text: "From scratch — 20 units beats 42 units; the fixed cost hasn't been spread over enough tasks yet", correct: true },
+    { text: "The foundation model — fixed costs are always worth it" },
+    { text: "They tie exactly at 2 tasks" },
+    { text: "Impossible to say without the parameter counts" }
+  ]}
+  explanation="From scratch: 10 × 2 = 20. Foundation: 40 + 1 × 2 = 42. At N = 2 the big pretraining toll hasn't been amortized, so from-scratch wins. The foundation model only pulls ahead once N is large enough — that crossover is the whole point."
+/>
+
+**The analogy.** Amortization is the logic of a season pass. A single lift ticket is cheap; a season pass costs a fortune up front but almost nothing per day after. One weekend of skiing? Buy day tickets. Forty days? The pass is a steal. A foundation model is a season pass for ML tasks: a brutal fixed pretraining cost, then near-free entry to each new task. Whether the pass beats day tickets depends entirely on **how many days you'll ski** — i.e., how many downstream tasks you have.
+
+**Precise model.** Let $N$ be the number of downstream tasks. Split costs into two regimes:
+
+- **From scratch:** a fixed per-task training cost $c$, paid every task, with no sharing. Total cost is purely linear:
+$$C_{\text{scratch}}(N) = c\,N.$$
+- **Foundation model:** a one-time pretraining cost $P$, paid *once* regardless of $N$, plus a small marginal adaptation cost $a$ per task:
+$$C_{\text{found}}(N) = P + a\,N.$$
+
+The foundation line starts high (you owe $P$ before task one) but climbs slowly (slope $a \ll c$). The from-scratch line starts at zero but climbs steeply (slope $c$). Two lines, different slopes and intercepts — they **cross**.
+
+**Solving for the crossover.** The foundation model wins when $C_{\text{found}}(N) < C_{\text{scratch}}(N)$:
+$$P + aN < cN \quad\Longrightarrow\quad N > \frac{P}{c - a}.$$
+
+**Worked example — show the arithmetic.** Use the illustrative units $c = 10$, $P = 40$, $a = 1$.
+
+- From scratch over $N$ tasks: $C_{\text{scratch}}(N) = 10N$.
+- Foundation over $N$ tasks: $C_{\text{found}}(N) = 40 + N$.
+
+Set them equal to find break-even: $10N = 40 + N \Rightarrow 9N = 40 \Rightarrow N = 40/9 \approx 4.44$. Since you can't have a fractional task, the foundation model becomes cheaper at $N = 5$ and beyond. Let's tabulate to make the crossover concrete:
+
+| Tasks $N$ | From scratch ($10N$) | Foundation ($40+N$) | Cheaper |
+|---|---|---|---|
+| 1 | 10 | 41 | From scratch |
+| 3 | 30 | 43 | From scratch |
+| 4 | 40 | 44 | From scratch |
+| 5 | 50 | 45 | **Foundation** |
+| 10 | 100 | 50 | **Foundation** |
+| 20 | 200 | 60 | **Foundation** |
+
+At $N = 20$ the foundation model covers all twenty tasks for 60 units while the from-scratch route burns 200 — more than 3× cheaper, and the gap widens forever after. Drag the slider below and watch the bars trade places exactly at the crossover.
+
+<PretrainFinetuneTimeline client:visible caption="Sweep the number of downstream tasks N from 1 to 20. The from-scratch route (10 units/task) is a straight line through the origin — no work is shared, so the bill is purely linear. The foundation model pays a big fixed pretraining toll (40 units) before task one, then adds only 1 unit per task, so its line starts high but barely rises. The two cross near N≈5: below it the fixed cost hasn't been amortized and from-scratch is cheaper; beyond it the foundation model wins and keeps winning. The entire payoff hinges on one assumption — that the pretrained representation actually TRANSFERS to each new task." />
+
+<Callout variant="warning" title="Amortization is an accounting trick, not a guarantee of quality">
+The math above only counts *cost*. It silently assumes the cheaply-adapted model is *as good* as the from-scratch one — that the season pass gets you onto the same slopes. If transfer is poor, you've spent 40 units to pretrain and then 1 unit per task to produce models that are *worse* than the 10-unit bespoke ones. Cheap and good are different axes. The crossover chart proves the foundation route is cheaper at scale; it says nothing about whether the cheap models actually work. Hold that thought — it's the whole tension of this course.
+</Callout>
+
+### When to use it
+
+The amortization bet is worth making when **$N$ is large and the per-task adaptation genuinely produces a competitive model** — many related tasks, cheap transfer, shared structure. It's a bad bet when $N$ is tiny (you never reach the crossover) or when transfer is so weak that the adapted models underperform bespoke ones (you reach the crossover on cost but lose on quality). Markets, we'll see, threaten *both* conditions at once.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "From-scratch cost C(N) = cN", definition: "A straight line through the origin — every task paid in full, nothing shared" },
+    { term: "Foundation cost C(N) = P + aN", definition: "A big fixed pretraining intercept plus a tiny per-task slope" },
+    { term: "Crossover N > P/(c−a)", definition: "The task count beyond which the foundation model is cheaper" },
+    { term: "Amortization", definition: "Spreading one large fixed cost across many tasks so the per-task share shrinks" }
+  ]}
+/>
+
+## Why pretrain-and-adapt conquered language, vision, and weather
+
+<MCQ
+  client:visible
+  pretest
+  question="Self-supervised pretraining (predict the next word, fill in a masked image patch) is powerful largely because it solves which practical bottleneck?"
+  options={[
+    { text: "The label bottleneck — the data supplies its own labels for free, so you can pretrain on essentially unlimited raw data", correct: true },
+    { text: "The compute bottleneck — it needs far less GPU time than supervised learning" },
+    { text: "The interpretability bottleneck — it produces fully explainable features" },
+    { text: "The latency bottleneck — it makes inference instant" }
+  ]}
+  explanation="Self-supervision turns raw, unlabeled data into a supervised problem for free: the next token IS the label, the masked patch IS the target. That removes the expensive human-labeling step and unlocks pretraining on web-scale data. It doesn't reduce compute, improve interpretability, or speed up inference."
+/>
+
+**The analogy.** Imagine learning a language by being handed every book ever written with the last word of every sentence covered up, and being asked to guess it — billions of times. You'd never pay a teacher; the text grades itself. That's **self-supervision**: the data secretly contains its own answer key. Predict the next token, and the actual next token tells you if you were right. Mask a patch of an image, and the original pixels are the answer. Suddenly "labeled data" is infinite, because every raw example *is* a labeled example.
+
+**The three ingredients that made the recipe explode.** Pretrain-and-adapt didn't win on cleverness alone. It won where three conditions all held:
+
+1. **Free labels via self-supervision.** Next-token (language), masked-patch (vision), next-state (weather) — no human annotation needed, so pretraining data is effectively unlimited.
+2. **Abundant data.** Web-scale text, billions of images, decades of gridded reanalysis weather fields. The fixed pretraining cost $P$ buys a representation only if there's a mountain of data to learn it from.
+3. **Near-stationary structure.** This is the quiet hero. Grammar today works like grammar next year. A cat's edges and textures don't mutate when you switch datasets. Atmospheric physics obeys the same equations forever. Because the *data-generating process is stable*, a representation learned during pretraining still describes the world at adaptation time — so it **transfers**.
+
+**Why stationarity is the load-bearing wall.** Transfer is the entire premise of amortization: the pretrained representation only helps a new task if the new task looks like what was pretrained on. When the underlying rules don't drift, "looks like" holds. Stationarity is what lets a representation learned yesterday be valid tomorrow. Pull that wall out and the whole structure — economics included — collapses.
+
+| Domain | Data volume | Label source | Stationarity | Transfer success |
+|---|---|---|---|---|
+| Language | Web-scale text | Next token (self-supervised) | High — grammar/semantics drift slowly | Spectacular |
+| Vision | Billions of images | Masked patch / augmentation | High — object structure stable | Spectacular |
+| Weather | Decades of reanalysis grids | Next atmospheric state | High — fixed physics | Strong and growing |
+| **Markets** | Modest, overlapping | Next return (self-supervised) | **Low — the process drifts** | **The open question** |
+
+Notice the first three rows share all three ingredients, and the fourth — markets — fails on the one that matters most. That single red cell is what the rest of this course is about.
+
+<Callout variant="warning" title="Free labels do not mean free signal">
+Self-supervision hands you labels for free, but only as much *signal* as the data contains. Next-token prediction on text works because text is dense with learnable structure. "Predict the next return" also gives free labels — but if the next return is mostly unforecastable noise (efficient markets, low signal-to-noise), you've cheaply generated a billion training examples for a problem that's largely unlearnable. Free labels are necessary, not sufficient. The bottleneck moves from *labeling* to *whether there's anything to learn*.
+</Callout>
+
+### When to use it
+
+Reach for self-supervised pretrain-and-adapt when **all three ingredients are present**: free labels, abundant data, and a stable generating process so the representation transfers. Miss any one and the recipe weakens. Miss stationarity in particular and the economics still *look* attractive (the cost crossover is real) while the quality quietly evaporates (the transfer fails) — the most dangerous failure mode, because the spreadsheet says yes while the out-of-sample results say no.
+
+<Categorize
+  client:visible
+  question="Sort each item under the ingredient of the pretrain-and-adapt recipe it represents."
+  buckets={["Free labels (self-supervision)", "Abundant data", "Stationarity / transfer"]}
+  items={[
+    { text: "The next token in a sentence acts as its own training target", bucket: "Free labels (self-supervision)" },
+    { text: "Masking an image patch and predicting the original pixels", bucket: "Free labels (self-supervision)" },
+    { text: "Decades of web-scale text or billions of images to pretrain on", bucket: "Abundant data" },
+    { text: "Grammar and object structure barely drift between pretraining and use", bucket: "Stationarity / transfer" },
+    { text: "Atmospheric physics obeys the same equations year after year", bucket: "Stationarity / transfer" }
+  ]}
+  explanation="Self-supervision supplies labels (next token, masked patch); web/image/reanalysis corpora supply volume; and a stable generating process is what lets the learned representation transfer to new tasks. All three held for language, vision and weather."
+/>
+
+## The adaptation spectrum (a preview)
+
+<MCQ
+  client:visible
+  pretest
+  question="You have a pretrained foundation model and a brand-new task with ZERO labeled examples for it. Which adaptation mode is even possible?"
+  options={[
+    { text: "Zero-shot — apply the pretrained model directly, with no task-specific examples", correct: true },
+    { text: "Full fine-tuning — you must always retrain all weights first" },
+    { text: "None — adaptation is impossible without labels" },
+    { text: "Few-shot only — you need at least a handful of labeled examples" }
+  ]}
+  explanation="Zero-shot uses the pretrained model as-is, no task examples required — that's the headline trick. Few-shot needs a handful of examples; full fine-tuning needs enough to update many weights without overfitting."
+/>
+
+Once you have a pretrained model, "adapt it to a task" is a spectrum, not a single move. Three landmarks, one sentence each (lesson 3, *Zero-Shot, Few-Shot & Scaling Laws*, goes deep on all of them):
+
+- **Zero-shot** — run the pretrained model on the new task with *no* task-specific examples at all; you lean entirely on what pretraining already learned. Cheapest, most demanding of transfer.
+- **Few-shot** — show the model a *handful* of labeled examples (in-context or via light tuning) to nudge it toward the task. A middle ground.
+- **Full fine-tuning** — update the model's weights on a task-specific dataset, specializing it the most but risking overfitting on small, noisy financial data.
+
+The further left you sit (zero-shot), the more you're betting on raw transfer; the further right (full fine-tune), the more task data you need and the more you risk the data-hunger problem from the prior course. The adaptation cost $a$ in our economics grows as you move right.
+
+<FillBlank
+  client:visible
+  question="Fill in the adaptation mode."
+  text="Applying a pretrained model to a new task with no task-specific examples at all is called {{zero-shot|few-shot|full fine-tuning}} adaptation, and it leans entirely on what pretraining already learned."
+  explanation="Zero-shot uses the model as-is. Few-shot supplies a handful of examples; full fine-tuning updates the weights on a task dataset."
+/>
+
+## The central tension with markets
+
+<MCQ
+  client:visible
+  pretest
+  question="Amortization (pay P once, adapt cheaply to many tasks) pays off ONLY if which condition holds?"
+  options={[
+    { text: "The pretrained representation transfers — i.e., the target resembles the pretraining distribution", correct: true },
+    { text: "The pretraining cost P is below some fixed dollar threshold" },
+    { text: "The downstream tasks are all classification, not regression" },
+    { text: "The foundation model has more parameters than any from-scratch alternative" }
+  ]}
+  explanation="The cost crossover is real regardless, but the BENEFIT only materializes if the learned representation actually transfers to each new task — which requires the target to resemble the pretraining distribution. That resemblance is exactly what markets threaten."
+/>
+
+Here's where the bet meets its toughest table. Amortization buys you cheap models; **it only buys you cheap *good* models if the representation transfers**, and transfer needs the target task to resemble the pretraining distribution. Markets attack that resemblance from three directions at once.
+
+**1. Non-stationarity — the rules drift.** The data-generating process of markets is not fixed. Volatility regimes shift, correlations break in crises, central-bank policy rewrites the playbook, market structure evolves (decimalization, high-frequency trading, new venues). A representation learned on 2010–2015 may describe a market that no longer exists by 2026. Unlike grammar or physics, the thing you pretrained on *moved*.
+
+**2. Adversarial reflexivity — your edge decays as others find it.** Finance is the one domain where *using* a pattern *destroys* it. If a signal genuinely predicts returns, traders pile in, push prices, and arbitrage the edge away. This is efficient-market pressure made concrete: the act of exploiting structure feeds back and erases it. A cat does not learn to hide its edges because a vision model got good at finding them; a market absolutely learns to hide its alpha because everyone's model got good at finding it.
+
+**Worked example — an edge crowding to death.** Suppose a signal earns a gross excess return of $r_0 = 8\%$ per year when only you trade it. As capital crowds in, the edge decays geometrically — say it shrinks by a factor of $0.7$ each year as competitors discover it:
+$$r_t = r_0 \cdot 0.7^{\,t}.$$
+Then year by year: $r_0 = 8.0\%$, $r_1 = 8 \times 0.7 = 5.6\%$, $r_2 = 8 \times 0.49 = 3.92\%$, $r_3 = 8 \times 0.343 = 2.74\%$, $r_4 = 8 \times 0.2401 = 1.92\%$. Now subtract a realistic all-in trading cost of, say, $2\%$ per year. The *net* edge is $r_t - 2\%$: it's $+6.0\%$ in year 0, but by year 4 it's $1.92\% - 2\% = -0.08\%$ — **negative**. The signal didn't just fade; continuing to trade it now *loses* money. A foundation model that learned this pattern during pretraining will keep confidently emitting it long after the market has arbitraged it into a cost-bleeding liability. The pattern was real *in the pretraining window* and worthless — even harmful — by deployment.
+
+**3. Brutally low signal-to-noise.** Even where structure exists, it's buried. Daily returns are dominated by unforecastable noise; the predictable component is a sliver. A representation pretrained to "predict the next return" is mostly fitting noise, because noise is most of what's there. This is the data-hunger and low-SNR problem from the prior deep-learning course, inherited wholesale.
+
+<Callout variant="warning" title="A foundation model's confidence is not calibrated to an adversarial market">
+This is the trap that sinks practitioners. A model's confidence reflects how consistent a pattern was *in its training distribution*, not how *durable* that pattern is against an adversary actively trying to erase it. In language, a confident next-token prediction is usually right because grammar isn't fighting back. In markets, the patterns the model is *most* confident about are often the most crowded, most arbitraged, and most likely to have already decayed — confidence and durability can be *inversely* related. Never read a foundation model's certainty about a market as evidence the edge will survive contact with other traders. The market is the one domain where the thing you're predicting reads your prediction and adjusts.
+</Callout>
+
+So the bet's geometry is clean and its premise is precisely what markets break. The cost lines still cross — pretrain-and-adapt is genuinely cheaper at scale. But "cheaper" only becomes "better" through transfer, and transfer needs a stable, non-adversarial, signal-rich target. Markets are non-stationary, adversarial, and low-SNR. That's not a reason to abandon the bet — it's the reason this course exists: to find where the bet *does* pay (it sometimes does) and to evaluate it honestly enough that we don't fool ourselves.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">If the cost crossover is genuinely real, why isn't "it's cheaper at scale" enough to justify foundation models for markets?</summary>
+
+**Answer.** Because the crossover only proves the foundation route is *cheaper*, and cheap is not the goal — *profitable* is. The amortization math assumes the cheaply-adapted models are as good as bespoke ones, which is true only when the pretrained representation transfers. In language, vision, and weather it transfers because the generating process is stable, so cheaper genuinely means equally-good-for-less. In markets the process is non-stationary, adversarial, and low-SNR, so transfer is in doubt: you can hit the cost crossover (spend less) while the adapted models are *worse* than from-scratch ones, or worse than just not trading. The spreadsheet says yes on cost while the out-of-sample P&L says no on quality. That gap — cheap but possibly not good — is the entire bet, and why honest evaluation (lesson 6) matters more here than anywhere else.
+
+</details>
+</Reveal>
+
+### When the pretrain-and-adapt bet is worth making vs. not
+
+It comes down to a clean trade-off between **task count + shared structure** (which favor the bet) and **non-stationarity + adversarial decay + low SNR** (which sink it):
+
+| Favors the bet | Sinks the bet |
+|---|---|
+| Many related downstream tasks (large $N$) | A single, one-off target |
+| Cheap, abundant pretraining data | Scarce, overlapping, regime-mixed data |
+| Stable generating process (transfer holds) | Non-stationary process (representation goes stale) |
+| Non-adversarial target | Reflexive market that arbitrages your edge away |
+| Decent signal-to-noise | Brutally low SNR (mostly noise) |
+
+**Worth making** when you have many related tasks that share structure and data is cheap — e.g., forecasting *many* benchmark time series at once, where lots of series share seasonality and trend dynamics (precisely where TimesFM, Chronos, Moirai and Lag-Llama in lesson 2 actually shine). **Doubtful** when the target is a single, heavily-arbitraged, non-stationary return series and you're betting the whole edge on a representation learned from a moving, adversarial past. The honest answer is "it depends, and you must measure it without fooling yourself" — which is why lessons 5 (leakage) and 6 (evaluation) exist.
+
+<Categorize
+  client:visible
+  question="Sort each market property under the mechanism by which it threatens the pretrain-and-adapt bet."
+  buckets={["Non-stationarity", "Adversarial reflexivity", "Low signal-to-noise"]}
+  items={[
+    { text: "Correlations that held for years break apart in a crisis", bucket: "Non-stationarity" },
+    { text: "A pattern from 2012 describes a market structure that no longer exists", bucket: "Non-stationarity" },
+    { text: "A profitable signal decays as capital crowds in to exploit it", bucket: "Adversarial reflexivity" },
+    { text: "The act of trading an edge pushes prices and erases the edge", bucket: "Adversarial reflexivity" },
+    { text: "Daily returns are mostly unforecastable noise around a tiny predictable sliver", bucket: "Low signal-to-noise" }
+  ]}
+  explanation="Drifting/breaking structure is non-stationarity; edges decaying because others exploit them is adversarial reflexivity; a tiny predictable component buried in noise is low SNR. All three attack the 'representation transfers' premise that amortization needs."
+/>
+
+## Recap
+
+<MindMap
+  client:visible
+  title="The pretrain-and-adapt bet"
+  caption="Pretrain once on broad data, adapt cheaply to many tasks — the economics are clean, but the payoff hinges on transfer, and markets break exactly that assumption."
+  root={{
+    label: "Pretrain-and-adapt bet",
+    children: [
+      {
+        label: "What a foundation model is",
+        children: [
+          { label: "Broad pretraining at scale" },
+          { label: "Adapt to many downstream tasks" },
+          { label: "Bommasani et al., Stanford 2021" },
+          { label: "Not a synonym for 'large' or 'LLM'" }
+        ]
+      },
+      {
+        label: "Two-phase economics",
+        children: [
+          { label: "From scratch: cost = cN (linear)" },
+          { label: "Foundation: cost = P + aN" },
+          { label: "Crossover N > P/(c−a)" },
+          { label: "Worked: 10N = 40+N → N≈5" },
+          { label: "Amortization = cheap, not auto-good" }
+        ]
+      },
+      {
+        label: "Why it conquered LLM/vision/weather",
+        children: [
+          { label: "Free labels (self-supervision)" },
+          { label: "Abundant data" },
+          { label: "Near-stationary → transfer holds" }
+        ]
+      },
+      {
+        label: "Adaptation spectrum (lesson 3)",
+        children: [
+          { label: "Zero-shot: no task examples" },
+          { label: "Few-shot: a handful" },
+          { label: "Full fine-tune: update weights" }
+        ]
+      },
+      {
+        label: "Central tension with markets",
+        children: [
+          { label: "Non-stationary: process drifts" },
+          { label: "Adversarial: edge decays as others find it" },
+          { label: "Low SNR: mostly noise" },
+          { label: "Confidence ≠ durability" }
+        ]
+      }
+    ]
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="The pretrain-and-adapt bet — check yourself"
+  questions={[
+    {
+      question: "Which is the defining characteristic of a foundation model, per Bommasani et al. (2021)?",
+      options: [
+        { text: "Trained on broad data at scale, then adaptable to a wide range of downstream tasks", correct: true },
+        { text: "Has at least one billion parameters" },
+        { text: "Is always a large language model" },
+        { text: "Guarantees higher accuracy than any from-scratch model" }
+      ],
+      explanation: "The definition is about the recipe — broad pretraining, then adaptation to many tasks — not parameter count, modality, or any accuracy guarantee."
+    },
+    {
+      question: "From-scratch costs 10 units/task; a foundation model costs 30 units to pretrain plus 1 unit/task to adapt. At how many tasks does the foundation model first become cheaper?",
+      options: [
+        { text: "At N = 4 (30 + 4 = 34 beats 40)", correct: true },
+        { text: "At N = 3 (they tie)" },
+        { text: "At N = 10" },
+        { text: "Never — from scratch is always cheaper" }
+      ],
+      explanation: "Solve 10N = 30 + N → 9N = 30 → N ≈ 3.33, so the foundation model wins from N = 4: 30 + 4 = 34 vs 10 × 4 = 40."
+    },
+    {
+      question: "Which conditions made pretrain-and-adapt succeed in language, vision, and weather?",
+      allowMultiple: true,
+      options: [
+        { text: "Self-supervision supplies labels for free (next token, masked patch)", correct: true },
+        { text: "Abundant pretraining data", correct: true },
+        { text: "A near-stationary generating process so representations transfer", correct: true },
+        { text: "An adversarial environment that actively erases learned patterns" }
+      ],
+      explanation: "Free labels, abundant data, and stationarity all held — that's why transfer worked. Adversarial erasure is a market problem, the opposite of what helped those domains."
+    },
+    {
+      question: "A signal earns 8% gross when only you trade it but decays by ×0.7 each year as others crowd in; all-in costs are 2%/year. Roughly when does the NET edge turn negative?",
+      options: [
+        { text: "Around year 4, when 8 × 0.7⁴ ≈ 1.92% falls below the 2% cost", correct: true },
+        { text: "Never — geometric decay never reaches zero" },
+        { text: "Immediately in year 0" },
+        { text: "Only after about 20 years" }
+      ],
+      explanation: "8 × 0.7⁴ ≈ 1.92%, and 1.92% − 2% ≈ −0.08%. The gross edge stays positive forever in theory, but net of costs it goes negative around year 4 as crowding erodes it. This is adversarial reflexivity in numbers."
+    },
+    {
+      question: "Why is a foundation model's confidence dangerous to trust in markets specifically?",
+      options: [
+        { text: "Confidence reflects consistency in the training distribution, not durability against an adversary actively erasing the pattern", correct: true },
+        { text: "Foundation models cannot output confidence scores at all" },
+        { text: "Markets are perfectly stationary, so confidence is always right" },
+        { text: "Confidence is only valid for classification, never regression" }
+      ],
+      explanation: "A confident prediction means the pattern was consistent in training. In an adversarial, non-stationary market the most confident (most crowded) patterns are often the most arbitraged and decayed — confidence and durability can be inversely related."
+    },
+    {
+      question: "The cost crossover proves a foundation model is cheaper at scale. Why is that NOT sufficient justification for using one on markets?",
+      options: [
+        { text: "Cheaper isn't better — the payoff also requires the representation to transfer, which markets' non-stationarity, reflexivity, and low SNR threaten", correct: true },
+        { text: "The crossover math is wrong for time series" },
+        { text: "Foundation models are always more expensive than from-scratch on markets" },
+        { text: "Cost is the only thing that ever matters in trading" }
+      ],
+      explanation: "Amortization proves cost-cheapness assuming the adapted models are as good as bespoke ones — which needs transfer. Markets break transfer, so you can be cheaper yet worse. That gap is the whole bet, and why honest evaluation matters."
+    }
+  ]}
+/>

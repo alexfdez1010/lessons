@@ -1,0 +1,459 @@
+---
+title: "La evaluación honesta: ¿sobrevive algo de todo esto?"
+description: "El gran final: rearma el ratio de Sharpe deflactado y la validación cruzada purgada con embargo, comprende por qué los benchmarks de preentrenamiento casi estacionarios no se transfieren a mercados adversariales, mapea exactamente dónde el preentrenamiento ayuda de verdad (transferencia entre activos, arranque en frío, regímenes con pocos datos) frente a dónde es puro humo, y ejecuta la prueba de extremo a extremo que convierte una victoria en un benchmark en dinero real."
+topic: "es/foundation-models-for-financial-time-series"
+order: 6
+minutes: 18
+updated: 2026-06-22
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, DeflatedSharpe } from '@/components/react';
+
+Cinco lecciones después, habéis aceptado la apuesta de preentrenar-y-adaptar (lección 1), conocido los modelos fundacionales de series temporales y su comportamiento zero-shot, few-shot y de escalado (lecciones 2–3), empuñado los LLM como herramientas de investigación y fuentes de señal (lección 4) y acabáis de pasaros una lección entera aprendiendo cómo la fuga de datos puede falsear en silencio cada resultado que producís (lección 5). Ahora llega el ajuste de cuentas.
+
+Esta es la lección donde dejamos de impresionarnos con los rankings y nos hacemos la única pregunta que paga el alquiler: **¿sobrevive algo de esto al contacto con un mercado real, adversarial y no estacionario — neto de costes, deflactado por la suerte y libre de fugas?** Los modelos fundacionales son genuinamente útiles en finanzas. También son hierba gatera para los demasiado entusiastas. La diferencia entre esas dos frases es una *evaluación honesta*, y eso es lo que vamos a construir aquí, ladrillo a ladrillo, como síntesis de todo el curso.
+
+Saldemos la cuenta.
+
+## Rearmar la disciplina
+
+<MCQ
+  client:visible
+  pretest
+  question="Ejecutaste una búsqueda sobre 500 configuraciones de modelo fundacional y la mejor anotó un Sharpe in-sample de 2,8. ¿Aproximadamente qué Sharpe deberías exigir antes de creer que hay alguna ventaja real?"
+  options={[
+    { text: "Alrededor de 3,5 — el listón de la suerte para el mejor de 500 ensayos escala con √(2 ln N), y 2,8 no lo supera", correct: true },
+    { text: "Alrededor de 0 — cualquier Sharpe positivo es evidencia de ventaja una vez has probado suficientes modelos" },
+    { text: "Exactamente 2,8 — el mejor Sharpe observado es un estimador insesgado de la verdad" },
+    { text: "Alrededor de 1,0 — un Sharpe por encima de 1 es el umbral universal independientemente del número de ensayos" }
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  explanation="El máximo esperado del Sharpe bajo la hipótesis nula crece aproximadamente con √(2 ln N). Para N=500, √(2 ln 500) ≈ 3,5, así que un mejor-de-500 Sharpe de 2,8 queda por debajo del listón de la suerte: indistinguible del ruido. El mejor observado está sesgado al alza precisamente porque es el máximo de muchos ensayos."
+/>
+
+**La analogía.** Imagina un casino donde 500 jugadores lanzan cada uno una moneda justa 100 veces, y coronas «campeón» a quien saque más caras. El campeón parecerá dotado — quizá 65 caras de 100 — pero no tiene ninguna habilidad; es simplemente el más afortunado de 500. Si solo entrevistas al ganador, concluirás que lanzar monedas es un arte que se aprende. **Hacer backtest de un modelo fundacional a través de cientos de arquitecturas, longitudes de contexto y recetas de fine-tuning es exactamente ese casino**, y el ratio de Sharpe deflactado es el portero que pide al campeón que demuestre que es mejor que el baseline del más-afortunado-de-500.
+
+**Herramienta 1 — el ratio de Sharpe deflactado.** Heredado de *Machine Learning para Alfa*. El hecho central: si pruebas $N$ estrategias independientes que tienen todas ventaja real *cero*, el máximo esperado de sus ratios de Sharpe in-sample no es cero — crece con $N$. Una regla del pulgar útil para el listón (en unidades tipo Sharpe anualizado, cuando la dispersión de los ensayos ronda 1) es
+
+$$\text{listón}(N) \approx \sigma_{SR}\,\sqrt{2 \ln N},$$
+
+donde $\sigma_{SR}$ es la dispersión de las estimaciones de Sharpe entre ensayos. Tu **ventaja deflactada** es el mejor Sharpe observado menos este listón. Si es $\le 0$, tu «ganador» es estadísticamente indistinguible del trader-ruidoso más afortunado de la sala.
+
+**Ejemplo resuelto — deflactar una búsqueda de modelo fundacional de 500 ensayos.** Hiciste fine-tuning y backtest de $N = 500$ configuraciones (arquitecturas × ventanas de contexto × rangos de adaptador) sobre el mismo histórico de precios, con dispersión de ensayos $\sigma_{SR} \approx 1$. Calcula el listón:
+
+$$\ln 500 = 6.215, \qquad 2 \ln 500 = 12.43, \qquad \sqrt{12.43} = 3.52.$$
+
+Así que el listón de la suerte ronda **3,5**. El Sharpe in-sample de tu campeón fue $2.8$. Ventaja deflactada $= 2.8 - 3.5 = -0.7$. **Negativa.** Ese deslumbrante 2,8 está *por debajo* de lo que 500 estrategias inservibles producirían por azar — no es alfa, es el casino. Para sobrevivir, tu mejor configuración habría necesitado un Sharpe in-sample cómodamente por encima de 3,5, o habrías necesitado ejecutar *muchísimos* menos ensayos.
+
+<DeflatedSharpe
+  client:visible
+  title="Deflactar una búsqueda de arquitectura de modelo fundacional"
+  trialsLabel="Configuraciones de modelo fundacional probadas (N)"
+  observedLabel="Mejor Sharpe observado (tu configuración campeona)"
+  hurdleLabel="Listón de la suerte: máximo Sharpe esperado bajo la nula"
+  deflatedLabel="Ventaja deflactada"
+  caption="Arrastra el deslizador de ensayos hacia 500 y observa cómo la curva de acento del listón de la suerte sube hasta rondar 3,5. Fija el mejor Sharpe observado en 2,8 (un backtest llamativo típico) y la ventaja deflactada se vuelve negativa — tu configuración campeona es indistinguible del más afortunado de 500 modelos inservibles. El enorme espacio de diseño de un modelo fundacional (arquitectura × longitud de contexto × adaptador × prompt) es lo que hace explotar N, así que el listón que debes superar es brutalmente alto. Solo un Sharpe observado que supere la curva en tu N es ventaja creíble."
+/>
+
+**Herramienta 2 — validación cruzada purgada y con embargo.** Heredada del mismo kit de herramientas y reforzada por la lección 5. La validación cruzada k-fold estándar baraja las filas, lo cual es una catástrofe para las series temporales: una fila de entrenamiento de *mañana* puede sentarse junto a una fila de test de *hoy*, filtrando el futuro. El arreglo tiene dos partes:
+
+- **Purga** — descartar las observaciones de entrenamiento cuyo horizonte de etiqueta *se solape* con el conjunto de test. Si una etiqueta se construye a partir de una ventana hacia adelante (p. ej. el rendimiento de los próximos 5 días), cualquier muestra de entrenamiento cuya ventana hacia adelante alcance el periodo de test está contaminada y debe eliminarse.
+- **Embargo** — tras cada fold de test, saltarse un colchón de observaciones antes de reanudar el entrenamiento, para que la correlación serial y las características de movimiento lento no filtren información del test al siguiente bloque de entrenamiento.
+
+Para los modelos fundacionales lo que está en juego es mayor, porque el *corpus de preentrenamiento* del modelo puede contener ya tu ventana de test — una fuga que ninguna CV ingeniosa puede arreglar si no controlas el corte temporal del preentrenamiento (la advertencia central de la lección 5). La CV purgada con embargo protege la división de *fine-tuning y evaluación*; un corte limpio de preentrenamiento protege todo lo que hay debajo.
+
+<Callout variant="warning" title="Un modelo fundacional multiplica tu número de ensayos sin que te des cuenta">
+Cada perilla es un ensayo. Arquitectura (4 de ellas), longitud de contexto (5 ajustes), rango de adaptador (4), tasa de aprendizaje (5), plantilla de prompt (3) — inocentemente eso son 4×5×4×5×3 = 1.200 configuraciones, y el mejor de 1.200 tiene un listón de la suerte de √(2 ln 1200) ≈ 3,76. La gente reporta el Sharpe del ganador y se olvida discretamente de las otras 1.199. Preregistra tu espacio de diseño, registra cada variante que ejecutes y deflacta por la N *verdadera* — no por la única configuración que decidiste publicar.
+</Callout>
+
+### Cuándo usarlo
+
+Aplica ambas herramientas a *cada* evaluación de modelo fundacional, siempre — no son extras opcionales para los paranoicos. Echa mano del Sharpe deflactado en el momento en que hayas comparado más de una configuración (que es siempre), y de la CV purgada con embargo siempre que las etiquetas tengan un horizonte hacia adelante o las características estén correlacionadas serialmente (que es siempre, en los mercados). El único momento en que puedes relajar la deflación es un modelo *único y preregistrado* sin búsqueda — e incluso entonces deberías reportar cuántas ideas descartaste antes de comprometerte.
+
+<FillBlank
+  client:visible
+  question="Completa el escalado del listón."
+  text="El máximo esperado del Sharpe de N ensayos con ventaja cero crece aproximadamente con {{√(2 ln N)|N²|1/√N}}, así que probar 500 configuraciones fija un listón de la suerte cercano a 3,5 que tu mejor Sharpe observado debe superar antes de contar como ventaja."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+  explanation="El máximo esperado bajo la nula escala con √(2 ln N): crecimiento lento pero implacable. Para N=500, √(2 ln 500) ≈ 3,5. Más ensayos → listón más alto → mayor Sharpe observado requerido."
+/>
+
+## Dominios casi estacionarios frente a mercados adversariales y no estacionarios
+
+<MCQ
+  client:visible
+  pretest
+  question="Un modelo fundacional de series temporales arrasa en el ranking de previsión de demanda eléctrica y meteorología. ¿Por qué es una garantía débil de que prevea los rendimientos de acciones?"
+  options={[
+    { text: "Los rendimientos son no estacionarios, adversariales y de baja SNR — el proceso generador de datos se mueve y erosiona activamente cualquier ventaja, a diferencia del tiempo o la demanda", correct: true },
+    { text: "El tiempo y la demanda no tienen patrón alguno, así que cualquier transferencia es imposible por definición" },
+    { text: "Los rendimientos de acciones son más fáciles, así que un modelo bueno en las tareas difíciles está sobrecualificado" },
+    { text: "Los modelos fundacionales solo pueden entrenarse en un dominio, así que la transferencia entre dominios nunca funciona" }
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  explanation="La demanda eléctrica y la meteorología son casi estacionarias y no adversariales: la física subyacente no se reescribe a sí misma para fastidiar a los pronosticadores, y la relación señal-ruido es alta. Los rendimientos son lo contrario — el régimen cambia, la señal es débil y, en cuanto se conoce una ventaja, se arbitra. El dominio en un benchmark dice poco sobre el mercado."
+/>
+
+**La analogía.** Un modelo fundacional que domina la meteorología y la demanda eléctrica es como un motor de ajedrez sobrehumano contra un oponente fijo que juega la misma apertura cada vez. Los mercados son un oponente de ajedrez que *te observa*, aprende tu estrategia y cambia su juego en el instante en que empiezas a ganar. Peor aún, el propio tablero se reconstruye a mitad de partida — las piezas cambian cómo se mueven (cambios de régimen). Los benchmarks estacionarios premian memorizar un patrón estable; los mercados castigan exactamente eso, porque cualquier patrón estable se encuentra y se borra.
+
+**Tres razones por las que las victorias en benchmarks no se traducen.**
+
+1. **Cambio de distribución (no estacionariedad).** El proceso generador de datos *se mueve*. Los regímenes de volatilidad, de tipos de interés, de liquidez y las estructuras de correlación cambian todos, a veces de forma abrupta. Un modelo preentrenado en un régimen puede estar confiadamente equivocado en el siguiente. El tiempo tiene estaciones, pero no decide de repente obedecer una física distinta en 2009.
+
+2. **Reflexividad / saturación del alfa.** Una ventaja genuina es *autodestructiva*. En el momento en que se descubre y se opera a escala un patrón rentable, las operaciones mueven los precios hacia el valor justo y la ventaja se reduce hacia cero. Tu previsión cambia aquello que prevés. A la temperatura de mañana le da igual que la hayas predicho; al precio de mañana no, y a la predicción de todos los demás tampoco.
+
+3. **Relación señal-ruido (SNR).** La predictibilidad de los rendimientos diarios es *minúscula* — un $R^2$ fuera de muestra de incluso un pequeño porcentaje es excepcional, y la mayor parte de la varianza es ruido irreducible. La demanda eléctrica a las 6 de la tarde está dominada abrumadoramente por estructura determinista (hora del día, temperatura, día de la semana); el suelo de ruido es bajo. Con una señal débil y un objetivo móvil, la mismísima capacidad que ayuda a un modelo fundacional a clavar la demanda se convierte en una lacra que ajusta ruido en los rendimientos.
+
+| Propiedad | Lenguaje / tiempo / demanda | Rendimientos financieros |
+|---|---|---|
+| Estacionariedad | Alta — patrones estables persisten | Baja — los regímenes cambian, a veces abruptamente |
+| Adversarialidad | Ninguna — la naturaleza no contraataca | Alta — las ventajas conocidas se arbitran |
+| Señal-ruido | Alta — gran parte de la varianza es estructura | Brutalmente baja — sobre todo ruido irreducible |
+| Retroalimentación sobre el pronosticador | Ninguna — tu previsión no mueve el objetivo | Fuerte — tus operaciones mueven el precio que predices |
+| Efecto en un modelo preentrenado | La habilidad del benchmark se transfiere limpiamente | La habilidad del benchmark puede no transferirse en absoluto |
+
+**Ejemplo resuelto — un benchmark que miente.** Supón que un modelo fundacional anota un MASE (error absoluto escalado medio) de $0.62$ en un benchmark meteorológico, batiendo al baseline estacional-ingenuo en un 38%. Traducido ingenuamente, podrías esperar una «mejora del 38%» comparable en los rendimientos. Pero en los rendimientos diarios de renta variable el baseline estacional-ingenuo es esencialmente *cero* (los rendimientos no tienen apenas autocorrelación explotable), así que batirlo en un 38% de casi-nada sigue siendo casi-nada. Un modelo puede tener un MASE precioso en una serie estacionaria y un $R^2$ de rendimiento fuera de muestra de, digamos, $0.3\%$ — y después de costes, ese $0.3\%$ es a menudo PnL *negativo*. El benchmark y la cuenta del banco miden universos distintos.
+
+<Callout variant="warning" title="La estacionariedad es el supuesto oculto detrás de cada afirmación sobre benchmarks">
+Cuando un proveedor dice «nuestro modelo fundacional es el estado del arte en 40 benchmarks de previsión», lee la letra pequeña: esos benchmarks son abrumadoramente series casi estacionarias y no adversariales (energía, tráfico, demanda minorista, meteorología). Generalizar ese dominio a los mercados introduce de contrabando el supuesto de que los rendimientos son simplemente otra serie estacionaria. No lo son. Una victoria en un ranking es una condición casi *necesaria* para un buen modelo, nunca una condición *suficiente* para una ventaja operable.
+</Callout>
+
+### Cuándo usarlo
+
+Confía en el dominio en benchmarks como evidencia de la calidad del modelo en dominios que *se parecen al benchmark* — series casi estacionarias, de alta SNR, no adversariales. Trátalo como casi irrelevante en el momento en que tu objetivo sea la previsión de rendimientos líquidos, muy investigados y de baja SNR. Cuanto más cerca esté tu problema del extremo estacionario y no adversarial de la tabla de arriba, más vale el preentrenamiento de un modelo fundacional; cuanto más cerca del extremo adversarial y no estacionario, más debes demostrar la ventaja desde cero en tu propia prueba limpia, deflactada y consciente de los costes.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Cambio de distribución", definition: "El proceso generador de datos se mueve — los regímenes de volatilidad, tipos y correlación cambian, así que un modelo ajustado a un régimen falla en el siguiente" },
+    { term: "Reflexividad / saturación", definition: "Una ventaja conocida es autodestructiva: operarla mueve los precios hacia el valor justo y erosiona la ventaja" },
+    { term: "Baja señal-ruido", definition: "La mayor parte de la varianza de los rendimientos es ruido irreducible, así que una alta capacidad del modelo ajusta ruido en lugar de señal" },
+    { term: "Benchmark casi estacionario", definition: "Una serie de tiempo o demanda cuya estructura estable hace que la habilidad de previsión se transfiera limpiamente — a diferencia de los mercados" }
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+## Dónde ayuda de verdad el preentrenamiento
+
+<MCQ
+  client:visible
+  pretest
+  question="¿En qué situación el prior preentrenado de un modelo fundacional aporta MÁS valor sobre un modelo bien ajustado entrenado solo en la serie objetivo?"
+  options={[
+    { text: "Un activo recién cotizado con solo unas pocas semanas de histórico propio", correct: true },
+    { text: "Un gran valor de 30 años, muy líquido y muy investigado, con histórico limpio abundante" },
+    { text: "Un benchmark que ya has sobreajustado con 1.000 configuraciones" },
+    { text: "Cualquier serie, por igual — el preentrenamiento ayuda uniformemente sin importar los datos locales" }
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  explanation="El preentrenamiento te aporta más donde los datos locales son escasos: un activo nuevo con poco histórico no puede sostener un modelo local bien ajustado, así que un prior prestado llena el hueco. Donde el objetivo es rico en datos y líquido, un modelo local ya tiene todo lo que necesita y el prior aporta poco — a veces nada."
+/>
+
+**La analogía.** Un modelo fundacional preentrenado es un analista veterano que ha leído *miles* de historias de empresas. Suéltalo sobre una OPV recién salida con tres semanas de cotización y es inestimable — reconoce patrones a partir de todo lo que ha visto. Suéltalo sobre una mega-cap de 30 años que un ejército de quants ya ha diseccionado hasta la molécula, y su sabiduría general no añade casi nada que los especialistas locales no sepan ya. **El preentrenamiento es un prior, y un prior importa más exactamente cuando los datos son demasiado escasos para abrumarlo.**
+
+**Cuatro lugares donde el preentrenamiento se gana el pan.**
+
+1. **Transferencia entre activos / entre mercados.** Preentrenar en miles de series — renta variable, divisas, materias primas, tipos, en distintas geografías — permite al modelo aprender *estructura compartida*: agrupamiento de volatilidad, reversión a la media en ciertos horizontes, reacciones comunes a los shocks. Esa estructura prestada puede afinar las previsiones sobre una serie objetivo que, por sí sola, es demasiado corta para revelarla.
+
+2. **Arranque en frío.** Una nueva cotización, un ETF recién lanzado o una acción recién salida a bolsa tiene casi nada de histórico. Un modelo entrenado localmente no tiene nada que masticar; un modelo preentrenado llega con un valor por defecto sensato y se adapta a partir de unas pocas observaciones (el régimen few-shot de la lección 3).
+
+3. **Regímenes con pocos datos / ilíquidos.** Los productos nuevos (un derivado novedoso), los mercados pequeños o frontera, o los nombres poco negociados simplemente no generan suficientes observaciones limpias para ajustar un modelo local hambriento. El prior preentrenado es la diferencia entre una previsión utilizable y ruido.
+
+4. **Un baseline / prior zero-shot fuerte.** Incluso cuando *vas* a construir un modelo a medida, la previsión zero-shot del modelo fundacional es un baseline de alta calidad que batir y un prior sensato hacia el que encoger — mejor que un valor por defecto estacional-ingenuo o de paseo aleatorio (lección 3).
+
+**Ejemplo resuelto — objetivo rico en datos frente a objetivo pobre en datos.** Dos trabajos de previsión, mismo modelo fundacional:
+
+| | Objetivo RICO en datos | Objetivo POBRE en datos |
+|---|---|---|
+| Activo | Gran valor líquido de 30 años | OPV de 3 semanas |
+| Observaciones locales | ~7.500 barras diarias | ~15 barras diarias |
+| $R^2$ fuera de muestra del modelo local ajustado | 1,8% | indefinido (no se puede ajustar) |
+| $R^2$ zero-shot del fundacional | 1,6% | 0,9% |
+| $R^2$ del fundacional con fine-tuning | 1,9% | 1,1% |
+| Veredicto | El prior añade ≈ 0,1% — básicamente nada | El prior añade *todo* — la única previsión utilizable |
+
+Sobre el gran valor rico en datos, el modelo local ajustado ya extrae el 1,8%; el modelo fundacional con fine-tuning alcanza el 1,9% — una ganancia del tamaño de un error de redondeo que casi seguro se evapora tras la deflación y los costes. Sobre la OPV de 3 semanas, el modelo local *ni siquiera puede ajustarse* (15 observaciones), mientras que el prior prestado del modelo fundacional entrega un 1,1% real, aunque modesto. **El mismo modelo, veredictos opuestos — y la variable decisiva es la abundancia de datos locales, no la inteligencia del modelo.**
+
+<Callout variant="warning" title="La transferencia supone estructura compartida — verifícalo">
+La transferencia entre activos solo ayuda si la fuente y el objetivo *comparten de verdad* dinámicas. Un modelo preentrenado sobre todo en renta variable de mercados desarrollados puede arrastrar el prior equivocado a un par de divisas frontera o a un perpetuo de cripto cuya microestructura es ajena. Una estructura prestada que no encaja es peor que no tener prior — inyecta un error sistemático y confiado. Comprueba siempre que la distribución de preentrenamiento del modelo fundacional cubre plausiblemente tu objetivo antes de apoyarte en su prior.
+</Callout>
+
+### Cuándo usarlo
+
+Apóyate en el preentrenamiento cuando los datos locales sean la restricción vinculante: activos en arranque en frío, productos ilíquidos o nuevos, mercados frontera, o cualquier previsión donde tengas decenas de observaciones en lugar de miles. Trátalo como un prior por defecto fuerte y un baseline zero-shot incluso en entornos ricos en datos — pero espera que la ganancia *marginal* sobre un modelo local bien ajustado se encoja hacia cero a medida que crece tu muestra local. La regla del pulgar: **el valor de un prior prestado es inversamente proporcional a cuántos de tus propios datos limpios ya tienes.**
+
+<Categorize
+  client:visible
+  question="Clasifica cada situación de previsión según si un prior preentrenado prestado probablemente añade mucho o no añade casi nada."
+  buckets={["El prior añade mucho", "El prior añade ≈ nada"]}
+  items={[
+    { text: "Acción recién salida a bolsa con tres semanas de histórico", bucket: "El prior añade mucho" },
+    { text: "Un derivado novedoso en un mercado pequeño y nuevo", bucket: "El prior añade mucho" },
+    { text: "Un nombre de mercado frontera con datos escasos y con huecos", bucket: "El prior añade mucho" },
+    { text: "Un gran valor líquido de 30 años con histórico limpio abundante", bucket: "El prior añade ≈ nada" },
+    { text: "Un futuro de índice muy investigado con miles de barras limpias", bucket: "El prior añade ≈ nada" }
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  explanation="Un prior preentrenado importa más donde los datos locales son demasiado escasos para ajustar un buen modelo local (arranque en frío, ilíquido, frontera, productos novedosos) e importa menos donde el objetivo es rico en datos y un modelo local ajustado ya extrae la señal disponible."
+/>
+
+## Dónde es puro humo
+
+<MCQ
+  client:visible
+  pretest
+  question="¿Qué uso de un modelo fundacional de series temporales es más probable que sea puro humo — impresionante sobre el papel, inútil como estrategia?"
+  options={[
+    { text: "Prever los rendimientos diarios de un gran valor líquido y muy investigado y tratar un MASE bajo como si fuera PnL", correct: true },
+    { text: "Producir una previsión baseline zero-shot para un ETF nuevecito con poco histórico" },
+    { text: "Afinar las previsiones de volatilidad de un nombre ilíquido tomando prestada estructura entre activos" },
+    { text: "Arrancar en caliente un modelo en un mercado frontera con datos escasos" }
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  explanation="La previsión de rendimientos líquidos, muy investigados y de baja SNR es el cementerio del humo de los modelos fundacionales: cualquier ventaja genuina ya se ha competido hasta desaparecer, así que un gran error de benchmark (MASE) no se traduce en beneficio operable. Los otros tres son exactamente los regímenes de arranque en frío y pocos datos donde un prior prestado ayuda de verdad."
+/>
+
+**La analogía.** Perseguir el MASE del ranking en la previsión de rendimientos líquidos es como pulir tu marca en una carrera donde la línea de meta se teletransporta lejos de ti más rápido de lo que puedes correr. La métrica mejora; no te acercas al dinero. **Un MASE más bajo no es un PnL más alto.** El MASE premia previsiones puntuales precisas de una serie; el beneficio de trading depende del *signo y el timing* de los movimientos neto de costes, sobre un objetivo cuya ventaja ya ha sido arbitrada por miles de competidores bien financiados.
+
+**La zona de humo, con precisión.** Los modelos fundacionales se sobrevenden más cuando *todas* estas condiciones se cumplen:
+
+- **Líquido y muy investigado** — el activo lo opera todo el mundo, así que cualquier patrón persistente se ha encontrado y borrado (reflexividad/saturación máxima).
+- **Baja señal-ruido** — la predictibilidad de los rendimientos diarios/semanales es débil, así que la capacidad sobrante del modelo ajusta ruido.
+- **Métrica ≠ dinero** — la victoria reportada es una métrica de error de previsión (MASE, MAE, RMSE) presentada como si fuera rendimiento de la estrategia, sin contabilizar costes, capacidad ni deflación.
+
+En esa zona, la enorme capacidad preentrenada de un modelo fundacional no es una ventaja — es un sobredimensionado ajustador de ruido, y el número del ranking es una métrica de vanidad. La expectativa honesta es *ninguna ventaja operable*, y la carga de la prueba recae por completo sobre quien afirme lo contrario.
+
+<Callout variant="warning" title="MASE/MAE sobre rendimientos no es un backtest">
+Un modelo fundacional puede anotar un MASE mejor que un paseo aleatorio sobre los rendimientos y aun así perder dinero todos y cada uno de los días después de costes, porque (a) la mejora puede vivir enteramente en el centro no rentable de la distribución, (b) ignora los costes de transacción y la capacidad, y (c) suele estar sin deflactar por el número de ensayos detrás de ella. Nunca dejes que una métrica de error de previsión sustituya a un backtest consciente de los costes, deflactado y libre de fugas. El ranking no es el libro mayor.
+</Callout>
+
+### Cuándo usarlo
+
+¿Honestamente? En la zona de humo, *no* — al menos no como tu motor de alfa. Si estás previendo rendimientos sobre un objetivo líquido, muy investigado y de baja SNR, asume que el modelo fundacional no tiene ventaja operable hasta que una prueba completa de extremo a extremo demuestre lo contrario, y nunca reportes una mejora de MASE/MAE como si fuera un resultado de estrategia. El papel legítimo de un modelo fundacional en ese régimen es infraestructura de apoyo (un baseline, una característica, un prior), no la señal protagonista.
+
+<FillBlank
+  client:visible
+  question="Completa la señal reveladora de la zona de humo."
+  text="La señal más clara de humo de modelo fundacional es reportar un {{MASE o métrica de error de previsión|ratio de Sharpe deflactado|fuera de muestra posterior al corte}} bajo sobre rendimientos líquidos y muy investigados, y tratarlo como si fuera PnL operable, sin contabilizar costes, capacidad ni deflación."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+  explanation="Una métrica de error de previsión como el MASE mide la precisión de la previsión puntual, no el beneficio. Sobre rendimientos líquidos de baja SNR, un MASE mejor coexiste rutinariamente con PnL negativo tras costes. Tratar la métrica como dinero es la jugada característica del humo."
+/>
+
+## La prueba de extremo a extremo
+
+<MCQ
+  client:visible
+  pretest
+  question="Tu estrategia de modelo fundacional supera el listón del Sharpe deflactado en una división limpia, purgada y con embargo. ¿Está lista para operar?"
+  options={[
+    { text: "Todavía no — también debe sobrevivir a los costes de transacción, los límites de capacidad, un fuera de muestra posterior al corte libre de fugas y la paridad con el pipeline en vivo", correct: true },
+    { text: "Sí — superar el Sharpe deflactado es la última palabra sobre una estrategia" },
+    { text: "Sí — una vez que la validación cruzada está limpia, los costes y la capacidad están garantizadamente bien" },
+    { text: "No — pero solo porque deberías ejecutar más ensayos de arquitectura primero" }
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  explanation="La deflación y la CV limpia son necesarias, no suficientes. Una ventaja teórica se convierte en dinero solo después de sobrevivir a costes de transacción realistas, restricciones de capacidad (¿persiste la ventaja a tamaño?), una ventana genuinamente fuera de muestra tras el corte de preentrenamiento, y un pipeline en vivo que coincida exactamente con tu código de investigación. Cada etapa mata estrategias que parecían perfectas aguas arriba."
+/>
+
+**La analogía.** Una victoria en un benchmark es un gran ensayo general; el trading en vivo es la noche de estreno con abucheos, un escenario en movimiento y el equipo de iluminación trabajando en tu contra. Montones de estrategias que clavan el ensayo se desploman en el momento en que los costes reales, el tamaño real y el tiempo real suben al escenario. La prueba de extremo a extremo es el pase técnico completo que atrapa el desplome *antes* de que conectes capital real.
+
+**Enunciado preciso — el desafío.** Una victoria teórica o de benchmark no es dinero hasta que sobrevive, en orden, a cada una de estas:
+
+| Etapa | La pregunta que responde | Cómo mata estrategias |
+|---|---|---|
+| Costes de transacción | ¿Sobrevive la ventaja al spread, las comisiones y el slippage? | Un Sharpe bruto de 1,5 puede volverse negativo al restar costes realistas de una señal de alta rotación |
+| Capacidad | ¿Persiste la ventaja al tamaño que operarías? | Un patrón que funciona con \$1M puede desvanecerse (impacto de mercado) con \$100M |
+| Deflación | ¿Es la ventaja mayor que el listón de la suerte del mejor-de-N? | El campeón de 500 configuraciones debe superar ≈ 3,5, no solo batir cero |
+| Fuera de muestra posterior al corte libre de fugas | ¿Funciona con datos *posteriores* al corte de preentrenamiento? | Un modelo fundacional puede haber «visto» datos de test anteriores al corte; solo las barras posteriores al corte son verdaderamente fuera de muestra (lección 5) |
+| Paridad con el pipeline en vivo | ¿El código en vivo reproduce exactamente el resultado de investigación? | Diferencias sutiles (proveedor de datos, timing, supuestos de ejecución) borran rutinariamente la ventaja |
+
+Falla cualquiera de ellas y la «ventaja» es un artefacto. Fíjate en que el orden no es arbitrario: las comprobaciones de deflación y fuga son *baratas* y deberían condicionar el trabajo *caro* en vivo — no pases tres meses en un pipeline de producción para una estrategia que nunca superó el listón de la suerte.
+
+**Ejemplo resuelto — una estrategia muere etapa a etapa.** Una señal de modelo fundacional parece espectacular:
+
+- **Sharpe bruto in-sample: 2,8.** Impresionante.
+- **Costes:** la rotación es alta; spread + comisiones + slippage realistas restan aproximadamente $1.0$ del Sharpe → **1,8 neto.** Aún bueno.
+- **Deflación:** fue la mejor de $N = 500$ configuraciones, listón $\approx 3.5$. Ventaja deflactada $= 1.8 - 3.5 = -1.7$. **Muere aquí** — pero supón por el argumento que lo hubiera superado, digamos un modelo único preregistrado con Sharpe neto 1,8 y listón 0,5.
+- **Fuera de muestra posterior al corte:** reejecuta solo sobre barras *posteriores* al corte de preentrenamiento. El Sharpe cae a **0,6** — gran parte de la ventaja aparente era contaminación anterior al corte (lección 5).
+- **Capacidad:** al tamaño objetivo, el impacto de mercado lo recorta a **0,3.**
+- **Paridad con el pipeline en vivo:** un desajuste de timing de 1 barra entre investigación y producción borra el resto → **≈ 0.**
+
+Un 2,8 que se convirtió en un 0. Cada etapa fue honesta; la estrategia simplemente nunca tuvo una ventaja real, operable, deflactada y libre de fugas. *Este es el resultado normal*, y una evaluación que no ejecute el desafío completo habría enviado un perdedor de dinero con diapositivas de aspecto estupendo.
+
+<Callout variant="success" title="Todo el curso, en una prueba">
+Aquí es donde converge todo lo que has aprendido. La *apuesta* de preentrenar-y-adaptar (lección 1) solo paga cuando el prior encaja en un objetivo pobre en datos. Los modelos fundacionales, zero-shot y las leyes de escalado (lecciones 2–3) te dan un baseline potente — pero un baseline, no una garantía. Los LLM como herramientas de investigación (lección 4) te ayudan a generar señales y razonar sobre ellas, lo cual solo multiplica tu número de ensayos. Y el campo de minas de la fuga de datos (lección 5) es por qué el «fuera de muestra posterior al corte» es innegociable. La evaluación honesta — deflactar por la suerte, purgar y poner embargo, descontar costes y capacidad, probar solo datos posteriores al corte, y exigir paridad con el pipeline en vivo — es la única disciplina que convierte toda esa maquinaria en dinero real o en un honesto «no». Domínala, y podrás usar modelos fundacionales sin que ellos te usen a ti.
+</Callout>
+
+### La decisión: el preentrenamiento probablemente ayuda frente a probablemente humo
+
+<Categorize
+  client:visible
+  question="Clasifica cada escenario concreto según si el preentrenamiento de un modelo fundacional probablemente ayuda de verdad o es probablemente humo."
+  buckets={["El preentrenamiento probablemente ayuda", "Probablemente humo"]}
+  items={[
+    { text: "Previsión de volatilidad en arranque en frío para una cotización de 2 semanas", bucket: "El preentrenamiento probablemente ayuda" },
+    { text: "Un prior entre activos afinando previsiones sobre un nombre frontera ilíquido", bucket: "El preentrenamiento probablemente ayuda" },
+    { text: "Un baseline zero-shot fuerte para un derivado nuevecito sin histórico", bucket: "El preentrenamiento probablemente ayuda" },
+    { text: "Señal de rendimiento diario sobre una mega-cap líquida, juzgada solo por MASE", bucket: "Probablemente humo" },
+    { text: "Sharpe del mejor-de-1.000-configuraciones sobre un índice muy investigado, sin deflactar", bucket: "Probablemente humo" },
+    { text: "Una victoria de MASE en un ranking reportada como si fuera un PnL de backtest", bucket: "Probablemente humo" }
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  explanation="El preentrenamiento ayuda donde los datos locales son escasos (arranque en frío, ilíquido, frontera, productos nuevecitos) y un prior prestado llena un hueco real. Es humo donde el objetivo es líquido, muy investigado y de baja SNR, donde cualquier ventaja se arbitra y una métrica de error de previsión se hace pasar por beneficio — especialmente con una evaluación sin deflactar y propensa a fugas."
+/>
+
+**La síntesis — y el puente hacia tu examen final.** Los modelos fundacionales no son ni un milagro ni un fraude; son un *prior*, y un prior es exactamente tan valioso como el hueco que llena. Donde tus propios datos limpios son escasos — arranque en frío, ilíquido, frontera, productos nuevos — esa estructura prestada es palanca genuina. Donde tus datos son abundantes y tu objetivo es líquido, de baja SNR y picoteado por un ejército de competidores, el prior no añade casi nada y el ranking es una métrica de vanidad. El instrumento que distingue ambos no es el entusiasmo — es la evaluación honesta: **deflacta el Sharpe del mejor-de-N, purga y pon embargo a tus folds, resta los costes y la capacidad reales, prueba solo sobre barras fuera de muestra posteriores al corte, y exige que tu pipeline en vivo reproduzca exactamente el resultado de investigación.** Lleva esa disciplina al examen final, donde tendrás que aplicar cada pieza de ella — la apuesta, los modelos, el escalado, las herramientas de LLM, las trampas de fuga y este desafío — para decidir qué sobrevive y qué es un espejismo. Ahora sabes cómo usar un modelo fundacional en los mercados sin dejar que él te use a ti. Ve a demostrarlo.
+
+## Recapitulación
+
+<MindMap
+  client:visible
+  title="La evaluación honesta de los modelos fundacionales en los mercados"
+  caption="Una victoria en un benchmark no es dinero. Deflacta por la suerte, purga y pon embargo, descuenta costes y capacidad, prueba posterior al corte, exige paridad en vivo — y ten claro que un prior prestado ayuda más exactamente donde tus propios datos son escasos."
+  root={{
+    label: "La evaluación honesta",
+    children: [
+      {
+        label: "Herramientas rearmadas",
+        children: [
+          { label: "Sharpe deflactado: listón ≈ √(2 ln N)" },
+          { label: "N=500 → listón ≈ 3,5" },
+          { label: "Purga: descartar filas con etiquetas solapadas" },
+          { label: "Embargo: colchón tras cada fold de test" }
+        ]
+      },
+      {
+        label: "Por qué los benchmarks no se transfieren",
+        children: [
+          { label: "Cambio de distribución (los regímenes se mueven)" },
+          { label: "Reflexividad / saturación (ventaja arbitrada)" },
+          { label: "Baja SNR (la capacidad ajusta ruido)" },
+          { label: "Dominios estacionarios ≠ mercados" }
+        ]
+      },
+      {
+        label: "Dónde ayuda el preentrenamiento",
+        children: [
+          { label: "Transferencia entre activos / entre mercados" },
+          { label: "Arranque en frío (activo nuevo, poco histórico)" },
+          { label: "Regímenes con pocos datos / ilíquidos" },
+          { label: "Baseline / prior zero-shot fuerte" }
+        ]
+      },
+      {
+        label: "Dónde es humo",
+        children: [
+          { label: "Rendimientos líquidos y muy investigados" },
+          { label: "Baja SNR, ventaja ya competida" },
+          { label: "Perseguir el MASE como si fuera PnL" }
+        ]
+      },
+      {
+        label: "Desafío de extremo a extremo",
+        children: [
+          { label: "Costes de transacción" },
+          { label: "Capacidad a tamaño" },
+          { label: "Deflación (mejor-de-N)" },
+          { label: "Fuera de muestra posterior al corte" },
+          { label: "Paridad con el pipeline en vivo" }
+        ]
+      }
+    ]
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="La evaluación honesta — comprobación de síntesis final"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  nextLabel="Siguiente pregunta"
+  backLabel="Atrás"
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  seeResultsLabel="Ver resultados"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  gateLabel="Comprueba tu respuesta para continuar."
+  questions={[
+    {
+      question: "Buscaste sobre N = 1.000 configuraciones de modelo fundacional y la mejor anotó un Sharpe in-sample de 3,0 (dispersión de ensayos ≈ 1). ¿Aproximadamente cuál es el listón de la suerte, y lo supera el campeón?",
+      options: [
+        { text: "Listón ≈ √(2 ln 1000) ≈ 3,7; 3,0 NO lo supera, así que es indistinguible de la suerte", correct: true },
+        { text: "Listón ≈ 1,0; 3,0 lo supera con facilidad, así que es claramente ventaja real" },
+        { text: "Listón ≈ 0; cualquier Sharpe positivo cuenta una vez que N es grande" },
+        { text: "Listón ≈ 7,4; imposible de superar jamás, así que la prueba no tiene sentido" }
+      ],
+      explanation: "ln 1000 ≈ 6,91, así que √(2 × 6,91) = √13,8 ≈ 3,72. El 3,0 del campeón está por debajo del listón: el mejor de 1.000 configuraciones inservibles parecería más o menos así de bueno por azar. Ventaja deflactada ≈ 3,0 − 3,7 = −0,7, indistinguible de la suerte."
+    },
+    {
+      question: "¿Qué propiedades de los rendimientos financieros explican por qué el dominio en benchmarks de tiempo/demanda no garantiza previsiones de rendimiento operables? (Selecciona todas las que apliquen.)",
+      allowMultiple: true,
+      options: [
+        { text: "No estacionariedad: el proceso generador de datos cambia entre regímenes", correct: true },
+        { text: "Reflexividad/saturación: una ventaja conocida se arbitra hacia cero", correct: true },
+        { text: "Baja señal-ruido: la mayor parte de la varianza del rendimiento es ruido irreducible", correct: true },
+        { text: "Los rendimientos no tienen patrón alguno, así que ningún modelo puede jamás batir a una moneda al aire" }
+      ],
+      explanation: "La no estacionariedad, la reflexividad y la baja SNR socavan todas la transferencia desde dominios estacionarios. Los rendimientos no carecen de patrón — existe estructura débil y fugaz — pero es adversarial y se arbitra con facilidad, que es exactamente por qué la habilidad del benchmark no se traduce."
+    },
+    {
+      question: "Mismo modelo fundacional, dos objetivos: un gran valor líquido de 30 años (R² local ajustado = 1,8%, R² del fundacional con fine-tuning = 1,9%) y una OPV de 3 semanas (el modelo local no se puede ajustar, R² del fundacional = 1,1%). ¿Cuál es la lectura correcta?",
+      options: [
+        { text: "El prior no añade casi nada en el objetivo rico en datos pero es la única previsión utilizable en el pobre en datos — el valor escala con la escasez de datos", correct: true },
+        { text: "El modelo fundacional es uniformemente mejor, ya que 1,9% > 1,8% y 1,1% > 0%", correct: true },
+        { text: "El modelo fundacional es inútil porque el 0,1% está dentro del ruido en el gran valor" },
+        { text: "Los modelos locales siempre baten a los fundacionales sin importar los datos" }
+      ],
+      explanation: "La variable decisiva es la abundancia de datos locales. En el gran valor rico en datos, la ganancia del 0,1% es un error de redondeo que probablemente muere tras la deflación y los costes; en la OPV pobre en datos, el prior prestado es la única previsión disponible. El valor de un prior prestado es inversamente proporcional a cuántos datos locales limpios ya tienes."
+    },
+    {
+      question: "Un modelo fundacional bate a un paseo aleatorio sobre los rendimientos diarios de un gran valor líquido en MASE. ¿Por qué podría ser puro humo?",
+      options: [
+        { text: "El MASE mide el error de previsión puntual, no el beneficio; sobre rendimientos líquidos de baja SNR, un MASE mejor coexiste rutinariamente con PnL negativo tras costes, y cualquier ventaja ya está saturada", correct: true },
+        { text: "El MASE no se puede calcular para redes neuronales" },
+        { text: "Los paseos aleatorios son imbatibles, así que cualquier mejora es un bug" },
+        { text: "Un MASE más bajo siempre implica un ratio de Sharpe más alto" }
+      ],
+      explanation: "El MASE premia previsiones puntuales precisas, pero el beneficio de trading depende del signo, el timing y los costes sobre un objetivo cuya ventaja ha sido arbitrada. El ranking no es el libro mayor: una métrica de error de previsión no es un backtest consciente de los costes, deflactado y libre de fugas."
+    },
+    {
+      question: "Una señal muestra un Sharpe bruto in-sample de 2,8. Tras costes realistas es 1,8; sobre una ventana fuera de muestra POSTERIOR AL CORTE libre de fugas cae a 0,6; al tamaño objetivo (capacidad) es 0,3; y un desajuste de timing en el pipeline en vivo lo lleva a ≈ 0. ¿Cuál es la lección?",
+      options: [
+        { text: "Una victoria en un benchmark no es dinero — debe sobrevivir a costes, capacidad, deflación, fuera de muestra posterior al corte y paridad con el pipeline en vivo; cada etapa puede borrar la ventaja", correct: true },
+        { text: "La estrategia está bien; solo el pipeline en vivo estaba roto y se puede ignorar" },
+        { text: "El Sharpe bruto in-sample es el único número que importa" },
+        { text: "Las pruebas posteriores al corte son opcionales una vez contabilizados los costes" }
+      ],
+      explanation: "Cada etapa del desafío de extremo a extremo puede matar una estrategia que parecía perfecta aguas arriba. Las comprobaciones de deflación y fuga son baratas y deberían condicionar el trabajo caro en vivo. La evaluación honesta ejecuta el desafío completo antes de arriesgar capital alguno."
+    },
+    {
+      question: "¿Qué escenario es el MEJOR encaje para apoyarse en el prior preentrenado de un modelo fundacional?",
+      options: [
+        { text: "Una previsión en arranque en frío para un producto nuevecito e ilíquido con solo un puñado de observaciones", correct: true },
+        { text: "Una señal de rendimiento diario sobre una mega-cap muy investigada con 30 años de datos limpios" },
+        { text: "Cualquier objetivo líquido, siempre que el MASE del ranking sea bajo" },
+        { text: "Un Sharpe del mejor-de-2.000-configuraciones reportado sin deflación" }
+      ],
+      explanation: "Un prior prestado llena el hueco dejado por unos datos locales escasos, así que el arranque en frío, lo ilíquido y los productos nuevecitos son donde ayuda de verdad. En una mega-cap líquida rica en datos, un modelo local ajustado ya extrae la señal disponible, y los resultados del mejor-de-N sin deflactar sobre objetivos líquidos son la zona de humo, no la de ayuda."
+    }
+  ]}
+/>

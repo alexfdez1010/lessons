@@ -77,25 +77,6 @@ export interface UpcomingCourse {
  */
 export const upcomingCourses: UpcomingCourse[] = [
   {
-    slug: 'foundation-models-for-financial-time-series',
-    icon: '🧠',
-    difficulty: 'expert',
-    order: 17,
-    accent: 'brand',
-    title: {
-      en: 'Foundation Models for Financial Time Series',
-      es: 'Modelos Fundacionales para Series Temporales Financieras',
-    },
-    description: {
-      en: 'The pretrain-and-adapt playbook meets markets: large time-series foundation models and LLM-driven research, zero/few-shot forecasting, multimodal price-plus-news signals — and a brutal audit of whether any of it survives contact with an efficient, non-stationary market.',
-      es: 'El manual de preentrenar-y-adaptar se topa con los mercados: grandes modelos fundacionales de series temporales e investigación impulsada por LLM, predicción zero/few-shot, señales multimodales de precio-más-noticias — y una auditoría brutal de si algo de esto sobrevive al contacto con un mercado eficiente y no estacionario.',
-    },
-    dependencies: ['deep-learning-for-market-data', 'generative-models-for-synthetic-market-data'],
-    tags: ['quantitative-finance'],
-    buildNotes:
-      'The frontier on top of deep-learning-for-market-data: stop training one model per task and PRETRAIN a foundation model, then adapt it. Time-series foundation models (the TimesFM / Chronos / Moirai / Lag-Llama lineage): pretraining objectives, tokenizing continuous returns, zero-shot and few-shot forecasting, and scaling laws — do they even hold on financial data? LLMs as research tools and as signals: sentiment/event extraction from filings and news, multimodal price+text models, LLM agents for hypothesis generation, and the leakage minefield (lookahead in pretraining corpora, the model having memorized the future). The honest evaluation, carrying forward the deflated-Sharpe / purged-CV discipline from the ML-for-alpha courses: foundation models are trained on near-stationary domains (language, weather) and markets are adversarial and non-stationary, so benchmark wins rarely translate to PnL. Where pretraining genuinely helps (cross-asset transfer, cold-start, data-poor regimes) vs where it is hype. Islands: pretrain-finetune-timeline + zero-shot-vs-fitted-forecast.',
-  },
-  {
     slug: 'causal-inference-for-alpha-and-execution',
     icon: '🎯',
     difficulty: 'expert',

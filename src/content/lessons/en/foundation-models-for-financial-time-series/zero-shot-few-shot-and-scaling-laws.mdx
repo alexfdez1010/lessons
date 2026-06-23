@@ -1,0 +1,419 @@
+---
+title: "Zero-Shot, Few-Shot & Scaling Laws"
+description: "Zero-shot forecasting with no weight updates, the MASE benchmark that decides whether you beat the naive baseline, the zero-shot → few-shot → full fine-tune adaptation spectrum, in-context learning as a tiny inference-time training set, and the neural scaling laws — plus the irreducible-noise-floor argument for why they flatten at a useless level on near-efficient market returns."
+topic: "en/foundation-models-for-financial-time-series"
+order: 3
+minutes: 18
+updated: 2026-06-22
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, ZeroShotVsFittedForecast } from '@/components/react';
+
+Lesson 2 handed you a time-series foundation model: one network, pretrained on a huge pile of unrelated series, that you point at a brand-new dataset and ask for a forecast. This lesson is about *how* you actually use it — and how to tell whether the forecast it hands back is worth anything.
+
+There's a spectrum of effort here. At one end you do **nothing**: feed the model a window of history and read off a forecast, no training of any kind. That's **zero-shot**. At the other end you retrain every weight on your target data — **full fine-tune**. In between sits the interesting middle: **few-shot** and **in-context learning**, where the model adapts a little without you touching most of its parameters.
+
+And looming over all of it is the question every quant eventually asks about deep learning: *does bigger help?* The **scaling laws** say "yes, predictably" — for most domains. We'll see why finance is the brutal exception, and why a scaling curve that flattens above the profit threshold is a treadmill you can run on forever and never get anywhere.
+
+Let's start with doing nothing.
+
+## Zero-shot forecasting
+
+<MCQ
+  client:visible
+  pretest
+  question="In a strict zero-shot forecast, what happens to the model's weights when you point it at a series it has never seen?"
+  options={[
+    { text: "Nothing — the weights are frozen; the model reads the context window and emits a forecast with no fitting at all", correct: true },
+    { text: "A few gradient steps fine-tune the final layer on the new series before predicting" },
+    { text: "The model retrains from scratch on the new series, using the pretraining as initialization" },
+    { text: "The optimizer runs until the in-sample error on the context window hits zero" }
+  ]}
+  explanation="Zero-shot means exactly zero weight updates. You feed the context window through the frozen pretrained model and read the forecast off the other side. Any gradient step — even on one layer — is already fine-tuning, not zero-shot."
+/>
+
+**The analogy.** Picture a seasoned forecaster who has read ten thousand charts across every imaginable market and sensor. You slide a brand-new chart across the desk — one she has never seen, from an industry she doesn't recognize — and ask, "what comes next?" She doesn't go study it for a week. She glances at the shape, recognizes the seasonality, the trend, the noise texture, and sketches the continuation cold. That cold read, drawing only on patterns absorbed elsewhere, is zero-shot forecasting. No homework, no fitting — just pattern transfer.
+
+**Precise definition.** A zero-shot forecast feeds a **context window** $x_{1:L}$ (the last $L$ observations of a target series) into a frozen pretrained model $f_\theta$ and produces a forecast $\hat{x}_{L+1:L+H}$ over a horizon $H$, with **no update to $\theta$**. The model has never trained on this series; it generalizes purely from the structure it learned during pretraining. Contrast this with the classical workflow, where you fit a fresh ARIMA or train a fresh LSTM *on this exact series* before you can forecast it.
+
+**How do you know the forecast is any good?** You need a benchmark, and "low error" in raw units is meaningless across series with different scales. The standard scale-free yardstick is the **MASE**.
+
+### MASE: the scaled-error benchmark
+
+**Mean Absolute Scaled Error** compares your forecast's error to the error of a dead-simple **naive baseline** — usually the seasonal naive forecast, which just predicts "the same as one season ago." Formally, for a forecast $\hat{y}_t$ against actuals $y_t$:
+
+$$\text{MASE} = \frac{\frac{1}{H}\sum_{t} |y_t - \hat{y}_t|}{\frac{1}{n-m}\sum_{i=m+1}^{n} |y_i - y_{i-m}|}$$
+
+The numerator is the **MAE of your forecast** on the test horizon. The denominator is the **MAE of the naive seasonal forecast** computed *on the training set* (predicting each point with the value $m$ steps earlier, where $m$ is the seasonal period). The ratio is unitless, so you can average it across thousands of series of wildly different scales.
+
+The reading is brutally simple:
+
+- **MASE < 1** → you beat the naive baseline (good).
+- **MASE = 1** → you tied the naive baseline (you added nothing).
+- **MASE > 1** → you are *worse* than just repeating last season (embarrassing).
+
+**Worked example — computing a MASE.** Suppose a non-seasonal series ($m=1$, so the naive forecast is "yesterday's value"). On the **training set** of 6 points $[10, 12, 11, 14, 13, 15]$, the naive one-step errors are the absolute consecutive differences:
+
+$$|12-10|, |11-12|, |14-11|, |13-14|, |15-13| = 2, 1, 3, 1, 2$$
+
+Their mean is $(2+1+3+1+2)/5 = 9/5 = 1.8$. That's the **denominator** — the naive baseline's typical error on this series.
+
+Now the model forecasts the next 3 points. Actuals turn out to be $[16, 14, 17]$; the **zero-shot** forecast was $[15.5, 14.5, 16.0]$. Its absolute errors are $|16-15.5|, |14-14.5|, |17-16.0| = 0.5, 0.5, 1.0$, mean $= 2.0/3 = 0.667$. That's the **numerator**.
+
+$$\text{MASE}_{\text{zero-shot}} = \frac{0.667}{1.8} = 0.37$$
+
+A MASE of **0.37** means the zero-shot forecast's average error is about a third of the naive baseline's — a clear, real win. Compare a clumsier forecast $[14, 14, 14]$ (just guessing the last training value): its errors are $|16-14|, |14-14|, |17-14| = 2, 0, 3$, mean $= 5/3 = 1.667$, giving $\text{MASE} = 1.667/1.8 = 0.93$ — barely better than naive. The MASE instantly tells you which forecast actually earned its keep.
+
+<ZeroShotVsFittedForecast client:visible caption="Toggle the regime. On the near-stationary (seasonal, weather-like) series, the frozen zero-shot forecast tracks the actual and lands a MASE comfortably below 1 — it genuinely beats the naive baseline. Flip to the financial-returns series and watch both the zero-shot AND the fully fitted forecasts collapse onto the naive line: MASE ≈ 1, because there is almost no structure to forecast. Same model, same metric — the difference is entirely in how much signal the series contains." />
+
+<Callout variant="warning" title="Beating the benchmark is not the same as making money">
+A MASE below 1 means you beat a naive forecast — a forecasting-contest win, not a P&L. Two traps hide here. First, on financial returns the naive baseline is *brutally strong* (tomorrow's return is roughly unforecastable, so "predict the mean" is nearly optimal), and a MASE of 0.99 is a rounding error, not an edge. Second, MASE measures point-forecast accuracy, which has almost nothing to do with whether a strategy built on the forecast survives transaction costs, latency, and turnover. A forecaster can win the benchmark and still lose money — see lesson 6.
+</Callout>
+
+### When to use it
+
+Reach for zero-shot first whenever you want a **fast, fit-free baseline** or you simply *cannot* fit a per-series model — a brand-new asset with three weeks of history, or ten thousand series you can't babysit individually. It's also the honest control: before you spend a week fine-tuning, check whether the frozen model already does the job. The catch is that zero-shot can only exploit structure that *resembles its pretraining*; a series with genuinely novel dynamics (or, as we'll see, almost no structure at all) gets a mediocre cold read and no amount of "zero" effort fixes it.
+
+<FillBlank
+  client:visible
+  question="Fill in the MASE reading."
+  text="A forecast with MASE = 0.37 has an average error about {{one third of|three times|equal to}} the naive seasonal baseline's, so it clearly {{beats|loses to|ties}} the benchmark."
+  explanation="MASE is forecast-MAE divided by naive-MAE. 0.37 means roughly one third of the baseline error — a clear win. Values above 1 would mean losing to naive; exactly 1 means a tie."
+/>
+
+## The adaptation spectrum
+
+<MCQ
+  client:visible
+  pretest
+  question="You order three approaches by how much of the model they change: (A) feed the target series as context with frozen weights, (B) retrain every weight on the target series, (C) update a small adapter / final layer on a handful of target examples. From least to most adaptation, which order is correct?"
+  options={[
+    { text: "A (zero-shot) → C (few-shot / light fine-tune) → B (full fine-tune)", correct: true },
+    { text: "B → C → A" },
+    { text: "C → A → B" },
+    { text: "A → B → C" }
+  ]}
+  explanation="Zero-shot changes no weights, few-shot changes a few (or runs a light tune on a handful of examples), and full fine-tune updates everything. So the order of increasing adaptation is A → C → B."
+/>
+
+**The analogy.** Hiring a consultant. **Zero-shot** is asking her to opine on your problem cold, using only her prior experience. **Few-shot** is handing her a one-page brief with three worked examples before she answers — she adapts on the spot without you reprogramming her. **Full fine-tune** is sending her back to school for a semester on *your* business specifically: maximal customization, maximal cost, and a real risk she forgets everything else (catastrophic forgetting) or just memorizes your three case studies (overfitting).
+
+**Precise definitions.**
+
+- **Zero-shot.** No weight updates. Context window in, forecast out.
+- **Few-shot.** A *small* amount of adaptation: either a handful of in-context examples appended to the prompt/context (no weight change — that's in-context learning, next section), or a **light fine-tune** touching only a small subset of parameters (a final layer, a LoRA adapter, a bias-only tune) on a few labeled examples.
+- **Full fine-tune.** Backpropagate into **all** parameters $\theta$ on your target data, using the pretrained weights only as an initialization.
+
+The trade-off across the spectrum is the heart of the lesson:
+
+| | Weight updates? | Target data needed | Compute | Overfitting risk on low-SNR data |
+|---|---|---|---|---|
+| Zero-shot | None | None (just a context window) | Inference only — cheapest | None (nothing is fit) — but capped by pretraining transfer |
+| Few-shot (in-context) | None | A handful of examples in context | Inference only | Low–moderate (a longer context can feed in more noise) |
+| Few-shot (light tune) | A small subset (adapter / final layer) | Tens–hundreds of examples | Modest | Moderate — fewer params to overfit, but you *are* fitting |
+| Full fine-tune | All parameters | Thousands+ aligned examples | Highest (full backprop) | **High** — max capacity meets noisy, scarce returns |
+
+Notice the column that matters most for finance: **overfitting risk rises as you move right**, and financial return series are exactly the low-signal, scarce-sample regime where that risk bites hardest. More adaptation is not automatically better — on noisy data it's often *worse*, because you've handed a flexible model more rope to fit noise (the data-hunger problem from the deep-learning course).
+
+<Callout variant="warning" title="Full fine-tuning a giant model on a few hundred noisy returns is a sponge for noise">
+The instinct "I have a foundation model, let me fine-tune it on my data" is usually right for vision and language and usually *wrong* for low-frequency returns. Full fine-tune unleashes the model's entire parameter count on a tiny, autocorrelated, regime-shifting sample — the parameters-per-effective-sample ratio explodes and the model memorizes noise. On scarce, low-SNR financial data, the *less*-adaptive end of the spectrum (zero-shot or a tiny adapter) frequently generalizes better than a full fine-tune. Default to the left of the table and only move right if held-out evidence — not in-sample loss — earns it.
+</Callout>
+
+### When to use which
+
+Use **zero-shot** for cold-start and massive cross-sections; **few-shot / light tune** when you have a *modest* amount of clean, relevant target data and want a nudge without a noise-soaking overhaul; **full fine-tune** only when you genuinely have abundant, aligned target data and a high-SNR task (think microstructure with millions of snapshots, not daily returns). The further right you go, the more you must prove the adaptation helps *out of sample*, because in-sample loss will always smile back at you.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Zero-shot", definition: "Frozen weights; the context window alone produces the forecast" },
+    { term: "In-context few-shot", definition: "A handful of examples in the prompt adapt behavior with no weight change" },
+    { term: "Light fine-tune", definition: "Update only a small adapter or final layer on a few labeled examples" },
+    { term: "Full fine-tune", definition: "Backprop into every parameter — highest capacity, highest overfitting risk on low-SNR data" }
+  ]}
+/>
+
+## In-context learning
+
+<MCQ
+  client:visible
+  pretest
+  question="A model performs 'in-context learning' when you put a few input→output examples in its context and it adapts to them. Where does this adaptation live?"
+  options={[
+    { text: "Entirely in the forward pass — the context acts like a tiny training set at inference; no weights change", correct: true },
+    { text: "In the weights, which are silently updated by a hidden gradient step on the examples" },
+    { text: "In a cache that persists the examples into the model's permanent parameters" },
+    { text: "Nowhere — in-context examples are ignored unless you also fine-tune" }
+  ]}
+  explanation="In-context learning is a forward-pass phenomenon. The examples in the context steer the output as if the model trained on them, but no parameter is updated — the 'learning' is transient, lasting only as long as those examples sit in the context."
+/>
+
+**The analogy.** You ask a polyglot friend to translate a sentence into a dialect she's rusty on. Instead of sending her to language school (fine-tuning), you show her five example translations first. She studies the pattern *in the moment* and nails the sixth — then forgets it the instant the conversation moves on. The five examples were a tiny, disposable training set that lived entirely in her short-term attention. That's **in-context learning (ICL)**: the model treats the context as an inference-time training set, adapting its output without any of it sticking to its weights.
+
+**Precise statement.** Given a context containing $k$ demonstration pairs $(x_1, y_1), \dots, (x_k, y_k)$ followed by a query $x_{\text{query}}$, the model produces $\hat{y}_{\text{query}}$ conditioned on all of them through a single forward pass. The remarkable empirical finding (and an active research area) is that large pretrained sequence models behave *as if* they ran a learning algorithm over those $k$ pairs internally — yet $\theta$ is untouched. For a time-series foundation model, the "demonstrations" are often just the **context window itself**: the recent history *is* the tiny training set the model conditions its continuation on.
+
+**Worked intuition — context length on a noisy series.** Suppose a series is 90% noise, 10% signal, and you extend the context window from 64 to 512 observations hoping to "show the model more." On a clean, near-stationary series, more context means more genuine pattern to lock onto — accuracy improves. On a near-efficient return series, the *extra 448 observations are overwhelmingly noise*: roughly $0.9 \times 448 \approx 403$ of them carry no forecastable structure. You haven't enriched the tiny training set with signal; you've diluted it with distractors, and the model can spuriously "learn" a pattern from noise that won't recur. Longer context helps **only in proportion to the signal density** of what you add.
+
+<Callout variant="warning" title="More context is not more signal on low-SNR series">
+The seductive fix when a forecast disappoints is "give it more history." On a structured series that helps. On returns it often *hurts*: a longer context is a longer noise sample, and in-context learning will happily fit transient noise patterns that evaporate out of sample — the same overfitting trap as fine-tuning, just relocated into the forward pass. Lengthen context to add *signal*, never to add *quantity*.
+</Callout>
+
+### When to use it
+
+In-context / few-shot prompting shines when you have a **few clean, representative examples** and want adaptation with zero training infrastructure — no optimizer, no checkpoint, no catastrophic-forgetting risk, and instant iteration. It's the natural default for cold-start and rapid prototyping. It fades exactly where signal density is low: piling more context onto a noisy return series feeds the model more noise, not more edge.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">If in-context learning changes no weights, how can the model 'adapt' to the examples at all?</summary>
+
+**Answer.** The adaptation lives in the **activations**, not the parameters. The demonstration pairs flow through self-attention, and the query token attends to them, so the output is *conditioned* on those examples just as if they were context for any prediction. Research suggests the forward pass can implement something resembling an internal learning step over the demonstrations — but crucially it is transient: remove the examples from the context and the "learning" vanishes completely, because nothing was ever written back into $\theta$. It's working memory, not long-term memory.
+
+</details>
+</Reveal>
+
+## Scaling laws
+
+<MCQ
+  client:visible
+  pretest
+  question="Neural scaling laws (Kaplan 2020; Hoffmann/Chinchilla 2022) describe how a model's test loss behaves as you grow parameters, data, and compute. What shape does that relationship take?"
+  options={[
+    { text: "A power law — loss falls smoothly and predictably, but with diminishing returns, toward an irreducible floor", correct: true },
+    { text: "A step function — loss is flat until a threshold, then drops to zero" },
+    { text: "Linear — every doubling of parameters halves the loss indefinitely" },
+    { text: "Exponential decay to exactly zero loss given enough compute" }
+  ]}
+  explanation="Scaling laws are power laws: test loss decreases as a power of model/data/compute size, with steadily diminishing returns, approaching a non-zero irreducible floor L_∞ — never zero. Each doubling helps less than the last."
+/>
+
+**The analogy.** Polishing a lens. The first hours of polishing sharpen the image dramatically. Keep going and each additional hour helps less — and no amount of polishing beats the *diffraction limit* set by physics: there's a floor of blur you simply cannot grind away. Neural scaling is the same. Pour in more parameters, data, and compute and the loss keeps dropping along a smooth power-law curve — but with diminishing returns, and it bottoms out at an **irreducible floor** $L_\infty$ set by how much signal the problem contains. You can polish forever; you cannot beat the diffraction limit.
+
+**Precise form.** A common parameterization of the scaling law in model size $N$ (holding data/compute ample) is:
+
+$$L(N) = L_\infty + \left(\frac{N_c}{N}\right)^{\alpha}$$
+
+where $L(N)$ is the test loss at $N$ parameters, $L_\infty$ is the **irreducible loss** (the entropy floor — the part no model can ever remove), $N_c$ is a problem-specific scale constant, and $\alpha > 0$ is the scaling exponent (the steepness of the diminishing-returns curve). Kaplan et al. (2020) found such power laws spanning many orders of magnitude in language; Hoffmann et al. (2022, "Chinchilla") refined the *compute-optimal* balance, showing many models were oversized and undertrained — you should scale data and parameters together.
+
+**Worked example — diminishing returns.** Take $L_\infty = 0.5$, $N_c = 10^6$, $\alpha = 0.5$ (so the reducible term is $\sqrt{N_c/N}$):
+
+| Parameters $N$ | Reducible term $\sqrt{10^6/N}$ | Total loss $L(N)$ | Gain vs previous row |
+|---|---|---|---|
+| $10^4$ | $\sqrt{100} = 10$ | $10.5$ | — |
+| $10^6$ | $\sqrt{1} = 1$ | $1.5$ | $-9.0$ |
+| $10^8$ | $\sqrt{0.01} = 0.1$ | $0.6$ | $-0.9$ |
+| $10^{10}$ | $\sqrt{0.0001} = 0.01$ | $0.51$ | $-0.09$ |
+
+Going from $10^4$ to $10^6$ parameters (×100) slashed loss by 9.0. The *next* ×100 (to $10^8$) bought only 0.9. The next ×100 bought 0.09. Each 100× scale-up delivers a *tenth* of the previous improvement, and the curve is visibly crawling toward $L_\infty = 0.5$. That asymptote is the whole story for finance.
+
+### Do scaling laws hold on market data?
+
+Here's the killer question. In language and vision, $L_\infty$ is **small** — there is enormous learnable structure, so scaling pays off for a long, long way before the floor bites. Markets are different. A near-efficient market has, almost by construction, a **huge irreducible floor**: next-period returns are close to a martingale, so the entropy of the target is nearly maximal and the forecastable component is tiny. The scaling law still *holds* — loss still falls as a power law — but it **flattens out at $L_\infty$ long before that floor is low enough to trade profitably.**
+
+**The noise-floor argument, side by side.** Imagine the same scaling law $L(N) = L_\infty + (N_c/N)^\alpha$ in two domains:
+
+| | Low-noise domain (e.g. weather nowcast) | Near-efficient returns |
+|---|---|---|
+| Irreducible floor $L_\infty$ | Small — lots of learnable structure | **Huge** — target is nearly unpredictable |
+| Where the curve flattens | At a *useful*, low loss | At a loss *above the profit threshold* |
+| Payoff from scaling 100× | Real, sustained accuracy gains | Asymptotically nothing tradeable |
+| Verdict | Scale away — it works | A treadmill: motion without progress |
+
+On returns, you can 100× your parameters and your data, ride the power-law curve down exactly as the math promises, and still land at a loss that's *above the threshold where a strategy makes money after costs*. The model gets "better" in loss while remaining useless in P&L, because the floor it's approaching is set by the market's near-efficiency, not by your compute budget.
+
+<Callout variant="warning" title="A scaling curve that flattens above the profit threshold is a treadmill">
+This is the single most important idea in the lesson. Scaling laws are real and they hold on market data — that's exactly the trap. You'll observe loss dropping with scale, conclude "it's working, let's scale more," and pour compute into a curve whose asymptote $L_\infty$ sits *above* the level you need to profit. You run faster and faster and stay in the same place. Before scaling anything on a return series, ask the only question that matters: *where does the floor sit relative to the profit threshold?* If $L_\infty$ is above it, more parameters, more data, and more compute are all dead money. Scale solves data-poor, high-signal problems — it cannot dig below a market's entropy floor.
+</Callout>
+
+<Categorize
+  client:visible
+  question="Sort each statement under the domain it best describes."
+  buckets={["Low-noise domain (scaling pays)", "Near-efficient returns (scaling is a treadmill)"]}
+  items={[
+    { text: "The irreducible floor L_∞ is small, so the curve flattens at a useful loss", bucket: "Low-noise domain (scaling pays)" },
+    { text: "Each 100× scale-up still yields real, usable accuracy gains", bucket: "Low-noise domain (scaling pays)" },
+    { text: "L_∞ is huge because the target is nearly a martingale", bucket: "Near-efficient returns (scaling is a treadmill)" },
+    { text: "Loss keeps falling on the power law yet never crosses the profit threshold", bucket: "Near-efficient returns (scaling is a treadmill)" }
+  ]}
+  explanation="Scaling helps in proportion to how much of the loss is reducible. A small floor (lots of structure) rewards scale; a huge floor (near-efficient market) means the curve flattens above the level you need to make money — motion without progress."
+/>
+
+### When scaling is worth the compute
+
+Scale up when the **floor is low and you're above it** — i.e. there is abundant learnable structure and your current loss is far from $L_\infty$, so the next doubling still buys real accuracy. That describes high-SNR, data-rich tasks (microstructure nowcasting, cross-sectional structure with millions of samples) far better than it describes a single liquid asset's daily returns. The honest test before spending the GPU budget: *estimate where $L_\infty$ sits relative to your profit threshold.* If you can't show the floor is below the threshold, scaling is the treadmill — and a smaller, cheaper model gets you the same nowhere.
+
+<FillBlank
+  client:visible
+  question="Fill in the scaling-law verdict for markets."
+  text="On near-efficient returns the irreducible loss L_∞ is {{huge|tiny|exactly zero}}, so the power-law curve flattens {{above|below|exactly at}} the profit threshold — making more parameters and data a {{treadmill|guaranteed edge|free lunch}}."
+  explanation="A near-efficient market's target is nearly unpredictable, so L_∞ is huge and the curve flattens above the level needed to profit. Scaling then produces motion without progress — a treadmill."
+/>
+
+## When zero-shot / few-shot is worth trying
+
+<MCQ
+  client:visible
+  pretest
+  question="For which single task is a frozen zero-shot foundation model the WEAKEST choice relative to a purpose-built classical model?"
+  options={[
+    { text: "Squeezing alpha from one liquid, heavily-arbitraged, low-SNR daily-return series", correct: true },
+    { text: "Forecasting a brand-new asset with three weeks of history (cold start)" },
+    { text: "Producing a baseline across a 5,000-name cross-section you can't fit individually" },
+    { text: "Forecasting in a data-poor, illiquid market with too little history to fit a custom model" }
+  ]}
+  explanation="Zero-shot shines exactly where you lack data to fit something custom (cold-start, illiquid, huge breadth) and as a baseline. The one place it's weakest is the most-competed arena: one liquid, heavily-arbitraged, low-SNR return series, where the floor is high and any edge is already arbitraged away."
+/>
+
+Pulling the spectrum and the scaling argument together gives a clean decision rule. **Zero-shot and few-shot earn their keep where data is the binding constraint and the floor is reachable — and disappoint exactly where the market is most efficient.**
+
+**Reach for zero-shot / few-shot when:**
+
+| Situation | Why the frozen model wins |
+|---|---|
+| **Cold start** — a new or short-history asset | You literally can't fit a per-series model on three weeks of data; the pretrained model transfers structure it learned elsewhere |
+| **Data-poor / illiquid markets** | Too little history to train a custom model without overfitting; zero-shot needs none |
+| **Breadth across a big cross-section** | One frozen model forecasts 10,000 series at once — no per-series fitting to babysit |
+| **A strong baseline to beat** | Before you spend a week fine-tuning, check whether "do nothing" already wins; it's the honest control for every fancier model |
+
+**Do NOT reach for it when:** you're trying to **squeeze alpha from one liquid, heavily-arbitraged, low-SNR return series**. That's the worst case on every axis — the irreducible floor is enormous (near-efficiency), any structure has been arbitraged away by armies of competitors, and a frozen model trained on unrelated series has no special claim on the residual. Here the foundation model is, at best, another mediocre forecaster of an unforecastable thing, and the scaling laws promise it won't get better with size.
+
+<Callout variant="warning" title="The same property — low SNR — that breaks scaling also breaks zero-shot">
+Notice the through-line of the whole lesson. Low signal-to-noise is *why* full fine-tuning overfits, *why* longer context hurts in-context learning, *why* the scaling curve flattens above the profit threshold, and *why* zero-shot has nothing to transfer. It's all one disease. Foundation models don't repeal market efficiency — they relocate where you fit (or don't fit) the model, but they cannot manufacture signal that isn't there. Use them where data scarcity is the problem; never expect them to beat a market whose problem is that there's almost nothing to predict.
+</Callout>
+
+### The trade-off in one line
+
+Zero-shot/few-shot trades **transfer for fitting**: you give up bespoke per-series training in exchange for instant, fit-free forecasts powered by pretraining. That trade is a *steal* when you have no data to fit (cold-start, illiquid, huge breadth) and a *sucker's bet* when the real constraint isn't data but the market's own efficiency. Match the tool to the binding constraint — data scarcity, yes; entropy floor, never.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Cold-start asset", definition: "Too little history to fit a custom model — zero-shot transfers structure learned elsewhere" },
+    { term: "Big cross-section", definition: "One frozen model forecasts thousands of series with no per-series fitting" },
+    { term: "Strong baseline", definition: "The honest 'do-nothing' control every fancier model must beat" },
+    { term: "One liquid arbitraged return series", definition: "The worst case — huge entropy floor, edge already competed away, nothing to transfer" }
+  ]}
+/>
+
+## Recap
+
+<MindMap
+  client:visible
+  title="Zero-shot, few-shot & scaling laws"
+  caption="Adaptation runs from frozen zero-shot to full fine-tune; scaling laws promise predictable gains — except on near-efficient returns, where a huge noise floor flattens the curve above the profit threshold."
+  root={{
+    label: "Zero-shot, few-shot & scaling",
+    children: [
+      {
+        label: "Zero-shot forecasting",
+        children: [
+          { label: "Frozen weights, context window in" },
+          { label: "No fitting on the target series" },
+          { label: "MASE = forecast MAE / naive MAE" },
+          { label: "MASE < 1 beats naive; > 1 worse" }
+        ]
+      },
+      {
+        label: "Adaptation spectrum",
+        children: [
+          { label: "Zero-shot → few-shot → full fine-tune" },
+          { label: "More adaptation = more overfit risk" },
+          { label: "Low-SNR returns: stay left" }
+        ]
+      },
+      {
+        label: "In-context learning",
+        children: [
+          { label: "Context = tiny inference-time training set" },
+          { label: "No weights change (lives in activations)" },
+          { label: "Longer context on noise = more noise" }
+        ]
+      },
+      {
+        label: "Scaling laws",
+        children: [
+          { label: "L(N) = L_∞ + (N_c/N)^α, power law" },
+          { label: "Diminishing returns toward floor L_∞" },
+          { label: "Kaplan 2020; Chinchilla 2022" },
+          { label: "Returns: huge L_∞ → treadmill" }
+        ]
+      },
+      {
+        label: "When to try zero/few-shot",
+        children: [
+          { label: "Cold-start & illiquid markets" },
+          { label: "Breadth across a cross-section" },
+          { label: "A strong baseline to beat" },
+          { label: "NOT one liquid arbitraged return series" }
+        ]
+      }
+    ]
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Zero-shot, few-shot & scaling laws — check yourself"
+  questions={[
+    {
+      question: "On a training set, the naive seasonal forecast's MAE is 4.0. Your model's MAE on the test horizon is 3.0. What is the MASE, and what does it mean?",
+      options: [
+        { text: "0.75 — the forecast beats the naive baseline", correct: true },
+        { text: "1.33 — the forecast is worse than naive" },
+        { text: "12.0 — accuracy improved twelvefold" },
+        { text: "0.75 — but it means the forecast lost to naive" }
+      ],
+      explanation: "MASE = forecast MAE / naive MAE = 3.0 / 4.0 = 0.75. Below 1 means the forecast beat the naive baseline."
+    },
+    {
+      question: "Which statements about in-context learning are correct?",
+      allowMultiple: true,
+      options: [
+        { text: "No model weights are updated — the adaptation lives in the forward pass", correct: true },
+        { text: "On a low-SNR return series, a longer context can hurt by feeding in more noise", correct: true },
+        { text: "The examples are permanently written into the model's parameters" },
+        { text: "It treats the in-context examples like a tiny inference-time training set", correct: true }
+      ],
+      explanation: "ICL is a forward-pass phenomenon: the context acts as a disposable training set, no weights change, and on noisy series a longer context just adds noise rather than signal."
+    },
+    {
+      question: "Using L(N) = L_∞ + (N_c/N)^α with L_∞ = 0.5, N_c = 10^6, α = 0.5: what is the loss at N = 10^8 parameters?",
+      options: [
+        { text: "0.6 — the reducible term √(10^6/10^8) = 0.1, plus the 0.5 floor", correct: true },
+        { text: "0.5 — the loss has reached the irreducible floor exactly" },
+        { text: "1.5 — the reducible term is 1.0" },
+        { text: "0.1 — only the reducible term counts" }
+      ],
+      explanation: "Reducible term = √(10^6 / 10^8) = √(0.01) = 0.1. Total = 0.5 + 0.1 = 0.6. The floor L_∞ = 0.5 is approached but never reached."
+    },
+    {
+      question: "Why can a model's test loss keep falling along the scaling curve on market returns while the strategy still makes no money?",
+      options: [
+        { text: "The irreducible floor L_∞ sits above the profit threshold, so the curve flattens before reaching a tradeable loss", correct: true },
+        { text: "Scaling laws don't apply to financial data at all" },
+        { text: "Test loss and P&L are the same quantity, so this can't happen" },
+        { text: "The model is numerically diverging, which lowers loss artificially" }
+      ],
+      explanation: "Scaling laws DO hold on returns — that's the trap. But a near-efficient market's huge L_∞ means the power-law curve flattens above the level needed to profit. Loss improves while P&L doesn't: a treadmill."
+    },
+    {
+      question: "You have a foundation model and a single liquid, heavily-arbitraged stock's daily returns. What's the soundest move?",
+      options: [
+        { text: "Treat zero-shot as a baseline, but don't expect alpha — this is the worst case (huge floor, edge already arbitraged, nothing to transfer)", correct: true },
+        { text: "Full fine-tune on the daily returns — adaptation always improves forecasts" },
+        { text: "Massively scale up parameters and data until the loss crosses the profit threshold" },
+        { text: "Lengthen the context window to thousands of days so the model sees more signal" }
+      ],
+      explanation: "Liquid, arbitraged, low-SNR returns are the worst case on every axis. Full fine-tuning overfits, scaling hits the entropy floor, and a longer context just adds noise. Zero-shot is fine as a baseline, but no approach manufactures signal that efficiency has already removed."
+    },
+    {
+      question: "Across the adaptation spectrum, why does overfitting risk RISE as you move from zero-shot toward full fine-tune on low-SNR financial data?",
+      options: [
+        { text: "Each step lets more parameters fit the target data, so on scarce, noisy returns more capacity meets less signal and the model memorizes noise", correct: true },
+        { text: "Full fine-tuning uses a larger learning rate, which always overfits" },
+        { text: "Zero-shot secretly fine-tunes more parameters than full fine-tune" },
+        { text: "Overfitting risk is actually constant across the spectrum" }
+      ],
+      explanation: "Moving right unfreezes more parameters to fit your data. On scarce, autocorrelated, low-SNR returns the parameters-per-effective-sample ratio explodes, so the model fits noise. That's why the left of the spectrum often generalizes better on financial data."
+    }
+  ]}
+/>

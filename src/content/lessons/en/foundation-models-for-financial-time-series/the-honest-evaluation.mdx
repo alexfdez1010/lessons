@@ -1,0 +1,421 @@
+---
+title: "The Honest Evaluation: Does Any of It Survive?"
+description: "The finale: re-arm the deflated Sharpe and purged-embargoed cross-validation, see why near-stationary pretraining benchmarks don't transfer to adversarial markets, map exactly where pretraining genuinely helps (cross-asset transfer, cold-start, data-poor regimes) versus where it's pure hype, and run the end-to-end test that turns a benchmark win into actual money."
+topic: "en/foundation-models-for-financial-time-series"
+order: 6
+minutes: 18
+updated: 2026-06-22
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, DeflatedSharpe } from '@/components/react';
+
+Five lessons in, you've taken the pretrain-and-adapt bet (lesson 1), met time-series foundation models and their zero-shot, few-shot, and scaling behavior (lessons 2–3), wielded LLMs as research tools and signal sources (lesson 4), and just spent a whole lesson learning how leakage can quietly fake every result you produce (lesson 5). Now comes the reckoning.
+
+This is the lesson where we stop being impressed by leaderboards and ask the only question that pays rent: **does any of it survive contact with a real, adversarial, non-stationary market — net of costs, deflated for luck, and free of leakage?** Foundation models are genuinely useful in finance. They are also catnip for the over-eager. The difference between those two sentences is an *honest evaluation*, and that's what we're building here, brick by brick, as the synthesis of the whole course.
+
+Let's settle the account.
+
+## Re-arming the discipline
+
+<MCQ
+  client:visible
+  pretest
+  question="You ran a search over 500 foundation-model configurations and the best one posted an in-sample Sharpe of 2.8. Roughly what Sharpe should you demand before you believe there's any real edge?"
+  options={[
+    { text: "Around 3.5 — the luck hurdle for the best of 500 trials scales with √(2 ln N), and 2.8 doesn't clear it", correct: true },
+    { text: "Around 0 — any positive Sharpe is evidence of edge once you've tried enough models" },
+    { text: "Exactly 2.8 — the observed best Sharpe is an unbiased estimate of the truth" },
+    { text: "Around 1.0 — a Sharpe above 1 is the universal threshold regardless of trial count" }
+  ]}
+  explanation="The expected maximum Sharpe under the null grows roughly with √(2 ln N). For N=500, √(2 ln 500) ≈ 3.5, so a best-of-500 Sharpe of 2.8 sits below the luck hurdle: indistinguishable from noise. The observed best is biased upward precisely because it's the max of many trials."
+/>
+
+**The analogy.** Imagine a casino where 500 gamblers each flip a fair coin 100 times, and you crown a "champion" as whoever got the most heads. The champion will look gifted — maybe 65 heads out of 100 — but they have no skill; they're just the luckiest of 500. If you only ever interview the winner, you'll conclude coin-flipping is a learnable art. **Backtesting a foundation model across hundreds of architectures, context lengths, and fine-tuning recipes is exactly that casino**, and the deflated Sharpe ratio is the bouncer who asks the champion to prove they're better than the luckiest-of-500 baseline.
+
+**Tool 1 — the deflated Sharpe ratio.** Carried from *Machine Learning for Alpha*. The core fact: if you try $N$ independent strategies that all have *zero* true edge, the expected maximum of their in-sample Sharpe ratios is not zero — it climbs with $N$. A useful back-of-envelope for the hurdle (in annualized-Sharpe-ish units, when trial dispersion is near 1) is
+
+$$\text{hurdle}(N) \approx \sigma_{SR}\,\sqrt{2 \ln N},$$
+
+where $\sigma_{SR}$ is the dispersion of Sharpe estimates across trials. Your **deflated edge** is the observed best Sharpe minus this hurdle. If it's $\le 0$, your "winner" is statistically indistinguishable from the luckiest noise-trader in the room.
+
+**Worked example — deflating a 500-trial foundation-model search.** You fine-tuned and back-tested $N = 500$ configurations (architectures × context windows × adapter ranks) on the same price history, with trial dispersion $\sigma_{SR} \approx 1$. Compute the hurdle:
+
+$$\ln 500 = 6.215, \qquad 2 \ln 500 = 12.43, \qquad \sqrt{12.43} = 3.52.$$
+
+So the luck hurdle is about **3.5**. Your champion's in-sample Sharpe was $2.8$. Deflated edge $= 2.8 - 3.5 = -0.7$. **Negative.** That dazzling 2.8 is *below* what 500 worthless strategies would produce by chance — it's not alpha, it's the casino. To survive, your best configuration would have needed an in-sample Sharpe comfortably above 3.5, or you'd have needed to run *far* fewer trials.
+
+<DeflatedSharpe
+  client:visible
+  title="Deflating a foundation-model architecture search"
+  trialsLabel="Foundation-model configurations tried (N)"
+  observedLabel="Observed best Sharpe (your champion config)"
+  hurdleLabel="Luck hurdle: expected max Sharpe under the null"
+  deflatedLabel="Deflated edge"
+  caption="Drag the trials slider toward 500 and watch the accent luck-hurdle curve climb to roughly 3.5. Set the observed best Sharpe to 2.8 (a typical eye-catching backtest) and the deflated edge goes negative — your champion configuration is indistinguishable from the luckiest of 500 worthless models. The huge design space of a foundation model (architecture × context length × adapter × prompt) is what makes N explode, so the hurdle you must clear is brutally high. Only an observed Sharpe that clears the curve at your N is credible edge."
+/>
+
+**Tool 2 — purged and embargoed cross-validation.** Carried from the same toolkit and reinforced by lesson 5. Standard k-fold cross-validation shuffles rows, which is a catastrophe for time series: a training row from *tomorrow* can sit next to a test row from *today*, leaking the future. The fix has two parts:
+
+- **Purging** — drop training observations whose label horizon *overlaps* the test set. If a label is built from a forward window (e.g. the next 5 days' return), any training sample whose forward window reaches into the test period is contaminated and must be removed.
+- **Embargo** — after each test fold, skip a buffer of observations before resuming training, so serial correlation and slow-moving features don't bleed test information into the next training block.
+
+For foundation models the stakes are higher, because the model's *pretraining corpus* may already contain your test window — a leak no amount of clever CV can fix if you don't control the pretrain cutoff (lesson 5's central warning). Purged-embargoed CV protects the *fine-tuning and evaluation* split; a clean pretrain cutoff protects everything underneath it.
+
+<Callout variant="warning" title="A foundation model multiplies your trial count without you noticing">
+Every knob is a trial. Architecture (4 of them), context length (5 settings), adapter rank (4), learning rate (5), prompt template (3) — innocently that's 4×5×4×5×3 = 1,200 configurations, and the best of 1,200 has a luck hurdle of √(2 ln 1200) ≈ 3.76. People report the winner's Sharpe and quietly forget the other 1,199. Pre-register your design space, log every variant you run, and deflate by the *true* N — not the one configuration you decided to write up.
+</Callout>
+
+### When to use it
+
+Apply both tools to *every* foundation-model evaluation, always — they're not optional extras for the paranoid. Reach for the deflated Sharpe the moment you've compared more than one configuration (which is always), and for purged-embargoed CV whenever labels have a forward horizon or features are serially correlated (which is always, in markets). The only time you can relax the deflation is a *single, pre-registered* model with no search — and even then you should report how many ideas you discarded before committing.
+
+<FillBlank
+  client:visible
+  question="Fill in the hurdle scaling."
+  text="The expected maximum Sharpe of N zero-edge trials grows roughly with {{√(2 ln N)|N²|1/√N}}, so trying 500 configurations sets a luck hurdle near 3.5 that your observed best Sharpe must clear before it counts as edge."
+  explanation="The expected max under the null scales with √(2 ln N): slow but relentless growth. For N=500, √(2 ln 500) ≈ 3.5. More trials → higher hurdle → bigger required observed Sharpe."
+/>
+
+## Near-stationary domains vs adversarial, non-stationary markets
+
+<MCQ
+  client:visible
+  pretest
+  question="A time-series foundation model crushes the leaderboard on electricity-demand and weather forecasting. Why is that a weak guarantee it will forecast stock returns?"
+  options={[
+    { text: "Returns are non-stationary, adversarial, and low-SNR — the data-generating process moves and actively erodes any edge, unlike weather or demand", correct: true },
+    { text: "Weather and demand have no patterns at all, so any transfer is impossible by definition" },
+    { text: "Stock returns are easier, so a model good at the hard tasks is overqualified" },
+    { text: "Foundation models can only be trained on one domain, so cross-domain transfer never works" }
+  ]}
+  explanation="Electricity demand and weather are near-stationary and non-adversarial: the underlying physics doesn't rewrite itself to spite forecasters, and the signal-to-noise ratio is high. Returns are the opposite — the regime shifts, the signal is faint, and the moment an edge is known it gets arbitraged away. Benchmark dominance in stationary domains says little about the market."
+/>
+
+**The analogy.** A foundation model that masters weather and electricity demand is like a chess engine that's superhuman against a fixed opponent who plays the same opening every time. Markets are a chess opponent who *watches you*, learns your strategy, and changes their play the instant you start winning. Worse, the board itself is being rebuilt mid-game — pieces change how they move (regime shifts). Stationary benchmarks reward memorizing a stable pattern; markets punish exactly that, because any stable pattern gets found and erased.
+
+**Three reasons benchmark wins don't translate.**
+
+1. **Distribution shift (non-stationarity).** The data-generating process *moves*. Volatility regimes, interest-rate regimes, liquidity regimes, and correlation structures all shift, sometimes abruptly. A model pretrained on one regime can be confidently wrong in the next. Weather has seasons, but it doesn't suddenly decide to obey different physics in 2009.
+
+2. **Reflexivity / alpha crowding.** A genuine edge is *self-destroying*. The moment a profitable pattern is discovered and traded at scale, the trades move prices toward fair value and the edge shrinks toward zero. Your forecast changes the thing you're forecasting. Tomorrow's temperature does not care that you predicted it; tomorrow's price does, and so does everyone else's prediction.
+
+3. **Signal-to-noise (SNR).** Daily return predictability is *tiny* — an out-of-sample $R^2$ of even a few percent is exceptional, and most of the variance is irreducible noise. Electricity demand at 6pm is overwhelmingly driven by deterministic structure (time of day, temperature, day of week); the noise floor is low. With faint signal and a moving target, the very capacity that helps a foundation model nail demand becomes a liability that fits noise on returns.
+
+| Property | Language / weather / demand | Financial returns |
+|---|---|---|
+| Stationarity | High — stable patterns persist | Low — regimes shift, sometimes abruptly |
+| Adversariality | None — nature doesn't fight back | High — known edges get arbitraged away |
+| Signal-to-noise | High — much of the variance is structure | Brutally low — mostly irreducible noise |
+| Feedback on the forecaster | None — your forecast doesn't move the target | Strong — your trades move the price you predict |
+| Effect on a pretrained model | Benchmark skill transfers cleanly | Benchmark skill may not transfer at all |
+
+**Worked example — a benchmark that lies.** Suppose a foundation model posts a MASE (mean absolute scaled error) of $0.62$ on a weather benchmark, beating the seasonal-naive baseline by 38%. Translated naively, you might expect a comparable "38% improvement" on returns. But on daily equity returns the seasonal-naive baseline is essentially *zero* (returns have ~no exploitable autocorrelation), so beating it by 38% of nearly-nothing is still nearly-nothing. A model can have a beautiful MASE on a stationary series and an out-of-sample return $R^2$ of, say, $0.3\%$ — and after costs, that $0.3\%$ is often *negative* PnL. The benchmark and the bank account are measuring different universes.
+
+<Callout variant="warning" title="Stationarity is the hidden assumption behind every benchmark claim">
+When a vendor says "our foundation model is state-of-the-art on 40 forecasting benchmarks," read the fine print: those benchmarks are overwhelmingly near-stationary, non-adversarial series (energy, traffic, retail demand, weather). Generalizing that dominance to markets smuggles in the assumption that returns are just another stationary series. They are not. A leaderboard win is a *necessary*-ish condition for a good model, never a *sufficient* one for a tradable edge.
+</Callout>
+
+### When to use it
+
+Trust benchmark dominance as evidence of model quality in domains that *resemble the benchmark* — near-stationary, high-SNR, non-adversarial series. Treat it as nearly irrelevant the moment your target is liquid, heavily-researched, low-SNR return forecasting. The closer your problem sits to the stationary, non-adversarial end of the table above, the more a foundation model's pretraining is worth; the closer to the adversarial, non-stationary end, the more you must prove edge from scratch on your own clean, deflated, cost-aware test.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Distribution shift", definition: "The data-generating process moves — volatility, rate, and correlation regimes change, so a model fit to one regime fails in the next" },
+    { term: "Reflexivity / crowding", definition: "A known edge is self-destroying: trading it moves prices toward fair value and erodes the edge" },
+    { term: "Low signal-to-noise", definition: "Most return variance is irreducible noise, so high model capacity fits noise instead of signal" },
+    { term: "Near-stationary benchmark", definition: "A weather or demand series whose stable structure makes forecasting skill transfer cleanly — unlike markets" }
+  ]}
+/>
+
+## Where pretraining genuinely helps
+
+<MCQ
+  client:visible
+  pretest
+  question="In which situation does a foundation model's pretrained prior add the MOST value over a well-tuned model trained only on the target series?"
+  options={[
+    { text: "A newly listed asset with only a few weeks of its own history", correct: true },
+    { text: "A 30-year, highly liquid, heavily-researched large-cap with abundant clean history" },
+    { text: "A benchmark you've already overfit with 1,000 configurations" },
+    { text: "Any series, equally — pretraining helps uniformly regardless of local data" }
+  ]}
+  explanation="Pretraining buys you the most where local data is scarce: a new asset with little history can't support a well-tuned local model, so a borrowed prior fills the gap. Where the target is data-rich and liquid, a local model already has everything it needs and the prior adds little — sometimes nothing."
+/>
+
+**The analogy.** A pretrained foundation model is a seasoned analyst who has read *thousands* of company histories. Drop them onto a brand-new IPO with three weeks of trading and they're invaluable — they pattern-match from everything they've seen. Drop them onto a 30-year mega-cap that an army of quants has already dissected to the molecule, and their general wisdom adds almost nothing the local specialists don't already know. **Pretraining is a prior, and a prior matters most exactly when the data is too thin to overwhelm it.**
+
+**Four places pretraining earns its keep.**
+
+1. **Cross-asset / cross-market transfer.** Pretraining on thousands of series — equities, FX, commodities, rates, across geographies — lets the model learn *shared structure*: volatility clustering, mean-reversion at certain horizons, common reactions to shocks. That borrowed structure can sharpen forecasts on a target series that, alone, is too short to reveal it.
+
+2. **Cold-start.** A new listing, a freshly launched ETF, or a just-IPO'd stock has almost no history. A locally trained model has nothing to chew on; a pretrained model arrives with a sensible default and adapts from a few observations (the few-shot regime from lesson 3).
+
+3. **Data-poor / illiquid regimes.** New products (a novel derivative), small or frontier markets, or thinly-traded names simply don't generate enough clean observations to fit a hungry local model. The pretrained prior is the difference between a usable forecast and noise.
+
+4. **A strong zero-shot baseline / prior.** Even when you *will* build a custom model, the foundation model's zero-shot forecast is a high-quality baseline to beat and a sensible prior to shrink toward — better than a naive seasonal or random-walk default (lesson 3).
+
+**Worked example — data-rich target vs data-poor target.** Two forecasting jobs, same foundation model:
+
+| | Data-RICH target | Data-POOR target |
+|---|---|---|
+| Asset | 30-yr liquid large-cap | 3-week-old IPO |
+| Local observations | ~7,500 daily bars | ~15 daily bars |
+| Tuned local model out-of-sample $R^2$ | 1.8% | undefined (can't fit) |
+| Foundation zero-shot $R^2$ | 1.6% | 0.9% |
+| Foundation fine-tuned $R^2$ | 1.9% | 1.1% |
+| Verdict | Prior adds ≈ 0.1% — basically nothing | Prior adds *everything* — the only usable forecast |
+
+On the data-rich large-cap, the tuned local model already extracts 1.8%; the foundation model fine-tuned reaches 1.9% — a rounding-error gain that almost certainly evaporates after deflation and costs. On the 3-week IPO, the local model *cannot even be fit* (15 observations), while the foundation model's borrowed prior delivers a real, if modest, 1.1%. **Same model, opposite verdicts — and the deciding variable is local data abundance, not the model's cleverness.**
+
+<Callout variant="warning" title="Transfer assumes shared structure — verify it">
+Cross-asset transfer only helps if the source and target *actually share* dynamics. A model pretrained mostly on developed-market equities may carry the wrong prior into a frontier FX pair or a crypto perpetual whose microstructure is alien. Borrowed structure that doesn't fit is worse than no prior — it injects confident, systematic error. Always check that the foundation model's pretraining distribution plausibly covers your target before you lean on its prior.
+</Callout>
+
+### When to use it
+
+Lean on pretraining when local data is the binding constraint: cold-start assets, illiquid or new products, frontier markets, or any forecast where you have dozens of observations rather than thousands. Treat it as a strong default prior and zero-shot baseline even in data-rich settings — but expect the *marginal* gain over a well-tuned local model to shrink toward zero as your local sample grows. The rule of thumb: **the value of a borrowed prior is inversely proportional to how much of your own clean data you already have.**
+
+<Categorize
+  client:visible
+  question="Sort each forecasting situation by whether a borrowed pretrained prior is likely to add a lot or add almost nothing."
+  buckets={["Prior adds a lot", "Prior adds ≈ nothing"]}
+  items={[
+    { text: "Freshly IPO'd stock with three weeks of history", bucket: "Prior adds a lot" },
+    { text: "A novel derivative in a small, new market", bucket: "Prior adds a lot" },
+    { text: "A frontier-market name with sparse, gappy data", bucket: "Prior adds a lot" },
+    { text: "A 30-year liquid large-cap with abundant clean history", bucket: "Prior adds ≈ nothing" },
+    { text: "A heavily-researched index future with thousands of clean bars", bucket: "Prior adds ≈ nothing" }
+  ]}
+  explanation="A pretrained prior matters most where local data is too thin to fit a good local model (cold-start, illiquid, frontier, novel products) and matters least where the target is data-rich and a tuned local model already extracts the available signal."
+/>
+
+## Where it's pure hype
+
+<MCQ
+  client:visible
+  pretest
+  question="Which use of a time-series foundation model is most likely to be pure hype — impressive on paper, worthless as a strategy?"
+  options={[
+    { text: "Forecasting daily returns of a liquid, heavily-researched large-cap and treating a low MASE as if it were PnL", correct: true },
+    { text: "Producing a zero-shot baseline forecast for a brand-new ETF with little history" },
+    { text: "Sharpening volatility forecasts on an illiquid name by borrowing cross-asset structure" },
+    { text: "Warm-starting a model on a frontier market with sparse data" }
+  ]}
+  explanation="Liquid, heavily-researched, low-SNR return forecasting is the graveyard of foundation-model hype: any genuine edge has been competed away, so a great benchmark error (MASE) does not translate into tradable profit. The other three are exactly the data-poor cold-start regimes where a borrowed prior genuinely helps."
+/>
+
+**The analogy.** Chasing leaderboard MASE on liquid return forecasting is like polishing your time in a footrace where the finish line is teleporting away from you faster than you can run. The metric improves; you get no closer to money. **A lower MASE is not a higher PnL.** MASE rewards accurate point forecasts of a series; trading profit depends on the *sign and timing* of moves net of costs, on a target whose edge has already been arbitraged by thousands of well-funded competitors.
+
+**The hype zone, precisely.** Foundation models are most over-sold when *all* of these hold:
+
+- **Liquid and heavily-researched** — the asset is traded by everyone, so any persistent pattern has been found and erased (maximal reflexivity/crowding).
+- **Low signal-to-noise** — daily/weekly return predictability is faint, so the model's spare capacity fits noise.
+- **Metric ≠ money** — the reported win is a forecasting-error metric (MASE, MAE, RMSE) presented as if it were strategy performance, with no cost, capacity, or deflation accounting.
+
+In that zone, a foundation model's enormous pretrained capacity is not an advantage — it's an over-powered noise-fitter, and the leaderboard number is a vanity metric. The honest expectation is *no tradable edge*, and the burden of proof is entirely on anyone claiming otherwise.
+
+<Callout variant="warning" title="MASE/MAE on returns is not a backtest">
+A foundation model can post a better MASE than a random walk on returns and still lose money every single day after costs, because (a) the improvement may live entirely in the unprofitable middle of the distribution, (b) it ignores transaction costs and capacity, and (c) it's usually undeflated for the trial count behind it. Never let a forecasting-error metric stand in for a cost-aware, deflated, leakage-free backtest. The leaderboard is not the ledger.
+</Callout>
+
+### When to use it
+
+Honestly? In the hype zone, *don't* — at least not as your alpha engine. If you're forecasting returns on a liquid, heavily-researched, low-SNR target, assume the foundation model has no tradable edge until a full end-to-end test proves otherwise, and never report a MASE/MAE improvement as if it were a strategy result. The legitimate role for a foundation model in that regime is supporting infrastructure (a baseline, a feature, a prior), not the headline signal.
+
+<FillBlank
+  client:visible
+  question="Fill in the hype-zone tell."
+  text="The clearest sign of foundation-model hype is reporting a low {{MASE or forecasting-error metric|deflated Sharpe ratio|post-cutoff out-of-sample}} on liquid, heavily-researched returns and treating it as if it were tradable PnL, with no costs, capacity, or deflation accounted for."
+  explanation="A forecasting-error metric like MASE measures point-forecast accuracy, not profit. On liquid low-SNR returns, a better MASE routinely coexists with negative PnL after costs. Treating the metric as money is the signature move of hype."
+/>
+
+## The end-to-end test
+
+<MCQ
+  client:visible
+  pretest
+  question="Your foundation-model strategy clears the deflated Sharpe hurdle on a clean, purged-embargoed split. Is it ready to trade?"
+  options={[
+    { text: "Not yet — it must also survive transaction costs, capacity limits, a leakage-free post-cutoff out-of-sample, and live-pipeline parity", correct: true },
+    { text: "Yes — clearing the deflated Sharpe is the last word on a strategy" },
+    { text: "Yes — once cross-validation is clean, costs and capacity are guaranteed to be fine" },
+    { text: "No — but only because you should run more architecture trials first" }
+  ]}
+  explanation="Deflation and clean CV are necessary, not sufficient. A theoretical edge becomes money only after it survives realistic transaction costs, capacity constraints (does the edge persist at size?), a genuinely out-of-sample window after the pretraining cutoff, and a live pipeline that matches your research code exactly. Each stage kills strategies that looked perfect upstream."
+/>
+
+**The analogy.** A benchmark win is a great dress rehearsal; live trading is opening night with hecklers, a moving stage, and the lighting crew working against you. Plenty of strategies that nail the rehearsal collapse the moment real costs, real size, and real time take the stage. The end-to-end test is the full dress-and-tech run that catches the collapse *before* you wire up real capital.
+
+**Precise statement — the gauntlet.** A theoretical or benchmark win is not money until it survives, in order, every one of these:
+
+| Stage | The question it answers | How it kills strategies |
+|---|---|---|
+| Transaction costs | Does the edge survive spread, fees, and slippage? | A gross Sharpe of 1.5 can go negative once you subtract realistic costs on a high-turnover signal |
+| Capacity | Does the edge persist at the size you'd trade? | A pattern that works on \$1M can vanish (market impact) at \$100M |
+| Deflation | Is the edge bigger than the best-of-N luck hurdle? | The champion of 500 configs must clear ≈ 3.5, not just beat zero |
+| Leakage-free post-cutoff OOS | Does it work on data *after* the pretraining cutoff? | A foundation model may have "seen" pre-cutoff test data; only post-cutoff bars are truly out-of-sample (lesson 5) |
+| Live-pipeline parity | Does the live code reproduce the research result exactly? | Subtle differences (data vendor, timing, fill assumptions) routinely erase the edge |
+
+Miss any one and the "edge" is an artifact. Notice the order isn't arbitrary: deflation and leakage checks are *cheap* and should gate the *expensive* live work — don't spend three months on a production pipeline for a strategy that never cleared the luck hurdle.
+
+**Worked example — a strategy dies one stage at a time.** A foundation-model signal looks spectacular:
+
+- **Gross in-sample Sharpe: 2.8.** Impressive.
+- **Costs:** turnover is high; realistic spread + fees + slippage knock roughly $1.0$ off the Sharpe → **1.8 net.** Still good.
+- **Deflation:** it was the best of $N = 500$ configs, hurdle $\approx 3.5$. Deflated edge $= 1.8 - 3.5 = -1.7$. **Dead here** — but suppose for argument it had cleared, say a pre-registered single model with net Sharpe 1.8 and hurdle 0.5.
+- **Post-cutoff OOS:** re-run only on bars *after* the pretraining cutoff. The Sharpe drops to **0.6** — much of the apparent edge was pre-cutoff contamination (lesson 5).
+- **Capacity:** at target size, market impact shaves it to **0.3.**
+- **Live-pipeline parity:** a 1-bar timing mismatch between research and production erases the rest → **≈ 0.**
+
+A 2.8 that became a 0. Every stage was honest; the strategy simply never had real, tradable, deflated, leakage-free edge. *This is the normal outcome*, and an evaluation that doesn't run the full gauntlet would have shipped a money-loser with great-looking slides.
+
+<Callout variant="success" title="The whole course, in one test">
+This is where everything you've learned converges. The pretrain-and-adapt *bet* (lesson 1) only pays when the prior fits a data-poor target. Foundation models, zero-shot, and scaling laws (lessons 2–3) give you a powerful baseline — but a baseline, not a guarantee. LLMs as research tools (lesson 4) help you generate and reason about signals, which only multiplies your trial count. And the leakage minefield (lesson 5) is why "post-cutoff out-of-sample" is non-negotiable. The honest evaluation — deflate for luck, purge and embargo, net out costs and capacity, test only post-cutoff data, and demand live-pipeline parity — is the single discipline that turns all of that machinery into either real money or an honest "no." Master it, and you can use foundation models without being used by them.
+</Callout>
+
+### The decision: pretraining likely helps vs likely hype
+
+<Categorize
+  client:visible
+  question="Sort each concrete scenario by whether a foundation model's pretraining is likely to genuinely help or is likely hype."
+  buckets={["Pretraining likely helps", "Likely hype"]}
+  items={[
+    { text: "Cold-start volatility forecast for a 2-week-old listing", bucket: "Pretraining likely helps" },
+    { text: "Cross-asset prior sharpening forecasts on an illiquid frontier name", bucket: "Pretraining likely helps" },
+    { text: "A strong zero-shot baseline for a brand-new derivative with no history", bucket: "Pretraining likely helps" },
+    { text: "Daily-return signal on a liquid mega-cap, judged by MASE alone", bucket: "Likely hype" },
+    { text: "Best-of-1,000-configs Sharpe on a heavily-researched index, undeflated", bucket: "Likely hype" },
+    { text: "A leaderboard MASE win reported as if it were a backtest PnL", bucket: "Likely hype" }
+  ]}
+  explanation="Pretraining helps where local data is scarce (cold-start, illiquid, frontier, brand-new products) and a borrowed prior fills a real gap. It's hype where the target is liquid, heavily-researched, and low-SNR, where any edge is arbitraged away and a forecasting-error metric is being passed off as profit — especially with an undeflated, leakage-prone evaluation."
+/>
+
+**The synthesis — and the bridge to your final exam.** Foundation models are neither a miracle nor a fraud; they are a *prior*, and a prior is exactly as valuable as the gap it fills. Where your own clean data is thin — cold-start, illiquid, frontier, new products — that borrowed structure is genuine leverage. Where your data is abundant and your target is liquid, low-SNR, and picked over by an army of competitors, the prior adds almost nothing and the leaderboard is a vanity metric. The instrument that tells the two apart is not enthusiasm — it's the honest evaluation: **deflate the best-of-N Sharpe, purge and embargo your folds, subtract real costs and capacity, test only on post-cutoff out-of-sample bars, and demand that your live pipeline reproduces the research result exactly.** Carry that discipline into the final exam, where you'll have to apply every piece of it — the bet, the models, the scaling, the LLM tooling, the leakage traps, and this gauntlet — to decide what survives and what's a mirage. You now know how to use a foundation model in markets without letting it use you. Go prove it.
+
+## Recap
+
+<MindMap
+  client:visible
+  title="The honest evaluation of foundation models in markets"
+  caption="A benchmark win is not money. Deflate for luck, purge and embargo, net costs and capacity, test post-cutoff, demand live parity — and know that a borrowed prior helps most exactly where your own data is thin."
+  root={{
+    label: "The honest evaluation",
+    children: [
+      {
+        label: "Re-armed tools",
+        children: [
+          { label: "Deflated Sharpe: hurdle ≈ √(2 ln N)" },
+          { label: "N=500 → hurdle ≈ 3.5" },
+          { label: "Purge: drop overlapping-label rows" },
+          { label: "Embargo: buffer after each test fold" }
+        ]
+      },
+      {
+        label: "Why benchmarks don't transfer",
+        children: [
+          { label: "Distribution shift (regimes move)" },
+          { label: "Reflexivity / crowding (edge arbitraged)" },
+          { label: "Low SNR (capacity fits noise)" },
+          { label: "Stationary domains ≠ markets" }
+        ]
+      },
+      {
+        label: "Where pretraining helps",
+        children: [
+          { label: "Cross-asset / cross-market transfer" },
+          { label: "Cold-start (new asset, little history)" },
+          { label: "Data-poor / illiquid regimes" },
+          { label: "Strong zero-shot baseline / prior" }
+        ]
+      },
+      {
+        label: "Where it's hype",
+        children: [
+          { label: "Liquid, heavily-researched returns" },
+          { label: "Low SNR, edge already competed away" },
+          { label: "Chasing MASE as if it were PnL" }
+        ]
+      },
+      {
+        label: "End-to-end gauntlet",
+        children: [
+          { label: "Transaction costs" },
+          { label: "Capacity at size" },
+          { label: "Deflation (best-of-N)" },
+          { label: "Post-cutoff out-of-sample" },
+          { label: "Live-pipeline parity" }
+        ]
+      }
+    ]
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="The honest evaluation — final synthesis check"
+  questions={[
+    {
+      question: "You searched N = 1,000 foundation-model configurations and the best posted an in-sample Sharpe of 3.0 (trial dispersion ≈ 1). Roughly what is the luck hurdle, and does the champion clear it?",
+      options: [
+        { text: "Hurdle ≈ √(2 ln 1000) ≈ 3.7; 3.0 does NOT clear it, so it's indistinguishable from luck", correct: true },
+        { text: "Hurdle ≈ 1.0; 3.0 clears it easily, so it's clearly real edge" },
+        { text: "Hurdle ≈ 0; any positive Sharpe counts once N is large" },
+        { text: "Hurdle ≈ 7.4; impossible to ever clear, so the test is meaningless" }
+      ],
+      explanation: "ln 1000 ≈ 6.91, so √(2 × 6.91) = √13.8 ≈ 3.72. The champion's 3.0 is below the hurdle: the best of 1,000 worthless configs would look about this good by chance. Deflated edge ≈ 3.0 − 3.7 = −0.7, indistinguishable from luck."
+    },
+    {
+      question: "Which properties of financial returns explain why dominance on weather/demand benchmarks fails to guarantee tradable return forecasts? (Select all that apply.)",
+      allowMultiple: true,
+      options: [
+        { text: "Non-stationarity: the data-generating process shifts across regimes", correct: true },
+        { text: "Reflexivity/crowding: a known edge gets arbitraged toward zero", correct: true },
+        { text: "Low signal-to-noise: most return variance is irreducible noise", correct: true },
+        { text: "Returns have no patterns at all, so no model can ever beat a coin flip" }
+      ],
+      explanation: "Non-stationarity, reflexivity, and low SNR all undermine transfer from stationary domains. Returns aren't pattern-free — faint, fleeting structure exists — but it's adversarial and easily arbitraged, which is exactly why benchmark skill doesn't translate."
+    },
+    {
+      question: "Same foundation model, two targets: a 30-year liquid large-cap (tuned local R² = 1.8%, fine-tuned foundation R² = 1.9%) and a 3-week IPO (local model can't be fit, foundation R² = 1.1%). What's the right read?",
+      options: [
+        { text: "The prior adds almost nothing on the data-rich target but is the only usable forecast on the data-poor one — value scales with data scarcity", correct: true },
+        { text: "The foundation model is uniformly better, since 1.9% > 1.8% and 1.1% > 0%", correct: true },
+        { text: "The foundation model is useless because 0.1% is within noise on the large-cap" },
+        { text: "Local models always beat foundation models regardless of data" }
+      ],
+      explanation: "The deciding variable is local data abundance. On the data-rich large-cap the 0.1% gain is a rounding error that likely dies after deflation and costs; on the data-poor IPO the borrowed prior is the only forecast available. A borrowed prior's value is inversely proportional to how much clean local data you already have."
+    },
+    {
+      question: "A foundation model beats a random walk on a liquid large-cap's daily returns by MASE. Why might this be pure hype?",
+      options: [
+        { text: "MASE measures point-forecast error, not profit; on liquid low-SNR returns a better MASE routinely coexists with negative PnL after costs, and any edge is already crowded out", correct: true },
+        { text: "MASE can't be computed for neural networks" },
+        { text: "Random walks are unbeatable, so any improvement is a bug" },
+        { text: "A lower MASE always implies a higher Sharpe ratio" }
+      ],
+      explanation: "MASE rewards accurate point forecasts, but trading profit depends on sign, timing, and costs on a target whose edge has been arbitraged away. The leaderboard is not the ledger: a forecasting-error metric is not a cost-aware, deflated, leakage-free backtest."
+    },
+    {
+      question: "A signal shows a gross in-sample Sharpe of 2.8. After realistic costs it's 1.8; on a leakage-free POST-CUTOFF out-of-sample window it falls to 0.6; at target size (capacity) it's 0.3; and a timing mismatch in the live pipeline takes it to ≈ 0. What's the lesson?",
+      options: [
+        { text: "A benchmark win is not money — it must survive costs, capacity, deflation, post-cutoff OOS, and live-pipeline parity; each stage can erase the edge", correct: true },
+        { text: "The strategy is fine; only the live pipeline was broken and can be ignored" },
+        { text: "Gross in-sample Sharpe is the only number that matters" },
+        { text: "Post-cutoff testing is optional once costs are accounted for" }
+      ],
+      explanation: "Every stage of the end-to-end gauntlet can kill a strategy that looked perfect upstream. Deflation and leakage checks are cheap and should gate the expensive live work. The honest evaluation runs the whole gauntlet before any capital is risked."
+    },
+    {
+      question: "Which scenario is the BEST fit for leaning on a foundation model's pretrained prior?",
+      options: [
+        { text: "A cold-start forecast for a brand-new, illiquid product with only a handful of observations", correct: true },
+        { text: "A daily-return signal on a heavily-researched mega-cap with 30 years of clean data" },
+        { text: "Any liquid target, as long as the leaderboard MASE is low" },
+        { text: "A best-of-2,000-configs Sharpe reported without deflation" }
+      ],
+      explanation: "A borrowed prior fills the gap left by scarce local data, so cold-start, illiquid, and brand-new products are where it genuinely helps. On a data-rich liquid mega-cap a tuned local model already extracts the available signal, and undeflated best-of-N results on liquid targets are the hype zone, not the help zone."
+    }
+  ]}
+/>

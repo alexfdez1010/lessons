@@ -1,0 +1,457 @@
+---
+title: "Zero-Shot, Few-Shot y Leyes de Escala"
+description: "Predicción zero-shot sin actualizar pesos, el benchmark MASE que decide si bates a la baseline ingenua, el espectro de adaptación zero-shot → few-shot → fine-tune completo, el in-context learning como un diminuto conjunto de entrenamiento en tiempo de inferencia, y las leyes de escala neuronales — además del argumento del suelo de ruido irreducible que explica por qué se aplanan en un nivel inútil sobre retornos de mercados casi eficientes."
+topic: "es/foundation-models-for-financial-time-series"
+order: 3
+minutes: 18
+updated: 2026-06-22
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, ZeroShotVsFittedForecast } from '@/components/react';
+
+La lección 2 os puso en las manos un modelo fundacional para series temporales: una única red, preentrenada sobre un montón enorme de series no relacionadas, que apuntáis a un conjunto de datos completamente nuevo y a la que le pedís una predicción. Esta lección va de *cómo* lo usáis de verdad — y de cómo saber si la predicción que os devuelve vale algo.
+
+Aquí hay un espectro de esfuerzo. En un extremo no hacéis **nada**: le dais al modelo una ventana de historia y leéis una predicción, sin entrenamiento de ningún tipo. Eso es **zero-shot**. En el otro extremo reentrenáis cada peso sobre vuestros datos objetivo — **fine-tune completo**. En medio está el punto interesante: **few-shot** e **in-context learning**, donde el modelo se adapta un poco sin que toquéis la mayoría de sus parámetros.
+
+Y sobrevolándolo todo está la pregunta que todo quant acaba haciéndose sobre el deep learning: *¿ayuda ser más grande?* Las **leyes de escala** dicen "sí, de forma predecible" — para la mayoría de los dominios. Veremos por qué las finanzas son la excepción brutal, y por qué una curva de escala que se aplana por encima del umbral de rentabilidad es una cinta de correr en la que puedes correr para siempre sin llegar a ningún sitio.
+
+Empecemos por no hacer nada.
+
+## Predicción zero-shot
+
+<MCQ
+  client:visible
+  pretest
+  question="En una predicción zero-shot estricta, ¿qué les pasa a los pesos del modelo cuando lo apuntas a una serie que nunca ha visto?"
+  options={[
+    { text: "Nada — los pesos están congelados; el modelo lee la ventana de contexto y emite una predicción sin ajuste alguno", correct: true },
+    { text: "Unos pocos pasos de gradiente hacen fine-tune a la capa final sobre la nueva serie antes de predecir" },
+    { text: "El modelo se reentrena desde cero sobre la nueva serie, usando el preentrenamiento como inicialización" },
+    { text: "El optimizador corre hasta que el error in-sample sobre la ventana de contexto llega a cero" }
+  ]}
+  explanation="Zero-shot significa exactamente cero actualizaciones de pesos. Pasas la ventana de contexto por el modelo preentrenado congelado y lees la predicción por el otro lado. Cualquier paso de gradiente — aunque sea sobre una sola capa — ya es fine-tuning, no zero-shot."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+**La analogía.** Imaginad a una analista experimentada que ha leído diez mil gráficos de todos los mercados y sensores imaginables. Le deslizáis por la mesa un gráfico completamente nuevo — uno que nunca ha visto, de un sector que no reconoce — y le preguntáis: "¿qué viene después?". No se va a estudiarlo durante una semana. Le echa un vistazo a la forma, reconoce la estacionalidad, la tendencia, la textura del ruido, y esboza la continuación en frío. Esa lectura en frío, apoyándose solo en patrones absorbidos en otros sitios, es la predicción zero-shot. Sin deberes, sin ajuste — pura transferencia de patrones.
+
+**Definición precisa.** Una predicción zero-shot pasa una **ventana de contexto** $x_{1:L}$ (las últimas $L$ observaciones de una serie objetivo) a un modelo preentrenado congelado $f_\theta$ y produce una predicción $\hat{x}_{L+1:L+H}$ sobre un horizonte $H$, **sin actualizar $\theta$**. El modelo nunca ha entrenado sobre esta serie; generaliza puramente a partir de la estructura que aprendió durante el preentrenamiento. Contrastad esto con el flujo de trabajo clásico, donde ajustáis un ARIMA nuevo o entrenáis un LSTM nuevo *sobre esta serie exacta* antes de poder predecirla.
+
+**¿Cómo sabéis si la predicción es buena?** Necesitáis un benchmark, y "error bajo" en unidades crudas no significa nada entre series con escalas distintas. La vara de medir libre de escala estándar es el **MASE**.
+
+### MASE: el benchmark de error escalado
+
+El **Error Absoluto Escalado Medio** (Mean Absolute Scaled Error) compara el error de vuestra predicción con el error de una **baseline ingenua** muy simple — normalmente la predicción ingenua estacional, que simplemente predice "lo mismo que hace una estación". Formalmente, para una predicción $\hat{y}_t$ frente a los valores reales $y_t$:
+
+$$\text{MASE} = \frac{\frac{1}{H}\sum_{t} |y_t - \hat{y}_t|}{\frac{1}{n-m}\sum_{i=m+1}^{n} |y_i - y_{i-m}|}$$
+
+El numerador es el **MAE de vuestra predicción** sobre el horizonte de test. El denominador es el **MAE de la predicción ingenua estacional** calculado *sobre el conjunto de entrenamiento* (prediciendo cada punto con el valor $m$ pasos antes, donde $m$ es el periodo estacional). El cociente no tiene unidades, así que podéis promediarlo entre miles de series de escalas radicalmente distintas.
+
+La lectura es brutalmente simple:
+
+- **MASE < 1** → bates a la baseline ingenua (bien).
+- **MASE = 1** → empatas con la baseline ingenua (no aportaste nada).
+- **MASE > 1** → eres *peor* que simplemente repetir la estación anterior (vergonzoso).
+
+**Ejemplo resuelto — calcular un MASE.** Supongamos una serie no estacional ($m=1$, así que la predicción ingenua es "el valor de ayer"). Sobre el **conjunto de entrenamiento** de 6 puntos $[10, 12, 11, 14, 13, 15]$, los errores ingenuos a un paso son las diferencias absolutas consecutivas:
+
+$$|12-10|, |11-12|, |14-11|, |13-14|, |15-13| = 2, 1, 3, 1, 2$$
+
+Su media es $(2+1+3+1+2)/5 = 9/5 = 1.8$. Ese es el **denominador** — el error típico de la baseline ingenua sobre esta serie.
+
+Ahora el modelo predice los siguientes 3 puntos. Los valores reales resultan ser $[16, 14, 17]$; la predicción **zero-shot** fue $[15.5, 14.5, 16.0]$. Sus errores absolutos son $|16-15.5|, |14-14.5|, |17-16.0| = 0.5, 0.5, 1.0$, media $= 2.0/3 = 0.667$. Ese es el **numerador**.
+
+$$\text{MASE}_{\text{zero-shot}} = \frac{0.667}{1.8} = 0.37$$
+
+Un MASE de **0.37** significa que el error medio de la predicción zero-shot es alrededor de un tercio del de la baseline ingenua — una victoria clara y real. Comparad una predicción más torpe $[14, 14, 14]$ (simplemente adivinando el último valor de entrenamiento): sus errores son $|16-14|, |14-14|, |17-14| = 2, 0, 3$, media $= 5/3 = 1.667$, dando $\text{MASE} = 1.667/1.8 = 0.93$ — apenas mejor que la ingenua. El MASE os dice al instante qué predicción se ganó de verdad el sueldo.
+
+<ZeroShotVsFittedForecast client:visible title="Zero-shot vs. ajustado: cuándo predecir realmente compensa" stationaryLabel="Estacional / casi estacionaria" financialLabel="Retornos financieros" actualLabel="Real (futuro realizado)" zeroShotLabel="Modelo fundacional zero-shot" fittedLabel="Modelo local ajustado" naiveLabel="Baseline ingenua" errorLabel="Error de predicción (estilo MASE, ↓ mejor)" caption="Alterna el régimen. En la serie casi estacionaria (estacional, tipo meteorología), la predicción zero-shot congelada sigue al valor real y consigue un MASE cómodamente por debajo de 1 — bate de verdad a la baseline ingenua. Cambia a la serie de retornos financieros y observa cómo tanto la predicción zero-shot COMO la totalmente ajustada se colapsan sobre la línea ingenua: MASE ≈ 1, porque casi no hay estructura que predecir. Mismo modelo, misma métrica — la diferencia está enteramente en cuánta señal contiene la serie." />
+
+<Callout variant="warning" title="Batir el benchmark no es lo mismo que ganar dinero">
+Un MASE por debajo de 1 significa que batiste a una predicción ingenua — una victoria en un concurso de predicción, no un P&L. Aquí se esconden dos trampas. Primera, sobre retornos financieros la baseline ingenua es *brutalmente fuerte* (el retorno de mañana es prácticamente impredecible, así que "predecir la media" es casi óptimo), y un MASE de 0.99 es un error de redondeo, no una ventaja. Segunda, el MASE mide la precisión de la predicción puntual, que no tiene casi nada que ver con si una estrategia construida sobre la predicción sobrevive a los costes de transacción, la latencia y la rotación. Un predictor puede ganar el benchmark y aun así perder dinero — ved la lección 6.
+</Callout>
+
+### Cuándo usarlo
+
+Echad mano del zero-shot lo primero siempre que queráis una **baseline rápida y sin ajuste** o simplemente *no podáis* ajustar un modelo por serie — un activo nuevo con tres semanas de historia, o diez mil series que no podéis vigilar individualmente. También es el control honesto: antes de gastar una semana haciendo fine-tuning, comprobad si el modelo congelado ya hace el trabajo. La pega es que el zero-shot solo puede explotar estructura que *se parezca a su preentrenamiento*; una serie con dinámicas genuinamente nuevas (o, como veremos, casi sin estructura) recibe una lectura en frío mediocre y ninguna cantidad de esfuerzo "cero" lo arregla.
+
+<FillBlank
+  client:visible
+  question="Completa la lectura del MASE."
+  text="Una predicción con MASE = 0.37 tiene un error medio de alrededor de {{un tercio del|tres veces el|igual al}} de la baseline ingenua estacional, así que claramente {{bate a|pierde frente a|empata con}} el benchmark."
+  explanation="El MASE es el MAE de la predicción dividido por el MAE ingenuo. 0.37 significa aproximadamente un tercio del error de la baseline — una victoria clara. Valores por encima de 1 significarían perder frente a la ingenua; exactamente 1 significa empate."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+/>
+
+## El espectro de adaptación
+
+<MCQ
+  client:visible
+  pretest
+  question="Ordenas tres enfoques según cuánto cambian del modelo: (A) dar la serie objetivo como contexto con pesos congelados, (B) reentrenar cada peso sobre la serie objetivo, (C) actualizar un pequeño adaptador / capa final sobre un puñado de ejemplos objetivo. De menos a más adaptación, ¿qué orden es correcto?"
+  options={[
+    { text: "A (zero-shot) → C (few-shot / fine-tune ligero) → B (fine-tune completo)", correct: true },
+    { text: "B → C → A" },
+    { text: "C → A → B" },
+    { text: "A → B → C" }
+  ]}
+  explanation="Zero-shot no cambia ningún peso, few-shot cambia unos pocos (o corre un ajuste ligero sobre un puñado de ejemplos), y el fine-tune completo lo actualiza todo. Así que el orden de adaptación creciente es A → C → B."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+**La analogía.** Contratar a una consultora. **Zero-shot** es pedirle que opine sobre tu problema en frío, usando solo su experiencia previa. **Few-shot** es darle un informe de una página con tres ejemplos resueltos antes de que responda — se adapta sobre la marcha sin que la reprogrames. **Fine-tune completo** es mandarla de vuelta a la escuela un semestre sobre *tu* negocio en concreto: máxima personalización, máximo coste, y un riesgo real de que olvide todo lo demás (olvido catastrófico) o que simplemente memorice tus tres casos de estudio (sobreajuste).
+
+**Definiciones precisas.**
+
+- **Zero-shot.** Sin actualizaciones de pesos. Entra la ventana de contexto, sale la predicción.
+- **Few-shot.** Una *pequeña* cantidad de adaptación: o bien un puñado de ejemplos en contexto añadidos al prompt/contexto (sin cambio de pesos — eso es in-context learning, próxima sección), o un **fine-tune ligero** que toca solo un pequeño subconjunto de parámetros (una capa final, un adaptador LoRA, un ajuste solo de sesgos) sobre unos pocos ejemplos etiquetados.
+- **Fine-tune completo.** Retropropagáis a **todos** los parámetros $\theta$ sobre vuestros datos objetivo, usando los pesos preentrenados solo como inicialización.
+
+El compromiso a lo largo del espectro es el corazón de la lección:
+
+| | ¿Actualiza pesos? | Datos objetivo necesarios | Cómputo | Riesgo de sobreajuste sobre datos de baja SNR |
+|---|---|---|---|---|
+| Zero-shot | Ninguno | Ninguno (solo una ventana de contexto) | Solo inferencia — el más barato | Ninguno (no se ajusta nada) — pero limitado por la transferencia del preentrenamiento |
+| Few-shot (in-context) | Ninguno | Un puñado de ejemplos en contexto | Solo inferencia | Bajo–moderado (un contexto más largo puede meter más ruido) |
+| Few-shot (ajuste ligero) | Un pequeño subconjunto (adaptador / capa final) | Decenas–cientos de ejemplos | Modesto | Moderado — menos parámetros que sobreajustar, pero *sí* estás ajustando |
+| Fine-tune completo | Todos los parámetros | Miles+ de ejemplos alineados | El más alto (backprop completo) | **Alto** — máxima capacidad frente a retornos ruidosos y escasos |
+
+Fijaos en la columna que más importa para las finanzas: **el riesgo de sobreajuste sube según os movéis a la derecha**, y las series de retornos financieros son exactamente el régimen de baja señal y pocas muestras donde ese riesgo muerde con más fuerza. Más adaptación no es automáticamente mejor — sobre datos ruidosos a menudo es *peor*, porque le has dado a un modelo flexible más cuerda para ajustar ruido (el problema del hambre de datos del curso de deep learning).
+
+<Callout variant="warning" title="Hacer fine-tune completo de un modelo gigante sobre unos cientos de retornos ruidosos es una esponja para el ruido">
+El instinto "tengo un modelo fundacional, voy a hacerle fine-tune sobre mis datos" suele acertar para visión y lenguaje y suele *equivocarse* para retornos de baja frecuencia. El fine-tune completo desata todo el número de parámetros del modelo sobre una muestra diminuta, autocorrelada y con cambios de régimen — el ratio de parámetros por muestra efectiva explota y el modelo memoriza ruido. Sobre datos financieros escasos y de baja SNR, el extremo *menos* adaptativo del espectro (zero-shot o un adaptador minúsculo) generaliza con frecuencia mejor que un fine-tune completo. Por defecto, quedaos a la izquierda de la tabla y solo moveos a la derecha si la evidencia fuera de muestra — no la pérdida in-sample — lo justifica.
+</Callout>
+
+### Cuándo usar cuál
+
+Usad **zero-shot** para arranques en frío y secciones transversales masivas; **few-shot / ajuste ligero** cuando tengáis una cantidad *modesta* de datos objetivo limpios y relevantes y queráis un empujón sin una revisión que absorba ruido; **fine-tune completo** solo cuando tengáis de verdad datos objetivo abundantes y alineados y una tarea de alta SNR (pensad en microestructura con millones de snapshots, no en retornos diarios). Cuanto más a la derecha vayáis, más debéis demostrar que la adaptación ayuda *fuera de muestra*, porque la pérdida in-sample siempre os sonreirá.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Zero-shot", definition: "Pesos congelados; la ventana de contexto por sí sola produce la predicción" },
+    { term: "Few-shot in-context", definition: "Un puñado de ejemplos en el prompt adaptan el comportamiento sin cambio de pesos" },
+    { term: "Fine-tune ligero", definition: "Actualizar solo un pequeño adaptador o capa final sobre unos pocos ejemplos etiquetados" },
+    { term: "Fine-tune completo", definition: "Backprop a cada parámetro — máxima capacidad, máximo riesgo de sobreajuste sobre datos de baja SNR" }
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+## In-context learning
+
+<MCQ
+  client:visible
+  pretest
+  question="Un modelo hace 'in-context learning' cuando pones unos pocos ejemplos entrada→salida en su contexto y se adapta a ellos. ¿Dónde vive esa adaptación?"
+  options={[
+    { text: "Enteramente en el forward pass — el contexto actúa como un diminuto conjunto de entrenamiento en inferencia; no cambia ningún peso", correct: true },
+    { text: "En los pesos, que se actualizan en silencio por un paso de gradiente oculto sobre los ejemplos" },
+    { text: "En una caché que persiste los ejemplos en los parámetros permanentes del modelo" },
+    { text: "En ningún sitio — los ejemplos en contexto se ignoran a menos que también hagas fine-tune" }
+  ]}
+  explanation="El in-context learning es un fenómeno del forward pass. Los ejemplos en el contexto guían la salida como si el modelo hubiera entrenado sobre ellos, pero no se actualiza ningún parámetro — el 'aprendizaje' es transitorio, dura solo mientras esos ejemplos están en el contexto."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+**La analogía.** Le pedís a una amiga políglota que traduzca una frase a un dialecto en el que está oxidada. En lugar de mandarla a la escuela de idiomas (fine-tuning), le mostráis primero cinco traducciones de ejemplo. Estudia el patrón *en el momento* y clava la sexta — y luego lo olvida en cuanto la conversación avanza. Los cinco ejemplos fueron un diminuto conjunto de entrenamiento desechable que vivió enteramente en su atención a corto plazo. Eso es **in-context learning (ICL)**: el modelo trata el contexto como un conjunto de entrenamiento en tiempo de inferencia, adaptando su salida sin que nada de ello se pegue a sus pesos.
+
+**Enunciado preciso.** Dado un contexto que contiene $k$ pares de demostración $(x_1, y_1), \dots, (x_k, y_k)$ seguidos de una consulta $x_{\text{query}}$, el modelo produce $\hat{y}_{\text{query}}$ condicionado a todos ellos a través de un único forward pass. El hallazgo empírico notable (y un área de investigación activa) es que los grandes modelos de secuencia preentrenados se comportan *como si* hubieran ejecutado un algoritmo de aprendizaje sobre esos $k$ pares internamente — y sin embargo $\theta$ permanece intacto. Para un modelo fundacional de series temporales, las "demostraciones" suelen ser simplemente la **propia ventana de contexto**: la historia reciente *es* el diminuto conjunto de entrenamiento sobre el que el modelo condiciona su continuación.
+
+**Intuición resuelta — longitud de contexto sobre una serie ruidosa.** Supongamos que una serie es 90% ruido, 10% señal, y extendéis la ventana de contexto de 64 a 512 observaciones esperando "mostrarle más al modelo". Sobre una serie limpia y casi estacionaria, más contexto significa más patrón genuino al que agarrarse — la precisión mejora. Sobre una serie de retornos casi eficiente, las *448 observaciones extra son abrumadoramente ruido*: aproximadamente $0.9 \times 448 \approx 403$ de ellas no llevan estructura predecible. No habéis enriquecido el diminuto conjunto de entrenamiento con señal; lo habéis diluido con distractores, y el modelo puede "aprender" espuriamente un patrón a partir del ruido que no se repetirá. Un contexto más largo ayuda **solo en proporción a la densidad de señal** de lo que añadís.
+
+<Callout variant="warning" title="Más contexto no es más señal sobre series de baja SNR">
+El arreglo seductor cuando una predicción decepciona es "dale más historia". Sobre una serie estructurada eso ayuda. Sobre retornos a menudo *perjudica*: un contexto más largo es una muestra de ruido más larga, y el in-context learning ajustará alegremente patrones de ruido transitorios que se evaporan fuera de muestra — la misma trampa de sobreajuste que el fine-tuning, solo que reubicada en el forward pass. Alargad el contexto para añadir *señal*, nunca para añadir *cantidad*.
+</Callout>
+
+### Cuándo usarlo
+
+El prompting in-context / few-shot brilla cuando tenéis **unos pocos ejemplos limpios y representativos** y queréis adaptación con cero infraestructura de entrenamiento — sin optimizador, sin checkpoint, sin riesgo de olvido catastrófico, e iteración instantánea. Es el valor por defecto natural para el arranque en frío y el prototipado rápido. Se desvanece exactamente donde la densidad de señal es baja: amontonar más contexto sobre una serie de retornos ruidosa le da al modelo más ruido, no más ventaja.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Si el in-context learning no cambia ningún peso, ¿cómo puede el modelo 'adaptarse' a los ejemplos en absoluto?</summary>
+
+**Respuesta.** La adaptación vive en las **activaciones**, no en los parámetros. Los pares de demostración fluyen por la self-attention, y el token de consulta los atiende, así que la salida está *condicionada* a esos ejemplos igual que si fueran contexto para cualquier predicción. La investigación sugiere que el forward pass puede implementar algo parecido a un paso de aprendizaje interno sobre las demostraciones — pero crucialmente es transitorio: quitad los ejemplos del contexto y el "aprendizaje" desaparece por completo, porque nunca se escribió nada de vuelta en $\theta$. Es memoria de trabajo, no memoria a largo plazo.
+
+</details>
+</Reveal>
+
+## Leyes de escala
+
+<MCQ
+  client:visible
+  pretest
+  question="Las leyes de escala neuronales (Kaplan 2020; Hoffmann/Chinchilla 2022) describen cómo se comporta la pérdida de test de un modelo según haces crecer parámetros, datos y cómputo. ¿Qué forma toma esa relación?"
+  options={[
+    { text: "Una ley de potencias — la pérdida cae de forma suave y predecible, pero con retornos decrecientes, hacia un suelo irreducible", correct: true },
+    { text: "Una función escalón — la pérdida es plana hasta un umbral, luego cae a cero" },
+    { text: "Lineal — cada duplicación de parámetros reduce a la mitad la pérdida indefinidamente" },
+    { text: "Decaimiento exponencial a una pérdida de exactamente cero con suficiente cómputo" }
+  ]}
+  explanation="Las leyes de escala son leyes de potencias: la pérdida de test decrece como una potencia del tamaño de modelo/datos/cómputo, con retornos constantemente decrecientes, acercándose a un suelo irreducible no nulo L_∞ — nunca cero. Cada duplicación ayuda menos que la anterior."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+**La analogía.** Pulir una lente. Las primeras horas de pulido afilan la imagen de forma espectacular. Seguid y cada hora adicional ayuda menos — y ninguna cantidad de pulido bate el *límite de difracción* fijado por la física: hay un suelo de borrosidad que simplemente no podéis eliminar lijando. El escalado neuronal es lo mismo. Echad más parámetros, datos y cómputo y la pérdida sigue cayendo a lo largo de una curva suave de ley de potencias — pero con retornos decrecientes, y toca fondo en un **suelo irreducible** $L_\infty$ fijado por cuánta señal contiene el problema. Podéis pulir para siempre; no podéis batir el límite de difracción.
+
+**Forma precisa.** Una parametrización común de la ley de escala en tamaño de modelo $N$ (manteniendo datos/cómputo abundantes) es:
+
+$$L(N) = L_\infty + \left(\frac{N_c}{N}\right)^{\alpha}$$
+
+donde $L(N)$ es la pérdida de test con $N$ parámetros, $L_\infty$ es la **pérdida irreducible** (el suelo de entropía — la parte que ningún modelo puede eliminar jamás), $N_c$ es una constante de escala específica del problema, y $\alpha > 0$ es el exponente de escala (la pendiente de la curva de retornos decrecientes). Kaplan et al. (2020) encontraron tales leyes de potencias abarcando muchos órdenes de magnitud en lenguaje; Hoffmann et al. (2022, "Chinchilla") refinaron el balance *óptimo en cómputo*, mostrando que muchos modelos estaban sobredimensionados e infraentrenados — deberíais escalar datos y parámetros a la vez.
+
+**Ejemplo resuelto — retornos decrecientes.** Tomad $L_\infty = 0.5$, $N_c = 10^6$, $\alpha = 0.5$ (así que el término reducible es $\sqrt{N_c/N}$):
+
+| Parámetros $N$ | Término reducible $\sqrt{10^6/N}$ | Pérdida total $L(N)$ | Ganancia vs fila anterior |
+|---|---|---|---|
+| $10^4$ | $\sqrt{100} = 10$ | $10.5$ | — |
+| $10^6$ | $\sqrt{1} = 1$ | $1.5$ | $-9.0$ |
+| $10^8$ | $\sqrt{0.01} = 0.1$ | $0.6$ | $-0.9$ |
+| $10^{10}$ | $\sqrt{0.0001} = 0.01$ | $0.51$ | $-0.09$ |
+
+Ir de $10^4$ a $10^6$ parámetros (×100) recortó la pérdida en 9.0. El *siguiente* ×100 (a $10^8$) compró solo 0.9. El siguiente ×100 compró 0.09. Cada aumento de escala de 100× entrega una *décima parte* de la mejora anterior, y la curva se arrastra visiblemente hacia $L_\infty = 0.5$. Esa asíntota es toda la historia para las finanzas.
+
+### ¿Se cumplen las leyes de escala sobre datos de mercado?
+
+Aquí está la pregunta letal. En lenguaje y visión, $L_\infty$ es **pequeña** — hay una estructura aprendible enorme, así que escalar compensa durante un largo, larguísimo trecho antes de que el suelo muerda. Los mercados son distintos. Un mercado casi eficiente tiene, casi por construcción, un **suelo irreducible enorme**: los retornos del siguiente periodo están cerca de una martingala, así que la entropía del objetivo es casi máxima y el componente predecible es minúsculo. La ley de escala sigue *cumpliéndose* — la pérdida sigue cayendo como una ley de potencias — pero se **aplana en $L_\infty$ mucho antes de que ese suelo sea lo bastante bajo como para operar rentablemente.**
+
+**El argumento del suelo de ruido, lado a lado.** Imaginad la misma ley de escala $L(N) = L_\infty + (N_c/N)^\alpha$ en dos dominios:
+
+| | Dominio de bajo ruido (p. ej. nowcast meteorológico) | Retornos casi eficientes |
+|---|---|---|
+| Suelo irreducible $L_\infty$ | Pequeño — mucha estructura aprendible | **Enorme** — el objetivo es casi impredecible |
+| Dónde se aplana la curva | En una pérdida *útil* y baja | En una pérdida *por encima del umbral de rentabilidad* |
+| Beneficio de escalar 100× | Ganancias de precisión reales y sostenidas | Asintóticamente nada operable |
+| Veredicto | Escala sin miedo — funciona | Una cinta de correr: movimiento sin progreso |
+
+Sobre retornos, podéis multiplicar por 100 vuestros parámetros y vuestros datos, deslizaros por la curva de ley de potencias exactamente como promete la matemática, y aun así aterrizar en una pérdida que está *por encima del umbral donde una estrategia gana dinero tras costes*. El modelo se vuelve "mejor" en pérdida mientras sigue siendo inútil en P&L, porque el suelo al que se acerca lo fija la casi eficiencia del mercado, no vuestro presupuesto de cómputo.
+
+<Callout variant="warning" title="Una curva de escala que se aplana por encima del umbral de rentabilidad es una cinta de correr">
+Esta es la única idea más importante de la lección. Las leyes de escala son reales y se cumplen sobre datos de mercado — esa es exactamente la trampa. Observaréis la pérdida cayendo con la escala, concluiréis "está funcionando, escalemos más", y verteréis cómputo en una curva cuya asíntota $L_\infty$ se sitúa *por encima* del nivel que necesitáis para ser rentables. Corréis cada vez más rápido y os quedáis en el mismo sitio. Antes de escalar nada sobre una serie de retornos, haceos la única pregunta que importa: *¿dónde se sitúa el suelo respecto al umbral de rentabilidad?* Si $L_\infty$ está por encima, más parámetros, más datos y más cómputo son todo dinero tirado. La escala resuelve problemas pobres en datos y ricos en señal — no puede cavar por debajo del suelo de entropía de un mercado.
+</Callout>
+
+<Categorize
+  client:visible
+  question="Clasifica cada afirmación bajo el dominio que mejor describe."
+  buckets={["Dominio de bajo ruido (escalar compensa)", "Retornos casi eficientes (escalar es una cinta de correr)"]}
+  items={[
+    { text: "El suelo irreducible L_∞ es pequeño, así que la curva se aplana en una pérdida útil", bucket: "Dominio de bajo ruido (escalar compensa)" },
+    { text: "Cada aumento de escala de 100× aún rinde ganancias de precisión reales y usables", bucket: "Dominio de bajo ruido (escalar compensa)" },
+    { text: "L_∞ es enorme porque el objetivo es casi una martingala", bucket: "Retornos casi eficientes (escalar es una cinta de correr)" },
+    { text: "La pérdida sigue cayendo por la ley de potencias pero nunca cruza el umbral de rentabilidad", bucket: "Retornos casi eficientes (escalar es una cinta de correr)" }
+  ]}
+  explanation="La escala ayuda en proporción a cuánta de la pérdida es reducible. Un suelo pequeño (mucha estructura) recompensa la escala; un suelo enorme (mercado casi eficiente) significa que la curva se aplana por encima del nivel que necesitas para ganar dinero — movimiento sin progreso."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+### Cuándo escalar merece el cómputo
+
+Escalad cuando el **suelo sea bajo y estéis por encima de él** — es decir, hay estructura aprendible abundante y vuestra pérdida actual está lejos de $L_\infty$, así que la siguiente duplicación aún compra precisión real. Eso describe tareas de alta SNR y ricas en datos (nowcasting de microestructura, estructura transversal con millones de muestras) mucho mejor que los retornos diarios de un único activo líquido. La prueba honesta antes de gastar el presupuesto de GPU: *estimad dónde se sitúa $L_\infty$ respecto a vuestro umbral de rentabilidad.* Si no podéis demostrar que el suelo está por debajo del umbral, escalar es la cinta de correr — y un modelo más pequeño y barato os lleva al mismo ningún sitio.
+
+<FillBlank
+  client:visible
+  question="Completa el veredicto de las leyes de escala para los mercados."
+  text="Sobre retornos casi eficientes la pérdida irreducible L_∞ es {{enorme|minúscula|exactamente cero}}, así que la curva de ley de potencias se aplana {{por encima del|por debajo del|exactamente en el}} umbral de rentabilidad — haciendo de más parámetros y datos una {{cinta de correr|ventaja garantizada|comida gratis}}."
+  explanation="El objetivo de un mercado casi eficiente es casi impredecible, así que L_∞ es enorme y la curva se aplana por encima del nivel necesario para ser rentable. La escala entonces produce movimiento sin progreso — una cinta de correr."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+/>
+
+## Cuándo merece la pena probar zero-shot / few-shot
+
+<MCQ
+  client:visible
+  pretest
+  question="¿Para qué única tarea es un modelo fundacional zero-shot congelado la opción MÁS DÉBIL frente a un modelo clásico construido a propósito?"
+  options={[
+    { text: "Exprimir alpha de una única serie de retornos diarios líquida, muy arbitrada y de baja SNR", correct: true },
+    { text: "Predecir un activo completamente nuevo con tres semanas de historia (arranque en frío)" },
+    { text: "Producir una baseline sobre una sección transversal de 5.000 nombres que no puedes ajustar individualmente" },
+    { text: "Predecir en un mercado pobre en datos e ilíquido con demasiada poca historia para ajustar un modelo a medida" }
+  ]}
+  explanation="El zero-shot brilla exactamente donde te falta data para ajustar algo a medida (arranque en frío, ilíquido, amplitud enorme) y como baseline. El único sitio donde es más débil es la arena más competida: una única serie de retornos líquida, muy arbitrada y de baja SNR, donde el suelo es alto y cualquier ventaja ya está arbitrada."
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+Juntar el espectro y el argumento de escala da una regla de decisión limpia. **El zero-shot y el few-shot se ganan el sueldo donde los datos son la restricción vinculante y el suelo es alcanzable — y decepcionan exactamente donde el mercado es más eficiente.**
+
+**Echad mano del zero-shot / few-shot cuando:**
+
+| Situación | Por qué gana el modelo congelado |
+|---|---|
+| **Arranque en frío** — un activo nuevo o de poca historia | Literalmente no puedes ajustar un modelo por serie con tres semanas de datos; el modelo preentrenado transfiere estructura que aprendió en otro sitio |
+| **Mercados pobres en datos / ilíquidos** | Demasiada poca historia para entrenar un modelo a medida sin sobreajustar; el zero-shot no necesita ninguna |
+| **Amplitud sobre una gran sección transversal** | Un único modelo congelado predice 10.000 series a la vez — sin ajuste por serie que vigilar |
+| **Una baseline fuerte que batir** | Antes de gastar una semana haciendo fine-tuning, comprueba si "no hacer nada" ya gana; es el control honesto para cualquier modelo más elaborado |
+
+**NO echéis mano de él cuando:** estéis intentando **exprimir alpha de una única serie de retornos líquida, muy arbitrada y de baja SNR**. Ese es el peor caso en todos los ejes — el suelo irreducible es enorme (casi eficiencia), cualquier estructura ha sido arbitrada por ejércitos de competidores, y un modelo congelado entrenado sobre series no relacionadas no tiene ningún derecho especial sobre el residuo. Aquí el modelo fundacional es, en el mejor de los casos, otro predictor mediocre de algo impredecible, y las leyes de escala prometen que no mejorará con el tamaño.
+
+<Callout variant="warning" title="La misma propiedad — baja SNR — que rompe el escalado también rompe el zero-shot">
+Fijaos en el hilo conductor de toda la lección. La baja relación señal-ruido es *por qué* el fine-tuning completo sobreajusta, *por qué* un contexto más largo perjudica al in-context learning, *por qué* la curva de escala se aplana por encima del umbral de rentabilidad, y *por qué* el zero-shot no tiene nada que transferir. Es todo una misma enfermedad. Los modelos fundacionales no derogan la eficiencia del mercado — reubican dónde ajustáis (o no ajustáis) el modelo, pero no pueden fabricar señal que no está. Usadlos donde la escasez de datos es el problema; nunca esperéis que batan a un mercado cuyo problema es que casi no hay nada que predecir.
+</Callout>
+
+### El compromiso en una línea
+
+El zero-shot/few-shot cambia **transferencia por ajuste**: renunciáis al entrenamiento a medida por serie a cambio de predicciones instantáneas y sin ajuste impulsadas por el preentrenamiento. Ese cambio es un *chollo* cuando no tenéis datos que ajustar (arranque en frío, ilíquido, amplitud enorme) y una *apuesta de pringado* cuando la restricción real no son los datos sino la propia eficiencia del mercado. Emparejad la herramienta con la restricción vinculante — escasez de datos, sí; suelo de entropía, nunca.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Activo en arranque en frío", definition: "Demasiada poca historia para ajustar un modelo a medida — el zero-shot transfiere estructura aprendida en otro sitio" },
+    { term: "Gran sección transversal", definition: "Un único modelo congelado predice miles de series sin ajuste por serie" },
+    { term: "Baseline fuerte", definition: "El control honesto de 'no hacer nada' que todo modelo más elaborado debe batir" },
+    { term: "Una serie de retornos líquida y arbitrada", definition: "El peor caso — suelo de entropía enorme, ventaja ya competida, nada que transferir" }
+  ]}
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+/>
+
+## Recapitulación
+
+<MindMap
+  client:visible
+  title="Zero-shot, few-shot y leyes de escala"
+  caption="La adaptación va desde el zero-shot congelado hasta el fine-tune completo; las leyes de escala prometen ganancias predecibles — excepto sobre retornos casi eficientes, donde un enorme suelo de ruido aplana la curva por encima del umbral de rentabilidad."
+  root={{
+    label: "Zero-shot, few-shot y escala",
+    children: [
+      {
+        label: "Predicción zero-shot",
+        children: [
+          { label: "Pesos congelados, entra la ventana de contexto" },
+          { label: "Sin ajuste sobre la serie objetivo" },
+          { label: "MASE = MAE de la predicción / MAE ingenuo" },
+          { label: "MASE < 1 bate a la ingenua; > 1 peor" }
+        ]
+      },
+      {
+        label: "Espectro de adaptación",
+        children: [
+          { label: "Zero-shot → few-shot → fine-tune completo" },
+          { label: "Más adaptación = más riesgo de sobreajuste" },
+          { label: "Retornos de baja SNR: quédate a la izquierda" }
+        ]
+      },
+      {
+        label: "In-context learning",
+        children: [
+          { label: "Contexto = diminuto set de entrenamiento en inferencia" },
+          { label: "No cambia ningún peso (vive en las activaciones)" },
+          { label: "Contexto más largo sobre ruido = más ruido" }
+        ]
+      },
+      {
+        label: "Leyes de escala",
+        children: [
+          { label: "L(N) = L_∞ + (N_c/N)^α, ley de potencias" },
+          { label: "Retornos decrecientes hacia el suelo L_∞" },
+          { label: "Kaplan 2020; Chinchilla 2022" },
+          { label: "Retornos: L_∞ enorme → cinta de correr" }
+        ]
+      },
+      {
+        label: "Cuándo probar zero/few-shot",
+        children: [
+          { label: "Arranque en frío y mercados ilíquidos" },
+          { label: "Amplitud sobre una sección transversal" },
+          { label: "Una baseline fuerte que batir" },
+          { label: "NO una serie de retornos líquida y arbitrada" }
+        ]
+      }
+    ]
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Zero-shot, few-shot y leyes de escala — ponte a prueba"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  nextLabel="Siguiente pregunta"
+  backLabel="Atrás"
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  seeResultsLabel="Ver resultados"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  gateLabel="Comprueba tu respuesta para continuar."
+  questions={[
+    {
+      question: "Sobre un conjunto de entrenamiento, el MAE de la predicción ingenua estacional es 4.0. El MAE de tu modelo sobre el horizonte de test es 3.0. ¿Cuál es el MASE y qué significa?",
+      options: [
+        { text: "0.75 — la predicción bate a la baseline ingenua", correct: true },
+        { text: "1.33 — la predicción es peor que la ingenua" },
+        { text: "12.0 — la precisión mejoró doce veces" },
+        { text: "0.75 — pero significa que la predicción perdió frente a la ingenua" }
+      ],
+      explanation: "MASE = MAE de la predicción / MAE ingenuo = 3.0 / 4.0 = 0.75. Por debajo de 1 significa que la predicción batió a la baseline ingenua."
+    },
+    {
+      question: "¿Qué afirmaciones sobre el in-context learning son correctas?",
+      allowMultiple: true,
+      options: [
+        { text: "No se actualiza ningún peso del modelo — la adaptación vive en el forward pass", correct: true },
+        { text: "Sobre una serie de retornos de baja SNR, un contexto más largo puede perjudicar al meter más ruido", correct: true },
+        { text: "Los ejemplos se escriben permanentemente en los parámetros del modelo" },
+        { text: "Trata los ejemplos en contexto como un diminuto conjunto de entrenamiento en inferencia", correct: true }
+      ],
+      explanation: "El ICL es un fenómeno del forward pass: el contexto actúa como un conjunto de entrenamiento desechable, no cambia ningún peso, y sobre series ruidosas un contexto más largo solo añade ruido en lugar de señal."
+    },
+    {
+      question: "Usando L(N) = L_∞ + (N_c/N)^α con L_∞ = 0.5, N_c = 10^6, α = 0.5: ¿cuál es la pérdida con N = 10^8 parámetros?",
+      options: [
+        { text: "0.6 — el término reducible √(10^6/10^8) = 0.1, más el suelo de 0.5", correct: true },
+        { text: "0.5 — la pérdida ha alcanzado el suelo irreducible exactamente" },
+        { text: "1.5 — el término reducible es 1.0" },
+        { text: "0.1 — solo cuenta el término reducible" }
+      ],
+      explanation: "Término reducible = √(10^6 / 10^8) = √(0.01) = 0.1. Total = 0.5 + 0.1 = 0.6. El suelo L_∞ = 0.5 se acerca pero nunca se alcanza."
+    },
+    {
+      question: "¿Por qué puede seguir cayendo la pérdida de test de un modelo a lo largo de la curva de escala sobre retornos de mercado mientras la estrategia sigue sin ganar dinero?",
+      options: [
+        { text: "El suelo irreducible L_∞ se sitúa por encima del umbral de rentabilidad, así que la curva se aplana antes de alcanzar una pérdida operable", correct: true },
+        { text: "Las leyes de escala no se aplican a los datos financieros en absoluto" },
+        { text: "La pérdida de test y el P&L son la misma cantidad, así que esto no puede pasar" },
+        { text: "El modelo está divergiendo numéricamente, lo que baja la pérdida artificialmente" }
+      ],
+      explanation: "Las leyes de escala SÍ se cumplen sobre retornos — esa es la trampa. Pero el enorme L_∞ de un mercado casi eficiente significa que la curva de ley de potencias se aplana por encima del nivel necesario para ser rentable. La pérdida mejora mientras el P&L no: una cinta de correr."
+    },
+    {
+      question: "Tienes un modelo fundacional y los retornos diarios de una única acción líquida y muy arbitrada. ¿Cuál es el movimiento más sólido?",
+      options: [
+        { text: "Trata el zero-shot como una baseline, pero no esperes alpha — este es el peor caso (suelo enorme, ventaja ya arbitrada, nada que transferir)", correct: true },
+        { text: "Fine-tune completo sobre los retornos diarios — la adaptación siempre mejora las predicciones" },
+        { text: "Escala masivamente parámetros y datos hasta que la pérdida cruce el umbral de rentabilidad" },
+        { text: "Alarga la ventana de contexto a miles de días para que el modelo vea más señal" }
+      ],
+      explanation: "Los retornos líquidos, arbitrados y de baja SNR son el peor caso en todos los ejes. El fine-tuning completo sobreajusta, la escala choca con el suelo de entropía, y un contexto más largo solo añade ruido. El zero-shot está bien como baseline, pero ningún enfoque fabrica señal que la eficiencia ya ha eliminado."
+    },
+    {
+      question: "A lo largo del espectro de adaptación, ¿por qué SUBE el riesgo de sobreajuste según te mueves del zero-shot hacia el fine-tune completo sobre datos financieros de baja SNR?",
+      options: [
+        { text: "Cada paso deja que más parámetros ajusten los datos objetivo, así que sobre retornos escasos y ruidosos más capacidad se topa con menos señal y el modelo memoriza ruido", correct: true },
+        { text: "El fine-tuning completo usa una tasa de aprendizaje mayor, que siempre sobreajusta" },
+        { text: "El zero-shot en secreto hace fine-tune a más parámetros que el fine-tune completo" },
+        { text: "El riesgo de sobreajuste es en realidad constante a lo largo del espectro" }
+      ],
+      explanation: "Moverse a la derecha descongela más parámetros para ajustar tus datos. Sobre retornos escasos, autocorrelados y de baja SNR el ratio de parámetros por muestra efectiva explota, así que el modelo ajusta ruido. Por eso la izquierda del espectro a menudo generaliza mejor sobre datos financieros."
+    }
+  ]}
+/>
