@@ -7,7 +7,7 @@ Code** headlessly.
 
 | Job | Script | Schedule (Europe/Madrid) | Purpose |
 |---|---|---|---|
-| **Builder** | `scripts/daily-lesson.sh` | `0 6,18 * * *` (06:00 & 18:00 daily) | Builds the next finance course (lowest-`order` entry in `src/lib/upcoming.ts`), en + es, then validates/commits/pushes. |
+| **Builder** | `scripts/daily-lesson.sh` | `0 6,18 * * *` (06:00 & 18:00 daily) | Catalog is complete; the build queue is retired. Each run improves one existing course (random pick, en + es), then validates/commits/pushes. |
 | **Improver** | `scripts/improve-daily-lesson.sh` | `0 12 * * 0` (Sundays 12:00) | Reviews recent builder **runs** and applies one small, evidence-based improvement to the *execution system* itself. |
 
 Both crontab lines are wrapped in the **same** non-blocking lock,

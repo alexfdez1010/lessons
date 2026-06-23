@@ -317,8 +317,9 @@ Read these first, in order:
   2. The raw run logs under \`.daily-lesson-logs/*.log\` (builder runs; ignore improve-*.log)
      for any run the digest flags as slow, repeated-repair, timed-out, or recovery-mode.
   3. \`scripts/daily-lesson.sh\` (the builder wrapper + its session prompts),
-     \`src/lib/upcoming.ts\` (the \`upcomingCourses\` build queue), \`CLAUDE.md\`, and
-     \`docs/daily-lesson-automation.md\`.
+     \`CLAUDE.md\`, and \`docs/daily-lesson-automation.md\`. (The old
+     \`src/lib/upcoming.ts\` build queue has been retired -- the catalog is complete and the
+     daily agent now only improves existing courses.)
 
 Your goal: make future autonomous runs FASTER and MORE EFFECTIVE while NEVER weakening any
 correctness gate. Look for evidence-backed wins such as: recurring validation failures the
@@ -336,7 +337,7 @@ HARD CONSTRAINTS:
   published, do not shorten validation below what safety needs. Speed must never trade away
   correctness.
 - You may ONLY create/edit files under \`scripts/\` and \`docs/\`. Touch nothing else. In
-  particular do NOT edit content, components, \`src/lib/upcoming.ts\`, or \`public/og\`.
+  particular do NOT edit content, components, or \`public/og\`.
 - Be especially careful editing \`scripts/improve-daily-lesson.sh\` (your own runtime): only
   small, obviously-safe changes, and never anything that could make it skip safety steps.
 
