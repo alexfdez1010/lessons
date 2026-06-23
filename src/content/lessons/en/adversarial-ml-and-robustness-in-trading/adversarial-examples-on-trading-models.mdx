@@ -1,0 +1,574 @@
+---
+title: "Adversarial Examples on Trading Models"
+description: "FGSM and PGD — tiny crafted input perturbations that flip a model — reframed for market features. Why a few basis points of engineered noise can flip a position, why high-dimensional near-linear models are so fragile, and the L-p geometry of an attack on a trading classifier."
+topic: "en/adversarial-ml-and-robustness-in-trading"
+order: 2
+minutes: 20
+updated: 2026-06-23
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, AdversarialPerturbationExplorer } from '@/components/react';
+
+In 2014 a research group took a photo of a panda, added a layer of noise so faint
+a human eye sees *no change whatsoever*, and a state-of-the-art image classifier
+that had called the original "panda" with 58% confidence now called the doctored
+image a **gibbon** with 99% confidence. The noise was not random. It was *engineered* —
+each pixel nudged in the exact direction that pushed the model toward "gibbon."
+
+That image launched a field. The unsettling lesson: a model can be **97% accurate
+and 100% breakable**, because high accuracy on natural inputs says nothing about
+behavior under inputs an adversary *designs*. And here is the part that should keep a
+quant up at night — **markets are full of adversaries who can design your inputs.**
+You don't feed a trading model pixels. You feed it engineered features: momentum,
+realized volatility, bid–ask spread, order-flow imbalance, RSI. And every one of
+those features can be *moved* by someone willing to trade against you.
+
+This lesson reframes the entire adversarial-examples toolkit — FGSM, PGD, the
+L-p geometry, the linearity explanation — for a trading model whose "pixels" are
+order-book features and whose "imperceptible noise" is a few basis points of
+strategically placed flow. Once you see your signal as a function an opponent can
+probe, robustness stops being a vision-research curiosity and becomes table stakes.
+
+## What is an adversarial example
+
+<MCQ
+  client:visible
+  pretest
+  question="A classifier is 98% accurate on real market data. An attacker adds a perturbation no human reviewer would flag as unusual and the model flips its call. What does the 98% accuracy tell you about this attack?"
+  options={[
+    { text: "Almost nothing — accuracy on natural inputs is no guarantee of behavior on inputs an adversary deliberately crafts", correct: true },
+    { text: "The attack is impossible; 98% accuracy means the model is robust" },
+    { text: "The attack can move accuracy by at most 2 percentage points" },
+    { text: "Accuracy and adversarial robustness are the same property measured twice" },
+  ]}
+  explanation="Standard accuracy is measured on inputs drawn from the natural data distribution. Adversarial examples are deliberately constructed off-distribution, in the directions the model is most sensitive to. The two are nearly independent properties — high accuracy, low robustness is the typical case."
+/>
+
+**Analogy.** A bank teller can verify a thousand real signatures flawlessly and still
+be fooled by one forger who studied exactly how the teller checks. The teller's
+99.9% accuracy on *honest* signatures is irrelevant to the forger, who isn't sampling
+from the honest distribution — they're searching for the one signature that slips
+through. An adversarial example is the forged signature, found by someone who knows
+the model's weak spots.
+
+**Definition.** Let a model produce a decision from an input feature vector $x$ via a
+score function and a loss $L(x, y)$ measuring how wrong it is on the true label $y$.
+An **adversarial example** is a perturbed input $x' = x + \delta$ where the
+perturbation $\delta$ is *small* under some chosen norm and yet *maximizes* the loss
+(or flips the output). Formally, the attacker solves
+
+$$ \max_{\delta} \; L(x + \delta, y) \quad \text{subject to} \quad \lVert \delta \rVert_p \le \varepsilon. $$
+
+The constraint $\lVert \delta \rVert_p \le \varepsilon$ is the **perturbation budget**:
+$\delta$ must be tiny under the $L_p$ norm, capped by $\varepsilon$. "Tiny" is what makes
+it adversarial rather than just a different input — the change is supposed to be
+imperceptible (in vision) or *cheap* (in markets).
+
+**Reframe for markets.** Replace pixels with engineered features. A trading model
+might score a feature vector
+
+$$ x = (\text{momentum},\; \text{volatility},\; \text{spread},\; \text{order-flow imbalance},\; \text{RSI}). $$
+
+A long signal fires when the score clears a boundary. An adversarial example here is a
+*crafted nudge* to those features — say momentum down 0.3 standard deviations,
+imbalance flipped sign, spread widened a touch — engineered so the model that wanted to
+go **long** now goes **short**. Crucially, you don't perturb the features directly:
+you perturb the **order book** just enough that the *engineered features computed from
+it* move where you want them. The attack lives in the market; the damage lands in the
+feature vector.
+
+**Worked example.** Suppose a long fires when the score is at least 0.60. Today's
+honest feature vector scores 0.62 — a comfortable long. An attacker computes that
+shifting four features by a combined budget of 0.05 (under the relevant norm) drops the
+score to 0.55. That is below 0.60, so the model now flips to short. The position
+reverses on a perturbation a risk officer eyeballing the features might not even notice:
+each feature moved a sliver, none looks anomalous, yet the *aggregate* was aimed
+precisely at the boundary.
+
+<Callout variant="warning" title="Off-distribution is the whole point">
+The reason backtests never warn you about this is that backtests replay *natural*
+history — inputs the market actually produced. Adversarial inputs are, by construction,
+the ones history *didn't* produce because no one was attacking you yet. A spotless
+out-of-sample Sharpe measures behavior on the honest distribution and is silent about
+the adversarial one. Robustness is a separate axis you must test on purpose.
+</Callout>
+
+### When to use it
+
+Reach for the adversarial-example lens whenever some other agent both **observes** your
+behavior and **benefits** from flipping it — a counterparty fading your flow, a
+predatory HFT hunting your stops, a rival reverse-engineering your signal. If your
+model's inputs are computed from public market data that anyone can move by trading,
+assume the inputs are *attackable* and ask how cheaply your decision can be flipped.
+
+<FillBlank
+  client:visible
+  question="Pin down the definition."
+  text="An adversarial example is a perturbation that is {{small under a chosen norm|large and obvious|random and unstructured}} yet is engineered to {{maximize the loss / flip the output|leave the output unchanged|reduce the input's magnitude}}."
+  explanation="The two defining properties are the size cap (small under an L-p norm, the budget epsilon) and the malicious objective (maximize loss / flip the decision). Random, large, or output-preserving changes are not adversarial examples."
+/>
+
+## The linearity explanation — why high-dimensional models are fragile
+
+<MCQ
+  client:visible
+  pretest
+  question="A quant argues: 'My model is basically a linear score on the features, so it's simple and therefore safe from these exotic adversarial attacks.' How should you react?"
+  options={[
+    { text: "That reasoning is backwards — linearity is precisely what makes adversarial examples cheap, effective, and transferable in high dimensions", correct: true },
+    { text: "Correct — linear models have no gradient, so they can't be attacked" },
+    { text: "Correct — only deep nonlinear networks are vulnerable" },
+    { text: "Irrelevant — vulnerability depends only on accuracy, not model form" },
+  ]}
+  explanation="Goodfellow et al.'s linearity hypothesis says adversarial examples arise BECAUSE models behave near-linearly in high dimensions. A linear score lets the attacker add up a small per-feature push across many features into a large total score change. Simplicity does not buy safety here."
+/>
+
+**Analogy.** Imagine a vote where 100 judges each get a tiny say. Bribe each judge with
+a single dollar — trivial, almost imperceptible per judge — and you've spent \$100 of
+influence in total. In a close vote, \$100 of coordinated nudges flips the outcome even
+though *no individual judge was bought for a meaningful sum*. High dimensionality is
+having *many judges*: lots of features, each cheap to nudge, summing to a decisive
+shove. That's the linear model's curse.
+
+**Definition.** For a linear score $s(x) = w \cdot x = \sum_i w_i x_i$, perturbing the
+input by $\delta$ changes the score by exactly
+
+$$ s(x + \delta) - s(x) = w \cdot \delta = \sum_i w_i\, \delta_i. $$
+
+Under an $L_\infty$ budget — meaning every feature may move by at most $\varepsilon$, i.e.
+the largest single-feature change is capped (this is the "max-norm" constraint) — the
+*worst-case* score shift is achieved by pushing each feature the full $\varepsilon$ in the
+sign of its weight:
+
+$$ \max_{\lVert \delta \rVert_\infty \le \varepsilon} \; w \cdot \delta = \varepsilon \sum_i \lvert w_i \rvert = \varepsilon\, \lVert w \rVert_1. $$
+
+Stare at that result. The worst-case damage scales with $\lVert w \rVert_1$, the sum of
+the absolute weights — which **grows with the number of features $d$**. Double the
+dimension and (for similar typical weights) you roughly double the attacker's leverage,
+*at the same per-feature budget* $\varepsilon$. High dimensionality, the thing that makes
+modern models powerful, is also what makes them fragile.
+
+**Worked example.** Take a model with $d = 100$ features, an average absolute weight of
+$\lvert w_i \rvert = 0.1$, and an $L_\infty$ budget of $\varepsilon = 0.01$ (each feature
+may move by one part in a hundred of its scaled range). The worst-case score shift is
+
+$$ \varepsilon \, \lVert w \rVert_1 = 0.01 \times (100 \times 0.1) = 0.01 \times 10 = 0.1. $$
+
+A score shift of **0.1** from a per-feature nudge of just **0.01** — a 10x amplification,
+courtesy of dimension. If the decision boundary sits within 0.1 of the current score
+(as it routinely does near a signal threshold), that's enough to flip the trade. Now
+scale to $d = 1000$ features at the same per-feature budget and the worst-case shift
+is $0.01 \times (1000 \times 0.1) = 1.0$ — ten times larger, for free.
+
+| Features $d$ | Per-feature budget $\varepsilon$ | Avg $\lvert w_i \rvert$ | Worst-case score shift $\varepsilon \lVert w \rVert_1$ |
+|---|---|---|---|
+| 10 | 0.01 | 0.1 | 0.01 |
+| 100 | 0.01 | 0.1 | 0.10 |
+| 1,000 | 0.01 | 0.1 | 1.00 |
+| 10,000 | 0.01 | 0.1 | 10.0 |
+
+<Callout variant="warning" title="'My model is basically linear, so it's safe' is exactly backwards">
+This is the single most dangerous intuition in the whole topic. Nonlinearity isn't what
+makes models vulnerable — *local linearity* is. A near-linear high-dimensional model
+hands the attacker a clean, additive budget: nudge many features a little, sum the
+pushes, cross the boundary. Worse, because the gradient direction is stable and roughly
+shared across similar models, an attack crafted on one near-linear model **transfers** to
+others. Linearity is why adversarial examples are cheap *and* portable.
+</Callout>
+
+### When to use it
+
+Use the linearity argument to *triage* your exposure: the more features your model
+consumes and the more linear its decision surface near the threshold, the bigger the
+attacker's $\lVert w \rVert_1$ leverage. It also tells you a partial defense —
+shrinking $\lVert w \rVert_1$ (sparser, more regularized, fewer-feature models) directly
+caps the worst-case $L_\infty$ damage. Reach for it any time you're tempted to add "just
+a few more features" to a signal sitting near a boundary.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">At a fixed per-feature budget epsilon, does moving from 100 features to 400 features make a near-linear model MORE or LESS vulnerable, and roughly by how much?</summary>
+
+**Hint.** The worst-case score shift is epsilon times the sum of absolute weights, which scales with the feature count.
+
+**More vulnerable — by roughly 4x.** The worst-case score shift is
+$\varepsilon \lVert w \rVert_1 = \varepsilon \sum_i \lvert w_i \rvert$. Holding the typical
+absolute weight fixed, quadrupling the feature count from 100 to 400 roughly quadruples
+$\lVert w \rVert_1$, so the attacker's worst-case leverage at the *same* per-feature
+budget grows about fourfold. Adding features expands expressiveness and the attack
+surface in the same stroke — dimensionality is the adversary's friend.
+
+</details>
+</Reveal>
+
+## FGSM — the Fast Gradient Sign Method
+
+<MCQ
+  client:visible
+  pretest
+  question="The Fast Gradient Sign Method takes a single step to build an attack. Which direction does each feature get pushed?"
+  options={[
+    { text: "Along the sign of the loss gradient with respect to that feature, each by the full budget epsilon", correct: true },
+    { text: "In a uniformly random direction, scaled by epsilon" },
+    { text: "Toward zero, to shrink the feature's magnitude" },
+    { text: "Proportional to the raw gradient magnitude, ignoring the budget" },
+  ]}
+  explanation="FGSM sets the perturbation to epsilon times the sign of the gradient of the loss w.r.t. the input. Using the sign (not the raw gradient) spends exactly the full per-feature L-infinity budget on every feature, in the loss-increasing direction. One gradient evaluation, one step."
+/>
+
+**Analogy.** You're at the bottom of a valley (low loss = correct decision) and want to
+climb out fastest with a fixed-length step in each compass direction. FGSM looks at the
+slope under your feet, and in *every* direction takes the full allowed step *uphill*.
+It doesn't bother with how steep each direction is — just *which way is up* — because the
+$L_\infty$ budget rewards moving every coordinate the full amount. It's the greedy,
+one-shot scramble out of the valley.
+
+**Definition.** The **Fast Gradient Sign Method (FGSM)** constructs the perturbation in a
+single gradient step:
+
+$$ \delta = \varepsilon \cdot \operatorname{sign}\big(\nabla_x L(x, y)\big), \qquad x' = x + \delta. $$
+
+Here $\nabla_x L$ is the gradient of the loss with respect to the *input* (not the
+weights — we're attacking the input, holding the model fixed), and $\operatorname{sign}(\cdot)$
+maps each component to $+1$, $0$, or $-1$. Multiplying by $\varepsilon$ spends the full
+per-feature budget on each coordinate. Because it uses the sign rather than the raw
+magnitude, the result lands exactly on the corner of the $L_\infty$ ball — the worst-case
+linear point we derived above. One forward pass, one backward pass, done. That's the
+"Fast" in FGSM.
+
+**Worked example (3-feature toy).** A linear model scores $s(x) = w \cdot x$ with weights
+$w = (0.9,\, -0.7,\, 0.6)$ and goes **long** when $s \ge 0$. Today
+$x = (0.5,\, 0.4,\, 0.3)$, so
+
+$$ s(x) = 0.9(0.5) + (-0.7)(0.4) + 0.6(0.3) = 0.45 - 0.28 + 0.18 = 0.35 \gt 0 \;\Rightarrow\; \text{LONG}. $$
+
+The attacker wants to *flip to short*, i.e. push the score **down**. For a linear score,
+the gradient of the score w.r.t. the input is just the weight vector,
+$\nabla_x s = w = (0.9, -0.7, 0.6)$. To *decrease* the score maximally under an
+$L_\infty$ budget of $\varepsilon = 0.1$, push each feature against its weight's sign:
+
+$$ \delta = -\varepsilon \cdot \operatorname{sign}(w) = -0.1 \cdot (\,+1,\, -1,\, +1\,) = (-0.1,\, +0.1,\, -0.1). $$
+
+The perturbed input is $x' = (0.4,\, 0.5,\, 0.2)$, and the new score is
+
+$$ s(x') = 0.9(0.4) + (-0.7)(0.5) + 0.6(0.2) = 0.36 - 0.35 + 0.12 = 0.13. $$
+
+Still positive — barely. Bump the budget to $\varepsilon = 0.2$:
+$\delta = (-0.2, +0.2, -0.2)$, $x' = (0.3, 0.6, 0.1)$, and
+
+$$ s(x') = 0.9(0.3) + (-0.7)(0.6) + 0.6(0.1) = 0.27 - 0.42 + 0.06 = -0.09 \lt 0 \;\Rightarrow\; \text{SHORT}. $$
+
+A per-feature nudge of 0.2 — within the noise of a single feature's normal range — drags
+the score from $+0.35$ to $-0.09$ and **flips the position**. Note that the total drop is
+exactly $\varepsilon\,\lVert w \rVert_1 = 0.2 \times (0.9 + 0.7 + 0.6) = 0.2 \times 2.2 = 0.44$,
+matching $0.35 - (-0.09) = 0.44$. The linearity formula predicted it on the nose.
+
+<AdversarialPerturbationExplorer client:visible caption="Crank up epsilon: FGSM nudges each feature by epsilon times the sign of its weight — exactly down the model's own sensitivity — and drags the score across the boundary, flipping LONG to SHORT while the bars barely move. Switch to random noise of the identical L-infinity size and the decision usually survives. The danger isn't the size of the change; it's that the attacker aims it down the gradient." />
+
+<Callout variant="warning" title="'FGSM is a tiny change, so it's harmless'">
+The whole trap is that small does not mean safe. The perturbation is small *per feature*
+and small under the $L_\infty$ norm, yet because it's perfectly aligned with the model's
+sensitivity it produces a *decisive* change in the decision. A risk check that flags only
+"unusual-looking" inputs will wave the attack straight through — every feature still sits
+in a plausible range. Magnitude is not the right alarm; *alignment with the gradient* is.
+</Callout>
+
+### When to use it
+
+FGSM is the cheap first probe — one gradient step — for *screening* whether a model is
+adversarially fragile at all. If a single FGSM step flips your decision at a tiny
+$\varepsilon$, you have a serious problem and don't need a fancier attack to prove it.
+Use it as a fast red-team smoke test and as the per-step engine inside the stronger
+iterative attack below.
+
+<Categorize
+  client:visible
+  question="Sort each statement under whether it describes FGSM accurately or is a misconception about it."
+  buckets={["Accurate", "Misconception"]}
+  items={[
+    { text: "Uses one gradient step (one forward + one backward pass)", bucket: "Accurate" },
+    { text: "Perturbs each feature by the full budget in the sign of the gradient", bucket: "Accurate" },
+    { text: "Lands on a corner of the L-infinity ball", bucket: "Accurate" },
+    { text: "Because the change is small per feature, it can't flip the decision", bucket: "Misconception" },
+    { text: "It scales each feature by the raw gradient magnitude", bucket: "Misconception" },
+    { text: "It needs many iterations to construct a single example", bucket: "Misconception" },
+  ]}
+  explanation="FGSM is single-step, sign-based, full-budget-per-feature, and lands on an L-infinity ball corner. It uses the sign (not the raw magnitude), needs no iteration, and small-per-feature changes very much can flip the decision when aligned with the gradient."
+/>
+
+## PGD — Projected Gradient Descent, the strongest first-order attack
+
+<MCQ
+  client:visible
+  pretest
+  question="Projected Gradient Descent strengthens FGSM. What is the role of the 'projection' step in each iteration?"
+  options={[
+    { text: "After each small gradient step it pulls the perturbation back onto the epsilon-ball, keeping the total within budget while iterating", correct: true },
+    { text: "It projects the input onto a lower-dimensional subspace to speed training" },
+    { text: "It randomly resets the perturbation to escape local minima" },
+    { text: "It removes the budget constraint so the attack can grow without limit" },
+  ]}
+  explanation="PGD takes many small signed-gradient steps and, after each, projects (clips) the accumulated perturbation back into the allowed epsilon-ball. The iteration lets it follow the loss surface around nonlinear bends; the projection enforces the budget throughout."
+/>
+
+**Analogy.** FGSM is one giant leap toward higher loss and hopes the ground was straight.
+But the loss surface bends — what looked uphill at the start may curve away. **PGD** is the
+patient mountaineer: take a *small* step uphill, look again, take another small step,
+re-aim, repeat — and whenever a step would wander outside the fenced-off region (the
+budget), step back to the fence. Many small re-aimed steps follow the terrain's curves
+far better than one blind leap, so PGD reliably reaches *higher loss* (a more confident
+misclassification) than FGSM at the same budget.
+
+**Definition.** **Projected Gradient Descent (PGD)** is the iterated, projected
+generalization of FGSM. Starting from $x_0 = x$ (often with a small random kick), it
+repeats for $t = 0, 1, 2, \dots$:
+
+$$ x_{t+1} = \operatorname{Proj}_{\mathcal{B}(x,\,\varepsilon)}\!\Big( x_t + \alpha \cdot \operatorname{sign}\big(\nabla_x L(x_t, y)\big) \Big). $$
+
+Here $\alpha$ is a small **step size** (smaller than $\varepsilon$), each step is an
+FGSM-style signed-gradient move, and $\operatorname{Proj}_{\mathcal{B}(x,\varepsilon)}$
+**projects** the result back into the $L_\infty$ ball $\mathcal{B}(x, \varepsilon)$ of
+radius $\varepsilon$ around the original input — for the max-norm ball this projection is
+just *clipping* each coordinate to stay within $\varepsilon$ of its original value. Because
+it re-computes the gradient at each new point, PGD adapts to curvature that a single FGSM
+step ignores. It is widely regarded as the **strongest first-order attack** — the
+benchmark adversary that defenses are expected to survive.
+
+**Worked example (intuition for the gain).** Take the 3-feature model above near the
+boundary. A single FGSM step at $\varepsilon = 0.15$ might land the score at, say,
+$+0.02$ — *just* failing to flip. PGD with the *same* total budget $\varepsilon = 0.15$
+but step size $\alpha = 0.05$ over 5 iterations re-aims after each small move: if the
+local gradient shifts (because a feature hit its clip and another now matters more), PGD
+redirects the remaining budget toward the features that still move the score, and lands
+at, say, $-0.04$ — a successful flip the one-shot leap missed. Same budget, smarter
+spend, stronger attack. (For a *purely* linear model FGSM is already optimal; PGD's edge
+shows the moment the decision surface bends, which any nonlinear model or any model with
+feature clipping/interactions does.)
+
+| Property | FGSM | PGD |
+|---|---|---|
+| Steps | 1 | many (e.g. 10–100) |
+| Per-step rule | full budget in sign of gradient | small step $\alpha$ in sign of gradient |
+| Budget enforcement | one shot, lands on ball corner | project / clip back into ball every step |
+| Follows curvature? | no (one blind leap) | yes (re-aims each step) |
+| Strength | weak baseline | strongest first-order attack |
+| Compute cost | cheapest (1 gradient) | higher (one gradient per step) |
+| Best used for | fast fragility smoke test | rigorous robustness evaluation |
+
+<Callout variant="tip" title="Evaluate against PGD, screen with FGSM">
+A model can look robust to FGSM and still crumble under PGD — surviving a single blind
+leap says little about surviving a patient, re-aiming climber. So the honest robustness
+claim is always stated against a *strong* attack: "robust to PGD at budget $\varepsilon$
+with $N$ steps." Use FGSM to cheaply find obvious holes; use PGD (multiple restarts, many
+steps) to *certify* you didn't just defeat the weakling.
+</Callout>
+
+### When to use it
+
+Use PGD whenever you actually want to *measure* robustness rather than just smoke-test it
+— it's the gold-standard adversary for stress-evaluating a trading model's decision
+surface, and (in the next lessons) the inner loop of adversarial training. If a defense
+only ever reports FGSM numbers, treat the robustness claim as unproven: weak-attack
+success is the classic way robustness gets overstated.
+
+<FillBlank
+  client:visible
+  question="Capture the PGD iteration in words."
+  text="PGD repeatedly takes a {{small signed-gradient step|single full-budget leap|random jump}}, then {{projects the perturbation back into the epsilon-ball|removes the budget constraint|averages over all features}} after each step, which lets it {{follow the loss surface's curvature|ignore the gradient entirely|reduce the feature dimension}}."
+  explanation="PGD = iterate small signed-gradient steps, project (clip) back into the epsilon-ball each time, re-computing the gradient so it tracks curvature. That re-aiming is exactly why it beats one-shot FGSM."
+/>
+
+## Adversarial examples in markets — the realistic threat
+
+<MCQ
+  client:visible
+  pretest
+  question="In the vision setting the attacker edits pixels directly. In a live market, how does an adversary actually move YOUR model's input features?"
+  options={[
+    { text: "By trading — spoofing the order book to move imbalance, painting the tape to move momentum — spending capital to shift the features your model computes from public data", correct: true },
+    { text: "By logging into your servers and editing the feature vector in memory" },
+    { text: "They can't — market features are not perturbable by outside parties" },
+    { text: "Only by changing your model's weights, never its inputs" },
+  ]}
+  explanation="An adversary rarely needs your servers. Your features (imbalance, momentum, spread, RSI) are computed from public market data, so anyone willing to trade can move them. The L-p perturbation budget maps to a dollars/impact budget: epsilon is how much capital the attacker spends bending your inputs."
+/>
+
+**Analogy.** The vision attacker has Photoshop and edits the image. The market attacker
+has a *trading account* and edits the **market** — and your features are computed from
+that market, so editing the market edits your features at one remove. Quoting and
+cancelling a wall of orders (spoofing) tilts the order-flow imbalance your model reads;
+a burst of wash-like prints (painting the tape) bends the short-horizon momentum it
+reads. They never touch your code. They move the world your code measures.
+
+**Definition — the budget becomes dollars.** In vision, $\varepsilon$ is a pixel-intensity
+cap and the constraint $\lVert \delta \rVert_p \le \varepsilon$ keeps the image looking
+unchanged. In markets the perturbation $\delta$ is a *change in your features induced by
+trading*, and the budget is no longer "imperceptible" — it's **how much capital and
+market impact the attacker is willing to spend** to bend those features. The
+optimization becomes:
+
+$$ \max_{\delta} \; (\text{harm to you from flipping the signal}) \quad \text{s.t.} \quad \text{cost}(\delta) \le \text{budget in dollars}. $$
+
+The $L_p$ ball is replaced by a *cost ball* shaped by market-impact and execution
+realities — moving spread is cheap, moving a deep, liquid imbalance is expensive — but the
+geometry is the same: a small, well-aimed push down your gradient flips your call.
+
+**Worked example.** A predatory desk knows (or guesses) you run a momentum signal that
+goes long when 1-minute return momentum clears a threshold. Your stop sits just below.
+They estimate that pressing \$2 million of aggressive sell flow over 90 seconds will
+push short-horizon momentum down by enough to (a) flip your model from long to flat and
+(b) trip your stop. If tripping your stop lets them buy back \$3 million of inventory
+from you at a better price — a \$2.5M *gain* against a \$2M *cost* — the attack is
+**positive expected value for them**. Your $\varepsilon$ — the engineered move in your
+momentum feature — was *bought* for \$2M, and it cleared your boundary. That is an
+adversarial example with a P&L statement attached.
+
+**Transferability — the black-box menace.** Attackers usually don't have your exact
+model. They don't need it. Because near-linear models share gradient directions (the
+linearity explanation again), an adversarial example crafted on a **surrogate** model —
+a plausible momentum/imbalance signal the attacker builds themselves — often **transfers**
+and flips *your* model too. So a competitor can red-team you without ever seeing your
+weights: attack their own reasonable guess of your signal, and the same flow tends to
+flip the real thing.
+
+<Callout variant="warning" title="Your stop-loss is an adversarial objective">
+The most uncomfortable reframing: a stop-loss is a *known, exploitable decision boundary*.
+Anyone who can infer roughly where your stops cluster has a target, and the cost to push
+price into that cluster is their $\varepsilon$. "Stop hunting" is not folklore — it's an
+adversarial attack on a model (your risk rule) whose boundary the attacker reverse-engineered.
+The defense is to make the boundary *uncertain and unprofitable to hit*, not to pretend
+no one is looking.
+</Callout>
+
+### When to use it
+
+Think in dollars-as-$\varepsilon$ whenever you assess a live signal's exposure: estimate
+how much capital it would take an adversary to move each input feature across your
+boundary, and ask whether the *payoff* from flipping your signal (triggering your stop,
+fading your flow, front-running your fills) exceeds that cost. If flipping you is cheap
+relative to what it earns them, you are a target — not because your backtest is bad, but
+because your boundary is *predictable and profitable to push*. Robustify the signals
+whose boundaries sit cheaply within an adversary's reach.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Adversarial example", definition: "A small-under-some-norm, deliberately crafted input change that flips the model's output" },
+    { term: "Linearity explanation", definition: "Near-linear high-dimensional models amplify a small per-feature budget into a large score shift, scaling with the sum of absolute weights" },
+    { term: "FGSM", definition: "One signed-gradient step at the full per-feature budget, landing on a corner of the L-infinity ball" },
+    { term: "PGD", definition: "Iterated small signed-gradient steps, each projected back into the epsilon-ball — the strongest first-order attack" },
+    { term: "Transferability", definition: "An attack crafted on a surrogate model often flips the real target, enabling black-box attacks" },
+    { term: "Dollars-as-epsilon", definition: "In markets the perturbation budget is the capital and impact an adversary spends to bend your features" },
+  ]}
+/>
+
+## Recap
+
+You walked in thinking a 98%-accurate model was a safe model and walked out knowing that
+accuracy and robustness are nearly independent axes. The arc: an **adversarial example**
+is a small-under-a-norm, loss-maximizing input change; the **linearity explanation** says
+high-dimensional near-linear models are fragile *because* a tiny per-feature budget sums
+to a large score shift ($\varepsilon \lVert w \rVert_1$, growing with dimension); **FGSM**
+builds such an example in one signed-gradient step; **PGD** iterates and projects to find a
+stronger one and is the benchmark adversary; and in **markets** the whole apparatus
+reappears with $\varepsilon$ measured in *dollars* — an opponent who trades to bend your
+features, whose attacks **transfer** from a surrogate, and whose favorite boundary is your
+stop-loss.
+
+<MindMap
+  client:visible
+  title="Adversarial examples on trading models"
+  caption="Build the map: what an attack is, why near-linear models are fragile, the two core attacks, and how it all lands in a live market."
+  root={{
+    label: 'Adversarial examples',
+    children: [
+      { label: 'What it is', children: [
+        { label: 'Small under an L-p norm (budget epsilon)' },
+        { label: 'Maximizes loss / flips output' },
+        { label: 'Off-distribution: backtests are silent' },
+        { label: 'Markets: perturb the order book, move the features' },
+      ]},
+      { label: 'Linearity explanation', children: [
+        { label: 'Score shift = w · delta' },
+        { label: 'Worst case = epsilon × sum of |w_i|' },
+        { label: 'Grows with feature count d' },
+        { label: 'Why attacks transfer' },
+      ]},
+      { label: 'FGSM', children: [
+        { label: 'One signed-gradient step' },
+        { label: 'Full budget per feature' },
+        { label: 'Lands on L-infinity ball corner' },
+        { label: 'Fast fragility smoke test' },
+      ]},
+      { label: 'PGD', children: [
+        { label: 'Iterate small steps + project to ball' },
+        { label: 'Re-aims with curvature' },
+        { label: 'Strongest first-order attack' },
+        { label: 'The benchmark to evaluate against' },
+      ]},
+      { label: 'In markets', children: [
+        { label: 'Epsilon becomes a dollar / impact budget' },
+        { label: 'Spoof imbalance, paint the tape' },
+        { label: 'Transferability → black-box attacks' },
+        { label: 'Stop-hunting = attack on your boundary' },
+      ]},
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Mixed check: can your model survive a fight?"
+  questions={[
+    {
+      question: "A linear trading score uses 100 features with average absolute weight 0.1. An attacker has an L-infinity budget of 0.01 per feature. What is the worst-case score shift, and why does it matter?",
+      options: [
+        { text: "0.1 — computed as 0.01 times (100 times 0.1); if the boundary is within 0.1 of the current score, the decision flips", correct: true },
+        { text: "0.01 — the budget caps the total change regardless of dimension" },
+        { text: "0.001 — high dimension shrinks the attacker's leverage" },
+        { text: "Exactly zero — linear models cannot be attacked" },
+      ],
+      explanation: "Worst-case shift under L-infinity is epsilon times the sum of absolute weights: 0.01 × (100 × 0.1) = 0.1. The leverage grows with the feature count, which is the core fragility of high-dimensional near-linear models.",
+    },
+    {
+      question: "Which statement about the relationship between standard accuracy and adversarial robustness is correct?",
+      options: [
+        { text: "They are nearly independent — a model can be highly accurate on natural inputs yet trivially flipped by a crafted perturbation", correct: true },
+        { text: "High accuracy guarantees high robustness" },
+        { text: "Robustness is just accuracy measured on a bigger test set" },
+        { text: "A robust model must always have lower accuracy than a fragile one" },
+      ],
+      explanation: "Accuracy is measured on the natural distribution; adversarial examples are deliberately off-distribution, aimed down the model's sensitivity. High accuracy, low robustness is the typical case — the two are nearly separate axes.",
+    },
+    {
+      question: "A model survives an FGSM attack at budget epsilon but the team has not tried PGD. What is the honest robustness claim?",
+      options: [
+        { text: "Unproven — surviving a single blind leap says little; PGD's iterated, re-aiming attack often flips models that resist FGSM", correct: true },
+        { text: "Fully robust — FGSM is the strongest possible attack" },
+        { text: "Robust, because PGD is weaker than FGSM" },
+        { text: "Robustness can't be tested at all without retraining" },
+      ],
+      explanation: "PGD is the strongest first-order attack; FGSM is a one-shot baseline. Reporting only FGSM is the classic way robustness gets overstated. The claim must be made against a strong attack like PGD with many steps and restarts.",
+    },
+    {
+      question: "How does a real-world adversary most plausibly create an adversarial example for your live momentum signal?",
+      options: [
+        { text: "By trading — e.g. pressing aggressive flow to bend short-horizon momentum across your boundary, spending capital as their epsilon budget", correct: true },
+        { text: "By hacking your servers and editing the feature vector directly" },
+        { text: "By emailing you a corrupted data file" },
+        { text: "By changing the exchange's clock" },
+      ],
+      explanation: "Your features are computed from public market data, so an adversary moves them by trading — spoofing imbalance, painting the tape. The L-p budget becomes a dollars/impact budget: epsilon is the capital spent bending your inputs.",
+    },
+    {
+      question: "Why can a competitor attack your model without ever seeing its weights?",
+      options: [
+        { text: "Transferability — an attack crafted on a surrogate model often flips the real one, because near-linear models share gradient directions", correct: true },
+        { text: "Because all trading models are legally required to publish their weights" },
+        { text: "Because random noise reliably flips any model" },
+        { text: "Because black-box models have no decision boundary to attack" },
+      ],
+      explanation: "The linearity explanation implies near-linear models share gradient directions, so an adversarial example built on a plausible surrogate often transfers to the real target — enabling black-box attacks with no access to your weights.",
+    },
+  ]}
+/>

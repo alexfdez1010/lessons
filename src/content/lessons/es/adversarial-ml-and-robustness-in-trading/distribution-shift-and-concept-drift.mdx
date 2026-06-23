@@ -1,0 +1,585 @@
+---
+title: "Cambio de distribución y deriva de concepto"
+description: "La mitad no maliciosa de la amenaza: cambio de covariables frente a cambio de etiqueta frente a deriva de concepto, por qué una estrategia decae en el momento en que se pone en producción a medida que el mercado se adapta y el alfa se masifica, y la estadística de detectar la deriva antes de que lo haga el PnL."
+topic: "es/adversarial-ml-and-robustness-in-trading"
+order: 4
+minutes: 20
+updated: 2026-06-23
+---
+
+import { Callout, MCQ, Quiz, Reveal, ThinkReveal, FillBlank, MatchConcepts, Categorize, MindMap, DriftDetectorTimeline, SignalDecay } from '@/components/react';
+
+Las tres lecciones anteriores tenían un villano protagonista: un *adversario* que alimentaba
+deliberadamente tu modelo con datos envenenados y entradas diseñadas a medida. Aterrador, sin
+duda, pero requiere que alguien quiera de verdad hacerte daño. Esta lección es la parte que te
+pilla incluso cuando **nadie está atacando en absoluto.**
+
+He aquí la verdad incómoda: el mundo sobre el que se entrenó tu modelo sencillamente *deja de
+existir*. El proceso generador de datos se desplaza. Los regímenes cambian. Otros quants
+encuentran tu señal y la negocian hasta aplanarla. Tu propia operativa empuja los mismos precios
+que estás prediciendo. No hace falta malicia: el mercado es un objetivo en movimiento, y tu
+modelo es una fotografía de dónde solía estar.
+
+Esa es la diferencia que conviene retener: un ataque adversario es **dirigido e intencionado**
+(Lecciones 1-3); el cambio de distribución es **difuso y natural** — entropía, no enemigos. Ambos
+dejan el mismo cráter en tu PnL. Esta lección es la estadística de la mitad natural: cómo
+*nombrar* el tipo de cambio que estás sufriendo, *por qué* una estrategia nueva decae al contacto
+con la realidad, y *cómo* atrapar la podredumbre antes de que tu curva de capital la anuncie por ti.
+
+## La taxonomía del cambio — ¿qué está cambiando, exactamente?
+
+<MCQ
+  client:visible
+  pretest
+  question="Un modelo entrenado con datos de 2015-2019 se despliega en 2020. Su distribución de características (volatilidad, diferenciales) parece completamente normal, idéntica al entrenamiento, pero pierde dinero. ¿Qué tipo de cambio es el principal sospechoso?"
+  options={[
+    { text: "Deriva de concepto — las entradas tienen el mismo aspecto, pero la relación entre las entradas y el resultado ha cambiado", correct: true },
+    { text: "Cambio de covariables — la distribución de entrada tiene que haberse movido" },
+    { text: "Cambio de etiqueta — solo cambió la tasa base de días alcistas" },
+    { text: "Ningún cambio en absoluto; la pérdida es pura mala suerte", },
+  ]}
+  explanation="Si P(x) tiene un aspecto idéntico pero el modelo aun así falla, el mapeo P(y|x) en sí se movió. Eso es deriva de concepto, y fíjate en que es invisible para cualquier monitor que solo vigile las entradas."
+/>
+
+**Analogía.** Imagina un cocinero que se formó durante años cocinando a nivel del mar. Tres cosas
+pueden arruinar el siguiente plato. Los *ingredientes* podrían cambiar — mantequilla más grasa,
+caldo más salado (las entradas se desplazan). La *mezcla del menú* podría cambiar — de repente el
+80% de los pedidos son postre en vez del 20% (las tasas base cambian). O la *física de la cocina*
+podría cambiar — ahora cocinan a 4.000 metros, donde el agua hierve a 87°C y cada receta antigua
+está equivocada incluso con ingredientes idénticos (la regla que conecta ingredientes con resultado
+se invirtió). Las tres son "algo salió mal", pero el diagnóstico — y el arreglo — difieren por
+completo.
+
+**Definición.** Cualquier modelo supervisado vive sobre una distribución conjunta de entradas $x$ y
+resultados $y$, que se factoriza de dos formas:
+
+$$ P(x, y) = P(y \mid x)\, P(x) = P(x \mid y)\, P(y). $$
+
+El cambio de distribución significa que la conjunta *en tiempo de prueba* $P_{\text{test}}(x, y)$
+difiere de la conjunta *de entrenamiento* $P_{\text{train}}(x, y)$. Los tres tipos canónicos aíslan
+*qué factor se movió*:
+
+- **Cambio de covariables** — $P(x)$ cambia, $P(y \mid x)$ permanece fijo. Tus entradas se desplazan
+  hacia regiones del espacio de características en las que nunca (o rara vez) entrenaste. La regla
+  sigue siendo válida; simplemente te siguen haciendo preguntas lejos de donde aprendiste.
+  Detectable vigilando las *entradas* por sí solas, porque eso es lo que se movió.
+- **Cambio de etiqueta** (también **cambio de prior**) — $P(y)$ cambia, mientras la
+  condicional de clase $P(x \mid y)$ permanece fija. Las tasas base se mueven: p. ej., la fracción
+  de días alcistas, o la tasa de impago incondicional, cambia. Un clasificador calibrado sobre una
+  tasa base del 55% de días alcistas queda mal calibrado cuando los días alcistas pasan a ser el
+  48%, aunque cada "dado un día alcista, qué aspecto tienen las características" permanezca idéntico.
+- **Deriva de concepto** — $P(y \mid x)$ cambia. La *relación misma* se mueve: las **mismas
+  características ahora predicen un resultado distinto (a veces opuesto).** Esta es la más letal para
+  el trading, porque las entradas pueden tener un aspecto perfectamente familiar mientras el modelo
+  está ahora *sistemáticamente equivocado*. Ningún monitor de solo entradas la verá venir.
+
+**Ejemplo resuelto — la característica de momento que te traiciona.** Sea $x$ una puntuación de
+momento normalizada a 12 meses e $y$ el rendimiento del mes siguiente. En un **régimen tendencial**
+(2017, pongamos), el momento alto predice *más* ganancias — los datos dicen $E[y \mid x] = +0.6\,x$,
+una pendiente positiva: los ganadores siguen ganando. El modelo aprende "compra momento alto".
+
+Ahora el régimen se vuelve **lateral/de reversión a la media** (un mercado de vaivenes al estilo
+de 2018). La *distribución de las puntuaciones de momento no cambia* — sigues viendo puntuaciones de
+aproximadamente el mismo rango, así que $P(x)$ es estable. Pero la relación se invierte a
+$E[y \mid x] = -0.4\,x$: el momento alto ahora predice un *retroceso*. Una acción con momento
+$x = +2.0$ que tu modelo esperaba que ganara $0.6 \times 2.0 = +1.2$ en cambio gana
+$-0.4 \times 2.0 = -0.8$. Misma entrada, **$y \mid x$ invertido** — un vaivén de $2.0$ en la
+dirección equivocada, y tu monitor de características marca todo en verde durante todo ese tiempo.
+Eso es deriva de concepto de manual, y es por lo que las estrategias de momento sufren "cracks"
+brutales precisamente cuando el mundo tiene un aspecto normal.
+
+| Tipo de cambio | Qué cambia | Qué permanece fijo | ¿Detectable solo desde las entradas? | Causa típica en mercados |
+|---|---|---|---|---|
+| **Cambio de covariables** | $P(x)$ | $P(y \mid x)$ | **Sí** — vigila la distribución de características | Nuevo régimen de volatilidad, nuevo universo de activos, un diferencial que se disparó |
+| **Cambio de etiqueta / prior** | $P(y)$ | $P(x \mid y)$ | En parte — vigila la tasa base del resultado | Alcista→bajista (cae la fracción de días alcistas), ciclo de crédito girando |
+| **Deriva de concepto** | $P(y \mid x)$ | (a menudo $P(x)$ parece estable) | **No** — hay que vigilar el *resultado* | Masificación del alfa, cambio de régimen, ruptura de una relación estructural |
+
+<Callout variant="warning" title="El cambio más letal es el invisible">
+El cambio de covariables y el de etiqueta dejan huellas en los datos que puedes mirar fijamente
+*antes* de que la operación se liquide. La deriva de concepto puede esconderse tras una distribución
+de entrada de aspecto perfectamente normal — las características son familiares, el modelo está
+seguro, y está seguro y equivocado. Si solo monitorizas tus entradas, la deriva de concepto es el
+cambio que vacía silenciosamente tu cuenta mientras todos los cuadros de mando siguen en verde.
+</Callout>
+
+### Cuándo usarlo
+
+Usa esta taxonomía como un *triaje* en el momento en que un modelo en producción rinde por debajo
+de lo esperado. Pregunta primero: ¿se movieron mis **entradas** hacia territorio desconocido
+(covariables)? Luego: ¿cambió la **tasa base** de lo que predigo (etiqueta)? Solo si ambas parecen
+estables pero sigues sangrando inculpas a la **deriva de concepto** — y echas mano de la detección
+basada en resultados (Sección 4) en vez de monitores de entrada que te seguirán mintiendo.
+
+<Categorize
+  client:visible
+  question="Clasifica cada escenario bajo el tipo de cambio que representa de forma más limpia."
+  buckets={["Cambio de covariables", "Cambio de etiqueta", "Deriva de concepto"]}
+  items={[
+    { text: "Entrenado con grandes capitalizaciones de EE. UU.; ahora puntuando microvalores de pequeña capitalización con características muy fuera del rango de entrenamiento", bucket: "Cambio de covariables" },
+    { text: "La volatilidad realizada se duplica hacia un rango que el modelo rara vez vio, pero la regla vol→rendimiento se mantiene", bucket: "Cambio de covariables" },
+    { text: "La fracción de días alcistas cae del 55% al 47% en un mercado bajista; las formas de las características por clase no cambian", bucket: "Cambio de etiqueta" },
+    { text: "La tasa de impago incondicional salta del 2% al 6% al girar el ciclo de crédito", bucket: "Cambio de etiqueta" },
+    { text: "El momento alto predecía ganancias; ahora las mismas puntuaciones predicen reversiones", bucket: "Deriva de concepto" },
+    { text: "Un adelanto-retardo largamente estable entre dos activos invierte su signo tras un cambio en la estructura de mercado", bucket: "Deriva de concepto" },
+  ]}
+  explanation="Covariables = las entradas se mueven hacia nuevas regiones, regla intacta. Etiqueta = las tasas base se mueven, formas condicionales de clase intactas. Concepto = el mapeo entrada→salida en sí se invierte, a menudo mientras las entradas parecen inalteradas."
+/>
+
+## Por qué una estrategia decae en el momento en que se pone en producción
+
+<MCQ
+  client:visible
+  pretest
+  question="Un backtest impecable muestra un Sharpe de 2.0. Lo despliegas con dinero real y el Sharpe en vivo se asienta cerca de 1.0. ¿Qué combinación de fuerzas explica mejor un recorte de aproximadamente la mitad como este?"
+  options={[
+    { text: "Sobreajuste/selección que el backtest no desinfló, masificación del alfa a medida que otros arbitran la misma señal, y reflexividad cuando tus propias operaciones mueven los precios", correct: true },
+    { text: "Pura mala suerte que revertirá a la media de vuelta a 2.0 si simplemente esperas" },
+    { text: "Un fallo en el código de ejecución en vivo; el alfa en sí no ha cambiado" },
+    { text: "El mercado es eficiente, así que cualquier Sharpe de backtest debe ser exactamente cero en vivo" },
+  ]}
+  explanation="Tres fuerzas se acumulan: el backtest era en parte suerte (desínflalo), la ventaja se compite hasta desaparecer (masificación), y actuar sobre la señal cambia los mismos precios que predice (reflexividad). Empíricamente, sobrevive ~la mitad de la ventaja en muestra."
+/>
+
+**Analogía.** El backtest de una estrategia es un perfil de citas: fotos halagadoras y
+cuidadosamente seleccionadas, sin mención a los ronquidos. El trading en vivo es irse a vivir
+juntos. Siguen tres decepciones. Parte del brillo era solo un *selfie con buen ángulo*
+(selección/suerte). Una vez que te ven en público, todos los demás copian el look hasta que deja de
+ser especial (masificación). Y tu presencia *cambia la habitación* — no puedes observar la fiesta
+tal como era antes de que entraras (reflexividad).
+
+**Definición — las tres fuerzas de decadencia.**
+
+1. **Sobreajuste y selección.** Tu backtest es el *máximo* sobre muchos intentos —
+   parámetros, características, universos, fechas de inicio. El máximo de estimaciones ruidosas está
+   sesgado al alza (la lección del **Sharpe desinflado** de *Machine Learning para Alfa*). Parte de
+   ese 2.0 nunca fue ventaja; fue la extracción más afortunada entre las configuraciones que
+   probaste, y se evapora fuera de muestra porque nunca hubo nada ahí desde el principio.
+2. **Masificación del alfa.** Los mercados son competitivos. En el instante en que una señal
+   funciona y se corre la voz — un artículo, una charla de conferencia, un colega que deserta —
+   otros quants negocian lo mismo, empujan los precios hacia el valor justo más rápido, y
+   **arbitran la ventaja hasta hacerla desaparecer.** Este es exactamente el problema de
+   *masificación y capacidad* de **Arbitraje sistemático y estadístico**: un diferencial que revierte
+   a la media en 10 días cuando lo negocian tres fondos revierte en 2 días cuando lo negocian
+   treinta, y el alfa por operación se encoge hacia tus costes.
+3. **Reflexividad.** Actuar sobre una señal *cambia el mercado que predice*. Tus órdenes de compra
+   empujan el precio hacia arriba, comiéndose la mismísima ineficiencia de precio que detectaste
+   (impacto de mercado), y a escala *te conviertes* en parte del proceso generador de datos. Este es
+   el quebradero de cabeza central de **RL profundo para ejecución**: no eres un observador pasivo de
+   un entorno fijo — eres un agente en un entorno que **reacciona a ti**, así que el mundo del que
+   tu modelo aprendió ya no existe una vez que el modelo empieza a actuar en él.
+
+**Ejemplo resuelto — el recorte por publicación.** El "¿Destruye la investigación académica la
+predictibilidad de los rendimientos bursátiles?" de McLean y Pontiff rastreó decenas de anomalías
+publicadas y halló que los rendimientos decaen aproximadamente un **58% fuera de muestra**, con una
+parte grande atribuida al declive **posterior a la publicación** (inversores que aprenden y negocian
+la señal) por encima del sesgo estadístico. Toma el número redondo que la literatura popularizó —
+alrededor de un **recorte del 50%**. Empieza con un Sharpe en muestra de $2.0$. Réstale la mitad de
+publicación/masificación: $2.0 \times (1 - 0.5) = 1.0$. Luego superpón la reflexividad y tus propios
+costes — pongamos un mordisco adicional del 20% por impacto al tamaño que realmente negocias:
+$1.0 \times (1 - 0.2) = 0.8$. La expectativa honesta para el Sharpe *en vivo, a tamaño* está muy por
+debajo de la mitad del titular. Cualquiera que cite el número del backtest como su expectativa a
+futuro está leyendo el perfil de citas, no conviviendo con los ronquidos.
+
+<SignalDecay client:visible title="Decadencia del alfa: toda señal es perecedera" caption="La curva de marca es el coeficiente de información de la señal desangrándose exponencialmente con el horizonte de mantenimiento — una señal publicada o masificada decae aún más rápido a medida que otros la negocian. La curva de acento es la moraleja: alfa neto por día tras costes, que tiene forma de joroba. Arrastra el deslizador de velocidad de decadencia hacia la izquierda (decadencia más rápida) y el horizonte óptimo se desliza más temprano — una ventaja perecedera debe negociarse rápido antes de que la masificación la aplane. Arrastra el deslizador de coste hacia arriba y el horizonte óptimo se desliza más tarde — cuando operar es caro hay que mantener más tiempo para amortizar la ida y vuelta. El punto marca el horizonte óptimo de reequilibrado consciente del coste. La lección más profunda: el alfa publicado decae aproximadamente el doble de rápido que el alfa privado, que es por lo que el secreto es en sí mismo una forma de capacidad." />
+
+<Callout variant="warning" title="El backtest es el techo, no el pronóstico">
+Tu Sharpe en muestra es el *mejor caso que nunca volverás a ver*. Trátalo como una cota superior y
+pronostica el rendimiento en vivo a aproximadamente la mitad (o menos), luego resta el impacto a tu
+tamaño real. Una estrategia que solo "funciona" con el número del backtest sin desinflar, sin
+masificar y sin fricciones es una estrategia que no funciona.
+</Callout>
+
+### Cuándo usarlo
+
+Aplica el recorte *antes* de dimensionar la posición, no después del drawdown. Al decidir la
+asignación de capital, introduce un Sharpe **desinflado, ajustado por masificación y ajustado por
+impacto** — no el titular del backtest. Y pondera las tres fuerzas según tu situación: un factor
+*publicado* es sobre todo riesgo de masificación; un libro *grande* es sobre todo riesgo de
+reflexividad; un backtest *sobreexplorado* es sobre todo riesgo de selección.
+
+<FillBlank
+  client:visible
+  question="Nombra las tres fuerzas que hacen decaer una estrategia en vivo."
+  text="Una estrategia nueva decae por {{selección/sobreajuste, masificación y reflexividad|apalancamiento, deslizamiento e impuestos|volatilidad, correlación y drawdown}} — el backtest era en parte suerte, otros arbitran la misma señal hasta hacerla desaparecer, y tu propia operativa mueve los precios que predices."
+  explanation="Selección (sesgo del Sharpe desinflado), masificación (otros la negocian hasta aplanarla — Arbitraje sistemático y estadístico) y reflexividad (cambias el entorno — RL profundo para ejecución) se acumulan en el recorte en vivo."
+/>
+
+<ThinkReveal
+  client:visible
+  prompt="Dos fondos ejecutan la idéntica señal de valor publicada. El Fondo A la negocia con 50M$; el Fondo B negocia la misma señal con 5.000M$. Antes de que se mueva ningún mercado, ¿de quién esperarías que el Sharpe en vivo fuera menor, y qué fuerza de decadencia es la culpable? Decide, luego revela."
+  hint="La masificación golpea a ambos por igual (misma señal publicada). Lo que es distinto es lo que las propias órdenes de cada uno hacen al precio."
+  text="El del Fondo B, casi con seguridad — y la culpable es la reflexividad / impacto de mercado, no la masificación. Ambos fondos se comen el mismo recorte de masificación porque negocian la idéntica señal pública, así que esa fuerza queda en tablas entre ellos. La diferencia es el tamaño: los 5.000M$ de órdenes del Fondo B empujan los precios en su contra mucho más que los 50M$ del Fondo A, así que una porción mucho mayor de la (ya masificada) ventaja la consume su propia huella. Este es el muro de capacidad — el mismo alfa que es perfectamente negociable a 50M$ puede ser neto-negativo a 5.000M$ una vez que se paga el impacto. Es también por lo que la pregunta honesta nunca es solo '¿cuál es el Sharpe?' sino '¿cuál es el Sharpe al tamaño que realmente necesito desplegar?'"
+/>
+
+## Detectar el cambio de covariables — vigila las entradas
+
+<MCQ
+  client:visible
+  pretest
+  question="Quieres una alerta temprana de que tu distribución de características en vivo se ha alejado de la distribución sobre la que se entrenó el modelo. ¿Qué familia de herramientas está construida exactamente para esto?"
+  options={[
+    { text: "Comparaciones de distribución de dos muestras sobre las características — Índice de Estabilidad de Población (PSI) y pruebas de tipo KS", correct: true },
+    { text: "Ratio de Sharpe móvil sobre el PnL", correct: true },
+    { text: "Una red neuronal más grande con más capas" },
+    { text: "Aumentar la tasa de aprendizaje hasta que la pérdida baje" },
+  ]}
+  explanation="El cambio de covariables es un cambio en P(x), así que comparas la distribución de características en vivo con la de entrenamiento. El PSI y las pruebas KS de dos muestras son los caballos de batalla. (El Sharpe móvil es para resultados — útil, pero ese es el trabajo de la siguiente sección.)"
+/>
+
+**Analogía.** La detección del cambio de covariables es un portero con una foto de los habituales.
+Cada noche compara quién entra contra la multitud de referencia. Si la clientela de esta noche se
+parece estadísticamente a los habituales de siempre, todo bien. Si de repente todos son
+desconocidos de un barrio distinto, el portero levanta una bandera — *antes* de que nada haya salido
+mal dentro, solo sobre la base de que las entradas ya no coinciden con el lugar para el que se
+escribieron las reglas.
+
+**Definición — Índice de Estabilidad de Población (PSI).** Agrupa una característica en $k$ cubos.
+Sea $a_i$ la fracción de observaciones de *entrenamiento* (referencia) en el cubo $i$ y $b_i$ la
+fracción de observaciones *en vivo* (actuales) en el mismo cubo. Entonces
+
+$$ \text{PSI} = \sum_{i=1}^{k} (b_i - a_i)\, \ln\!\left(\frac{b_i}{a_i}\right). $$
+
+(Es el primo de entropía relativa simetrizada de la divergencia KL — cada término es no negativo,
+así que el PSI solo crece a medida que las dos distribuciones se separan.) Reglas prácticas de la
+industria: **PSI &lt; 0.1** = estable (sin cambio significativo); **0.1-0.25** = cambio moderado
+(investiga); **&gt; 0.25** = cambio significativo (la población se ha movido — reentrena o
+recalibra). Una herramienta complementaria es la **prueba de Kolmogórov-Smirnov (KS) de dos
+muestras**, cuyo estadístico es la brecha máxima entre las dos funciones de distribución acumulada;
+un valor p pequeño dice "estas muestras no provienen de la misma distribución".
+
+**Ejemplo resuelto — PSI sobre una característica de 2 cubos.** Supón que una característica binaria
+de régimen era una división **50/50** en entrenamiento, así que $a_1 = 0.5,\ a_2 = 0.5$. En vivo, ha
+derivado a **30/70**, así que $b_1 = 0.3,\ b_2 = 0.7$. Término a término:
+
+- Cubo 1: $(b_1 - a_1)\ln(b_1/a_1) = (0.3 - 0.5)\ln(0.3/0.5) = (-0.2)\ln(0.6) = (-0.2)(-0.5108) \approx 0.1022$.
+- Cubo 2: $(b_2 - a_2)\ln(b_2/a_2) = (0.7 - 0.5)\ln(0.7/0.5) = (0.2)\ln(1.4) = (0.2)(0.3365) \approx 0.0673$.
+
+Suma: $\text{PSI} \approx 0.1022 + 0.0673 = 0.169$. Eso cae de lleno en la banda
+**0.1-0.25 "cambio moderado, investiga"**. Fíjate en la estructura: *ambos* términos son positivos
+(la diferencia negativa en el cubo 1 multiplica un logaritmo negativo, dando un producto positivo),
+que es por lo que el PSI no puede cancelarse a sí mismo — cualquier movimiento, en cualquier
+dirección, suma a la puntuación.
+
+<Callout variant="tip" title="El PSI es una alarma de humo, no un termómetro">
+El PSI te dice que las entradas *se movieron*; no te dice si el movimiento *hace daño*. Una
+característica puede cambiar drásticamente (PSI alto) mientras el modelo sigue funcionando bien si
+esa característica es poco importante — y una característica puede apenas moverse mientras una
+relación sutil y relevante para el modelo se rompe. Pondera tus alarmas de PSI por importancia de
+característica, y nunca trates "las entradas parecen estables" como "el modelo está bien". Esa falsa
+tranquilidad es toda la trampa de la siguiente sección.
+</Callout>
+
+### Cuándo usarlo
+
+Ejecuta monitores de PSI/KS sobre cada entrada del modelo en un calendario móvil (diario o por
+reequilibrado), y alarma primero sobre las características *importantes*. Son tu aviso más barato y
+más temprano — pero solo atrapan el **cambio de covariables**. Trátalos como necesarios, nunca
+suficientes: pasar todos los monitores de entrada es totalmente compatible con que el modelo esté
+peligrosamente equivocado porque la *relación* — no las entradas — ha derivado.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Cambio de covariables", definition: "P(x) se mueve mientras P(y|x) permanece fijo — las entradas derivan hacia regiones desconocidas" },
+    { term: "Cambio de etiqueta / prior", definition: "P(y) se mueve mientras P(x|y) permanece fijo — las tasas base cambian" },
+    { term: "Deriva de concepto", definition: "P(y|x) en sí cambia — las mismas entradas ahora predicen un resultado distinto" },
+    { term: "PSI", definition: "Puntuación de entropía relativa simetrizada y agrupada en cubos; >0.25 señala un cambio significativo de la distribución de entrada" },
+    { term: "Prueba KS de dos muestras", definition: "Brecha máxima entre dos CDF; prueba si las características en vivo y de entrenamiento comparten una distribución" },
+  ]}
+/>
+
+## Detectar la deriva de concepto — vigila el resultado
+
+<MCQ
+  client:visible
+  pretest
+  question="Tus monitores de PSI y KS están todos en verde — la distribución de características en vivo coincide perfectamente con el entrenamiento. ¿Puedes concluir que el modelo está sano?"
+  options={[
+    { text: "No — los monitores de entrada son ciegos a la deriva de concepto, donde P(x) es estable pero P(y|x) se invirtió; también debes monitorizar el resultado", correct: true },
+    { text: "Sí — si las entradas coinciden con el entrenamiento, el modelo tiene que estar rindiendo correctamente" },
+    { text: "Sí — un PSI por debajo de 0.1 es una garantía matemática de salud del modelo" },
+    { text: "Solo si además vuelves a ejecutar el backtest sobre datos históricos" },
+  ]}
+  explanation="Los monitores de cambio de covariables comparan P(x). La deriva de concepto vive en P(y|x), que puede cambiar mientras P(x) está inalterado. Unos monitores de entrada en verde no te dicen nada sobre una relación invertida — tienes que vigilar el rendimiento realizado."
+/>
+
+**Analogía.** Los monitores de entrada comprueban que los *ingredientes* coinciden con la receta.
+Los monitores de deriva de concepto prueban el *plato*. Puedes tener ingredientes impecables y
+conforme a especificación y aun así servir algo incomible si el termostato del horno se rompió en
+secreto — y la única forma de saberlo es probar el resultado, no reinspeccionar la harina. Así que
+vigilas el *resultado*: tasa de acierto realizada, PnL realizado, residuos de predicción.
+
+**Definición — detección de deriva basada en resultados.** Como la deriva de concepto puede dejar
+$P(x)$ intacto, monitorizas el *rendimiento realizado del modelo a lo largo del tiempo* y disparas
+cuando se degrada más rápido que el ruido:
+
+- **Sharpe móvil / tasa de acierto móvil** — una estimación por ventana móvil de la ventaja en vivo;
+  un deslizamiento sostenido hacia (o a través de) cero es el síntoma titular.
+- **CUSUM (suma acumulada)** — acumula la suma corriente de desviaciones de la métrica respecto a su
+  nivel esperado (bueno); la suma acumulada permanece plana sin deriva y se dispara una vez que se
+  instala un deterioro pequeño y persistente, así que atrapa la deriva *gradual* que una prueba de un
+  solo periodo pasaría por alto.
+- **Prueba de Page-Hinkley** — una variante de CUSUM afinada para la detección de puntos de cambio en
+  un flujo: rastrea la desviación acumulada y el mínimo que ha alcanzado, y alarma cuando la brecha
+  entre la acumulada actual y ese mínimo corriente supera un umbral $\lambda$. Clásica para detectar
+  un *cambio de media* en un flujo de residuos o errores en línea.
+
+El punto didáctico, hecho concreto por la línea temporal de al lado: un *buen* detector dispara
+**antes de que el PnL se desplome del todo**, mientras todavía queda ventaja que proteger — pero la
+sensibilidad del detector es un compromiso genuino. Un **umbral bajo** dispara *pronto* pero salta
+con el ruido (falsas alarmas que te sacan de una estrategia que aún funciona); un **umbral alto**
+dispara *tarde*, después de que la mayor parte de la ventaja ya se haya ido. No hay almuerzo gratis,
+solo un dial entre "pronto pero nervioso" y "tarde pero seguro".
+
+<DriftDetectorTimeline client:visible title="Detección de deriva: cazar la decadencia del alfa antes de que lo haga el PnL" slowLabel="Deriva gradual" fastLabel="Deriva rápida" thresholdLabel="Umbral del detector (sensibilidad)" timeAxisLabel="Meses en vivo" edgeLegendLabel="Ventaja de la estrategia (Sharpe móvil)" driftLegendLabel="Estadístico de deriva (tipo PSI)" thresholdLegendLabel="Umbral del detector" alarmLabel="DERIVA DETECTADA" edgeAtDetectionLabel="Ventaja al detectar" monthsToDetectionLabel="Meses hasta detección" neverFiresLabel="nunca se dispara" caption="Una línea temporal de 24 meses. El azul es la ventaja móvil de la estrategia (Sharpe), que se mantiene mientras los datos en vivo parecen el entrenamiento, y luego decae a través de cero. El ámbar es un estadístico de deriva que compara lo en vivo con el entrenamiento — sube ANTES de que el PnL se desplome del todo. El primer mes que el ámbar cruza el umbral discontinuo, el detector dispara DERIVA DETECTADA. Alterna entre deriva gradual y rápida y arrastra el umbral: bájalo y la alarma dispara antes (pero arriesga falsas alarmas con el ruido); súbelo y dispara tarde, después de que la ventaja se haya ido en su mayoría. Vigila las entradas Y los resultados — un buen detector te compra meses para reentrenar o retirar la estrategia mientras todavía queda ventaja que salvar." />
+
+**Ejemplo resuelto — Page-Hinkley sobre una tasa de acierto.** Digamos que la tasa de acierto de tu
+señal debería ser del **54%** cuando está sana, así que cada acierto puntúa $+1$ y cada fallo $-1$,
+con una media esperada por operación de $0.54 - 0.46 = +0.08$. Después de que la deriva de concepto
+invierta silenciosamente parte de la ventaja, la tasa de acierto *verdadera* cae al **48%**, una
+media esperada de $0.48 - 0.52 = -0.04$. El estadístico corriente de Page-Hinkley acumula el déficit
+de cada operación por debajo del $+0.08$ esperado y rastrea su mínimo corriente; una vez que la
+brecha supera tu $\lambda$, alarma. La clave: una *sola mala semana* (unos cuantos fallos) no lo
+disparará — eso es solo ruido alrededor de $+0.08$ — pero una caída **persistente** de $+0.08$ a
+$-0.04$ hace que el déficit acumulado crezca sin límite, así que la alarma dispara tras un *número
+característico de operaciones*, no en cualquier operación desafortunada aislada. Un $\lambda$ más
+bajo acorta ese número (más pronto, más nervioso); un $\lambda$ más alto lo alarga (más tarde, más
+seguro).
+
+<Callout variant="warning" title="Los monitores de covariables NO atrapan la deriva de concepto">
+La idea equivocada más cara aquí: "mis monitores de distribución de entrada están en verde, así que
+el modelo está bien". Son ciegos por construcción. Si $P(x)$ está inalterado pero $P(y \mid x)$ se
+invirtió — tu característica de momento ahora prediciendo reversiones mientras la distribución de
+puntuaciones de momento parece totalmente normal — todas las pruebas de PSI y KS pasan mientras el
+modelo sangra. **Debes** emparejar la monitorización de entradas (covariables) con la monitorización
+de resultados (concepto). Una sin la otra es un cuadro de mando que miente en una dirección distinta.
+</Callout>
+
+### Cuándo usarlo
+
+Ejecuta monitores de resultados de forma continua, junto a (nunca en lugar de) los monitores de
+entrada. Elige la herramienta según la forma de la deriva: un **Sharpe móvil** de una sola ventana
+para rupturas rápidas y obvias; **CUSUM / Page-Hinkley** para la degradación lenta e insidiosa que
+una ventana difuminaría en ruido. Fija el umbral según tu asimetría: si una falsa alarma (retirar
+innecesariamente una estrategia que funciona) es más barata que una deriva no detectada (cabalgar una
+muerta hasta el suelo), sesga el umbral *bajo* — y viceversa.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">¿Por qué un solo mal mes no puede disparar una alarma CUSUM/Page-Hinkley bien afinada — y por qué eso es una característica, no un fallo?</summary>
+
+**Respuesta.** Los detectores de la familia CUSUM acumulan la *suma corriente* de desviaciones
+respecto al nivel bueno esperado, y se reinician (o rastrean un mínimo corriente) de modo que los
+altibajos aleatorios alrededor de la media verdadera se cancelan aproximadamente. Un solo mal mes es
+una desviación negativa nadando en un mar de ruido de media cero — la suma acumulada tiembla pero no
+se dispara. Solo un déficit **persistente y del mismo signo** (la firma de un cambio de media
+genuino, es decir, deriva real) hace que la suma acumulada crezca sin límite hasta cruzar el umbral.
+Esa es exactamente la clave: ignora el ruido y reacciona a la *estructura*, intercambiando un poco de
+latencia de detección por muchas menos falsas alarmas. Una prueba ingenua de "alarma si este mes fue
+malo" hace lo contrario — dispara constantemente con el ruido y no te dice nada sobre si la relación
+subyacente se movió de verdad.
+
+</details>
+</Reveal>
+
+## Responder a la deriva — el menú de movimientos
+
+<MCQ
+  client:visible
+  pretest
+  allowMultiple
+  question="Tu detector de deriva acaba de dispararse con alta confianza. ¿Cuáles de estas son respuestas legítimas? (Selecciona todas las que apliquen.)"
+  options={[
+    { text: "Reentrenar sobre una ventana móvil para que el modelo reaprenda el régimen actual", correct: true },
+    { text: "Cambiar a aprendizaje en línea que actualiza continuamente", correct: true },
+    { text: "Usar un modelo de cambio de régimen o de ensamblado que se adapte a en qué mundo estás", correct: true },
+    { text: "APAGAR la estrategia hasta que la entiendas y puedas reestablecer la ventaja", correct: true },
+  ]}
+  explanation="Las cuatro están en el menú. Nota que el aprendizaje en línea, aunque adaptativo, reabre la puerta del envenenamiento de datos de la Lección 3 — un flujo de actualizaciones adversarias puede corromper un modelo que entrena continuamente. Y 'apágala' es la opción honesta e infravalorada."
+/>
+
+**Analogía.** Responder a la deriva es como adaptarte a una ciudad a la que te has mudado. Puedes
+guardar una **memoria móvil** — recuerda solo los últimos meses y olvida la ciudad antigua
+(reentreno por ventana móvil). Puedes **actualizar constantemente** — aprende de cada calle nueva
+(aprendizaje en línea), a riesgo de que te engañe un desvío engañoso (envenenamiento). Puedes
+mantener **varios mapas mentales** y cambiar por barrio (cambio de régimen/ensamblados). O —
+radicalmente — puedes **dejar de conducir** hasta que tengas claro el nuevo mapa (apagarla). La
+sabiduría es emparejar la respuesta con *lo rápido que está cambiando la ciudad*.
+
+**Definición — el menú de respuestas.**
+
+- **Reentrenar / ventanas móviles.** Reajusta sobre una ventana arrastrada para que el modelo siga el
+  régimen actual. La longitud de la ventana es un **dial de sesgo-varianza**: una ventana *corta* se
+  adapta rápido a nuevos regímenes pero se estima sobre pocos puntos ruidosos (alta varianza); una
+  ventana *larga* es estable y bien estimada pero *rancia* — lenta para notar que un régimen ha
+  girado (alto sesgo hacia el pasado).
+- **Aprendizaje en línea.** Actualiza el modelo de forma incremental a medida que llegan datos —
+  máximamente adaptativo, pero **reabre la superficie de ataque de envenenamiento de datos** de la
+  Lección 3: un modelo que confía en cada punto nuevo puede ser guiado por un adversario que lo
+  alimenta con actualizaciones diseñadas a medida. La adaptabilidad y la atacabilidad son dos caras de
+  la misma moneda.
+- **Modelos de cambio de régimen.** Modela explícitamente un estado de régimen oculto (p. ej., un
+  modelo de cambio markoviano) y usa los parámetros del régimen en el que estás actualmente, de modo
+  que una inversión en $P(y \mid x)$ sea *esperada* en vez de *catastrófica*.
+- **Ensamblado entre regímenes.** Mantén un establo de modelos — uno por régimen o por era de
+  entrenamiento — y mézclalos o selecciónalos según las condiciones actuales. Robusto ante que
+  cualquier modelo individual quede rancio; este es el puente natural al tema de
+  robustez-por-diversidad de la **Lección 5**.
+- **Apagarla.** El movimiento honesto e infravalorado: cuando la deriva está confirmada y aún no la
+  entiendes, *deja de negociar la estrategia.* Un PnL plano es mejor que cabalgar una ventaja muerta
+  hacia un drawdown mientras "esperas a que vuelva".
+
+**Ejemplo resuelto — ventana de reentreno de 60 días frente a 250 días.** Supón que un coeficiente
+que reestimas en cada reequilibrado tiene un ruido de estimación por observación tal que el error
+estándar de la media escala como $\sigma/\sqrt{n}$ con $n$ la longitud de la ventana. Una ventana de
+**250 días** da $\sigma/\sqrt{250} = \sigma/15.8$ — una estimación ajustada y estable. Una ventana de
+**60 días** da $\sigma/\sqrt{60} = \sigma/7.7$, aproximadamente $15.8/7.7 \approx 2.0\times$ **más
+ruidosa** por estimación. Así que la ventana corta paga el doble de ruido de estimación. ¿Qué compra?
+Velocidad: si un régimen gira en el día 0, la ventana de 60 días es "mayoritariamente régimen nuevo"
+en ~30 días de negociación, mientras la ventana de 250 días todavía tiene ~190 días rancios
+arrastrando la estimación hacia el régimen muerto durante *meses*. Así que estás cambiando una
+penalización de ruido limpia de ~2× por una adaptación aproximadamente 4× más rápida — vale la pena
+precisamente cuando el alfa decae rápido, un mal trato cuando es lento y estable.
+
+| Ventana de reentreno | Ruido de estimación (SE ∝ 1/√n) | Velocidad de adaptación a un nuevo régimen | Mejor cuando |
+|---|---|---|---|
+| **Corta (60 días)** | Alto — unas $2\times$ una ventana de 250 días | Rápida — "mayoritariamente régimen nuevo" en ~30 días | El alfa decae rápido; los regímenes giran a menudo (alta rotación, microestructura) |
+| **Larga (250 días)** | Bajo — estable, bien estimada | Lenta — rancia durante meses tras un giro | El alfa decae despacio; las relaciones son estructuralmente estables |
+| **Ensamblado / cambio de régimen** | Moderado — agrupado entre regímenes | Rápida *y* estable, a costa de complejidad | No puedes predecir en qué régimen estarás |
+
+<Callout variant="tip" title="Empareja la ventana con la semivida">
+No hay una longitud de ventana universalmente correcta — solo hay una emparejada con **lo rápido que
+decae tu alfa.** Una señal perecedera y de masificación rápida exige una ventana corta (o aprendizaje
+en línea) para que siga el objetivo en movimiento; una relación lenta y estructural merece una
+ventana larga para que no remuevas capital persiguiendo ruido. Estima primero la semivida del alfa
+(recuerda la curva de SignalDecay), luego fija la ventana a ella — no al revés.
+</Callout>
+
+### Cuándo usarlo
+
+Elige la respuesta según la *velocidad de decadencia* y el *coste de equivocarte*. Decadencia rápida
+→ ventana corta o aprendizaje en línea (y acepta la exposición al envenenamiento con la validación de
+entradas de la Lección 3). Régimen desconocido → cambio de régimen o ensamblados. Deriva confirmada
+que no entiendes → **apágala** e investiga; nunca dejes que "podría volver" mantenga viva una
+estrategia diagnosticada como muerta. El objetivo no es no derivar nunca — todo deriva — es
+*detectarla antes de que lo haga el PnL* y responder de forma proporcional.
+
+<FillBlank
+  client:visible
+  question="Enuncia el compromiso sesgo-varianza de la longitud de la ventana de reentreno."
+  text="Una ventana de reentreno corta {{se adapta rápido pero es ruidosa; una ventana larga es estable pero rancia|siempre es mejor que una larga|elimina la deriva de concepto por completo}}, así que emparejas la ventana con lo rápido que decae el alfa."
+  explanation="Ventana corta = adaptación rápida, alta varianza de estimación. Ventana larga = baja varianza, pero sesgada hacia un pasado rancio. Ninguna domina; la semivida del alfa decide."
+/>
+
+## Recapitulación
+
+El adversario de las primeras tres lecciones era una persona. El adversario de aquí es la
+**entropía**: el proceso generador de datos deriva tanto si alguien pretende hacerte daño como si no.
+Aprendiste a *nombrar* la podredumbre — **cambio de covariables** ($P(x)$ se mueve), **cambio de
+etiqueta** ($P(y)$ se mueve), y la más letal, **deriva de concepto** ($P(y \mid x)$ se invierte
+mientras las entradas parecen inocentes). Aprendiste *por qué* una estrategia nueva decae al contacto
+con la realidad — **selección**, **masificación** (Arbitraje sistemático y estadístico) y
+**reflexividad** (RL profundo para ejecución) — y que aproximadamente la mitad de la ventaja del
+backtest es la expectativa honesta a futuro. Aprendiste a *atraparla*: **PSI / KS** sobre las
+entradas para el cambio de covariables, y **Sharpe móvil / CUSUM / Page-Hinkley** sobre los
+resultados para la deriva de concepto que los monitores de entrada no pueden ver — la línea temporal
+hizo vívido el compromiso de detección temprana-frente-tardía. Y aprendiste a *responder*: ventanas
+móviles (con su dial de sesgo-varianza), aprendizaje en línea (y su exposición al envenenamiento),
+cambio de régimen, ensamblados (siguiente lección) y la opción honesta de apagar la estrategia.
+
+<MindMap
+  client:visible
+  title="Cambio de distribución y deriva de concepto"
+  caption="Construye el mapa: nombra el cambio, entiende la decadencia, detéctalo, luego responde."
+  root={{
+    label: 'Cambio de distribución',
+    children: [
+      { label: 'Taxonomía del cambio', children: [
+        { label: 'Covariables: P(x) se mueve, P(y|x) fijo' },
+        { label: 'Etiqueta/prior: P(y) se mueve' },
+        { label: 'Deriva de concepto: P(y|x) se invierte (la más letal)' },
+        { label: 'Misma x, y|x opuesta = momento→reversión' },
+      ]},
+      { label: 'Por qué las estrategias decaen en vivo', children: [
+        { label: 'Selección / sobreajuste (desinfla el Sharpe)' },
+        { label: 'Masificación (otros la arbitran hasta hacerla desaparecer)' },
+        { label: 'Reflexividad (mueves los precios)' },
+        { label: 'Recorte del ~50% del backtest (McLean-Pontiff)' },
+      ]},
+      { label: 'Detectar el cambio de covariables', children: [
+        { label: 'PSI: cubos, >0.25 = significativo' },
+        { label: 'Prueba KS de dos muestras sobre las características' },
+        { label: 'Alarma de humo, no termómetro' },
+      ]},
+      { label: 'Detectar la deriva de concepto', children: [
+        { label: 'Vigila el RESULTADO, no las entradas' },
+        { label: 'Sharpe móvil / tasa de acierto' },
+        { label: 'Punto de cambio CUSUM / Page-Hinkley' },
+        { label: 'Dispara antes del desplome del PnL; compromiso de sensibilidad' },
+      ]},
+      { label: 'Responder a la deriva', children: [
+        { label: 'Ventana móvil (dial de sesgo-varianza)' },
+        { label: 'Aprendizaje en línea (riesgo de envenenamiento)' },
+        { label: 'Cambio de régimen / ensamblados' },
+        { label: 'APÁGALA (la opción honesta)' },
+      ]},
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Comprobación mixta: ¿te movió el objetivo en movimiento?"
+  questions={[
+    {
+      question: "La distribución de características de un modelo de momento no ha cambiado, y sin embargo ahora pierde dinero porque el momento alto predice reversiones en vez de ganancias. Nombra el cambio.",
+      options: [
+        { text: "Deriva de concepto — P(y|x) se invirtió mientras P(x) permaneció estable", correct: true },
+        { text: "Cambio de covariables — las entradas tienen que haberse movido" },
+        { text: "Cambio de etiqueta — solo cambió la tasa base de días alcistas" },
+        { text: "Ningún cambio; está dentro del ruido normal" },
+      ],
+      explanation: "Entradas estables pero una relación entrada→salida invertida es la definición de deriva de concepto — y exactamente por lo que los monitores de solo entradas la pasan por alto.",
+    },
+    {
+      question: "Un Sharpe en muestra de 2.0 pronostica de la forma más honesta un Sharpe en vivo de aproximadamente cuánto, una vez que tienes en cuenta selección, masificación y reflexividad?",
+      options: [
+        { text: "Alrededor de 1.0 o menos — aproximadamente la mitad, según la decadencia por publicación de McLean-Pontiff, antes de costes de impacto adicionales", correct: true },
+        { text: "Exactamente 2.0 — los backtests son pronósticos insesgados" },
+        { text: "Alrededor de 3.0 — el trading en vivo mejora sobre los backtests" },
+        { text: "Exactamente 0.0 — los mercados son perfectamente eficientes" },
+      ],
+      explanation: "Las anomalías publicadas decaen ~58% fuera de muestra; el recorte popularizado del ~50% lleva 2.0 a ~1.0, y tu propio impacto de mercado a tamaño recorta más.",
+    },
+    {
+      question: "El entrenamiento tiene una división de característica 50/50; en vivo es 30/70. El PSI sale alrededor de 0.17. ¿Cómo deberías leerlo?",
+      options: [
+        { text: "Cambio moderado (banda 0.1-0.25) — investiga; la distribución de entrada se ha movido de forma significativa", correct: true },
+        { text: "Estable — por debajo del umbral de 0.1, nada que ver" },
+        { text: "Catastrófico — muy por encima de 0.25, reentrena de inmediato" },
+        { text: "El PSI puede ser negativo aquí, así que el signo indica la dirección" },
+      ],
+      explanation: "(0.3−0.5)ln(0.6) + (0.7−0.5)ln(1.4) ≈ 0.102 + 0.067 ≈ 0.17, que cae en la banda 0.1-0.25 'moderado, investiga'. Los términos del PSI son siempre no negativos.",
+    },
+    {
+      question: "Tus monitores de PSI y KS están todos en verde. ¿Qué puedes concluir con seguridad sobre la salud del modelo?",
+      options: [
+        { text: "Solo que las entradas no han derivado; la deriva de concepto todavía puede estar destruyendo la ventaja en silencio, así que también debes monitorizar los resultados", correct: true },
+        { text: "El modelo está definitivamente sano — las entradas en verde lo garantizan" },
+        { text: "El modelo está definitivamente roto — las entradas en verde son una bandera roja" },
+        { text: "Nada, porque el PSI y el KS miden resultados, no entradas" },
+      ],
+      explanation: "Los monitores de entrada prueban P(x). La deriva de concepto vive en P(y|x), invisible para ellos. Las entradas en verde son necesarias, nunca suficientes — emparéjalas con monitores de resultados de Sharpe móvil/CUSUM.",
+    },
+    {
+      question: "Acortas tu ventana de reentreno de 250 días a 60 días. ¿Qué compromiso acabas de hacer?",
+      options: [
+        { text: "Adaptación más rápida al cambio de régimen, pero estimaciones de coeficientes unas 2× más ruidosas (el SE escala como 1/√n)", correct: true },
+        { text: "Estrictamente mejor — las ventanas cortas dominan a las largas en todos los aspectos" },
+        { text: "Menor ruido de estimación y adaptación más lenta, lo mejor de ambos mundos" },
+        { text: "Elimina la deriva de concepto, así que no se necesita monitorización" },
+      ],
+      explanation: "SE ∝ 1/√n significa que 60 días es √(250/60) ≈ 2× más ruidoso que 250, pero 'mayoritariamente régimen nuevo' en ~30 frente a ~190 días rancios. Empareja la ventana con la semivida de decadencia del alfa.",
+    },
+  ]}
+/>

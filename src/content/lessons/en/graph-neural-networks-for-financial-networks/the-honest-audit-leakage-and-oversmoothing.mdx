@@ -1,0 +1,586 @@
+---
+title: "The Honest Audit: Leakage and Over-Smoothing"
+description: "The sober field manual for graph models in finance: why graphs leak harder than any data structure (a node sees its neighbours, so a careless split lets the test set peek across edges), topology-aware splitting, over-smoothing as you stack too many layers, non-stationary topology, and the brutal data-plumbing cost that sinks most GNN projects."
+topic: "en/graph-neural-networks-for-financial-networks"
+order: 6
+minutes: 22
+updated: 2026-06-23
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap } from '@/components/react';
+
+You have spent five lessons learning what graph neural networks *can* do: pass messages
+along edges, learn embeddings that respect who-connects-to-whom, model contagion through
+a financial system. This lesson is the cold shower. It is the GNN sibling of the
+"why deep learning struggles in finance" discipline — the one that taught you to deflate
+your Sharpe for the number of trials, to purge and embargo your cross-validation, and to
+trust an out-of-sample number roughly as far as you can throw it.
+
+Here is the punchline up front: **a graph is the most leakage-prone data structure you
+will ever model, because the entire point of message passing is to let a node consume its
+neighbours' information.** Bolt a careless train/test split onto that, and your "test"
+nodes have been quietly reading the training set's answer key across every edge. You will
+get a gorgeous AUC, present it proudly, and watch it evaporate the moment it touches a
+node the graph never saw before.
+
+Everything you respected in the deep-learning course bites *harder* here: leakage, because
+edges are conduits; non-stationarity, because the graph itself rewires in exactly the
+crisis you care about; and the deflated-Sharpe paranoia, because a graph project hides its
+overfitting in the plumbing where nobody audits. Let's audit it.
+
+## Why graphs leak harder than tables
+
+<MCQ
+  client:visible
+  pretest
+  question="A 2-layer GNN predicts whether a 'test' node is fraudulent. That test node has one neighbour that sits in the training set, with a known fraud label. Why is this a leakage problem rather than legitimate use of structure?"
+  options={[
+    { text: "Message passing folds the train neighbour's features (and, in many pipelines, its label) into the test node's embedding — so the test prediction is literally a function of training data the model already fit on", correct: true },
+    { text: "It is not a problem; neighbours are supposed to inform each other, that is the whole point of a graph" },
+    { text: "It only leaks if the two nodes share an identical feature vector" },
+    { text: "Leakage is impossible in classification, only in regression" },
+  ]}
+  explanation="A node's embedding is a function of its K-hop neighbourhood. If a neighbour is a training node, the test node's representation depends on data the model was fit on. Using structure is fine; letting the test set's prediction depend on already-seen training rows across an edge is leakage."
+/>
+
+**Analogy.** Imagine sitting an exam in a room where the person next to you — who has
+already been graded — keeps whispering their answers. You will ace the exam. You have
+learned nothing. A GNN with a leaky split is exactly that exam room: every edge is a
+neighbour whispering, and the test node's "independent" answer is half-copied from a
+classmate the grader already knows the score of.
+
+**Definition.** In a graph neural network, the embedding of node $v$ after $K$ layers of
+message passing is a function of the features of *every node within $K$ hops* of $v$.
+Schematically, layer $k$ updates each node from itself and its neighbours:
+
+$$ h_v^{(k)} = \phi\!\left(h_v^{(k-1)},\ \operatorname{AGG}\{\,h_u^{(k-1)} : u \in \mathcal{N}(v)\,\}\right). $$
+
+Unrolling $K$ of these layers means $h_v^{(K)}$ depends on the **$K$-hop receptive field**
+of $v$. So the leakage radius of a GNN is not "the node itself" — it is *every node
+reachable in $K$ steps*. Stack more layers, and the contamination front pushes one hop
+further out with each one.
+
+Contrast that with a table. In tabular data, row $i$ is (you hope) independent of row $j$;
+a clean split puts row $i$ in train and row $j$ in test and they never touch. There is no
+mechanism by which the model's prediction for test row $j$ reads training row $i$. A graph
+*manufactures* that mechanism on purpose. That is why graphs leak harder than any tabular
+dataset: the leakage is not an accident of preprocessing, it is the design.
+
+**Worked example — a 2-layer GNN and one train neighbour.** Let test node $t$ have a
+single neighbour $a$, and let $a$ in turn neighbour a node $b$. Both $a$ and $b$ are in the
+training set; the model has already fit on their features and (for $a$) its label. Trace
+the two layers of message passing for $t$:
+
+| Layer | What feeds into the embedding of test node t |
+|---|---|
+| Layer 1 | t's own features, plus neighbour a's features (a is a train node) |
+| Layer 2 | the layer-1 embedding of t, plus the layer-1 embedding of a — and a's layer-1 embedding already absorbed b |
+| Result | h_t depends on features of t, a, and b — two of which the model trained on |
+
+So $h_t^{(2)} = f(\,x_t,\ x_a,\ x_b\,)$ where $x_a$ and $x_b$ are training features. The
+"held-out" prediction for $t$ is, mathematically, a function of data the model has already
+seen and fit. The AUC you measure on $t$ is contaminated. With $K=2$ the reach was 2 hops;
+push to $K=4$ and a single training node four edges away still seeps in.
+
+<Callout variant="warning" title="The leakage radius is your layer count">
+Every extra message-passing layer extends the leakage front by one hop. A 3-layer GNN on
+a dense financial graph (where most nodes are within 3 hops of everything) can let the
+*entire* training set inform *every* test node. The fix is never "add more layers to
+capture more structure" without first asking what those layers drag in across the split.
+</Callout>
+
+### When to use it
+
+Treat the $K$-hop receptive field as the unit of leakage *before* you choose a split — it
+is the blast radius your train/test boundary has to contain. Whenever you report a GNN
+metric, the first question is not "is the AUC high?" but "could any test node's embedding
+have consumed a training node's features or label across an edge?" If yes, the number is
+inflated until proven otherwise.
+
+<FillBlank
+  client:visible
+  question="State the leakage radius of a GNN."
+  text="After K layers of message passing, a node's embedding depends on its entire {{K-hop neighbourhood|single nearest neighbour|disconnected component}}, so the leakage radius equals the number of layers."
+  explanation="Unrolling K message-passing layers makes each node's representation a function of every node within K hops — that is exactly the radius across which a careless split leaks."
+/>
+
+## Topology-aware splitting
+
+<MCQ
+  client:visible
+  pretest
+  question="Your fraud GNN scores AUC 0.94 on a random 80/20 node split and you are thrilled. A colleague insists on re-splitting by time (train on edges before March, test after). What is the most likely outcome and why?"
+  options={[
+    { text: "AUC drops sharply — the random split let test nodes message-pass with train neighbours and leak the future; a temporal split removes that crutch and exposes the honest, lower number", correct: true },
+    { text: "AUC rises, because temporal splits give the model more relevant recent data" },
+    { text: "AUC is unchanged, because the split scheme cannot affect a GNN" },
+    { text: "The model will refuse to train on a temporal split" },
+  ]}
+  explanation="A random node split scatters connected nodes across train and test, so message passing carries information (and the future) across the boundary. A temporal split cuts the graph by time and is the finance default; the AUC almost always falls because the leaky crutch is gone."
+/>
+
+**Analogy.** Splitting graph nodes at random is like shuffling a deck where every card is
+glued to its neighbours by a thread — you cannot pull a "test" card out cleanly, because it
+drags three "training" cards along with it. You need scissors that cut *along the threads*
+(the edges) and *along time*, not a blind random grab.
+
+**Definition.** **Topology-aware splitting** means you partition data respecting the graph
+structure *and* time, never i.i.d. The three workhorse schemes:
+
+- **(a) Temporal split — the finance default.** Train on the graph as it existed before
+  time $T$ (edges, nodes, labels up to $T$); test on what comes after. The future cannot
+  whisper into the past because it does not exist yet at training time.
+- **(b) Inductive split.** Hold out *entire subgraphs or connected components* that the
+  model never saw during training, then ask it to generalize to brand-new nodes — the
+  GraphSAGE setting. The test component shares no edges with training, so there is no
+  conduit.
+- **(c) Edge masking for link prediction.** When the task *is* predicting edges, you must
+  **hide the test edges during message passing**. If edge $(u,v)$ is the thing you are
+  predicting, you cannot let that edge carry messages between $u$ and $v$ — that is the
+  model reading its own answer.
+
+Carry the **purge/embargo** idea straight over from *Machine Learning for Alpha*: in a
+temporal split you do not just cut at $T$, you **embargo** edges whose effect straddles the
+boundary. If an edge formed at $T - 1$ but its label (say, a default) only resolves at
+$T + 5$, that edge's information overlaps the test window — embargo it, exactly as you
+purged overlapping labels in the time-series course.
+
+**Worked example — random vs temporal split.** Same fraud graph, same model, two splits:
+
+| Split scheme | Test nodes share edges with train? | Future leaks back? | Reported AUC | Honest? |
+|---|---|---|---|---|
+| Random 80/20 node split | Yes — connected nodes scattered across both sides | Yes — via message passing | 0.94 | No (inflated) |
+| Temporal (train &lt; March, test &ge; March) | Only through past→future edges, embargoed | No | 0.71 | Yes |
+| Inductive (held-out component) | No — disjoint subgraph | No | 0.68 | Yes |
+
+The 0.94 is the whispering-classmate score. The 0.71 and 0.68 are what the model actually
+knows. A practitioner who ships the 0.94 has shipped a fantasy; one who reports the 0.71
+has shipped a model. The gap between them *is* the leakage.
+
+<Callout variant="warning" title="The number one GNN self-deception">
+A spectacular cross-validated AUC on a random node split is the single most common way a
+GNN project lies to itself. Random splitting is the default in tutorials and the default in
+most ML libraries, so it is what you reach for without thinking — and on a connected graph
+it leaks by construction. If someone shows you a graph result and cannot tell you the split
+was temporal or inductive, treat the metric as unverified.
+</Callout>
+
+### When to use each
+
+Use a **temporal split** as the default for any deployed finance model — you trade in time,
+so you must validate in time. Use an **inductive split** when the real question is "will
+this generalize to entities we have never seen" (new customers, new counterparties, a new
+market) — it is the honest test of transfer. Use **edge masking** whenever the prediction
+target is an edge itself (will these two firms transact, will this loan link form), because
+without it the model trivially reads the answer off the very edge you asked about.
+
+<Categorize
+  client:visible
+  question="Match each situation to the split scheme that keeps it honest."
+  buckets={["Temporal split", "Inductive split", "Edge masking"]}
+  items={[
+    { text: "Deploying a default-risk model that will trade forward in time", bucket: "Temporal split" },
+    { text: "Embargoing edges whose label resolves after the cutoff date", bucket: "Temporal split" },
+    { text: "Asking whether the model generalizes to a brand-new set of firms", bucket: "Inductive split" },
+    { text: "Holding out a whole connected component unseen in training", bucket: "Inductive split" },
+    { text: "Predicting whether two counterparties will form a transaction edge", bucket: "Edge masking" },
+    { text: "Hiding the target edge so it cannot pass messages between its endpoints", bucket: "Edge masking" },
+  ]}
+  explanation="Temporal splits respect time and embargo straddling edges; inductive splits hold out disjoint subgraphs to test transfer to unseen nodes; edge masking hides the predicted edge so it cannot inform its own prediction."
+/>
+
+## Over-smoothing
+
+<MCQ
+  client:visible
+  pretest
+  question="Your GNN underperforms a non-graph baseline. Your instinct is to stack more message-passing layers to capture richer structure. Why is this likely to make things worse?"
+  options={[
+    { text: "Over-smoothing — each extra layer averages over a larger neighbourhood, pulling every node's embedding toward the same vector until they become indistinguishable and discriminative power collapses", correct: true },
+    { text: "More layers always help GNNs the way they help CNNs; the real problem is the learning rate" },
+    { text: "Extra layers overfit the training labels but never affect the embeddings" },
+    { text: "Deeper GNNs simply train slower; accuracy is unaffected" },
+  ]}
+  explanation="Stacking message-passing layers repeatedly averages neighbourhoods, so node embeddings converge toward a common mean — over-smoothing. Discriminative signal is washed out. Deeper is not better for GNNs, unlike CNNs."
+/>
+
+**Analogy.** Stir a drop of milk into your coffee and at first you can see swirls — distinct
+regions, structure, contrast. Keep stirring and every sip tastes identical. Message passing
+is stirring: a little blends useful neighbourhood context; too much homogenizes the whole
+cup until every node tastes the same beige.
+
+**Definition.** **Over-smoothing** is the phenomenon where, as you stack many message-passing
+layers, every node's embedding aggregates an ever-larger neighbourhood until all embeddings
+converge toward a nearly identical vector. Once two nodes have the same representation, no
+classifier can tell them apart — the model's discriminative power collapses. This is the
+crucial way GNNs differ from CNNs: in a CNN, depth builds richer hierarchical features and
+deeper usually helps; in a GNN, depth past a small number of layers actively *destroys*
+information by averaging it away.
+
+**Worked example — repeated averaging.** Take two nodes whose embeddings start far apart,
+say node $P$ at value $10$ and node $Q$ at value $0$, on a graph where each layer replaces a
+node's value with the average of itself and its neighbour (a toy mean-aggregation). Watch
+them collapse toward the global mean of $5$:
+
+| Layer | Embedding of P | Embedding of Q | Gap (P minus Q) |
+|---|---|---|---|
+| 0 (input) | 10.00 | 0.00 | 10.00 |
+| 1 | 7.50 | 2.50 | 5.00 |
+| 2 | 6.25 | 3.75 | 2.50 |
+| 3 | 5.625 | 4.375 | 1.25 |
+| 5 | 5.156 | 4.844 | 0.31 |
+
+Do the layer-1 arithmetic: $P$ becomes $(10 + 0)/2 \cdot$ blended with itself — in this toy
+the gap simply halves each layer, $10 \to 5 \to 2.5 \to 1.25 \to 0.31$. After five layers
+$P$ and $Q$ are within a third of a unit of each other; after ten they are indistinguishable.
+The discriminative signal that made $P$ and $Q$ *different nodes* has been averaged into
+mush. That is over-smoothing in one number: the **gap** $\to 0$.
+
+**Mitigations:**
+
+- **Stay shallow.** Most production GNNs use **2–3 layers**. That is not a lack of ambition;
+  it is the sweet spot before over-smoothing bites.
+- **Residual / skip connections (jumping knowledge).** Let each layer keep a copy of the
+  pre-aggregation embedding, so the original signal survives the stirring.
+- **Normalization.** Techniques like PairNorm or per-layer normalization push embeddings
+  apart to counteract the collapse.
+
+<Callout variant="warning" title="'Underperforming? Add layers' is exactly backwards">
+This is the GNN twin of the deep-learning trap where a low Sharpe tempts you to add
+capacity. In a GNN, adding message-passing layers usually moves you *toward* over-smoothing:
+better at memorizing the training graph, worse at telling nodes apart out of sample. The
+disciplined move when a GNN underperforms is almost always *fewer* layers, skip connections,
+or a hard look at whether the relational signal exists at all — not depth.
+</Callout>
+
+### When to use depth
+
+Reach for extra layers only when the task genuinely needs information from far across the
+graph — a long-range dependency that a 2-hop neighbourhood provably misses — *and* you pair
+the depth with skip connections or normalization to fight the collapse. For the overwhelming
+majority of financial graph tasks (fraud rings, counterparty risk, sector clustering), the
+signal lives within 2–3 hops, and a shallow network both avoids over-smoothing and contains
+your leakage radius. Depth is a cost you pay only against a demonstrated long-range need.
+
+<FillBlank
+  client:visible
+  question="State the cause-and-effect of over-smoothing."
+  text="As a GNN stacks more message-passing layers, repeated neighbourhood averaging drives node embeddings toward {{a common vector|opposite extremes|random noise}}, which destroys the model's ability to tell nodes apart."
+  explanation="Each layer averages over a wider neighbourhood; iterated, this converges every embedding toward the global mean, collapsing discriminative power — the defining mechanism of over-smoothing."
+/>
+
+## Non-stationary topology
+
+<MCQ
+  client:visible
+  pretest
+  question="You train a GNN on a correlation network built from a calm two-year period, then deploy it into a market crash. What is the core risk?"
+  options={[
+    { text: "The graph itself rewires in the crisis — correlations spike, edges multiply, the topology the model learned no longer exists exactly when you most need it", correct: true },
+    { text: "No risk; correlation networks are fixed structures that do not change with the regime" },
+    { text: "The only risk is that node features change, but the edges are safe" },
+    { text: "The model will simply retrain itself automatically during the crash" },
+  ]}
+  explanation="Financial graphs are non-stationary: in a crash, correlations spike toward 1, the correlation network densifies, and the learned topology breaks. The stress regime — the one you care about — is precisely where the graph differs most from training."
+/>
+
+**Analogy.** You learn the road map of a city in summer, with its quiet side streets and
+predictable flow. Then a flood hits: roads close, traffic reroutes, everyone funnels onto the
+same three bridges. Your beautiful summer map is now actively misleading — and the flood is
+the exact day you needed directions most. A financial graph floods in a crisis.
+
+**Definition.** **Non-stationary topology** means the graph's *structure* — which edges exist,
+how dense it is, which nodes are central — drifts over time rather than staying fixed. Loans
+roll off and new ones originate; supply chains re-route around a disruption; and in a
+correlation network, the edges themselves are statistical estimates that **spike in a crash**.
+A model trained on one regime's topology can fail in another, and the regime that differs most
+is usually the stress regime you built the model to handle.
+
+**Worked example — correlation network densifying in a crash.** Build edges between assets
+whenever their pairwise correlation exceeds a threshold, say $\rho > 0.5$. In a calm regime,
+average pairwise correlation might sit around $0.2$, so few pairs clear the bar and the graph
+is sparse. In a crash, "everything falls together" — average correlation jumps toward $0.8$,
+and almost every pair clears the threshold:
+
+| Regime | Average pairwise correlation | Pairs above 0.5 threshold (of 100 assets) | Edge count | Graph density |
+|---|---|---|---|---|
+| Calm | 0.20 | ~5% of pairs | ~250 edges | Sparse |
+| Stress (crash) | 0.80 | ~90% of pairs | ~4,450 edges | Near-complete |
+
+The crash graph is nearly complete — almost every node connects to almost every other. Now
+recall over-smoothing: on a near-complete graph, a single layer of message passing already
+averages over *almost the entire network*, so embeddings collapse toward the global mean in
+one step. The cruelest twist: **the topology over-smooths exactly when it matters most.** The
+model trained on the sparse calm graph meets a dense crisis graph and both the structure it
+learned *and* its ability to discriminate dissolve at once. This ties directly to the temporal
+GNNs of lesson 3 — modelling the graph as a sequence of time-stamped snapshots is the response
+to topology that will not hold still, and it mirrors the non-stationarity theme that haunted
+the deep-learning course.
+
+<Callout variant="warning" title="Averaging the graph over a long window hides the crisis">
+The tempting fix for a noisy, drifting graph is to estimate one "stable" graph over a long
+window. Resist it. Averaging a correlation network over five years blends the sparse calm
+structure with the dense crisis structure into a bland in-between graph that matches *neither*
+regime — and specifically erases the dense topology of the crash, the one event your risk model
+exists to survive. A long-window average launders away the very signal you need.
+</Callout>
+
+### When to use a static vs temporal graph
+
+Use a **static graph** only when the relationships are genuinely slow-moving and structural —
+legal ownership hierarchies, fixed supply-chain contracts, settled corporate filings — where
+the topology barely drifts over your horizon. Use a **temporal / dynamic graph** (snapshots or
+a streaming temporal GNN) whenever the edges are themselves regime-sensitive estimates —
+correlation networks, transaction flows, interbank exposures — because those rewire precisely
+in the stress you are modelling, and a static snapshot will be most wrong when being right
+matters most.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Why does a crisis correlation graph make over-smoothing worse, not just different?</summary>
+
+**Answer.** Over-smoothing is driven by how much of the graph each layer averages over. On a
+sparse calm graph, one layer touches a node's handful of neighbours — modest blending. In a
+crash the correlation network becomes near-complete, so a single message-passing step averages
+over almost every node at once. That collapses embeddings toward the global mean in *one* layer
+instead of many, wiping out node-level discrimination at the exact moment positions are blowing
+up. The non-stationary topology and the over-smoothing failure mode compound each other: the
+crisis both invalidates the learned structure and accelerates the homogenization of whatever
+structure remains.
+
+</details>
+</Reveal>
+
+## The data-plumbing tax
+
+<MCQ
+  client:visible
+  pretest
+  question="Two teams build fraud GNNs. Team A obsesses over GCN vs GAT vs GraphSAGE architecture; Team B spends its time on entity resolution, point-in-time edge timestamps, and correlation thresholds. Who is more likely to ship a model that works?"
+  options={[
+    { text: "Team B — in real GNN projects the graph construction and leakage-free plumbing dominate the outcome, far more than the architecture choice", correct: true },
+    { text: "Team A — the architecture is where all the predictive power lives" },
+    { text: "Neither matters; results are random" },
+    { text: "Team A, because newer architectures automatically fix bad data" },
+  ]}
+  explanation="The architecture (GCN vs GAT vs GraphSAGE) is the visible tip; entity resolution, edge definitions, point-in-time timestamps, and scale are the 90% underwater that decides whether the model is honest and useful. Getting the graph right beats tuning the layer type."
+/>
+
+**Analogy.** A GNN model is the tip of an iceberg poking proudly above the water. The 90%
+underwater — the part that sinks ships — is the pipeline that *built the graph*: who is a node,
+what counts as an edge, when did each edge exist, and can you assemble it at scale without a
+look-ahead. Everyone photographs the tip. The cold dark mass below is where projects die.
+
+**Definition / reality.** The **data-plumbing tax** is the (usually dominant) share of a GNN
+project spent not on modelling but on constructing and maintaining the graph itself:
+
+- **Entity resolution.** Is "JP Morgan", "JPMorgan Chase", "J.P. Morgan & Co.", and ticker
+  "JPM" one node or four? Get this wrong and your graph's topology is fiction.
+- **Edge-definition thresholds.** Which correlation counts as an edge — $\rho > 0.3$,
+  $0.5$, $0.7$? Each threshold produces a *different* graph and a different model. The choice
+  is a modelling decision masquerading as a data-cleaning step.
+- **Point-in-time timestamping.** Every edge must carry *when it became known*, or you commit
+  the same look-ahead bias the prerequisite courses drilled into you: using an edge in a
+  prediction before that edge existed is leakage through time.
+- **Scale.** Financial transaction graphs run to billions of edges; building, storing, and
+  message-passing over them is an engineering problem before it is a modelling one.
+
+**Worked example — where the effort actually goes.** A representative breakdown of engineering
+effort on a deployed financial GNN:
+
+| Project phase | Share of total effort | What lives here |
+|---|---|---|
+| Data and edge construction | ~60% | Entity resolution, edge thresholds, point-in-time timestamps, ingestion |
+| Modelling / architecture | ~15% | Choosing and tuning GCN / GAT / GraphSAGE, layer count |
+| Validation / leakage audit | ~15% | Topology-aware splits, embargo, deflating for trials |
+| Serving and maintenance | ~10% | Scale, refresh, monitoring topology drift |
+
+Roughly **85%** of the work is *not* the architecture. The 15% everyone fights about
+(GCN vs GAT) sits between a 60% plumbing block that decides whether the graph is even real and
+a 15% validation block that decides whether the result is honest. Spend your scarce attention
+accordingly.
+
+<Callout variant="tip" title="The architecture matters least">
+The honest hierarchy of what drives a financial GNN's success: (1) a correct, point-in-time,
+leakage-free graph; (2) a topology-aware, temporal split that survives audit; (3) a shallow
+enough network to dodge over-smoothing; and only then (4) the GCN-vs-GAT-vs-GraphSAGE choice.
+If you are debating layer types before you have nailed entity resolution and the split, you are
+polishing the tip of the iceberg while the hull takes on water.
+</Callout>
+
+### When to use a GNN at all
+
+Reach for a graph neural network only when **both** conditions hold: the relational signal is
+strong enough to clear the steep plumbing cost (a plain tabular model on node features alone
+genuinely leaves money on the table), **and** the edge that signal lives on survives a
+topology-aware, point-in-time split. If a gradient-boosted tree on per-node features matches
+your GNN on an honest temporal split, the graph added cost, not edge — ship the tree. The GNN
+earns its keep only when relational structure is both real and leakage-free.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "K-hop receptive field", definition: "The neighbourhood a node's embedding depends on after K layers — and therefore the leakage radius of the GNN" },
+    { term: "Temporal split", definition: "Train on the graph before time T, test after, embargoing edges whose effect straddles the cutoff" },
+    { term: "Over-smoothing", definition: "Stacked layers average neighbourhoods until all node embeddings converge and discrimination collapses" },
+    { term: "Non-stationary topology", definition: "The graph rewires across regimes — correlation networks densify in a crash, breaking the learned structure" },
+    { term: "Data-plumbing tax", definition: "The dominant share of a GNN project spent on entity resolution, edge definition, and point-in-time construction" },
+  ]}
+/>
+
+## A pre-flight checklist
+
+<MCQ
+  client:visible
+  pretest
+  question="What single discipline from the alpha course is the closest sibling of a GNN pre-flight leakage audit?"
+  options={[
+    { text: "The deflated-Sharpe / purged-CV discipline — refusing to trust a headline number until you have subtracted selection bias and confirmed it survives an honest, leakage-free split", correct: true },
+    { text: "Maximizing model capacity until in-sample error hits zero" },
+    { text: "Reporting the best result from the largest possible architecture search" },
+    { text: "Trusting a high cross-validated AUC because cross-validation cannot leak" },
+  ]}
+  explanation="A GNN pre-flight check is the graph sibling of deflated-Sharpe paranoia: do not believe a number until you have proven the split was honest, the edges were point-in-time, and the result beats a baseline after accounting for trials."
+/>
+
+**Analogy.** A pilot does not trust a plane because it looks shiny on the tarmac; they run a
+fixed pre-flight checklist every single time, because the failure modes are known and the cost
+of skipping is a smoking crater. A GNN result deserves the same ritual. Below is the checklist —
+the GNN sibling of the deflated-Sharpe discipline you already carry from *Machine Learning for
+Alpha*. Run it before you trust *any* graph result, including your own.
+
+<Callout variant="warning" title="Before you trust a GNN result — run the checklist">
+1. Topology-aware AND temporal split? (No random node split on a connected graph — that leaks
+by construction.)
+2. Are all edges point-in-time, with straddling edges embargoed? (No edge informs a prediction
+before it existed.)
+3. Is the network shallow enough to avoid over-smoothing? (Usually 2 to 3 layers; more only with
+skip connections and a real long-range need.)
+4. Has the topology been checked across regimes? (Does the calm-period graph still resemble the
+stress-period graph you will deploy into?)
+5. Does it beat a non-graph baseline on the same honest split? (If a tabular model ties it, the
+graph added cost, not edge.)
+6. Is the headline metric deflated for the number of trials? (Every architecture, threshold, and
+seed you searched is a trial — deflate, exactly as you deflate a Sharpe.)
+
+If any box is unchecked, the number is unverified. A GNN result you cannot defend on all six is a
+victory-lap slide, not a model.
+</Callout>
+
+### When to use it
+
+Run this checklist on every graph result you produce *and* every one you are asked to believe —
+before deployment, before a write-up, before a pitch. It is cheap relative to a model that fails
+silently in production. The moment a GNN's reported metric cannot survive all six questions,
+treat it the way you treat an un-deflated Sharpe from a thousand-trial search: interesting,
+unproven, and not yet tradeable.
+
+## Recap
+
+You came in able to build a graph neural network. You leave able to *audit* one. The four ways a
+GNN lies to you are now familiar: it leaks across edges harder than any table because message
+passing is leakage by design; it demands a topology-aware, temporal, embargoed split or its AUC
+is fiction; it collapses into over-smoothing if you mistake depth for power; and it is trained on
+a topology that rewires in the exact crisis it is meant to survive. Behind all of it sits the
+plumbing tax — the unglamorous 85% of the work that actually decides the outcome, while everyone
+argues about the architecture that decides the least.
+
+<MindMap
+  client:visible
+  title="The honest audit: leakage and over-smoothing"
+  caption="Build the map: four failure modes, the plumbing tax beneath them, and the pre-flight checklist that catches them all."
+  root={{
+    label: 'Auditing a financial GNN',
+    children: [
+      { label: 'Graphs leak harder than tables', children: [
+        { label: 'Message passing consumes neighbours' },
+        { label: 'Leakage radius = layer count (K hops)' },
+        { label: 'Test node embeds train neighbours' },
+      ]},
+      { label: 'Topology-aware splitting', children: [
+        { label: 'Temporal split (finance default)' },
+        { label: 'Inductive (held-out subgraph)' },
+        { label: 'Edge masking for link prediction' },
+        { label: 'Embargo straddling edges' },
+      ]},
+      { label: 'Over-smoothing', children: [
+        { label: 'Layers average until embeddings converge' },
+        { label: 'Deeper is NOT better (unlike CNNs)' },
+        { label: 'Fix: 2-3 layers, skip connections, norm' },
+      ]},
+      { label: 'Non-stationary topology', children: [
+        { label: 'Correlations spike in a crash' },
+        { label: 'Graph densifies, over-smooths when it matters' },
+        { label: 'Static vs temporal graph choice' },
+      ]},
+      { label: 'Data-plumbing tax (~85%)', children: [
+        { label: 'Entity resolution' },
+        { label: 'Edge thresholds' },
+        { label: 'Point-in-time timestamps' },
+        { label: 'Architecture matters least' },
+      ]},
+      { label: 'Pre-flight checklist', children: [
+        { label: 'Honest split + embargo' },
+        { label: 'Shallow + regime-checked' },
+        { label: 'Beats baseline, deflated for trials' },
+      ]},
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Mixed check: can you audit a graph result?"
+  questions={[
+    {
+      question: "A 3-layer GNN on a dense interbank graph reports AUC 0.96 on a random node split. Spot the trap.",
+      options: [
+        { text: "On a connected graph a random split lets test nodes message-pass with train neighbours; with 3 layers the leakage reaches 3 hops and can pull the whole training set into every test prediction — the AUC is inflated", correct: true },
+        { text: "AUC 0.96 is fine because random splits are the unbiased gold standard" },
+        { text: "The only issue is that 3 layers is too few to capture interbank structure" },
+        { text: "Dense graphs cannot leak because every node looks the same" },
+      ],
+      explanation: "The number one GNN self-deception: a high AUC on a random split. The leakage radius equals the layer count, so on a dense graph a 3-layer model lets the training set whisper into every test node. Re-split temporally or inductively before believing the number.",
+    },
+    {
+      question: "A team's GNN underperforms a gradient-boosted tree, so they add layers from 3 to 8. Cause and effect — what happens to the node embeddings and why?",
+      options: [
+        { text: "The extra layers average over ever-larger neighbourhoods, so embeddings converge toward a common vector (over-smoothing) and node discrimination collapses — performance gets worse, not better", correct: true },
+        { text: "The embeddings become sharper and more distinct, fixing the underperformance" },
+        { text: "Nothing changes; layer count does not affect embeddings" },
+        { text: "The model overfits the labels but the embeddings stay separated" },
+      ],
+      explanation: "Adding depth to a GNN drives over-smoothing: repeated neighbourhood averaging pushes every embedding toward the global mean until nodes are indistinguishable. 'Underperforming, add layers' is exactly backwards — the cure is usually fewer layers plus skip connections.",
+    },
+    {
+      question: "You build a correlation network with a 0.5 edge threshold and train on a calm period. Why is deploying it into a crash dangerous?",
+      options: [
+        { text: "In a crash correlations spike toward 1, almost every pair clears the threshold, and the graph becomes near-complete — the learned sparse topology no longer exists and message passing over-smooths in a single step", correct: true },
+        { text: "Correlation networks are fixed, so the crash graph is identical to the calm graph" },
+        { text: "The danger is only that node features change; the edges are stable" },
+        { text: "A crash makes the graph sparser, which always improves the model" },
+      ],
+      explanation: "Non-stationary topology: the correlation network densifies dramatically in a crash, breaking the learned structure exactly when it matters and accelerating over-smoothing on the near-complete graph. A static calm-period graph is most wrong in the stress regime it exists to handle.",
+    },
+    {
+      question: "You are predicting whether two firms will form a transaction edge. Which precaution is non-negotiable?",
+      options: [
+        { text: "Edge masking — hide the target edge during message passing so it cannot pass information between its two endpoints and let the model read its own answer", correct: true },
+        { text: "Use as many layers as possible so the model sees the whole graph" },
+        { text: "Average the graph over five years to get a stable structure" },
+        { text: "Report the best AUC across every threshold you tried, undeflated" },
+      ],
+      explanation: "In link prediction the target edge must be masked during message passing. Leaving it in lets the endpoints exchange information across the very edge being predicted — the model trivially reads the answer, the purest form of graph leakage.",
+    },
+    {
+      question: "Which split-and-audit combination would make you trust a financial GNN's reported edge over a tabular baseline?",
+      options: [
+        { text: "A temporal split with straddling edges embargoed, a shallow network, topology checked across regimes, and a metric deflated for every architecture and threshold tried — that beats the baseline on the same honest split", correct: true },
+        { text: "A random 80/20 node split with a deep network and the best AUC from a large architecture search", correct: false },
+        { text: "A single in-sample fit with no held-out test, since GNNs cannot overfit graphs", correct: false },
+        { text: "A long-window-averaged static graph with no embargo, judged on training AUC", correct: false },
+      ],
+      explanation: "This is the pre-flight checklist as the GNN sibling of deflated-Sharpe discipline: honest temporal split, embargo, shallow to avoid over-smoothing, regime-checked topology, deflated for trials, and a win over a non-graph baseline on the same split. Only then is the relational edge real and tradeable.",
+    },
+  ]}
+/>

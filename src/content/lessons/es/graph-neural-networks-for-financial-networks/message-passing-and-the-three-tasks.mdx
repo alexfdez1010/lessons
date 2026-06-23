@@ -1,0 +1,596 @@
+---
+title: "El paso de mensajes y las tres tareas"
+description: "El motor que vive dentro de toda red neuronal de grafos: cada nodo se actualiza agregando información de sus vecinos. Por qué el pooling invariante a permutaciones es innegociable, cómo apilar capas hace crecer el campo receptivo un salto cada vez, y los tres tipos de tarea — a nivel de nodo (puntuar una institución o una cartera), a nivel de arista (predecir un enlace) y a nivel de grafo (puntuar el estado de toda una red)."
+topic: "es/graph-neural-networks-for-financial-networks"
+order: 2
+minutes: 20
+updated: 2026-06-23
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, MessagePassingAnimator } from '@/components/react';
+
+Un grafo es una forma preciosa de *almacenar* una red financiera — los bancos como nodos, los
+préstamos como aristas, toda la maraña enredada de quién-debe-a-quién dibujada en una sola
+imagen. Pero una imagen se queda ahí, quieta. Para *aprender* de ella — para predecir qué banco
+es frágil, qué transferencia es fraudulenta, qué red entera está a punto de agarrotarse —
+necesitáis un motor que convierta la estructura en números que un modelo pueda puntuar.
+
+Ese motor tiene en su corazón una idea única, casi sospechosamente simple: el **paso de
+mensajes**. Cada nodo mira a sus vecinos, escucha lo que tienen que decir y actualiza su propia
+descripción de sí mismo. Hacedlo una vez y un nodo conoce su vecindario. Hacedlo dos veces y
+conoce el vecindario de su vecindario. Apilad unas cuantas rondas y un nodo lleva consigo un
+resumen comprimido de la porción de la red que alcanza — exactamente lo que queréis cuando un
+shock a dos saltos de préstamo todavía puede hundiros.
+
+Esta lección construye el motor desde cero, y después muestra los tres trabajos a los que
+podéis apuntarlo. Si acertáis con el paso de mensajes, cualquier arquitectura posterior —
+GraphSAGE, GAT, las variantes con atención — es simplemente una elección distinta de *cómo*
+escucha un nodo.
+
+## El paradigma del paso de mensajes
+
+<MCQ
+  client:visible
+  pretest
+  question="Una red neuronal de grafos necesita calcular una representación para un nodo a partir de sus vecinos. ¿Cuál es la operación central que repite, capa tras capa?"
+  options={[
+    { text: "Cada nodo agrega información de sus vecinos y después actualiza su propio vector combinando ese agregado con su vector anterior", correct: true },
+    { text: "Cada nodo copia al único vecino más importante y descarta el resto" },
+    { text: "Todo el grafo se aplana en una única fila larga y se pasa a un MLP estándar" },
+    { text: "Cada nodo solo mira sus propias características; las aristas se ignoran" },
+  ]}
+  explanation="Paso de mensajes = agregar de los vecinos y después actualizarse a uno mismo. Aplanar tira la estructura, copiar un vecino tira el resto, e ignorar las aristas tira por la borda todo el sentido de usar un grafo."
+/>
+
+**Analogía.** Tu reputación es la compañía que mantienes. Imaginad a una persona que, cada
+tarde, toma el ánimo medio de los amigos con los que ha hablado ese día y empuja su propio
+ánimo hacia él — y al día siguiente esos amigos hacen lo mismo, habiendo sido ellos mismos
+empujados por *sus* amigos. Tras unas cuantas tardes, los rumores de todo el círculo social se
+han difundido silenciosamente en el ánimo de todos. Un nodo en una GNN hace exactamente esto:
+cotillea con sus vecinos y actualiza su propio estado a partir de lo que oye.
+
+**Definición.** Una **red neuronal de grafos (GNN)** calcula un vector para cada nodo — su
+**embedding**, un resumen numérico aprendido del nodo y su contexto. Lo hace en rondas llamadas
+**capas**. Sea $h_v^{(k)}$ el embedding del nodo $v$ tras la capa $k$, y sea $\mathcal{N}(v)$ el
+conjunto de vecinos de $v$ (los nodos conectados a él por una arista). Una capa genérica de paso
+de mensajes es:
+
+$$ h_v^{(k)} = \text{UPDATE}\!\left( h_v^{(k-1)},\ \text{AGGREGATE}\big(\{\, h_u^{(k-1)} : u \in \mathcal{N}(v) \,\}\big) \right). $$
+
+Leedla de izquierda a derecha. **AGGREGATE** es una función que se traga el *conjunto* de
+embeddings de los vecinos y los comprime en un único vector resumen — una suma, una media, un
+máximo. **UPDATE** combina entonces ese resumen-de-vecinos con el *propio* embedding anterior
+del nodo $h_v^{(k-1)}$ para producir el nuevo. Los embeddings iniciales $h_v^{(0)}$ son
+simplemente las características de entrada en bruto del nodo (el ratio de capital de un banco, el
+número de transacciones de una cartera). En cada capa el modelo aprende pesos dentro de UPDATE y
+AGGREGATE, de modo que descubre *qué* información de los vecinos importa.
+
+<MessagePassingAnimator client:visible
+  title="Una ronda de paso de mensajes"
+  playLabel="Reproducir ronda"
+  stepLabel="Paso"
+  resetLabel="Reiniciar"
+  centerLabel="Nodo objetivo"
+  neighbourLabel="vecino"
+  stage0Label="En reposo: cada nodo guarda su propia característica."
+  stage1Label="1 · Envío: cada vecino empuja un mensaje por su arista."
+  stage2Label="2 · Agregación: el objetivo agrupa los mensajes entrantes (media)."
+  stage3Label="3 · Actualización: el objetivo integra el resumen en su propio embedding."
+  resultLabel="Embedding del objetivo"
+  caption="Una ronda de paso de mensajes: el nodo central recoge vectores de sus cuatro vecinos, los agrupa en un único agregado y después lo fusiona con su propio valor anterior para producir su embedding actualizado. Pulsad reproducir y observad las fases de envío, agregación y actualización." />
+
+**Ejemplo resuelto.** Tomad un nodo objetivo con embedding $h_v^{(0)} = 0.3$ y cuatro vecinos
+con los valores $0.8,\ 0.2,\ 0.6,\ 0.4$. Usad el par de funciones más simple: AGGREGATE = media,
+y UPDATE = promedio-de-(uno-mismo, agregado).
+
+Paso 1 — agregar los vecinos:
+
+$$ \text{AGGREGATE} = \frac{0.8 + 0.2 + 0.6 + 0.4}{4} = \frac{2.0}{4} = 0.5. $$
+
+Paso 2 — actualizar promediando el propio valor del nodo con ese agregado:
+
+$$ h_v^{(1)} = \frac{h_v^{(0)} + 0.5}{2} = \frac{0.3 + 0.5}{2} = \frac{0.8}{2} = 0.4. $$
+
+El nodo pasó de $0.3$ a $0.4$ — arrastrado hacia arriba por vecinos que, de media, están más
+altos que él. Ese es el motor entero en un solo número. Las GNN reales hacen esto con vectores y
+matrices de pesos aprendidas en lugar de escalares, pero la forma es idéntica: escuchar,
+agrupar, combinar.
+
+<Callout variant="warning" title="UPDATE conserva el término propio por un motivo">
+Un error frecuente es eliminar $h_v^{(k-1)}$ y hacer que el nodo sea igual *solo* al agregado de
+los vecinos. Si lo hacéis, un nodo olvida sus propias características — un banco bien capitalizado
+en un vecindario tambaleante se puntuaría exactamente igual que sus vecinos inestables, porque su
+propio ratio de capital fuerte se ha esfumado. El término propio es lo que permite a un nodo
+seguir siendo en parte él mismo mientras sigue absorbiendo contexto.
+</Callout>
+
+### Cuándo usarlo
+
+El paso de mensajes es la herramienta adecuada en el momento en que las *relaciones* portan una
+señal que perderíais tratando las filas de forma independiente. Si el riesgo de un banco depende
+de a quién presta, la etiqueta de una cartera depende de con quién transacciona, o la legitimidad
+de una transferencia depende del patrón a su alrededor, queréis una GNN. Si cada fila es
+genuinamente independiente — las características describen por completo el resultado sin contexto
+relacional — un modelo tabular simple es más sencillo e igual de bueno. Recurrid al paso de
+mensajes cuando las aristas *signifiquen* algo.
+
+<FillBlank
+  client:visible
+  question="Enunciad las dos mitades de una capa de paso de mensajes."
+  text="Una capa aplica primero {{AGGREGATE|UPDATE|READOUT}} para agrupar los embeddings de los vecinos, y después aplica {{UPDATE|AGGREGATE|SORT}} para combinar ese resumen agrupado con el propio embedding anterior del nodo."
+  explanation="El orden importa: agregar los vecinos en un solo vector, y después actualizar el nodo fusionando ese vector con su propio estado previo."
+/>
+
+## Por qué la invariancia a permutaciones es innegociable
+
+<MCQ
+  client:visible
+  pretest
+  question="Los vecinos de un nodo llegan como un conjunto sin orden natural. ¿Qué propiedad debe tener por tanto la función AGGREGATE?"
+  options={[
+    { text: "Debe ser invariante a permutaciones: la salida es idéntica sea cual sea el orden en que se listen los vecinos", correct: true },
+    { text: "Debe leer siempre los vecinos en orden alfabético" },
+    { text: "Debe dar más peso al vecino que casualmente aparezca primero" },
+    { text: "Debe exigir que todos los nodos tengan exactamente el mismo número de vecinos" },
+  ]}
+  explanation="Los vecinos son un conjunto, no una secuencia — no hay un primero ni un último canónicos. Así que AGGREGATE tiene que ser un pooling simétrico cuya respuesta no dependa del orden. Cualquier cosa sensible al orden inventaría un significado que no está en el grafo."
+/>
+
+**Analogía.** Imaginad que contáis el dinero en un bote de monedas. No importa si sacáis primero
+la moneda de un euro o la de diez céntimos — el total es el total. Ahora imaginad en cambio que
+escribierais el valor de cada moneda en una fila de casillas *en el orden en que las fuisteis
+sacando*, y que vuestra respuesta dependiera de qué casilla contenía qué moneda. Barajad el orden
+de extracción y vuestra "respuesta" cambia, aunque el bote nunca lo hizo. Los vecinos en un grafo
+son monedas en un bote, no casillas en una fila.
+
+**Definición.** Una función es **invariante a permutaciones** si reordenar sus entradas nunca
+cambia su salida: para cualquier reordenamiento, $f(\{x_1, x_2, \dots\}) = f(\{x_{\pi(1)},
+x_{\pi(2)}, \dots\})$. Los poolings simétricos — **suma**, **media** y **máximo** — son todos
+invariantes a permutaciones, que es exactamente por lo que las GNN los usan para AGGREGATE.
+También manejan con elegancia el **grado variable**: un nodo con 2 vecinos y un nodo con 200
+vecinos producen ambos un único vector resumen del mismo tamaño.
+
+**Ejemplo resuelto.** Tomad tres valores de vecinos $\{0.8,\ 0.2,\ 0.6\}$ y reordenadlos a
+$\{0.2,\ 0.6,\ 0.8\}$.
+
+Media del primer orden:
+
+$$ \frac{0.8 + 0.2 + 0.6}{3} = \frac{1.6}{3} \approx 0.533. $$
+
+Media del conjunto reordenado:
+
+$$ \frac{0.2 + 0.6 + 0.8}{3} = \frac{1.6}{3} \approx 0.533. $$
+
+Idéntica — a la media no le importa el orden. Ahora probad la alternativa rota, la
+**concatenación**, que simplemente pega los valores en un único vector ordenado. El primer orden
+da el vector $[0.8,\ 0.2,\ 0.6]$; el reordenamiento da $[0.2,\ 0.6,\ 0.8]$. Son vectores
+*distintos*, así que un modelo que los lea aprende cosas distintas del *mismo* vecindario. Peor
+aún, un nodo con cuatro vecinos produciría un vector de longitud 4 y un nodo con dos vecinos un
+vector de longitud 2 — el modelo ni siquiera puede aceptar ambos.
+
+<Callout variant="warning" title="La trampa de simplemente concatenar los vecinos">
+El atajo tentador "voy a alinear sin más las características de los vecinos una tras otra y pasar
+eso a una capa densa" falla por partida doble. Primero, se rompe con el **grado variable**: cada
+nodo tiene un número distinto de vecinos, así que la entrada concatenada tiene una longitud
+distinta y ninguna capa de tamaño fijo le encaja. Segundo, se rompe con el **orden**: sin un
+orden canónico de vecinos, el modelo atribuiría significado a un orden que es puro accidente de
+cómo resultó que los listasteis. El pooling simétrico esquiva ambos problemas a la vez.
+</Callout>
+
+### Cuándo usarlo
+
+En realidad no *elegís* la invariancia a permutaciones — es un requisito estricto siempre que los
+vecinos son un conjunto sin orden, lo que en las redes financieras siempre lo son. Las
+contrapartes, los socios de transacción y los enlaces de cadena de suministro no tienen un primero
+ni un último inherentes. La verdadera elección es *qué* pooling invariante: **media** cuando os
+importa el vecino típico, **suma** cuando importan el recuento bruto y la exposición total (la
+suma crece con el grado; la media no), y **máximo** cuando un vecino dominante debe llevar la
+señal. La agregación sensible al orden solo tiene sentido en datos genuinamente secuenciados —
+una serie temporal de precios — que es otra lección completamente distinta.
+
+<Categorize
+  client:visible
+  question="Clasificad cada función de agregación según si es seguro usarla como AGGREGATE en una GNN."
+  buckets={["Invariante a permutaciones (segura)", "Dependiente del orden (insegura)"]}
+  items={[
+    { text: "Media de los vectores de los vecinos", bucket: "Invariante a permutaciones (segura)" },
+    { text: "Suma de los vectores de los vecinos", bucket: "Invariante a permutaciones (segura)" },
+    { text: "Máximo elemento a elemento sobre los vecinos", bucket: "Invariante a permutaciones (segura)" },
+    { text: "Concatenar los vecinos en el orden de listado", bucket: "Dependiente del orden (insegura)" },
+    { text: "Tomar solo el primer vecino de la lista", bucket: "Dependiente del orden (insegura)" },
+    { text: "Ponderar los vecinos por su índice de posición", bucket: "Dependiente del orden (insegura)" },
+  ]}
+  explanation="La suma, la media y el máximo dan la misma respuesta bajo cualquier reordenamiento. Cualquier cosa que dependa de la posición en el listado — concatenación, solo-el-primero, pesos por posición — inventa una estructura que el grafo nunca tuvo."
+/>
+
+## El campo receptivo crece un salto cada vez
+
+<MCQ
+  client:visible
+  pretest
+  question="Apiláis 3 capas de paso de mensajes. ¿Hasta dónde puede ver el embedding final de un nodo dentro del grafo?"
+  options={[
+    { text: "Hasta 3 saltos de distancia — sus vecinos, los vecinos de estos y los vecinos de los vecinos de estos", correct: true },
+    { text: "El grafo entero, independientemente de cuántas capas haya" },
+    { text: "Solo sus vecinos directos, por muchas capas que apiléis" },
+    { text: "Exactamente un nodo, elegido al azar en cada capa" },
+  ]}
+  explanation="Cada capa mezcla un anillo más de vecinos, así que K capas alcanzan K saltos. Una capa ve los vecinos directos; la entrada de la tercera capa ya contiene información que viajó desde 3 saltos de distancia."
+/>
+
+**Analogía.** Los rumores se propagan una conversación cada vez. Tras una tarde sabéis lo que
+saben vuestros amigos directos. Tras dos tardes sabéis lo que *sus* amigos les contaron —
+información de personas que nunca habéis conocido os ha llegado, retransmitida un salto más cada
+noche. Las capas de una GNN son tardes: cada una deja que la información recorra exactamente una
+arista más.
+
+**Definición.** El **campo receptivo** de un nodo es el conjunto de otros nodos cuya información
+puede influir en su embedding final. Tras $K$ capas de paso de mensajes, el campo receptivo de un
+nodo es su **vecindario de $K$ saltos** — cada nodo alcanzable por un camino de a lo sumo $K$
+aristas. La razón es mecánica: la capa 1 trae a los vecinos a 1 salto; los vecinos de la capa 2
+*ya* han absorbido a *sus* vecinos a 1 salto en la capa 1, así que la capa 2 entrega
+indirectamente información a 2 saltos; y así sucesivamente. El número de capas es igual al número
+de saltos.
+
+**Ejemplo resuelto — contar el alcance.** Supongamos que cada nodo tiene aproximadamente 3
+vecinos (un grafo de grado medio 3). Trazad a cuántos nodos puede notar un objetivo a medida que
+añadís capas:
+
+| Capas $K$ | Saltos alcanzados | Aproximadamente cuántos nodos al alcance |
+|---|---|---|
+| 1 | vecinos directos | ~3 |
+| 2 | vecinos de los vecinos | ~3 + 3×3 = ~12 |
+| 3 | sus vecinos también | ~12 + 9×3 = ~39 |
+
+El alcance explota porque cada salto multiplica por el grado. Con 1 capa el nodo ve unos 3
+nodos; con 3 capas, unos 39. (En una red financiera densa con grado medio 20, tres saltos pueden
+ya tocar *miles* de instituciones — lo cual es a la vez la potencia y el peligro, como advierte
+el siguiente aviso.)
+
+**Anticipo del contagio.** Esta es toda la razón por la que las GNN encajan en el riesgo
+interbancario. Un modelo de 1 capa solo nota un shock en un banco al que prestáis
+*directamente*. Un modelo de 2 capas nota un shock a dos saltos de préstamo — un banco al que
+prestáis presta al banco que quebró, y la tensión se propaga de vuelta hasta vosotros a través de
+la cadena. Apilar capas codifica literalmente cuán lejos a través de la red de préstamos puede
+propagarse un impago antes de llegar a vuestra puerta.
+
+<Callout variant="warning" title="Más saltos no salen gratis — cuidado con el sobre-suavizado">
+Es tentador apilar muchas capas para que cada nodo vea todo el grafo. Forzadlo demasiado y caéis
+en el **sobre-suavizado** (*over-smoothing*): tras demasiadas rondas de promediado, el embedding
+de cada nodo converge hacia el mismo valor borroso, y bancos distintos se vuelven
+indistinguibles. El alcance crece además tan deprisa que en un puñado de saltos el vecindario de
+un nodo es *la mayor parte del grafo*, de modo que el embedding deja de ser local y específico.
+La mayoría de las GNN prácticas usan solo de 2 a 4 capas — suficientes saltos para capturar rutas
+de contagio reales sin fundir a todos los nodos en una papilla.
+</Callout>
+
+### Cuándo usarlo
+
+Fijad el número de capas según la dependencia más larga que realmente necesitéis capturar, no
+según la mayor que podáis encajar. Para el contagio interbancario donde importan las exposiciones
+de segundo orden, lo típico son de 2 a 3 capas. Para anillos de fraude que abarcan cadenas largas
+de transferencias, quizá necesitéis más — pero vigilad el sobre-suavizado y el coste de cómputo
+creciente. La regla práctica: elegid $K$ para que coincida con la distancia en saltos a lo largo
+de la cual la influencia viaja genuinamente en vuestra red, y entonces parad.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Si 3 capas ya alcanzan ~39 nodos, ¿por qué no apilar 10 capas para verlo todo?</summary>
+
+**Respuesta.** Dos fuerzas os castigan. Primero, el **sobre-suavizado**: cada capa promedia un
+nodo hacia sus vecinos, y tras muchas rondas cada embedding deriva hacia el mismo valor,
+borrando las diferencias que hacen a un banco más arriesgado que a otro. Segundo, la **saturación
+del alcance**: con un grado razonable, un puñado de saltos ya engulle la mayor parte del grafo,
+así que las capas adicionales aportan poca información nueva mientras cuestan más cómputo y
+memoria. El arte está en usar el *menor* número de capas que abarque la longitud real de
+dependencia — para la mayoría de los grafos financieros, de 2 a 4.
+
+</details>
+</Reveal>
+
+## Tareas a nivel de nodo — puntuar un único nodo
+
+<MCQ
+  client:visible
+  pretest
+  question="Queréis marcar carteras de criptomonedas individuales como probablemente ilícitas. ¿De qué tipo de tarea se trata?"
+  options={[
+    { text: "A nivel de nodo: adjuntáis una etiqueta o puntuación a cada nodo individual", correct: true },
+    { text: "A nivel de arista: predecís si existe una conexión" },
+    { text: "A nivel de grafo: puntuáis toda la red con un único número" },
+    { text: "Ninguna de estas; las GNN no pueden clasificar entidades individuales" },
+  ]}
+  explanation="Cada cartera es un nodo, y estáis puntuando nodos de uno en uno — esa es la definición de una tarea a nivel de nodo. A nivel de arista se puntúan conexiones; a nivel de grafo se puntúa todo el grafo de una vez."
+/>
+
+**Analogía.** Una agencia de crédito entrega a cada *persona* una puntuación. No puntúa
+relaciones ni puntúa toda la economía — puntúa individuos, de uno en uno, usando información
+sobre ellos *y* sus asociaciones financieras. Una tarea de GNN a nivel de nodo es la versión
+nativa de grafo de esa agencia.
+
+**Definición.** Una **tarea a nivel de nodo** adjunta una predicción a cada nodo individual.
+Ejecutáis el paso de mensajes para obtener el embedding final del nodo $h_v^{(K)}$ — un vector
+que ahora codifica tanto las características propias del nodo como su contexto a $K$ saltos — y lo
+pasáis por un pequeño clasificador o regresor para producir la respuesta. Formalmente:
+
+$$ \hat{y}_v = \text{CLASSIFY}\big(h_v^{(K)}\big). $$
+
+La salida puede ser una **clase** (cartera ilícita frente a legítima) o una **puntuación
+continua** (la calificación de fragilidad de un banco de 0 a 1).
+
+**Ejemplo resuelto.** Ejecutad una GNN de 2 capas sobre un grafo de transacciones y una cartera
+concreta termina con el embedding $h_v^{(2)}$. Una capa final mapea ese embedding a un único
+número y una sigmoide lo aplasta en una probabilidad — digamos $0.87$. Con un umbral de decisión
+de $0.5$, la cartera se marca como ilícita (ya que $0.87$ supera $0.5$). Y lo crucial: ese $0.87$
+refleja no solo el comportamiento propio de la cartera sino la compañía que mantiene: el paso de
+mensajes integró el hecho de que varios de sus vecinos a 2 saltos eran mezcladores
+(*mixers*) conocidos. Un modelo tabular plano que mirara solo la propia fila de la cartera habría
+pasado por alto esa señal de culpa-por-asociación.
+
+<Callout variant="info" title="El contexto es la ventaja">
+Todo el valor añadido de una GNN a nivel de nodo sobre un clasificador tabular plano es el
+contexto integrado en $h_v^{(K)}$. Dos carteras con características individuales idénticas pueden
+obtener puntuaciones muy distintas porque se sitúan en vecindarios diferentes. Ese es el quid: en
+finanzas, *con quién transaccionas* es a menudo una señal más fuerte que *qué aspecto tienes tú
+individualmente*.
+</Callout>
+
+### Cuándo usarlo
+
+Elegid tareas a nivel de nodo siempre que la unidad de decisión sea una única entidad: calificar
+la fragilidad de cada banco, etiquetar cada cartera, puntuar el riesgo de impago de cada cliente,
+clasificar cada cuenta como bot. Si vuestra pregunta empieza con "para cada X, predice..." y X es
+un nodo, este es vuestro tipo de tarea.
+
+## Tareas a nivel de arista — predecir un enlace
+
+<MCQ
+  client:visible
+  pretest
+  question="Queréis predecir, para un par de empresas sin enlace registrado, si probablemente existe una relación de suministro pero falta en vuestros datos. ¿Qué tipo de tarea?"
+  options={[
+    { text: "A nivel de arista (predicción de enlaces): puntuáis si una arista debería conectar dos nodos", correct: true },
+    { text: "A nivel de nodo: etiquetáis cada empresa de forma independiente" },
+    { text: "A nivel de grafo: puntuáis toda la red de suministro de una vez" },
+    { text: "Es imposible sin conocer ya la arista" },
+  ]}
+  explanation="La predicción trata de una relación entre dos nodos — si existe una arista, o cuál es su peso. Eso es a nivel de arista, también llamado predicción de enlaces. Inferir aristas faltantes o futuras es su pan de cada día."
+/>
+
+**Analogía.** Una aplicación de citas no se limita a describir a cada persona — predice si *dos*
+personas harían match. La puntuación vive en el *par*, calculada a partir de ambos perfiles. Las
+tareas a nivel de arista son emparejamiento para nodos: dadas dos entidades, ¿cuán probable es un
+enlace entre ellas?
+
+**Definición.** Una **tarea a nivel de arista** (o **predicción de enlaces**) predice si existe
+una arista entre dos nodos, o cuál es su peso. Primero calculáis ambos embeddings de los extremos
+$h_u^{(K)}$ y $h_v^{(K)}$ con el paso de mensajes, y después los combináis en una única puntuación
+de arista. Dos combinadores estándar:
+
+- **Producto escalar:** $\ \hat{y}_{uv} = h_u^{(K)} \cdot h_v^{(K)}$ — grande cuando los dos
+  embeddings apuntan en la misma dirección, es decir, los nodos son "compatibles".
+- **MLP sobre la concatenación:** $\ \hat{y}_{uv} = \text{MLP}\big([\, h_u^{(K)} \,\|\,
+  h_v^{(K)} \,]\big)$ — pasad ambos embeddings, pegados, a una pequeña red que aprende una regla
+  de puntuación más flexible. (Aquí concatenar *dos extremos concretos* está bien — hay
+  exactamente dos, en un rol definido, así que los problemas de grado variable y de orden de
+  antes no aplican.)
+
+**Ejemplo resuelto.** Dos empresas tienen embeddings $h_u^{(K)} = [0.5,\ 0.2,\ 0.8]$ y
+$h_v^{(K)} = [0.4,\ 0.1,\ 0.6]$. Puntuad la arista candidata con un producto escalar:
+
+$$ h_u^{(K)} \cdot h_v^{(K)} = (0.5)(0.4) + (0.2)(0.1) + (0.8)(0.6) = 0.20 + 0.02 + 0.48 = 0.70. $$
+
+Pasad $0.70$ por una sigmoide y obtenéis una probabilidad de en torno a $0.67$ — un enlace de
+suministro faltante moderadamente probable, digno de avisar a un analista para que investigue. La
+misma maquinaria predice una **transferencia fraudulenta** (¿una arista entre estas dos cuentas
+tiene pinta de blanqueo?) o la **exposición a la contraparte** (¿cuán grande debería ser el peso
+de la arista entre estos dos bancos?).
+
+<Callout variant="warning" title="Muestreo negativo: no entrenéis solo con positivos">
+Los grafos reales registran las aristas que *existen* y guardan silencio sobre la inmensa mayoría
+que no. Si entrenáis un predictor de enlaces solo con aristas existentes, aprende a decir "sí" a
+todo. Debéis alimentarlo con **muestras negativas** — pares de nodos sin arista — para que aprenda
+a distinguir enlaces de no-enlaces. Saltarse esto es el clásico tiro en el pie de la predicción de
+enlaces: un modelo que puntúa cada par como conectado y parece estupendo hasta que predice una
+cadena de suministro entre dos empresas no relacionadas.
+</Callout>
+
+### Cuándo usarlo
+
+Recurrid a las tareas a nivel de arista cuando la pregunta trata de una *relación entre dos
+nodos*: recomendar o inferir un enlace de contraparte faltante, marcar una transferencia como
+fraudulenta, predecir una operación futura entre dos mesas, estimar el peso (tamaño de la
+exposición) de un préstamo interbancario, o rellenar huecos en una red de suministro observada
+parcialmente. Si la respuesta se adjunta a un *par*, es a nivel de arista.
+
+<FillBlank
+  client:visible
+  question="Describid cómo una tarea a nivel de arista puntúa un enlace candidato."
+  text="Primero calcula ambos embeddings de los extremos con el paso de mensajes, y después los combina — por ejemplo con un {{producto escalar|media de un solo vecino|readout de grafo}} o un MLP sobre su concatenación — en una única puntuación de arista."
+  explanation="La predicción de enlaces trabaja sobre el par de embeddings de los extremos, puntuado por un producto escalar o un MLP sobre su concatenación. Un readout de grafo es para la tarea de grafo completo, no para una sola arista."
+/>
+
+## Tareas a nivel de grafo — puntuar toda una red
+
+<MCQ
+  client:visible
+  pretest
+  question="Queréis un único número que diga si todo un subgrafo de transacciones coincide con un patrón de blanqueo de capitales. ¿Qué tipo de tarea, y qué paso extra requiere?"
+  options={[
+    { text: "A nivel de grafo: agrupar TODOS los embeddings de los nodos en un único vector de grafo con un readout, y después puntuar ese", correct: true },
+    { text: "A nivel de nodo: simplemente puntuar el nodo más activo y llamarlo la puntuación del grafo" },
+    { text: "A nivel de arista: puntuar una arista representativa para todo el grafo" },
+    { text: "No hace falta agrupar; podéis leer la respuesta en cualquier nodo individual" },
+  ]}
+  explanation="Un veredicto de grafo completo necesita un readout: un pooling invariante a permutaciones sobre cada embedding de nodo, que produce un único vector de grafo de tamaño fijo que después clasificáis. Leer un nodo o una arista tira el resto de la estructura."
+/>
+
+**Analogía.** Un médico no os diagnostica a partir de una sola célula — toma las lecturas de
+todo el cuerpo y emite un único veredicto: sano o no. Una tarea a nivel de grafo es ese veredicto
+de cuerpo entero para una red: colapsad todo lo que habéis aprendido sobre cada nodo en un único
+resumen, y después decidid sobre la red en su conjunto.
+
+**Definición.** Una **tarea a nivel de grafo** produce una única predicción para un *grafo
+entero*. Después de que el paso de mensajes da a cada nodo su embedding, un **readout** (también
+llamado pooling de grafo) combina *todos* los embeddings de los nodos en un único vector de grafo
+de tamaño fijo, que un clasificador final puntúa:
+
+$$ h_G = \text{READOUT}\big(\{\, h_v^{(K)} : v \in G \,\}\big), \qquad \hat{y}_G = \text{CLASSIFY}\big(h_G\big). $$
+
+El READOUT debe ser **invariante a permutaciones** por la misma razón que lo era AGGREGATE — los
+nodos no tienen un orden canónico — así que es de nuevo una suma, una media o un máximo sobre cada
+nodo. (La suma preserva un sentido del tamaño y de la actividad total; la media lo normaliza.
+Elegid según si la *escala* del grafo debe importar al veredicto.)
+
+**Ejemplo resuelto.** Un pequeño subgrafo sospechoso de blanqueo tiene tres cuentas cuyos
+embeddings finales se reducen a los escalares $0.9,\ 0.7,\ 0.8$ (en la práctica son vectores). Un
+readout de media da el vector de grafo:
+
+$$ h_G = \frac{0.9 + 0.7 + 0.8}{3} = \frac{2.4}{3} = 0.8. $$
+
+Pasad $0.8$ por el clasificador de grafo y cruza el umbral del patrón de blanqueo — se marca el
+*subgrafo entero*, no una sola cuenta. Esa es la granularidad correcta: el blanqueo es un *patrón
+a través de cuentas* (entrada en abanico, salida en abanico, ida y vuelta rápida), así que el
+veredicto tiene que vivir en el grafo, no en sus nodos individuales.
+
+<Callout variant="info" title="El readout es a los grafos lo que AGGREGATE es a los nodos">
+Fijaos en la simetría: AGGREGATE agrupa los *vecinos* de un nodo en un único vector; READOUT
+agrupa los nodos del *grafo entero* en un único vector. Ambos deben ser invariantes a
+permutaciones, ambos son típicamente suma/media/máximo, y ambos convierten un conjunto de tamaño
+variable en un resumen de tamaño fijo. Si entendéis uno, entendéis el otro — operan a escalas
+distintas.
+</Callout>
+
+### Cuándo usarlo
+
+Elegid tareas a nivel de grafo cuando el *objeto que puntuáis es la propia red*: clasificar todo
+un subgrafo de transacciones como blanqueo o limpio, puntuar la fragilidad sistémica de una
+cartera, etiquetar el estado actual del mercado como un régimen estresado o calmado, o comparar
+dos estructuras de red parecidas a moléculas. Si la respuesta es un único veredicto para el grafo
+entero, necesitáis un readout y una cabeza a nivel de grafo.
+
+## Las tres tareas, una al lado de la otra
+
+Toda aplicación de GNN se reduce a uno de estos tres trabajos. La diferencia es puramente *a qué
+adjuntáis la predicción final* — un nodo, un par de nodos o el grafo entero — y por tanto qué
+pooling (si lo hay) hacéis al final.
+
+| Tipo de tarea | Qué predecís | Ejemplo en finanzas | Readout / cabeza típicos |
+|---|---|---|---|
+| **A nivel de nodo** | Una etiqueta o puntuación para cada nodo individual | Calificar la fragilidad de un banco; marcar una cartera como ilícita | Sin pooling de grafo — clasificar $h_v^{(K)}$ directamente |
+| **A nivel de arista** | Si existe una arista, o su peso, para un par de nodos | Predecir un enlace de suministro faltante; marcar una transferencia fraudulenta; dimensionar la exposición a la contraparte | Producto escalar o MLP sobre los dos embeddings de los extremos |
+| **A nivel de grafo** | Un único veredicto para el grafo entero | Puntuar la fragilidad sistémica de una cartera; clasificar un subgrafo de blanqueo; etiquetar un régimen de mercado | Readout invariante a permutaciones (suma/media/máximo) sobre todos los nodos, y después clasificar |
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Paso de mensajes", definition: "Cada nodo agrega de sus vecinos, y después actualiza su propio embedding combinándolo con el anterior" },
+    { term: "Invariancia a permutaciones", definition: "Propiedad por la que el agregado no cambia al reordenar los vecinos — por qué se usan la suma, la media y el máximo" },
+    { term: "Campo receptivo", definition: "El vecindario de K saltos que un nodo puede ver tras K capas; el alcance crece un salto por capa" },
+    { term: "Tarea a nivel de nodo", definition: "Adjuntar una etiqueta o puntuación a cada nodo individual, clasificando su embedding final directamente" },
+    { term: "Tarea a nivel de arista", definition: "Puntuar un par de nodos según si existe un enlace o su peso, vía producto escalar o MLP sobre los dos embeddings" },
+    { term: "Tarea a nivel de grafo", definition: "Agrupar todos los embeddings de los nodos con un readout en un único vector, y después puntuar el grafo entero" },
+  ]}
+/>
+
+## Recapitulación
+
+Habéis construido el motor. El paso de mensajes es simplemente **agregar de tus vecinos y después
+actualizarte a ti mismo** — repetidlo capa a capa y el embedding de un nodo crece hasta codificar
+su porción de $K$ saltos de la red. La agregación *debe* ser invariante a permutaciones (suma,
+media, máximo), porque los vecinos son un conjunto sin orden y de tamaño variable, y la
+concatenación se rompe por ambos motivos. Apilar $K$ capas alcanza $K$ saltos, que es exactamente
+cómo una GNN puede notar un shock viajando varios saltos de préstamo a través de una red
+interbancaria — aunque demasiadas capas sobre-suavizan a todos hasta dejarlos hechos papilla. Y
+sea lo que sea a lo que apuntéis el motor, el trabajo es uno de tres: **a nivel de nodo** (puntuar
+una entidad), **a nivel de arista** (puntuar una relación) o **a nivel de grafo** (puntuar toda la
+red, vía un readout que agrupa cada nodo).
+
+<MindMap
+  client:visible
+  title="El paso de mensajes y las tres tareas"
+  caption="Construid el mapa: el motor, su propiedad innegociable, cómo crece el alcance, y después los tres trabajos."
+  root={{
+    label: 'Motor de GNN y tareas',
+    children: [
+      { label: 'Paso de mensajes', children: [
+        { label: 'AGGREGATE: los vecinos en un único vector' },
+        { label: 'UPDATE: combinar el agregado con el propio embedding previo' },
+        { label: 'Repetir capa a capa' },
+      ]},
+      { label: 'Invariancia a permutaciones', children: [
+        { label: 'Los vecinos son un conjunto sin orden' },
+        { label: 'Usar suma / media / máximo' },
+        { label: 'La concatenación se rompe por orden + grado' },
+      ]},
+      { label: 'Campo receptivo', children: [
+        { label: 'K capas = K saltos' },
+        { label: 'El alcance se multiplica por el grado en cada salto' },
+        { label: 'Captura el contagio multi-salto' },
+        { label: 'Demasiadas capas = sobre-suavizado' },
+      ]},
+      { label: 'Tres tareas', children: [
+        { label: 'A nivel de nodo: puntuar una entidad' },
+        { label: 'A nivel de arista: predecir un enlace' },
+        { label: 'A nivel de grafo: readout + puntuar el grafo entero' },
+      ]},
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Repaso mixto: ¿arranca el motor?"
+  questions={[
+    {
+      question: "Un nodo tiene embedding 0.2 y tres vecinos con los valores 0.6, 0.4 y 0.8. Usando agregación por media y una actualización que promedia el propio valor del nodo con el agregado, ¿cuál es su nuevo embedding?",
+      options: [
+        { text: "0.4 — el agregado es (0.6+0.4+0.8)/3 = 0.6, y después (0.2+0.6)/2 = 0.4", correct: true },
+        { text: "0.6 — el nuevo valor es simplemente la media de los vecinos" },
+        { text: "0.2 — el nodo ignora a sus vecinos" },
+        { text: "1.0 — sumas el valor del nodo al agregado" },
+      ],
+      explanation: "Agregad primero: (0.6+0.4+0.8)/3 = 1.8/3 = 0.6. Después actualizad promediando uno-mismo con el agregado: (0.2+0.6)/2 = 0.4. Conservar el término propio es lo que impide que la respuesta sea simplemente 0.6.",
+    },
+    {
+      question: "¿Por qué AGGREGATE no puede simplemente concatenar las características de los vecinos en un único vector?",
+      options: [
+        { text: "El grado variable da entradas de longitudes distintas, y sin un orden canónico el modelo inventaría significado a partir de la posición en el listado", correct: true },
+        { text: "La concatenación es demasiado lenta de calcular en el hardware moderno" },
+        { text: "La concatenación siempre produce un número mayor que uno" },
+        { text: "Funcionaría perfectamente; las GNN concatenan vecinos por defecto" },
+      ],
+      explanation: "Dos fallos: los nodos tienen distinto número de vecinos (sin tamaño de entrada fijo) y los vecinos no tienen orden (así que la posición portaría un significado espurio). El pooling simétrico arregla ambos.",
+    },
+    {
+      question: "Una red interbancaria tiene grado medio 3. ¿A cuántas instituciones, aproximadamente, puede notar un nodo con una GNN de 2 capas frente a una de 1 capa?",
+      options: [
+        { text: "Unas 12 con 2 capas frente a unas 3 con 1 capa — cada salto multiplica el alcance por el grado", correct: true },
+        { text: "El mismo número; las capas no cambian el alcance" },
+        { text: "La red entera tanto con 1 como con 2 capas" },
+        { text: "Unas 2 con 2 capas frente a 1 con 1 capa" },
+      ],
+      explanation: "1 capa alcanza ~3 vecinos directos; 2 capas añaden sus ~3 vecinos cada uno, aproximadamente 3 + 9 = ~12. K capas alcanzan K saltos, con el alcance escalando por el grado en cada salto.",
+    },
+    {
+      question: "Necesitáis una única predicción de si todo un subgrafo de transacciones es un patrón de blanqueo. ¿Cuál es el paso final requerido?",
+      options: [
+        { text: "Un readout invariante a permutaciones que agrupa todos los embeddings de los nodos en un único vector de grafo, que después clasificáis", correct: true },
+        { text: "Puntuar el único nodo de mayor actividad y usar eso como la respuesta del grafo" },
+        { text: "Tomar el producto escalar de dos embeddings de nodo arbitrarios" },
+        { text: "Leer la predicción directamente del primer nodo, sin agrupar" },
+      ],
+      explanation: "Las tareas a nivel de grafo necesitan un readout (suma/media/máximo sobre cada nodo) para colapsar el grafo de tamaño variable en un único vector fijo antes de clasificar. El blanqueo es un patrón de grafo completo, no un único nodo.",
+    },
+    {
+      question: "Dos cuentas tienen embeddings [0.5, 0.2, 0.8] y [0.4, 0.1, 0.6]. Usando una puntuación de arista por producto escalar, ¿cuál es la puntuación bruta antes de cualquier sigmoide?",
+      options: [
+        { text: "0.70 — (0.5)(0.4) + (0.2)(0.1) + (0.8)(0.6) = 0.20 + 0.02 + 0.48", correct: true },
+        { text: "1.40 — sumas los seis números juntos" },
+        { text: "0.48 — solo cuenta el mayor término coincidente" },
+        { text: "0.10 — restas un vector del otro y sumas" },
+      ],
+      explanation: "Un producto escalar multiplica las componentes coincidentes y las suma: 0.20 + 0.02 + 0.48 = 0.70. Esta puntuación por pares es el corazón de la predicción de enlaces a nivel de arista, pasada por una sigmoide para obtener una probabilidad.",
+    },
+  ]}
+/>

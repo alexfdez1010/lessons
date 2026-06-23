@@ -1,0 +1,601 @@
+---
+title: "Los mercados son adversarios"
+description: "Cualquier otro curso de ML asume que el proceso generador de datos es indiferente a ti; los mercados asumen que es hostil. La mentalidad de seguridad para el ML cuantitativo — modelos de amenaza, el proceso generador de datos reactivo y estratégico, y qué debe significar 'robusto' cuando es un oponente, y no la naturaleza, quien elige tu distribución de test."
+topic: "es/adversarial-ml-and-robustness-in-trading"
+order: 1
+minutes: 16
+updated: 2026-06-23
+---
+
+import { Callout, MCQ, Quiz, Reveal, ThinkReveal, FillBlank, MatchConcepts, Categorize, MindMap, ProcessOutcomeMatrix, RlAgentEnvLoop } from '@/components/react';
+
+Abre cualquier manual de aprendizaje automático y en algún punto del primer capítulo te
+toparás con una suposición silenciosa pero estructural: tus datos se extraen de forma
+**i.i.d.** — independiente e idénticamente distribuida — de algún proceso fijo, y tu
+trabajo es *estimar* ese proceso. El mundo escupe fotos de gatos, dígitos manuscritos,
+correos de spam; tú ajustas un modelo; el mundo sigue escupiendo el mismo tipo de cosa,
+indiferente a si acertaste o no. La naturaleza no lee tu modelo. A la naturaleza le da
+igual.
+
+A los mercados no les da igual.
+
+Un mercado es el único "proceso generador de datos" que **cambia su comportamiento en
+respuesta a tu modelo** — a veces de forma mecánica (tu orden de compra mueve el precio),
+a veces de forma deliberada (otra mesa de operaciones aplica ingeniería inversa a tu
+ventaja y se te adelanta). Aquello que intentas predecir *también está intentando
+predecirte a ti*. Ese único hecho rompe la cómoda historia de la estimación y la sustituye
+por algo más parecido a una partida de ajedrez contra un oponente que puede ver tu lista
+de jugadas.
+
+Este curso toma su marco no de la estadística, sino de la **seguridad informática**, donde
+nadie ha asumido jamás que el entorno sea amistoso. La gente de seguridad construye para la
+*peor* entrada que un adversario inteligente pueda diseñar, no para la entrada *media* que
+la naturaleza casualmente envía. Esa es la mentalidad de seguridad, y es la mentalidad
+correcta para el ML cuantitativo. La conclusión de toda esta primera lección: **en los
+mercados, tu distribución de test no la extrae la naturaleza — la elige un oponente, y el
+oponente puede mirar tu modelo primero.**
+
+## La suposición i.i.d. y por qué las finanzas la rompen
+
+<MCQ
+  client:visible
+  pretest
+  question="Un modelo de visión y un modelo de trading se entrenan ambos con datos históricos. ¿Cuál es la diferencia estructural más profunda entre sus procesos generadores de datos?"
+  options={[
+    { text: "El proceso de datos del mercado reacciona a las propias salidas del modelo y a agentes rivales que optimizan contra él, mientras que el proceso de las imágenes es indiferente al modelo", correct: true },
+    { text: "El modelo de trading simplemente tiene menos filas de entrenamiento que el modelo de visión" },
+    { text: "El modelo de trading usa números mientras que el modelo de visión usa píxeles" },
+    { text: "No hay diferencia estructural; ambos son solo aprendizaje supervisado sobre datos i.i.d." },
+  ]}
+  explanation="Los datos de imágenes los genera un proceso indiferente a tu modelo. Los datos de mercado los genera un proceso que responde a tus acciones (impacto) y que contiene agentes que deliberadamente optimizan contra ti (estrategia). Esa retroalimentación es la ruptura estructural."
+/>
+
+**Analogía.** Predecir fotos de gatos es como pescar en un estanque abastecido por un
+guarda indiferente: los peces no saben que estás ahí, y el estanque de mañana se parece al
+de hoy. Predecir mercados es como pescar en un estanque donde los peces han leído tu caja
+de aparejos, han observado dónde lanzaste el anzuelo ayer y han acordado entre ellos nadar
+exactamente donde tu anzuelo no está. Misma caña, estanque muy distinto.
+
+**Definición.** Un **proceso generador de datos (PGD) i.i.d. estacionario** produce cada
+observación como una extracción independiente de una única distribución fija $P$.
+Formalmente, las muestras $x_1, x_2, \dots, x_n$ satisfacen
+
+$$ x_i \sim P \quad \text{de forma independiente}, \qquad P \text{ fija para todo } i. $$
+
+Crucialmente, $P$ **no** depende de tu modelo $f$, de tus acciones pasadas ni de nada que
+hagas. Las garantías de generalización de la teoría del aprendizaje — el error de
+entrenamiento sigue al error de test — descansan todas en que los conjuntos de
+entrenamiento y de test se extraigan de esa *misma* $P$.
+
+Los mercados violan esto de dos maneras crecientes. Ponlas una al lado de la otra:
+
+| Tipo de proceso | Qué le hace a $P$ | Ejemplo de mercado | Tu oponente real |
+|---|---|---|---|
+| **Pasivo** | $P$ es fija; te ignora por completo | Un conjunto de datos i.i.d. de lanzamientos de moneda | Nadie — solo ruido de muestreo |
+| **Reactivo** | $P$ se desplaza mecánicamente *porque* actuaste | Tu orden grande empuja el precio (impacto de precio) | Tu propia huella |
+| **Estratégico** | $P$ se desplaza porque otros *agentes optimizan contra ti* | Un rival detecta tu señal y opera por delante de ella | Un adversario inteligente |
+
+**Reactivo** significa que el acto de operar sobre una predicción cambia la misma magnitud
+que predijiste. Pronosticas que el precio subirá, compras, y tu compra *en sí misma*
+empuja el precio — de modo que el mundo que mediste después de actuar ya no es el mundo que
+modelaste antes de actuar. **Estratégico** es peor: significa que hay otros optimizadores
+en el sistema cuyo objetivo es en parte *el negativo del tuyo*. Ya no estás estimando una
+$P$ fija; eres un jugador en un **juego no cooperativo**, y la "distribución" es un
+resultado de equilibrio que depende de la estrategia de todos, incluidas las
+contraestrategias provocadas por *tu* modelo.
+
+**Ejemplo resuelto.** Supón que tu modelo dice que una acción está mal valorada y
+"debería" estar a \$100,50 frente a los \$100,00 actuales, así que quieres comprar 100.000
+acciones. Bajo una visión pasiva i.i.d. anotarías la ventaja completa de \$0,50 por acción:
+100.000 acciones por \$0,50 son \$50.000. Ahora añade un PGD reactivo con un impacto lineal
+de \$0,01 por cada 10.000 acciones. Tu propia compra empuja el precio hacia arriba: para
+cuando terminas, el precio medio de ejecución es aproximadamente 100,00 más un medio por
+(100.000 / 10.000) por 0,01 — es decir, 100,00 + 0,05 = \$100,05. Tu ventaja realizada por
+acción se desploma de \$0,50 a 100,50 − 100,05 = \$0,45, y eso es *antes* de que entre un
+adversario estratégico. Si un rival detecta tu compra y sube las ofertas por delante de ti,
+el propio valor justo deriva hasta \$100,40 mientras operas, dejándote una ventaja realizada
+cercana a 100,40 − 100,05 = \$0,35 — y en la siguiente ronda el adversario se adelanta
+antes, comprimiéndola aún más. El número que "estimaste" nunca fue una propiedad fija del
+mundo; fue una función de cuán ruidosamente lo perseguiste.
+
+<RlAgentEnvLoop
+  client:visible
+  title="Un mercado reactivo: la propia acción del agente mueve el mundo"
+  caption="Activa el impacto de mercado. El agente ejecuta una política fija, pero una vez activado el impacto, cada acción empuja el precio en la dirección que acaba de operar — de modo que el entorno que el agente observa a continuación es en parte un reflejo de sí mismo. Ese bucle de retroalimentación es exactamente lo que la suposición i.i.d. prohíbe."
+  impactLabel="Impacto de mercado"
+  actionWords={["comprar", "mantener", "vender"]}
+/>
+
+<Callout variant="warning" title="Los backtests asumen calladamente un PGD pasivo">
+La forma más común de engañarte a ti mismo aquí es hacer un backtest como si los precios
+históricos hubieran ocurrido *con independencia de tus operaciones*. No lo habrían hecho.
+Un backtest reproduce una grabación pasiva de un mundo que nunca vio tus órdenes — sin
+impacto, sin adversario, sin reacción. En el instante en que sales en vivo, el PGD se
+vuelve reactivo y posiblemente estratégico, y la ventaja que "mediste" es la ventaja de un
+jugador al que nadie vigilaba.
+</Callout>
+
+### Cuándo usarlo
+
+Invoca la escalera pasivo-vs-reactivo-vs-estratégico siempre que estés a punto de *confiar
+en un número de backtest*. Pregúntate: ¿sobreviviría esta estimación a mi propia huella
+(reactivo)? ¿Sobreviviría a un competidor que puede ver lo que yo veo y actúa sobre ello
+(estratégico)? Si la estrategia es pequeña, lenta y solitaria, la aproximación pasiva quizá
+sirva. Si es grande, rápida o está abarrotada, estás jugando un juego, no estimando la
+naturaleza — y debes modelar a los demás jugadores.
+
+<FillBlank
+  client:visible
+  question="Nombra los tres peldaños de la escalera del proceso generador de datos."
+  text="Un proceso pasivo te ignora; un proceso {{reactivo|aleatorio|recursivo}} se desplaza porque actuaste (impacto de precio); y un proceso estratégico se desplaza porque otros agentes optimizan contra ti."
+  explanation="Reactivo = respuesta mecánica a tu propia acción (impacto). Estratégico = agentes inteligentes cuyo objetivo se opone al tuyo. Ambos rompen la historia i.i.d. de P-fija, tú-no-importas."
+/>
+
+## Modelos de amenaza — tomados de la seguridad
+
+<MCQ
+  client:visible
+  pretest
+  question="Los ingenieros de seguridad describen lo que un atacante puede ver, tocar y cambiar como el ¿qué? del sistema"
+  options={[
+    { text: "Superficie de ataque — el conjunto de entradas, componentes y canales que un adversario puede alcanzar", correct: true },
+    { text: "Función de pérdida — aquello que el modelo minimiza durante el entrenamiento" },
+    { text: "Matriz de confusión — la tabla de verdaderos y falsos positivos" },
+    { text: "Tasa de aprendizaje — la velocidad a la que se mueve el optimizador" },
+  ]}
+  explanation="La superficie de ataque es todo lo que un adversario puede observar o influir. Cartografiarla es el primer paso de cualquier modelo de amenaza — y un modelo de trading tiene una sorprendentemente grande."
+/>
+
+**Analogía.** Un arquitecto de castillos no pregunta "¿qué tan bonitos están los muros en
+un día tranquilo?" — pregunta "¿por dónde puede entrar alguien?". Puertas, poternas, el
+pozo, el proveedor de la cocina, el guardia al que se puede sobornar. Cada uno es una vía
+de entrada. Un modelo de trading también tiene puertas, y la mayoría de los cuantitativos
+nunca dibujan el mapa.
+
+**Definición.** Un **modelo de amenaza** es una enumeración explícita de (1) lo que un
+adversario puede observar, (2) lo que puede modificar y (3) lo que intenta conseguir. La
+superficie de entradas y componentes que puede alcanzar es la **superficie de ataque**.
+Para un modelo de trading, la superficie de ataque tiene cuatro puertas distintas:
+
+- **Las entradas (feed de datos de mercado).** Las cotizaciones y operaciones pueden
+  *fabricarse*. El **spoofing** — colocar órdenes grandes que pretendes cancelar — pinta un
+  cuadro falso de oferta y demanda precisamente para alimentar a tu modelo con una mentira.
+  Tu "característica" es el mensaje del atacante.
+- **Los datos de entrenamiento.** El **poisoning** — un adversario que puede influir en lo
+  que acaba en tu conjunto de entrenamiento (o que simplemente opera con patrones que sabe
+  que aprenderás) puede plantar estructura que parece señal y detona en vivo.
+- **El propio modelo.** Mediante interacción repetida, un adversario puede realizar
+  **extracción de modelo** (reconstruir tu regla de decisión a partir de cómo reaccionas) o
+  **inferencia de pertenencia / atributos** (averiguar qué tienes o cómo estás posicionado).
+  Tu flujo de órdenes *es* un canal lateral que filtra tu modelo.
+- **El entorno.** Tu propio **impacto de mercado** más los **oponentes adaptativos** que
+  cambian su comportamiento a medida que aprenden el tuyo. La arena no es un decorado fijo;
+  se adapta.
+
+También tomamos prestada la taxonomía de adversarios de la seguridad:
+
+| Conocimiento del adversario | Qué saben | Análogo en trading | Cuánto preocuparse |
+|---|---|---|---|
+| **De caja blanca** | Tu modelo, pesos, características, umbrales | Un exempleado, o un rival que aplicó ingeniería inversa completa a tu estrategia | Al máximo — diseñan la entrada exacta que te rompe |
+| **De caja negra** | Solo tu *comportamiento*: las órdenes que envías, cuándo, de qué tamaño | Un competidor observando la cinta y sondeándote | Aún bastante — el comportamiento filtra estructura con el tiempo |
+
+**El principio rector.** El **principio de Kerckhoffs** de la seguridad dice que un sistema
+debe ser seguro incluso si todo lo relativo a él, salvo la clave secreta, es público —
+*asume que el adversario conoce tu sistema*. Replanteado para el trading: **asume que tu
+ventaja será objeto de ingeniería inversa.** No apuestes tu supervivencia al secreto de tu
+alfa; apuéstala a si el alfa sigue funcionando una vez que un oponente listo y bien
+capitalizado sabe exactamente lo que haces. Si tu estrategia solo sobrevive porque nadie la
+ha notado todavía, no tienes una ventaja robusta — tienes una cuenta atrás.
+
+**Ejemplo resuelto.** Imagina un adversario de caja negra sondeando un bot de reversión a
+la media. Envían una pequeña venta de \$200.000 para ver si "alguien" compra reflejamente
+la caída, y luego observan la cinta. Supón que tu bot, en efecto, compra aproximadamente el
+30% de cualquier movimiento a la baja en segundos. Después de, digamos, 40 sondeos, el
+adversario ha estimado tu coeficiente de reacción con un margen de un pequeño porcentaje —
+puramente a partir de tu *comportamiento*, sin ver jamás una línea de tu código. Ahora dan
+la vuelta al juego: empujan el precio hacia abajo con \$2.000.000 de ventas, dejan que tu
+bot compre obedientemente 0,30 por \$2.000.000 = \$600.000 de inventario en caída, y luego
+siguen vendiendo contra tu puja. Compraste el cuchillo; ellos te lo entregaron. Un
+adversario *de caja blanca* se salta los 40 sondeos — lee el coeficiente directamente de tu
+código y ataca en el sondeo uno.
+
+<Categorize
+  client:visible
+  question="Cada ataque apunta a una puerta de la superficie de ataque del modelo de trading. Ordénalos."
+  buckets={["Entradas (feed de datos)", "Datos de entrenamiento", "El modelo", "El entorno"]}
+  items={[
+    { text: "Spoofing: órdenes enormes colocadas solo para ser canceladas, falseando oferta/demanda", bucket: "Entradas (feed de datos)" },
+    { text: "Inyectar patrones de cotización engañosos en el pipeline de características en vivo", bucket: "Entradas (feed de datos)" },
+    { text: "Poisoning: plantar estructura aprendible en aquello sobre lo que entrenas", bucket: "Datos de entrenamiento" },
+    { text: "Operar con patrones que un rival sabe que tu modelo ajustará", bucket: "Datos de entrenamiento" },
+    { text: "Extracción: reconstruir tu regla de decisión a partir de cómo reaccionas", bucket: "El modelo" },
+    { text: "Inferencia: deducir tus posiciones a partir de tu flujo de órdenes", bucket: "El modelo" },
+    { text: "Tu propio impacto de mercado moviendo el precio sobre el que operas", bucket: "El entorno" },
+    { text: "Un oponente que cambia su comportamiento a medida que aprende el tuyo", bucket: "El entorno" },
+  ]}
+  explanation="Entradas = el propio feed puede manipularse (spoofing). Datos de entrenamiento = envenenar aquello de lo que aprendes. Modelo = extracción/inferencia que filtra tu regla o tu cartera. Entorno = tu impacto y oponentes adaptativos. Cuatro puertas, cuatro defensas."
+/>
+
+### Cuándo usarlo
+
+Dibuja el modelo de amenaza *antes* de dibujar la arquitectura del modelo. Para cada nueva
+estrategia, lista literalmente las cuatro puertas y un ataque concreto en cada una, luego
+hazte la pregunta de Kerckhoffs: "si mi competidor más feroz tuviera todo mi código fuente,
+¿esto seguiría dando dinero?". Usa la suposición de caja blanca para todo aquello cuyo
+secreto no puedas garantizar (que es casi todo, ya que el comportamiento filtra). Reserva la
+suposición más benévola de caja negra solo para ventajas genuinamente ocultas y de
+decaimiento rápido — e incluso entonces, vigila los sondeos.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Superficie de ataque", definition: "El conjunto de entradas, componentes y canales que un adversario puede observar o influir" },
+    { term: "Spoofing", definition: "Colocar órdenes grandes destinadas a ser canceladas, falseando oferta y demanda para engañar a un modelo" },
+    { term: "Poisoning", definition: "Plantar estructura aprendible en los datos de entrenamiento para que el modelo ajuste una trampa" },
+    { term: "Extracción de modelo", definition: "Reconstruir la regla de decisión de una estrategia a partir de cómo reacciona a las entradas" },
+    { term: "Adversario de caja blanca", definition: "Un oponente que conoce tu modelo, pesos y umbrales con exactitud" },
+    { term: "Principio de Kerckhoffs", definition: "Asume que el adversario conoce tu sistema — la seguridad no debe depender del secreto del diseño" },
+  ]}
+/>
+
+## Por qué robusto no es lo mismo que preciso
+
+<MCQ
+  client:visible
+  pretest
+  question="Una estrategia muestra un Sharpe de backtest de 2,0 sobre su muestra histórica. ¿Qué único hecho socavaría más el llamarla robusta?"
+  options={[
+    { text: "Su Sharpe se vuelve profundamente negativo cuando un adversario desplaza una sola característica de entrada dentro de un rango plausible", correct: true },
+    { text: "Su muestra de entrenamiento contenía más días al alza que días a la baja" },
+    { text: "Usa una red neuronal en lugar de un modelo lineal" },
+    { text: "Se hizo el backtest sobre cinco años en lugar de diez" },
+  ]}
+  explanation="La precisión es el rendimiento medio bajo la distribución de entrenamiento. La robustez es el rendimiento en el peor caso sobre un conjunto de incertidumbre de distribuciones que un adversario podría elegir. Una gran media que se desploma bajo un único desplazamiento factible es precisa pero no robusta."
+/>
+
+**Analogía.** Un puente calificado para el camión *medio* que lo cruzó el año pasado es
+"preciso". Un puente calificado para el camión *más pesado* que plausiblemente pudiera
+cruzarlo alguna vez es "robusto". El adversario en finanzas es el ingeniero que elige qué
+camión aparecerá el día después de que cortes la cinta — y elegirá el más pesado para el que
+tu modelo nunca entrenó.
+
+**Definición.** La **precisión** estándar (o el Sharpe de backtest) es el rendimiento
+*promediado* sobre la distribución de entrenamiento $P$:
+
+$$ \text{Precisión}(f) = \mathbb{E}_{x \sim P}\big[\,\text{rendimiento}(f, x)\,\big]. $$
+
+La **robustez** es el rendimiento bajo la **peor** distribución $Q$ en un *conjunto de
+incertidumbre* $\mathcal{U}$ de distribuciones que un adversario podría producir de forma
+plausible:
+
+$$ \text{Robustez}(f) = \min_{Q \in \mathcal{U}} \; \mathbb{E}_{x \sim Q}\big[\,\text{rendimiento}(f, x)\,\big]. $$
+
+Las dos pueden divergir por completo. Un modelo puede bordar la media ($P$) y fallar el
+peor caso ($Q$), porque el adversario no tiene por qué jugar $P$ — esa es *tu* distribución
+de entrenamiento, y él no está obligado a extraer de ella.
+
+**Ejemplo resuelto.** Toma una estrategia con un Sharpe de backtest de 2,0. Su rendimiento
+anualizado es, digamos, del 16% con una volatilidad del 8% ($16/8 = 2,0$). La ventaja se
+apoya fuertemente en una característica — un desequilibrio de flujo de órdenes a corto plazo
+— que históricamente promediaba $+0,3$ antes de los movimientos al alza. Ahora un adversario
+(que sabe esto, según Kerckhoffs) gasta un poco para *desplazar esa única característica*:
+hace spoofing del flujo de modo que el desequilibrio marque $+0,3$ cuando la verdad es
+neutra, invirtiendo sistemáticamente tu señal en los peores momentos. Bajo esta $Q$
+adversaria la ventaja de la estrategia se invierte: ahora compra justo antes de que el
+movimiento fabricado revierta. Supón que el rendimiento oscila hasta $-8\%$ con la misma
+volatilidad del 8% — Sharpe $-8/8 = -1,0$. Mismo modelo, mismo código, pesos intactos.
+Habilidad de caso medio de $+2,0$, habilidad de peor caso de $-1,0$, y el adversario, no tú,
+decidió en cuál de las dos vivirías.
+
+<ProcessOutcomeMatrix
+  client:visible
+  title="Robusto vs frágil, frente a un mundo benigno vs adversario"
+  caption="La precisión vive arriba a la izquierda: un modelo frágil puede parecer brillante mientras el mundo siga siendo benigno. La robustez es toda la columna derecha — el rendimiento cuando un oponente, no la naturaleza, elige tus entradas. El cuadrante peligroso es frágil-y-benigno, porque te halaga justo hasta que llega el adversario."
+  processAxisLabel="Diseño del modelo"
+  outcomeAxisLabel="Mundo al que te enfrentas"
+  goodLabel="Robusto / Benigno"
+  badLabel="Frágil / Adversario"
+  goodProcessGoodOutcome={{ label: "Robusto en un mundo benigno", note: "Rinde bien y seguiría rindiendo bajo un desplazamiento de peor caso. Ligeramente sobreasegurado si nunca aparece un adversario — un coste que pagas con gusto.", example: "Una estrategia con tamaño de posición que además sobrevive a que se haga spoofing de una característica." }}
+  goodProcessBadOutcome={{ label: "Robusto bajo ataque", note: "El objetivo. Se degrada con elegancia cuando un oponente elige la peor distribución factible, porque se sometió a estrés contra exactamente eso.", example: "El Sharpe cae de 2,0 a 1,2 bajo ataque en lugar de volverse negativo." }}
+  badProcessGoodOutcome={{ label: "Frágil pero con suerte", note: "La trampa seductora. Gran Sharpe de backtest puramente porque el mundo se ha mantenido hasta ahora cerca de la distribución de entrenamiento. Indistinguible de robusto hasta que se pone a prueba.", example: "Sharpe 2,0 sobre un histórico que simplemente nunca contuvo el caso adversario." }}
+  badProcessBadOutcome={{ label: "Frágil bajo ataque", note: "La explosión. La única característica en la que se apoyaba el modelo se desplaza, y el 2,0 de caso medio se convierte en el menos 1,0 de peor caso.", example: "El ejemplo del desequilibrio falseado: la ventaja se invierte, las pérdidas se acumulan." }}
+/>
+
+<Callout variant="warning" title="Un Sharpe alto no dice nada del peor caso">
+El Sharpe de backtest es un estadístico *promedio*. Puede ser arbitrariamente alto mientras
+el comportamiento de peor caso es catastrófico, porque la media nunca tiene que visitar el
+peor caso. Dos estrategias con un Sharpe idéntico de 2,0 pueden tener robusteces
+descabelladamente distintas — una se degrada a 1,2 bajo ataque, la otra a negativo. El
+Sharpe por sí solo no puede distinguirlas; solo puede hacerlo una evaluación explícita de
+peor caso (el mínimo sobre un conjunto de incertidumbre).
+</Callout>
+
+### Cuándo usarlo
+
+Siempre que informes de un número de rendimiento promedio, oblígate también a declarar el
+*conjunto de incertidumbre* contra el que implícitamente te defiendes y el número de peor
+caso sobre él. "Sharpe 2,0" es media frase; "Sharpe 2,0 sobre el histórico, y no peor que
+0,8 bajo cualquier desplazamiento de hasta dos desviaciones estándar en una sola
+característica" es la frase completa. Si no puedes declarar la segunda mitad, has medido
+precisión y la has llamado robustez.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Dos estrategias hacen backtest ambas con un Sharpe de 2,0. ¿Por qué una podría ser mucho más robusta que la otra?</summary>
+
+**Respuesta.** Porque el Sharpe es una esperanza sobre la distribución de entrenamiento y no
+dice nada sobre el *mínimo* sobre el conjunto de incertidumbre de un adversario. Una
+estrategia puede repartir su ventaja entre muchas características débilmente correlacionadas,
+de modo que desplazar cualquiera de ellas apenas la mella; la otra puede concentrar toda su
+ventaja en una sola característica que un adversario puede manipular de forma barata. Misma
+media, peor caso completamente distinto. La robustez es una propiedad del *mínimo sobre
+$\mathcal{U}$*, no de la media sobre $P$ — y dos modelos pueden coincidir en la media
+mientras divergen en el mínimo.
+
+</details>
+</Reveal>
+
+## Reflexividad y mercados adaptativos
+
+<MCQ
+  client:visible
+  pretest
+  question="Se publica una señal rentable en un artículo popular. Durante los dos años siguientes sus rendimientos se desvanecen hacia cero. La explicación más limpia es:"
+  options={[
+    { text: "Actuar sobre la ventaja cambia el mundo: el abarrotamiento la arbitra hasta hacerla desaparecer, así que la ventaja decae — reflexividad / mercados adaptativos en acción", correct: true },
+    { text: "La investigación original era fraudulenta" },
+    { text: "Los mercados son perfectamente eficientes, así que la ventaja nunca existió" },
+    { text: "La señal dejó de funcionar por razones puramente aleatorias no relacionadas con su uso" },
+  ]}
+  explanation="La reflexividad de Soros y la Hipótesis de los Mercados Adaptativos de Lo dicen ambas que el acto de explotar una ventaja retroalimenta los precios. Abarrotarse en una anomalía publicada elimina su prima por puja — la ventaja decae porque la gente la usó."
+/>
+
+**Analogía.** Un atajo por el bosque es rápido precisamente *porque* está vacío.
+Publícalo en todas las apps de senderismo y en una temporada se convierte en un sendero
+congestionado y erosionado — más lento que la carretera. El atajo no empeoró; *ser conocido*
+lo empeoró. Las ventajas son atajos que se degradan en el momento en que una multitud los
+descubre.
+
+**Definición.** La **reflexividad** (George Soros) es la idea de que las creencias y
+acciones de los participantes *retroalimentan* los fundamentos a los que reaccionan, de modo
+que el precio y la "realidad" coevolucionan en lugar de que uno refleje pasivamente al otro.
+La **Hipótesis de los Mercados Adaptativos** (Andrew Lo) replantea la eficiencia como
+*evolutiva*: las estrategias son especies, los beneficios son alimento, y una ventaja que se
+explota acaba *pescada hasta agotarse* — la competencia se adapta, el nicho se cierra, y la
+ventaja decae. Juntas formalizan por qué la primera frase de esta sección es cierta: **la
+distribución de test es endógena a la población de estrategias. Tu acción sobre una ventaja
+es una de las fuerzas que la destruye.**
+
+Este es el primo conceptual del **decaimiento del alfa** (alpha decay) y el **abarrotamiento
+del alfa** (alpha crowding) del curso *Arbitraje sistemático y estadístico* (preparamos el
+análisis profundo para la lección 4). El decaimiento del alfa es la reflexividad con un
+gráfico adjunto: la vida media de una señal se reduce a medida que más capital la persigue,
+porque el propio capital comprime el diferencial del que se alimenta la señal.
+
+**Ejemplo resuelto.** Una señal de operativa de pares capturaba históricamente un
+diferencial de reversión a la media de 40 puntos básicos, $0,0040$ por ciclo. Es modesto
+pero real. La señal se publica y el capital se acumula. Modela el abarrotamiento como el
+diferencial capturado reduciéndose a la mitad con cada duplicación del capital de
+abarrotamiento: al principio te quedas el $0,40\%$ completo; tras una duplicación, $0,20\%$;
+tras dos, $0,10\%$; tras tres, $0,05\%$. Resta un coste de ida y vuelta del $0,08\%$. Para la
+segunda duplicación tu ventaja *neta* es $0,10\% - 0,08\% = 0,02\%$ — apenas respirando — y
+para la tercera es $0,05\% - 0,08\% = -0,03\%$: la operación ahora pierde dinero solo por los
+costes. La señal nunca estuvo "equivocada". Fue *consumida*. Cada dólar que actuó sobre ella
+se comió una porción del mismo diferencial del que dependía, hasta que el diferencial fue más
+fino que el peaje para cruzarlo.
+
+<Callout variant="tip" title="Los conjuntos de test endógenos son todo el juego">
+En el ML pasivo el conjunto de test es un regalo de la naturaleza, fijo y externo. En los
+mercados el conjunto de test es *en parte tu propia creación*: la distribución futura
+depende de cómo tú y todos los que son como tú operasteis la ventaja en el pasado. Por eso
+una ventaja con backtest puede ser genuinamente real y aun así morir — no por un error de
+modelado, sino por el simple hecho de que los patrones rentables son alimento, y el alimento
+se come. Planifica para el decaimiento; no es un fallo, es el ecosistema funcionando.
+</Callout>
+
+### Cuándo usarlo
+
+Echa mano de la lente de la reflexividad siempre que una ventaja sea *visible, popular o esté
+abarrotada* — una anomalía publicada, una estrategia que "todo el mundo" ejecuta, un factor
+con miles de millones persiguiéndolo. Estima una vida media de decaimiento y dimensiona como
+si la ventaja se estuviera muriendo, porque lo está. Por el contrario, si una ventaja es
+genuinamente oscura y de capacidad limitada, la reflexividad muerde más despacio — pero nunca
+asumas que no morderá en absoluto. En el momento en que escalas, *tú* te conviertes en la
+multitud.
+
+<FillBlank
+  client:visible
+  question="Enuncia la retroalimentación que está en el corazón de la reflexividad y de la Hipótesis de los Mercados Adaptativos."
+  text="Actuar sobre una ventaja retroalimenta los precios y abarrota la operación, de modo que la ventaja {{decae|se fortalece|se mantiene constante}} con el tiempo — el mismo fenómeno que el curso de arbitraje denomina decaimiento del alfa."
+  explanation="La reflexividad (Soros) y la Hipótesis de los Mercados Adaptativos (Lo) dicen ambas que la explotación retroalimenta el mundo, erosionando la ventaja. Esa erosión es el decaimiento del alfa; el abarrotamiento lo acelera."
+/>
+
+## La trampa de la evaluación de robustez
+
+<MCQ
+  client:visible
+  pretest
+  question="Un cuantitativo dice: 'Añadí ruido aleatorio a mis entradas y la estrategia siguió ganando dinero, así que es robusta'. Detecta el fallo."
+  options={[
+    { text: "Solo es robusta al ruido específico que casualmente probaron; un adversario elige la peor perturbación, no una aleatoria", correct: true },
+    { text: "Añadir ruido siempre destruye cualquier señal real, así que la prueba no demuestra nada sobre nada" },
+    { text: "El ruido aleatorio es ilegal de usar en backtests" },
+    { text: "No hay fallo; sobrevivir al ruido añadido es la definición de robustez" },
+  ]}
+  explanation="La robustez es de peor caso, no de caso-medio-sobre-algún-ruido-que-elegiste. Las perturbaciones aleatorias muestrean el centro fácil del conjunto de incertidumbre; el adversario apunta a la peor esquina. Sobrevivir al ruido que elegiste no dice nada sobre sobrevivir al ataque que no elegiste."
+/>
+
+**Analogía.** "Cerré mi puerta de entrada, así que mi casa es segura" — dicho con todas las
+ventanas abiertas. Probaste la amenaza en la que pensaste; el ladrón prueba la que no. Una
+prueba de estrés solo es tan honesta como la imaginación de la persona que la diseñó, y tú la
+diseñaste sabiendo qué le gusta a tu modelo.
+
+**Definición.** La **trampa de la evaluación de robustez** es la asimetría de que **las
+afirmaciones de robustez son más fáciles de falsear que las afirmaciones de alfa**, porque
+una afirmación de robustez solo es tan fuerte como la prueba de estrés que la respalda — y
+tú, el que afirma, diseñaste la prueba de estrés. Una afirmación de alfa al menos se enfrenta
+a un juez externo: el P&amp;L en vivo. Una afirmación de robustez se enfrenta a un juez que tú
+elegiste a dedo. Formalmente, informas de
+
+$$ \min_{Q \in \mathcal{U}_{\text{que elegiste}}} \; \text{rendimiento}(f, Q), $$
+
+pero el adversario minimiza sobre el conjunto factible *verdadero*
+$\mathcal{U}_{\text{real}}$, que casi siempre es mayor que el que imaginaste. Si
+$\mathcal{U}_{\text{que elegiste}} \subsetneq \mathcal{U}_{\text{real}}$, tu peor caso es
+optimista por construcción.
+
+Este es el **credo del Sharpe deflactado** con un sombrero nuevo. En *Aprendizaje automático
+para el alfa* aprendiste a deflactar un Sharpe de backtest por el número de intentos que
+hiciste, porque el mejor de muchos intentos ruidosos parece hábil por suerte. La misma
+enfermedad infecta las pruebas de estrés: **cada escenario de estrés que pruebas y luego
+descartas calladamente cuando rompe tu modelo es un intento.** Informa solo de los escenarios
+que sobrevivió y habrás blanqueado la fragilidad en una comprobación de robustez "superada"
+exactamente del mismo modo en que la búsqueda en rejilla blanquea el sobreajuste en un
+Sharpe. Construimos la versión honesta de esto — evaluación adversaria, de peor caso, con
+recuento de intentos — en la lección 6.
+
+**Ejemplo resuelto.** Pruebas tu estrategia contra tres perturbaciones que se te ocurrieron:
+±1% de ruido de precio, una interrupción de datos de un día y un diferencial duplicado.
+Sobrevive a las tres — el Sharpe se mantiene por encima de 1,5 — y escribes "robusta al
+estrés" en la presentación. Pero la ventaja de tu modelo en realidad depende del *signo* de
+una característica de flujo de órdenes, y ninguna de tus tres pruebas invierte jamás ese
+signo. El primer movimiento del adversario lo invierte (ese es el ejemplo de la Sección 3),
+y la estrategia se va a $-1,0$. Hiciste tres intentos, todos en el interior seguro del
+conjunto de incertidumbre, e informaste de los supervivientes. La afirmación honesta nunca
+fue "superó mis tres pruebas"; fue "no tengo ni idea de cuál es el peor caso, porque nunca lo
+busqué — busqué pruebas que superaría".
+
+<Callout variant="warning" title="Aquí corriges tus propios deberes">
+El alfa tiene un examinador externo — el mercado se lleva tu dinero si te equivocas. La
+robustez, tal como se practica habitualmente, *no* tiene examinador externo: la prueba de
+estrés la corrige la persona que la escribió, con preguntas que eligió, sabiendo las
+respuestas. Trata cada prueba de estrés autodiseñada con la sospecha que le darías a un
+estudiante que se puso su propio examen. Cuenta los escenarios que probaste, incluidos los
+que descartaste, y busca el peor caso *de forma adversaria* — deja que un optimizador, no tu
+intuición, elija la perturbación.
+</Callout>
+
+### Cuándo usarlo
+
+Aplica el máximo escepticismo precisamente cuando un resultado te *halaga* — "superó todas
+las pruebas que hice" debería disparar la pregunta "¿cuántas pruebas hice, y las diseñé para
+que fueran superables?". Prefiere la búsqueda adversaria de peor caso (un optimizador cazando
+la perturbación que más duele) sobre un menú elegido a dedo de choques benignos. Y siempre
+que presentes una afirmación de robustez, revela el conjunto de incertidumbre y el recuento
+de intentos, igual que revelarías el número de backtests detrás de un Sharpe. Anticipando la
+lección 6: la única robustez en la que merece la pena confiar es la que sobrevive a un
+oponente que intenta romperla, no la que sobrevive a las pruebas que esperabas que superara.
+
+<ThinkReveal
+  client:visible
+  prompt="¿Por qué es estructuralmente más fácil falsear una afirmación de robustez que una afirmación de alfa?"
+  text="Porque una afirmación de alfa la juzga en última instancia un examinador externo e indiferente — el P&L en vivo — mientras que una afirmación de robustez la juzga una prueba de estrés que el que afirma diseñó, con pleno conocimiento de lo que le gusta y lo que no a su modelo. El que afirma puede (consciente o inconscientemente) elegir escenarios que su modelo supera, descartar los que falla e informar solo de los supervivientes. Sin revelar el conjunto de incertidumbre y el recuento de intentos, 'sobrevivió a mi prueba de estrés' solo es tan honesto como la prueba — y la prueba tenía un autor con conflicto de intereses. La solución es buscar el peor caso de forma adversaria y contar cada escenario probado, exactamente como el Sharpe deflactado cuenta cada backtest."
+/>
+
+## Recapitulación
+
+Entraste con la imagen del manual — ajusta una distribución fija e indiferente, confía en la
+media — y sales con la mentalidad de seguridad: el proceso generador de datos es reactivo y a
+veces estratégico, el modelo tiene una superficie de ataque de cuatro puertas, "robusto"
+significa peor caso sobre el conjunto de incertidumbre de un adversario en lugar de la media
+sobre tu conjunto de entrenamiento, las ventajas decaen porque actuar sobre ellas cambia el
+mundo, y las afirmaciones de robustez son *más fáciles de falsear que las afirmaciones de
+alfa* porque corriges tu propia prueba de estrés. Asume que tu ventaja será objeto de
+ingeniería inversa, asume que el camión más pesado cruzará tu puente, y asume que tu conjunto
+de test es en parte obra tuya. Esa paranoia es el cimiento de todo el curso.
+
+<MindMap
+  client:visible
+  title="Los mercados son adversarios"
+  caption="Construye el mapa: desde la suposición i.i.d. rota, a los modelos de amenaza, a qué significa realmente robusto, a por qué las ventajas decaen, a la trampa de la evaluación."
+  root={{
+    label: 'Los mercados son adversarios',
+    children: [
+      { label: 'i.i.d. se rompe', children: [
+        { label: 'Pasivo: P fija, te ignora' },
+        { label: 'Reactivo: tu impacto mueve P' },
+        { label: 'Estratégico: agentes optimizan contra ti' },
+        { label: 'Un juego no cooperativo, no estimación' },
+      ]},
+      { label: 'Modelos de amenaza (de seguridad)', children: [
+        { label: 'Entradas: spoofing del feed' },
+        { label: 'Datos de entrenamiento: poisoning' },
+        { label: 'Modelo: extracción / inferencia' },
+        { label: 'Entorno: impacto + enemigos adaptativos' },
+        { label: 'Kerckhoffs: asume que la ventaja es conocida' },
+      ]},
+      { label: 'Robusto != preciso', children: [
+        { label: 'Precisión = media sobre la P de entrenamiento' },
+        { label: 'Robustez = mínimo sobre el conjunto de incertidumbre' },
+        { label: 'Sharpe 2,0 puede ocultar un peor caso de -1,0' },
+      ]},
+      { label: 'Reflexividad / mercados adaptativos', children: [
+        { label: 'Actuar sobre una ventaja cambia el mundo' },
+        { label: 'Abarrotamiento al decaimiento del alfa' },
+        { label: 'El conjunto de test es endógeno' },
+      ]},
+      { label: 'Trampa de la evaluación', children: [
+        { label: 'Diseñas tu propia prueba de estrés' },
+        { label: 'Más fácil de falsear que el alfa' },
+        { label: 'Deflacta por escenarios probados (lección 6)' },
+      ]},
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Comprobación mixta: ¿te superó el mercado en astucia?"
+  questions={[
+    {
+      question: "Terminas de comprar 100.000 acciones de una acción con precio cercano a 100,00 y tu precio medio de ejecución es 100,05 en lugar de 100,00. ¿Qué característica del proceso generador de datos demuestra esto de forma más directa?",
+      options: [
+        { text: "Un PGD reactivo — tu propio flujo de órdenes empujó mecánicamente el precio sobre el que operabas", correct: true },
+        { text: "Un PGD pasivo — los precios evolucionaron con independencia de tus operaciones" },
+        { text: "Puro ruido de medición no relacionado con tu actividad" },
+        { text: "Sesgo de supervivencia en la muestra histórica" },
+      ],
+      explanation: "Subir tu propio precio de ejecución de 100,00 a 100,05 es impacto de mercado: el proceso reaccionó a tu acción. Ese es el peldaño reactivo, la primera ruptura de la suposición i.i.d.",
+    },
+    {
+      question: "Replantea el principio de Kerckhoffs para una mesa de trading. ¿Qué afirmación lo captura?",
+      options: [
+        { text: "Asume que tu ventaja será objeto de ingeniería inversa; la supervivencia no debe depender del secreto de tu estrategia", correct: true },
+        { text: "Mantén tu estrategia en secreto y estarás automáticamente a salvo" },
+        { text: "Solo los adversarios de caja blanca pueden hacerte daño, así que esconde tu código" },
+        { text: "La robustez solo importa para el modelo, nunca para el feed de datos" },
+      ],
+      explanation: "Kerckhoffs dice que un sistema debe aguantar incluso si el adversario lo conoce todo salvo la clave. Para el trading: asume que el alfa es conocido y pregúntate si sigue funcionando — no apuestes la supervivencia al secreto.",
+    },
+    {
+      question: "Dos estrategias hacen backtest ambas con un Sharpe de 2,0. La estrategia A cae a 1,2 bajo el peor desplazamiento de una sola característica; la estrategia B se vuelve negativa bajo el mismo tipo de desplazamiento. ¿Qué ilustra este contraste?",
+      options: [
+        { text: "La precisión (media sobre P) no dice nada sobre la robustez (mínimo sobre el conjunto de incertidumbre del adversario)", correct: true },
+        { text: "La estrategia B simplemente tenía un fallo de programación" },
+        { text: "Un Sharpe más alto siempre significa mayor robustez" },
+        { text: "La robustez y la precisión son la misma magnitud medida dos veces" },
+      ],
+      explanation: "Medias idénticas, mínimos distintos. La robustez vive en el peor caso sobre el conjunto de incertidumbre, que un único estadístico promedio como el Sharpe no puede revelar.",
+    },
+    {
+      question: "Una señal de pares publicada que una vez capturaba un 0,40% por ciclo se desvanece hasta apenas positiva en dos años desde que se hizo popular. ¿Qué mecanismo explica mejor el desvanecimiento?",
+      options: [
+        { text: "Reflexividad y mercados adaptativos: el abarrotamiento en la ventaja arbitra hasta hacer desaparecer el diferencial del que se alimentaba — decaimiento del alfa", correct: true },
+        { text: "El mercado se volvió perfectamente eficiente de la noche a la mañana por casualidad" },
+        { text: "El efecto original era un error de datos que acaba de corregirse" },
+        { text: "Los costes de transacción subieron para todos los participantes simultáneamente" },
+      ],
+      explanation: "Actuar sobre la ventaja cambia el mundo: el capital se abarrota y comprime el mismo diferencial que la señal explota. Ese decaimiento endógeno es la historia de los Mercados Adaptativos / la reflexividad y se denomina decaimiento del alfa en el curso de arbitraje.",
+    },
+    {
+      question: "Un colega informa de 'robusta al estrés' tras sobrevivir la estrategia a un ruido aleatorio de entrada que añadió. Identifica la trampa.",
+      options: [
+        { text: "Sobrevivir a perturbaciones autoelegidas, a menudo benignas, no dice nada sobre el ataque de peor caso que un adversario realmente elegiría", correct: true },
+        { text: "Añadir ruido es inválido, así que nunca es posible ninguna conclusión sobre robustez" },
+        { text: "La afirmación está bien siempre que el ruido fuera gaussiano" },
+        { text: "La robustez solo puede juzgarse por el Sharpe en vivo, nunca por pruebas de estrés en absoluto" },
+      ],
+      explanation: "La trampa de la evaluación de robustez: una prueba autodiseñada muestrea el interior fácil del conjunto de incertidumbre, mientras que el adversario elige la peor esquina. Cuenta cada escenario probado y busca el peor caso de forma adversaria, la disciplina del Sharpe deflactado aplicada a la robustez.",
+    },
+  ]}
+/>

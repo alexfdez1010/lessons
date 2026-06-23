@@ -1,0 +1,572 @@
+---
+title: "Adversarial Stress Evaluation"
+description: "Replacing the i.i.d. test set with a worst-case opponent. Why robustness claims are even easier to fake than alpha claims, how to red-team your own strategy, gradient masking and false robustness, and the honest scorecard that survives a hostile referee."
+topic: "en/adversarial-ml-and-robustness-in-trading"
+order: 6
+minutes: 20
+updated: 2026-06-23
+---
+
+import { Callout, MCQ, Quiz, Reveal, ThinkReveal, FillBlank, MatchConcepts, Categorize, MindMap, DeflatedSharpe, ProcessOutcomeMatrix } from '@/components/react';
+
+For five lessons this course has hammered a single idea: in markets, **someone is on the
+other side of your trade, and they are not rooting for you.** You learned that markets
+are adversarial (lesson 1), that a few basis points of engineered noise can flip a
+position (adversarial examples, lesson 2), that your training data and your model itself
+are attack surfaces (poisoning and extraction, lesson 3), and that a live model drifts
+out from under its own assumptions (lesson 4).
+
+This is the capstone, and it turns the knife on the one thing you've been quietly
+trusting the whole time: **your own evaluation.** Because here is the uncomfortable
+truth — if the world is adversarial, then *the test must be adversarial too.* An i.i.d.
+test set is graded by Nature, who is indifferent. A deployed strategy is graded by an
+**opponent**, who picks the worst case on purpose. Score yourself against the indifferent
+referee and you will pass; the hostile referee is the one who actually settles your P&L.
+
+And there's a second twist that makes this the hardest lesson to be honest in: a
+**robustness claim is even easier to fake than an alpha claim.** You already know alpha
+inflates with the number of backtests you ran (the deflated Sharpe). Robustness inflates
+the same way — except the knob you cheat with is the *strength of the adversary you chose
+to test against*, and you have every incentive to choose a weakling. This lesson is about
+keeping score honestly when every instinct, and every incentive, pushes you to lie to
+yourself.
+
+## Why i.i.d. test accuracy is the wrong scorecard
+
+<MCQ
+  client:visible
+  pretest
+  question="A classifier scores 95% accuracy on a held-out i.i.d. test set. Why might that number be nearly worthless as a measure of how it will perform once deployed against an opponent?"
+  options={[
+    { text: "An i.i.d. test set is drawn by Nature (average case); a deployed strategy faces an opponent who picks the worst case, so the relevant number is performance under the strongest feasible attack, not the average", correct: true },
+    { text: "95% is too high to be real, so it must be a bug" },
+    { text: "Accuracy is the wrong metric only because the classes are imbalanced" },
+    { text: "Test accuracy is always exactly equal to live accuracy, so there is nothing to worry about" },
+  ]}
+  explanation="The i.i.d. test set samples the same distribution as training, drawn indifferently. A live opponent does not draw randomly — they search for the input that breaks you. Average-case accuracy and worst-case accuracy are different numbers, and only the second one trades."
+/>
+
+**Analogy.** Imagine certifying a bridge by driving the *average* car across it a thousand
+times. It passes beautifully. Then a freight company — who read your spec sheet — sends a
+truck loaded to the exact weight that maximizes stress on the one weak girder. Nature sends
+you average cars. An adversary sends you the truck. The honest load rating is the heaviest
+load the bridge survives, **not** the typical load it carries.
+
+**Definition.** Two different questions, two different scorecards:
+
+- **Average-case (i.i.d.) evaluation** asks: what is performance under the *same*
+  distribution the data was drawn from? Formally, the expected loss over the test
+  distribution $P_{\text{test}} = P_{\text{train}}$. This is what test accuracy,
+  backtest Sharpe, and a clean cross-validation all measure.
+- **Worst-case (robust) evaluation** asks: what is performance under the *worst*
+  distribution in an uncertainty set, or against the *strongest* attack an adversary can
+  mount? Formally, robust loss is a maximization wrapped in your evaluation,
+
+$$ \mathcal{L}_{\text{robust}}(f) = \max_{\delta \in \mathcal{S}} \; \mathcal{L}\big(f(x + \delta),\, y\big), $$
+
+where $\mathcal{S}$ is the set of perturbations the opponent is allowed (recall the
+$L_p$-ball budget from lesson 2). The $\max$ is the whole point: you report performance
+*at the corner the adversary aims for*, not in the comfortable middle Nature samples.
+
+**Worked example.** A model classifies "long / flat / short" on engineered features and
+scores **95% accuracy** on its i.i.d. test set. You then run the strongest projected
+gradient descent attack from lesson 2 — PGD with 50 steps inside the allowed
+perturbation budget — and re-measure. Accuracy collapses to **10%.** Do the arithmetic on
+what that means for trading: of every 100 decisions the live opponent steers you toward,
+roughly 90 are wrong, and the adversary chose *which* 100. The 95% is a fact about a world
+with no opponent; the 10% is a fact about the world you actually trade in.
+
+| Scorecard | Who grades it | What it measures | This model's number |
+|---|---|---|---|
+| i.i.d. test accuracy | Nature (indifferent) | Average case, same distribution | 95% |
+| Robust accuracy (PGD-50) | The opponent (hostile) | Worst case in the budget | 10% |
+
+The correct report is **both numbers, side by side** — and the one you size the position
+on is the worst-case 10%, because that is the one the market will collect against.
+
+<Callout variant="warning" title="A single number hides the gap">
+The most expensive habit in this whole field is reporting *one* number and letting the
+reader assume it's the relevant one. "95% accurate" is true and useless; "10% under the
+strongest attack we could mount" is the load rating. If a robustness write-up shows you a
+clean metric with no worst-case companion, it is not a robustness write-up — it is a
+backtest wearing a security costume.
+</Callout>
+
+### When to use it
+
+Use worst-case evaluation as the *default scorecard* for anything that will face a
+strategic counterparty: execution algos, market-making quotes, any signal that moves size
+in a liquid name. Average-case accuracy is fine as a *sanity floor* (if it's bad average,
+don't bother with worst case), but it is never the deploy decision. Report both; size on
+the worst.
+
+<FillBlank
+  client:visible
+  question="State the core distinction in one sentence."
+  text="An i.i.d. test set is drawn by {{Nature|the opponent|the regulator}}, who is indifferent, whereas a deployed strategy is graded by an {{opponent|auditor|average}} who deliberately picks the worst case — so the number that trades is the worst-case one."
+  explanation="Nature draws the test set indifferently from the training distribution. The opponent searches for the worst input. Average-case and worst-case are different numbers; only the worst-case one survives deployment."
+/>
+
+## Robustness claims are easier to fake than alpha claims
+
+<MCQ
+  client:visible
+  pretest
+  question="You report 'I tested my strategy against an adversary and it survived.' What is the single most important missing piece of information?"
+  options={[
+    { text: "How strong the adversary was — the claim is only as good as the strongest attack you actually tried, and you have every incentive to pick a weak one", correct: true },
+    { text: "How many CPUs the test used" },
+    { text: "Whether the adversary was written in Python or C++" },
+    { text: "The exact wall-clock time the test took to run" },
+  ]}
+  explanation="'Survived an adversary' is meaningless without the adversary's strength. A weak attack is cheap to survive and lets you claim robustness you don't have — the direct analogue of inflating Sharpe by quietly running more backtests."
+/>
+
+**Analogy.** Alpha fraud is buying 200 lottery tickets and bragging about the one that hit.
+Robustness fraud is subtler and *worse*: it's hiring your own sparring partner, telling
+them to go easy, and then declaring yourself a champion when they tap out. You didn't just
+get lucky — you *chose* the opponent, and choosing a weak one is the cheapest possible way
+to manufacture a robustness number that looks great and means nothing.
+
+**Definition.** This is the **robustness-evaluation trap** from lesson 1, now stated as an
+inflation result. Recall the deflated Sharpe: when you select the best of $N$ noisy
+backtests, the expected maximum Sharpe under the null (no real skill) grows with
+
+$$ \mathbb{E}[\max \text{SR}] \approx \sigma_{\text{SR}} \cdot \sqrt{2 \ln N}. $$
+
+Robust accuracy inflates the *same direction* but along a different axis. Alpha inflates
+with the **number of trials**; **robust accuracy inflates as the attack you evaluate
+against gets weaker.** A weak attack barely searches the perturbation set, so it finds few
+failures, so your "robust accuracy" stays high — a number that flatters you exactly the way
+a max-over-many-backtests flatters you. You are not measuring robustness; you are measuring
+the gentleness of your sparring partner.
+
+<DeflatedSharpe client:visible caption="The same discipline, two axes. Slide the trials up and watch the luck-hurdle rise: a backtest Sharpe must clear the hurdle to count as real. Robust accuracy works the same way — except the hurdle you must clear is the strongest honest attack, and 'I survived' counts for nothing until you show how hard the attack hit." />
+
+**Worked example.** A defender reports the headline number "robust accuracy 60%." Read the
+fine print and it was measured against **FGSM** — the single-step, weak attack from lesson
+2. Re-run the evaluation against **PGD-50** — the strong, multi-step attack that actually
+searches the budget — and robust accuracy falls to **8%.**
+
+| Attack used to "prove" robustness | Strength | Reported robust accuracy | Honest? |
+|---|---|---|---|
+| FGSM (one gradient step) | Weak | 60% | No — fakeable |
+| PGD-50 (50 projected steps) | Strong | 8% | Yes — the real number |
+
+The 60% is the fakeable number. It is not a lie about *what happened* — FGSM really did
+only knock accuracy to 60% — it is a lie *by selection of opponent*. The defender chose the
+attack that flattered them, the way an alpha cheat chooses the backtest that flattered them.
+Tie it back to lesson 1's trap: surviving the easy interior of the uncertainty set tells
+you nothing about the worst corner, and a weak attack only ever pokes the interior.
+
+<Callout variant="warning" title="The strength of the attack IS the claim">
+Whenever you read or write "robust to adversarial perturbations," your first question must
+be: *robust to which attack, at what budget, with how many steps?* "Robust" with no named,
+strong attack attached is precisely as informative as "high Sharpe" with no trial count —
+which is to say, not at all. The number to publish is the one from your **strongest honest
+attempt to break it**, not your gentlest.
+</Callout>
+
+### When to use it
+
+Apply this skepticism every time you see a robustness number — your own most of all.
+Before believing "we are robust," demand the adversary's spec: attack family, perturbation
+budget, step count, and number of restarts. If the write-up only quotes a single-step or
+black-box attack, treat the robustness claim as *unverified*, the way you'd treat a Sharpe
+with no deflation as *unearned*.
+
+<ThinkReveal
+  client:visible
+  prompt="Your colleague says: 'Our model is 60% robust — I attacked it myself and it held.' Before you believe a word, what two things must you ask?"
+  hint="One is about the opponent's strength, one is about how many opponents (or configs) were tried."
+  text="First: which attack and how strong? 60% against FGSM means almost nothing; the same model may sit at 8% under PGD-50. The claim is only as strong as the strongest attack tried. Second: how many defenses or configurations were tried before this one was reported? Just as the deflated Sharpe penalizes the best-of-N backtests, the best-of-N defenses must be deflated too — the winning config is a maximum over noisy trials and inflates the same way."
+/>
+
+## Gradient masking and false robustness
+
+<MCQ
+  client:visible
+  pretest
+  question="A defense shows high robust accuracy against white-box gradient attacks, but a black-box transfer attack — which never sees the gradients — beats it badly. What does that pattern most strongly suggest?"
+  options={[
+    { text: "Gradient masking — the defense broke the attacker's gradient (obfuscated gradients) rather than being truly robust, so a gradient-free attack shatters it; the black-box-beats-white-box reversal is the classic red flag", correct: true },
+    { text: "The defense is genuinely robust, since white-box is always the hardest setting" },
+    { text: "Black-box attacks are simply stronger than white-box attacks in general" },
+    { text: "The result is impossible and must be a measurement error" },
+  ]}
+  explanation="Normally white-box (full-knowledge) attacks are at least as strong as black-box. If black-box wins, the white-box attacker was being starved of a usable gradient — the defense looks robust only because it obfuscated gradients, not because it removed the vulnerability."
+/>
+
+**Analogy.** Imagine a safe that *looks* impregnable because it's coated in grease — every
+time a thief tries to read the dial by feel, their fingers slip. You run your test (a thief
+who reads dials by feel) and declare victory. Then a thief who uses a stethoscope, ignoring
+the dial entirely, opens it in thirty seconds. The grease never made the lock stronger; it
+just defeated *the one tool your test happened to use.* That's gradient masking.
+
+**Definition.** **Gradient masking** (or **obfuscated gradients**, Athalye, Carlini &
+Wagner, 2018) is a defense that appears robust because it **breaks the attacker's gradient
+signal** rather than actually flattening the loss surface around the input. Gradient-based
+attacks like PGD need a useful $\nabla_x \mathcal{L}$ to know which way to push; if the
+defense makes that gradient uninformative — shattered, stochastic, or vanishing — the
+attack wanders blindly and *appears* to fail. The vulnerability is still there; you've just
+hidden the map to it. The authors identified three telltale **tells** that you're masking
+rather than defending:
+
+1. **Robust to weak attacks but not strong ones.** Robust accuracy is high against
+   single-step FGSM but collapses under multi-step PGD with enough iterations and restarts.
+2. **Black-box beats white-box.** A transfer or query-based attack with *less* information
+   outperforms the white-box attack with *full* gradient access. This is backwards — full
+   knowledge should never do worse — and it's the loudest alarm bell.
+3. **Unbounded attacks don't reach 0% accuracy.** If you let the perturbation budget grow
+   without limit and the model *still* classifies correctly, the attack is broken, not the
+   model is robust. With an unbounded budget any honest attack should drive accuracy to
+   zero (you can perturb the input into literally anything).
+
+**Worked example — the diagnostic table.** You audit a defense and collect four numbers:
+
+| Attack | Information | Robust accuracy | Reading |
+|---|---|---|---|
+| FGSM (weak, white-box) | Full gradient, 1 step | 78% | Looks great |
+| PGD-50 (strong, white-box) | Full gradient, 50 steps | 71% | Still good?? |
+| Transfer (black-box) | No gradient at all | 22% | Red flag: less info, more damage |
+| Unbounded perturbation | No budget limit | 35% | Broken: should be 0% |
+
+Read the pattern, not the headline. The white-box numbers (78%, 71%) look like a robust
+defense. But the **black-box attack with no gradient access does far more damage (22%)**
+than the white-box attack with full access — the impossible reversal — and the **unbounded
+attack never reaches 0%.** Two of the three tells fire at once. This defense is not robust;
+it is *masking*. The honest robust accuracy is somewhere near that 22% (or lower, once
+someone runs an adaptive gradient-free attack designed for it).
+
+**Market reframe.** A strategy that survives your *gentle simulated opponent* — a backtest
+replay with random noise, a slippage model you tuned to be forgiving — but dies the moment
+a *real adaptive opponent* probes it. The simulated opponent is your obfuscated gradient:
+it can't find the weak spot because your simulation hid the map. The live market sends the
+stethoscope.
+
+<Callout variant="warning" title="Black-box robust is NOT truly robust">
+The seductive misconception is "it survived a black-box attack, so it's robust." Backwards.
+A defense that is *only* robust to black-box attacks while folding under a properly executed
+white-box (or gradient-free adaptive) attack is the signature of gradient masking. Black-box
+survival is weak evidence at best; the strong test is whether an attacker *with full
+knowledge of the defense* — Kerckhoffs, lesson 1 — still can't break it.
+</Callout>
+
+### When to use it
+
+Run the gradient-masking checklist on any defense before you trust its robustness number:
+compare weak vs strong attacks, white-box vs black-box, and bounded vs unbounded budgets.
+If strong &lt; weak in *damage*, if black-box &gt; white-box in *damage*, or if unbounded
+attacks leave accuracy above zero, stop — the number is masking, not robustness, and your
+next move is an **adaptive attack** built specifically for this defense.
+
+<Categorize
+  client:visible
+  question="Sort each observation under whether it signals real robustness or gradient masking (false robustness)."
+  buckets={["Genuine robustness", "Gradient masking"]}
+  items={[
+    { text: "White-box PGD does more damage than a no-gradient black-box attack", bucket: "Genuine robustness" },
+    { text: "Accuracy goes to 0% as the perturbation budget grows unbounded", bucket: "Genuine robustness" },
+    { text: "Robust to FGSM but collapses under PGD-50", bucket: "Gradient masking" },
+    { text: "A no-gradient black-box attack beats the full-gradient white-box attack", bucket: "Gradient masking" },
+    { text: "Unbounded-budget attacks still leave the model classifying correctly", bucket: "Gradient masking" },
+    { text: "An adaptive attack designed for the defense fails to do better than a generic one", bucket: "Genuine robustness" },
+  ]}
+  explanation="Genuine robustness: full-information attacks are the strongest, unbounded budgets eventually reach 0%, and tailoring the attack doesn't help. Masking: weak beats strong's expectation, black-box beats white-box, and unbounded attacks mysteriously can't finish the job."
+/>
+
+## Red-teaming your own strategy
+
+<MCQ
+  client:visible
+  pretest
+  question="A strategy passes 9 of 10 randomly generated stress scenarios but fails the 1 scenario that was adaptively designed to exploit its specific weakness. Which result should you weight most heavily?"
+  options={[
+    { text: "The adaptive scenario — a real opponent crafts the attack to your specific defense; passing 9 generic scenarios is the easy interior, the adaptive one is the worst corner that actually trades", correct: true },
+    { text: "The 9 passes, because 9 out of 10 is a 90% pass rate" },
+    { text: "Neither — stress testing is inherently unreliable" },
+    { text: "An average of all 10, weighting each scenario equally" },
+  ]}
+  explanation="Random scenarios sample the easy middle of the uncertainty set; an adaptive scenario aims at the worst corner — exactly what a real opponent does. A 90% pass rate on generic stress is precisely the false comfort the adaptive failure exposes."
+/>
+
+**Analogy.** A castle's defenders run drills against their *own* soldiers, who attack the
+front gate every time because that's the drill. The castle never falls — in the drill. A
+real siege army studies the walls, finds the unguarded postern, and walks in. **Red-teaming**
+is hiring soldiers whose entire job is to *think like the siege army* and attack your
+postern before the enemy does. Their success is your success, because they fail *cheaply*
+where the market fails *expensively*.
+
+**Definition.** **Red-teaming** is the discipline of standing up an internal adversary team
+whose explicit mandate is to *break your own strategy* before deployment — and to be
+rewarded for breaking it, not for confirming it works. A real red-team uses five tools:
+
+1. **Adaptive attacks.** Attack the *specific* defense, don't reuse a generic off-the-shelf
+   attack. (A generic attack against a masking defense is exactly how false robustness slips
+   through; the adaptive attack is built to defeat *this* model's tricks.)
+2. **Worst-case historical replay.** Replay the *worst* regime your data contains — the 2008
+   meltdown, the 2010 flash crash, the 2020 March collapse — not the average backtest window.
+   Nature already ran one adversarial scenario for you; don't average it away.
+3. **Adversarial scenario generation.** Synthesize stress scenarios that target the
+   strategy's leverage points, rather than sampling plausible-but-easy ones.
+4. **Stress the execution assumptions.** Attack your *fills*, your *slippage* model, and your
+   *capacity*. A 2.0 Sharpe that assumes mid-price fills and infinite liquidity is a fantasy;
+   the red-team makes the fills hostile and the book thin.
+5. **Assume the opponent knows your model.** Kerckhoffs's principle, lesson 1: design the
+   attack as if the adversary has read your code, knows your features, and has seen your
+   weights. Security that relies on the opponent's ignorance is not security.
+
+The danger a red-team guards against is **survival by luck under a bad evaluation process.**
+You can pass an evaluation for the *wrong reason* — a weak test that never probed your real
+weakness — and a passing grade tells you nothing about whether your *process* was sound. The
+process-vs-outcome matrix makes this explicit:
+
+<ProcessOutcomeMatrix
+  client:visible
+  title="Red-team evaluation: process vs outcome"
+  caption="The two diagonals are honest; the off-diagonals are the traps. A strategy can 'survive' your evaluation with a bad process (you only ran weak, generic attacks) — that survival is luck, not robustness, and the market will eventually collect. Equally, a sound red-team that 'breaks' the strategy did its job: it found the failure cheaply, before deployment."
+  processAxisLabel="Evaluation process"
+  outcomeAxisLabel="Did the strategy survive?"
+  goodProcessGoodOutcome={{ label: "Earned robustness", note: "A strong, adaptive, Kerckhoffs-aware red-team threw its hardest honest attack and the strategy still held. This is the only cell where 'survived' is real evidence — and even here you keep deflating for the number of configs tried.", example: "PGD-50 white-box, an adaptive attack built for the defense, and worst-regime replay all fail to break it." }}
+  goodProcessBadOutcome={{ label: "Caught in the lab", note: "A sound red-team broke the strategy before deployment. This feels like failure but is exactly the win you want: the failure happened cheaply, in simulation, instead of expensively, with live capital.", example: "The adaptive scenario flips the position; you kill the strategy before it ever trades." }}
+  badProcessGoodOutcome={{ label: "Survival by luck", note: "The most dangerous cell. The strategy 'passed' only because the evaluation was weak — generic attacks, average regimes, forgiving fills. The vulnerability is fully intact; the test just never aimed at it. A real opponent will.", example: "Passes 9 random stress scenarios; the one adaptive scenario nobody ran is the live blow-up waiting to happen." }}
+  badProcessBadOutcome={{ label: "Doomed and obvious", note: "A weak evaluation still broke it. At least the lesson is unmissable: the strategy is fragile and the fix is to rebuild, not to retune the test.", example: "Even a single-step FGSM-style stress flips the signal; the strategy was never viable." }}
+/>
+
+**Worked example.** A strategy is put through 10 stress scenarios. Nine are *randomly
+generated* — plausible market moves sampled from history — and it passes all nine. The
+tenth is *adaptive*: the red-team studied the strategy, found it leans heavily on a single
+order-book imbalance feature (echoing lesson 1's single-feature fragility), and crafted a
+scenario that spoofs exactly that feature. The strategy fails the tenth. A naive reading
+says "90% pass rate, ship it." The correct reading: the nine passes are the easy interior
+of the uncertainty set; **the one adaptive failure is the worst corner, and the worst
+corner is where the opponent lives.** That single adaptive scenario outweighs all nine
+random ones combined, because it's the only one that imitates a real, thinking adversary.
+
+<Callout variant="tip" title="Reward the red-team for breaking you">
+The structural fix is incentives. If your evaluation team is rewarded for the strategy
+passing, you've built a sparring partner paid to go easy — the gradient-masking failure at
+the org-chart level. Reward the red-team for *finding the break*, and the worst-corner
+failures surface in the lab (Caught in the lab) instead of in production (Survival by luck
+collecting its debt). A break found before deployment is a gift, not a setback.
+</Callout>
+
+### When to use it
+
+Stand up a red-team for any strategy that will hold meaningful size or interact with a
+strategic counterparty. Make adaptive attacks and worst-regime replay mandatory gates, not
+optional extras, and *never* let the team that built the strategy be the only team that
+evaluates it — the builder is the worst possible referee, because they unconsciously test
+the cases they already know survive.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Adaptive attack", definition: "An attack designed for the specific defense, not a generic one reused off the shelf" },
+    { term: "Worst-case historical replay", definition: "Stress against the worst regime in the data (2008, flash crash) rather than the average window" },
+    { term: "Execution stress", definition: "Attacking the fills, slippage, and capacity assumptions a clean backtest takes for granted" },
+    { term: "Kerckhoffs in red-teaming", definition: "Build the attack assuming the opponent already knows your model, features, and weights" },
+    { term: "Survival by luck", definition: "Passing an evaluation for the wrong reason — a weak process that never probed the real weakness" },
+  ]}
+/>
+
+## The honest robustness scorecard
+
+<MCQ
+  client:visible
+  pretest
+  allowMultiple
+  question="Which items belong on an honest robustness scorecard you'd actually deploy on? (Select all that apply.)"
+  options={[
+    { text: "Both the clean metric AND the worst-case metric, side by side", correct: true },
+    { text: "The strength of the strongest attack tried (family, budget, steps, restarts)", correct: true },
+    { text: "A robust accuracy deflated for the number of defenses and configurations tried", correct: true },
+    { text: "Capacity and execution stress results, plus a kill-switch / drift-trigger", correct: true },
+    { text: "A single clean accuracy number with no worst-case companion" },
+  ]}
+  explanation="The honest scorecard reports clean AND worst-case, names the strongest attack, deflates for configs tried, includes capacity/execution stress, and ships with a kill switch. The one thing that does NOT belong is a lone clean number — that's the costume, not the rating."
+/>
+
+**Analogy.** A serious bridge inspection report doesn't say "the bridge is fine." It states
+the load rating, the heaviest test load applied, the safety margin, the inspection
+methodology, the known weak points, and the maximum traffic before the bridge gets closed.
+The honest robustness scorecard is that report for your strategy — and like a bridge
+report, it's worthless if it omits how hard you actually pushed.
+
+**Definition.** The **honest robustness scorecard** reports everything a hostile referee
+would demand to *audit* your claim, not just the claim. Each line exists to close a specific
+hole this course has shown you:
+
+| Line item | What to report | Closes which hole |
+|---|---|---|
+| **Clean metric** | Average-case accuracy / backtest Sharpe | The sanity floor (section 1) |
+| **Worst-case metric** | Robust accuracy / worst-regime Sharpe under the strongest attack | The number that actually trades (section 1) |
+| **Strongest attack tried** | Attack family, perturbation budget, step count, restarts | The fakeability of "I survived" (section 2) |
+| **Uncertainty / ambiguity set size** | How large a perturbation or distribution shift you defended against | What the worst-case number is *over* (lesson 1) |
+| **Deflation for configs tried** | Worst-case number penalized for the number of defenses / configurations evaluated | Best-of-N robustness inflation — the deflated-Sharpe discipline (lesson 2, and the architecture-trial tax from *Deep Learning for Market Data*) |
+| **Capacity & execution stress** | Performance under hostile fills, slippage, and at scale | The fantasy-fill backtest (red-teaming, section 4) |
+| **Kill switch / drift-trigger** | The live condition that halts the strategy when reality diverges | A live model drifting out from under its assumptions (lesson 4) |
+
+Note the **deflation** line carefully: it's the same idea as deflating Sharpe for the number
+of *architectures* you tried in *Deep Learning for Market Data*, just relabeled. Every
+defense and every configuration you evaluate is another trial; the best one's robust accuracy
+is a maximum over noisy trials and inflates with $\sqrt{2 \ln N}$ exactly like a best-of-N
+Sharpe. Report the deflated number, not the victory-lap one.
+
+**Worked example.** Two write-ups for the same strategy. Which would you fund?
+
+| Field | Write-up A (costume) | Write-up B (honest scorecard) |
+|---|---|---|
+| Headline | "95% accurate, robust to adversarial noise" | "Clean 95%, robust 41% under our strongest attack" |
+| Attack named? | No | PGD-50, budget specified, 5 restarts, plus an adaptive attack |
+| Configs tried / deflated? | Not mentioned | 30 configs tried; robust accuracy deflated for the count |
+| Execution stress? | "Assumes mid fills" | Tested with hostile fills and at 5x size; Sharpe holds to 3x, degrades past |
+| Kill switch? | None | Drift-trigger halts trading if live feature distribution shifts past threshold |
+
+Write-up A is the higher number and the worse strategy. Write-up B's 41% looks worse on the
+slide and is *far* more likely to survive contact with a real opponent, because it was
+*measured* against one. Fund B.
+
+<Callout variant="success" title="The closing creed">
+In a hostile world, the only robustness you can trust is the one that survived your
+**hardest honest attempt to break it** — not your gentlest, not your most flattering, not
+the one that fit on the slide. And you must keep score honestly, because the market keeps
+score whether you do or not. An i.i.d. test set forgives; a deflated, worst-case,
+red-teamed scorecard does not — and that's exactly why it's the only one worth trusting.
+The whole course in one line: **evaluate the way the market will, before the market does.**
+</Callout>
+
+### When to use it
+
+Make the scorecard the *deliverable* of every robustness exercise — the artifact that gates
+deployment, gets reviewed, and gets revisited when regimes shift. If any of its seven lines
+is missing, the claim is incomplete and the strategy doesn't ship. Treat a robustness
+write-up with no named strong attack and no deflation the way you'd treat a Sharpe with no
+trial count: interesting, unverified, and not yet investable.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Write-up A reports a higher headline number than Write-up B. Why is B the safer strategy to deploy?</summary>
+
+**Answer.** Because A's number was graded by Nature and B's was graded by an opponent.
+A's "95% accurate, robust to adversarial noise" never names the attack, never deflates for
+the configs tried, assumes free fills, and has no kill switch — it is an average-case
+backtest in a security costume. B's 41% is *lower precisely because it was measured against
+the strongest honest attack*, deflated for the 30 configs tried, stress-tested on hostile
+fills at scale, and shipped with a drift-trigger. The worst-case number is the one the
+market will collect against, so a *true* 41% is worth more than a *fake* 95%. You are not
+choosing the bigger number; you are choosing the number that was honestly earned against a
+hostile referee.
+
+</details>
+</Reveal>
+
+## Recap
+
+You started this course believing the market might fall to a firehose of predictive power,
+and you end it knowing that the firehose's worst enemy is its own evaluation. The i.i.d.
+test set is graded by an indifferent Nature; the deployed strategy is graded by a hostile
+opponent who picks the worst case on purpose — so the worst-case number is the one that
+trades. Robustness claims inflate even more easily than alpha claims, because the knob you
+cheat with is the strength of the sparring partner you chose, and gradient masking lets a
+defense *look* robust by hiding the map to its own weakness. The fix is to red-team
+yourself with adaptive, Kerckhoffs-aware, worst-regime attacks — rewarding the team for
+breaking you — and to publish an honest scorecard that reports clean and worst-case
+metrics, names the strongest attack, deflates for the configs tried, stresses execution,
+and ships with a kill switch.
+
+<MindMap
+  client:visible
+  title="Adversarial stress evaluation"
+  caption="Build the map: the wrong scorecard, why robustness fakes easily, how it fakes (masking), how to test honestly (red-team), and what to report (the scorecard)."
+  root={{
+    label: 'Adversarial stress evaluation',
+    children: [
+      { label: 'i.i.d. is the wrong scorecard', children: [
+        { label: 'Nature grades average case' },
+        { label: 'Opponent grades worst case' },
+        { label: 'Report both; size on the worst (95% clean, 10% PGD)' },
+      ]},
+      { label: 'Robustness fakes easier than alpha', children: [
+        { label: 'Knob = strength of attack chosen' },
+        { label: 'Weak attack inflates robust accuracy' },
+        { label: 'Deflated-Sharpe discipline, new axis (60% FGSM vs 8% PGD)' },
+      ]},
+      { label: 'Gradient masking = false robustness', children: [
+        { label: 'Breaks the gradient, not the vulnerability' },
+        { label: 'Tell: weak survives, strong fails' },
+        { label: 'Tell: black-box beats white-box' },
+        { label: 'Tell: unbounded attack never hits 0%' },
+      ]},
+      { label: 'Red-team your own strategy', children: [
+        { label: 'Adaptive attacks, not generic' },
+        { label: 'Worst-regime replay + execution stress' },
+        { label: 'Kerckhoffs: opponent knows your model' },
+        { label: 'Reward breaking; beware survival-by-luck' },
+      ]},
+      { label: 'The honest scorecard', children: [
+        { label: 'Clean AND worst-case metric' },
+        { label: 'Strongest attack named + budget' },
+        { label: 'Deflate for configs tried' },
+        { label: 'Capacity, execution, kill switch' },
+      ]},
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Mixed check: can your evaluation survive a hostile referee?"
+  questions={[
+    {
+      question: "A model scores 95% on its i.i.d. test set and 10% under PGD-50. Which number do you size the position on, and why?",
+      options: [
+        { text: "10% — a deployed strategy is graded by an opponent who picks the worst case, so the worst-case number is the one the market collects against", correct: true },
+        { text: "95% — it's the larger sample and therefore more reliable" },
+        { text: "The average of the two, about 52.5%" },
+        { text: "Neither; accuracy can't inform position sizing at all" },
+      ],
+      explanation: "The i.i.d. number is graded by an indifferent Nature; the live opponent steers you toward the worst case. Report both, but size on the worst-case 10% — that's the world you actually trade in.",
+    },
+    {
+      question: "Why is a robustness claim even easier to fake than an alpha claim?",
+      options: [
+        { text: "You choose the adversary, and choosing a weak one (e.g. FGSM over PGD-50) cheaply manufactures a high 'robust accuracy' that means nothing — the same inflation as best-of-N Sharpe, on a new axis", correct: true },
+        { text: "Robustness numbers are always rounded up by convention" },
+        { text: "Alpha is impossible to measure, so any comparison is unfair" },
+        { text: "Robustness and alpha are actually the same quantity" },
+      ],
+      explanation: "Alpha inflates with the number of trials; robust accuracy inflates as the chosen attack weakens. Reporting 60% against weak FGSM while the model sits at 8% under PGD-50 is a lie by selection of opponent — the deflated-Sharpe trap in disguise.",
+    },
+    {
+      question: "A defense is robust to white-box PGD, but a no-gradient black-box transfer attack does far more damage. What is the diagnosis?",
+      options: [
+        { text: "Gradient masking — the defense obfuscated the gradient so the white-box attacker couldn't find the weakness; the black-box-beats-white-box reversal is the classic tell of false robustness", correct: true },
+        { text: "Genuine robustness, since white-box is always the hardest case" },
+        { text: "A measurement bug, because black-box can never beat white-box" },
+        { text: "Proof the model needs more parameters" },
+      ],
+      explanation: "Full-information (white-box) attacks should be at least as strong as black-box. When less information does more damage, the white-box gradient was being starved — the vulnerability is intact and merely hidden. Add the unbounded-budget test: if accuracy doesn't reach 0%, masking is confirmed.",
+    },
+    {
+      question: "A strategy passes 9 of 10 random stress scenarios but fails the 1 adaptive scenario built to exploit its specific weakness. What's the honest read?",
+      options: [
+        { text: "The adaptive failure dominates — random scenarios sample the easy interior; the adaptive one is the worst corner where a real opponent lives, so it outweighs all nine passes", correct: true },
+        { text: "90% pass rate, ship it" },
+        { text: "Ignore the adaptive scenario as an outlier" },
+        { text: "Re-run until the adaptive scenario passes, then report that" },
+      ],
+      explanation: "A real opponent crafts the attack to your specific defense. The nine random passes are the easy middle of the uncertainty set; the one adaptive failure is the worst corner — and the worst corner is exactly what gets exploited live. That single result outweighs the nine.",
+    },
+    {
+      question: "Two write-ups: A says '95% accurate, robust to adversarial noise.' B reports clean 95%, robust 41% under PGD-50 with 5 restarts plus an adaptive attack, deflated for 30 configs tried, hostile-fill and capacity stress, and a drift-triggered kill switch. Which do you fund?",
+      options: [
+        { text: "B — the lower headline number was measured against a hostile referee, deflated for trials, stress-tested on execution, and shipped with a kill switch; a true 41% beats a fake 95%", correct: true },
+        { text: "A — it has the higher accuracy number" },
+        { text: "A — fewer caveats means a cleaner result" },
+        { text: "Neither can be compared without re-running both" },
+      ],
+      explanation: "A is an average-case backtest in a security costume: no named attack, no deflation, fantasy fills, no kill switch. B's seven-line honest scorecard closes every hole this course exposed. Fund the number that was earned against an opponent, not the one that fit on a slide.",
+    },
+  ]}
+/>

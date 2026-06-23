@@ -1,0 +1,397 @@
+---
+title: "The Reality Check: NISQ and Data Loading"
+description: "The walls between quantum promise and a real edge: NISQ noise and decoherence, qubit counts and error-correction overhead, and the data-loading state-preparation problem that can erase the speedup."
+topic: "en/quantum-computing-for-finance"
+order: 5
+minutes: 18
+updated: 2026-06-23
+---
+
+import { Callout, MCQ, Quiz, Reveal, ThinkReveal, FillBlank, MatchConcepts, Categorize, MindMap } from '@/components/react';
+
+Four lessons ago we promised you a crown jewel: Quantum Amplitude Estimation turning Monte Carlo's $1/\sqrt{N}$ crawl into a $1/N$ sprint, a *provable* quadratic speedup. Then we promised you portfolio optimization as a QUBO, annealers and QAOA circling the efficient frontier. The math was real. The excitement was earned.
+
+This lesson is where we earn the right to be skeptical.
+
+Here is the uncomfortable truth that separates a working quant from a conference-keynote tourist: **almost every near-term quantum-finance result you will read quietly ignores three walls, and any one of them can turn a beautiful theoretical speedup into a slower, noisier, more expensive way of getting the same number.** The walls are (1) noise and decoherence on today's hardware, (2) the staggering qubit overhead of error correction, and (3) — the one that gets buried in the appendix and quietly eats the whole speedup — the cost of *loading your classical market data into the quantum machine in the first place*.
+
+None of this means quantum computing for finance is a fraud. It means you must read every claim like a risk manager reads a backtest: where is the cost being hidden, and does the *end-to-end* pipeline actually beat the best classical baseline? By the end of this lesson you will have a checklist that lets you smell a too-good claim from across the room. That sets up the final turn of the course — the quantum-*inspired* classical methods you can actually run today.
+
+## NISQ: noisy, intermediate-scale, and unforgiving
+
+<MCQ
+  client:visible
+  pretest
+  question="The term NISQ describes today's quantum hardware. What does it actually mean for a quant trying to run an algorithm?"
+  options={[
+    { text: "Tens-to-hundreds of noisy physical qubits with no error correction, so every gate introduces error and only shallow circuits stay reliable", correct: true },
+    { text: "Fully error-corrected machines that can run any circuit you write, just slowly" },
+    { text: "Quantum computers that are noise-free but limited to small problem sizes" },
+    { text: "A software emulator that runs quantum circuits on classical GPUs" },
+  ]}
+  explanation="NISQ = Noisy Intermediate-Scale Quantum: a modest number of physical qubits, each gate carrying real error, and no error correction to clean it up. That noise budget is what caps how deep a circuit you can trust."
+/>
+
+**Analogy.** A NISQ computer is a pocket calculator that randomly flips one of its displayed digits every few button presses. Add two numbers and you are probably fine. Run a 300-step calculation and, somewhere in the middle, a digit silently flips — and every step after it inherits the lie. You do not get an error message. You get a confident, wrong answer that *looks* like a real number.
+
+**Definition.** **NISQ** stands for *Noisy Intermediate-Scale Quantum*: hardware with roughly tens to a few thousand **physical** qubits, where each gate operation has a non-trivial error rate and there is **no error correction** running underneath to detect and repair faults. Coined by John Preskill in 2018, the term is a deliberate dose of realism — it names the era we are actually in, not the fault-tolerant era we are promised.
+
+The key consequence is a hard cap on **circuit depth** (the number of sequential gate operations). If each gate succeeds independently with probability $1-p$, the probability that an entire circuit of $G$ gates runs without a single fault is
+
+$$ P_{\text{success}} \approx (1-p)^{G}, $$
+
+where $p$ is the per-gate error rate (today's two-qubit gates sit somewhere around $p \approx 10^{-2}$ to $10^{-3}$). This is a brutal exponential in disguise: once $G$ gets large, $P_{\text{success}}$ collapses toward zero and your output is indistinguishable from random noise.
+
+**Worked example.** Take an optimistic per-gate error $p = 10^{-3}$, so $1-p = 0.999$.
+
+- A **1,000-gate** circuit succeeds with probability $0.999^{1000}$. Using $0.999^{1000} \approx e^{-1000 \times 0.001} = e^{-1} \approx 0.37$ — barely better than one in three.
+- A **5,000-gate** circuit: $0.999^{5000} \approx e^{-5} \approx 0.0067$ — under seven runs in a thousand land clean. The rest is noise wearing a tuxedo.
+
+| Circuit depth $G$ (gates) | $P_{\text{success}} \approx e^{-pG}$ at $p=10^{-3}$ | Verdict |
+|---|---|---|
+| 100 | $e^{-0.1} \approx 0.90$ | usable |
+| 1,000 | $e^{-1} \approx 0.37$ | marginal |
+| 5,000 | $e^{-5} \approx 0.0067$ | essentially noise |
+| 10,000 | $e^{-10} \approx 0.000045$ | hopeless |
+
+Notice this is *the same exponential decay* you have now seen twice in this course — once as Monte Carlo's error wall, once here as the success-probability wall. Exponentials do not negotiate.
+
+<Callout variant="warning" title="Shallow circuits or nothing">
+The single most common omission in a NISQ-era demo is the circuit depth. Many algorithms with gorgeous asymptotics — including textbook QAE — require *deep* circuits to realize the speedup. On NISQ hardware that depth is exactly what you cannot afford. A result that only works at toy depth, with the real-problem depth quietly off-screen, is a science-fair project, not an edge.
+</Callout>
+
+### What it means for your edge
+
+When someone shows you a quantum-finance result, ask first: **how deep is the circuit at problem scale, and what is the per-gate error?** Multiply them. If $p \times G$ is much bigger than about 1, the machine is returning noise no matter how elegant the algorithm. NISQ rewards *shallow* circuits (variational methods, low-depth heuristics) and punishes the deep ones where the cleanest speedups (like full QAE) actually live.
+
+<FillBlank
+  client:visible
+  question="Fill in the NISQ depth law."
+  text="If each gate has error rate p and the circuit has G gates, the probability the whole circuit runs correctly is roughly {{(1 minus p) to the power G|p times G|G divided by p}}, which collapses toward zero as the circuit gets deep."
+  explanation="Independent per-gate success of (1 minus p) compounds multiplicatively across G gates, giving (1 minus p)^G — an exponential decay in depth. That is the wall on NISQ circuit depth."
+/>
+
+## Decoherence: the clock you are racing
+
+<MCQ
+  client:visible
+  pretest
+  question="Even if every gate were perfect, why does a real qubit still limit how long your computation can run?"
+  options={[
+    { text: "Qubits lose their quantum state to the environment over a coherence time of microseconds, so you must finish the whole computation before the state decays", correct: true },
+    { text: "Qubits overheat and must cool down between every gate" },
+    { text: "Quantum states are stored on disk and reading them is slow" },
+    { text: "There is no time limit; a qubit holds its state indefinitely once prepared" },
+  ]}
+  explanation="Decoherence is the leak of quantum information into the surrounding environment. The coherence time (T1, T2) is a hard deadline: finish before the state turns to mush, or the answer is garbage."
+/>
+
+**Analogy.** A qubit's quantum state is an ice sculpture in a warm room. The moment you carve it, it starts melting. You have a fixed number of minutes to photograph it (run your circuit and read out the answer) before it collapses into a puddle. Decoherence is the room temperature; coherence time is how long the sculpture survives.
+
+**Definition.** **Decoherence** is the process by which a qubit's fragile superposition leaks into its environment and decays into ordinary classical noise. Two time constants summarize it: **$T_1$** (energy relaxation — the qubit decaying from excited to ground state) and **$T_2$** (dephasing — the loss of phase coherence, usually the more stringent one). They are measured in **microseconds** on superconducting hardware. The practical ceiling on useful work is
+
+$$ G_{\max} \approx \frac{T_{\text{coh}}}{t_{\text{gate}}}, $$
+
+the coherence time divided by the time one gate takes. Run more gates than that and the state has decayed out from under you mid-computation.
+
+**Worked example.** Suppose a coherence time of $T_{\text{coh}} = 100~\mu\text{s}$ and a gate time of $t_{\text{gate}} = 100~\text{ns} = 0.1~\mu\text{s}$. Then
+
+$$ G_{\max} \approx \frac{100~\mu\text{s}}{0.1~\mu\text{s}} = 1{,}000 \text{ gates}. $$
+
+A thousand sequential gates before the clock runs out — and notice this is *the same order of magnitude* as the NISQ gate-error budget from the previous section. The two walls reinforce each other: even if a magic process held gate errors to zero, decoherence alone would still cap you near a thousand gates. Realistically both limits bite at once, and the tighter one wins.
+
+<Callout variant="warning" title="The deadline is physical, not a setting">
+You cannot configure your way around decoherence. It is a property of the hardware and its environment, lowered only by better fabrication, colder fridges, and error correction. When a paper reports an algorithm that needs, say, fifty thousand sequential gates, check it against the chip's coherence-time-over-gate-time budget. If the algorithm needs more gates than the qubit survives, the demo physically cannot finish — regardless of how clean the math looks on the whiteboard.
+</Callout>
+
+### What it means for your edge
+
+Coherence time and gate error are two clocks ticking on the same circuit; your usable depth is whichever runs out first. Both currently sit around the low thousands of gates. That is why near-term quantum finance lives almost entirely in the world of *shallow, variational* circuits — and why anyone promising a deep-circuit speedup on today's hardware is selling you the fault-tolerant era before it arrives.
+
+<ThinkReveal
+  client:visible
+  prompt="A vendor claims their NISQ option-pricer runs a 40,000-gate circuit on hardware with 100 microsecond coherence and 100 ns gates. Before checking error rates at all, what is already wrong?"
+  hint="Compute the maximum gate count the coherence time alone allows."
+  text="The decoherence budget is about 100 us / 100 ns = 1,000 gates. A 40,000-gate circuit needs roughly 40 times longer than the qubit stays coherent, so the state has decayed long before the circuit finishes. The claim fails on physics before you even reach gate-error or data-loading objections."
+/>
+
+## Error correction: the thousands-to-one tax
+
+<MCQ
+  client:visible
+  pretest
+  question="Quantum error correction is the long-term fix for noise. What is its cost, and why is the fault-tolerant era still far off?"
+  options={[
+    { text: "Each reliable logical qubit is built from many (roughly a thousand or more) noisy physical qubits, so an algorithm needing 100 logical qubits needs ~100,000+ physical ones — far beyond today's hundreds", correct: true },
+    { text: "It only requires doubling the number of qubits, which today's machines already have" },
+    { text: "It is a software patch that adds no qubit overhead at all" },
+    { text: "It eliminates the need for any physical qubits by simulating them classically" },
+  ]}
+  explanation="Surface-code error correction encodes one protected logical qubit across roughly 1,000+ physical qubits at useful error rates. The multiplier is brutal: useful logical-qubit counts demand physical-qubit counts orders of magnitude beyond what exists today."
+/>
+
+**Analogy.** Suppose you must mail a single bit reliably over a channel that randomly corrupts characters. You do not send one letter — you send the same letter a thousand times and take a vote at the other end. The message gets through, but your bandwidth just dropped a thousandfold. Error correction is that vote: one trustworthy *logical* qubit purchased with a crowd of disposable, noisy *physical* qubits.
+
+**Definition.** **Quantum error correction (QEC)** encodes the information of one **logical qubit** redundantly across many **physical qubits**, continuously measuring error-detecting checks (syndromes) to catch and reverse faults faster than they accumulate. The leading scheme, the **surface code**, requires on the order of
+
+$$ n_{\text{phys}} \approx 1{,}000 \text{ to } 10{,}000 \text{ physical qubits per logical qubit} $$
+
+to reach the low logical error rates a real algorithm needs (and it only works at all once physical error rates dip below a threshold near $p \approx 10^{-2}$). This is the **thousands-of-physical-per-logical wall**.
+
+**Worked example.** Take an algorithm that needs **100 logical qubits** — modest by classical standards, a serious target for quantum advantage. At a conservative 1,000 physical qubits per logical qubit:
+
+$$ n_{\text{phys}} \approx 100 \times 1{,}000 = 100{,}000 \text{ physical qubits.} $$
+
+At 10,000 per logical, that is **one million** physical qubits. Today's flagship machines field hundreds to low thousands of physical qubits. The gap between "hundreds" and "hundreds of thousands" is not a next-quarter firmware update — it is the central reason the fault-tolerant era is widely judged to be **years to decades** away.
+
+| Logical qubits needed | Physical per logical | Total physical qubits | vs. today (hundreds) |
+|---|---|---|---|
+| 1 | 1,000 | 1,000 | already a stretch |
+| 100 | 1,000 | 100,000 | ~100,000x too few |
+| 100 | 10,000 | 1,000,000 | ~1,000,000x too few |
+
+<Callout variant="warning" title="Logical and physical are not the same word">
+The fastest way to be fooled is to read a qubit count without asking *which kind*. A press release boasting "1,000 qubits" means 1,000 *physical*, noisy qubits — possibly fewer than *one* fault-tolerant logical qubit's worth of protection. Algorithms whose advantage requires deep, fault-tolerant circuits (full QAE among them) are quoting *logical* qubits. Until physical-qubit counts climb several orders of magnitude, those algorithms run only as small, noise-limited toys.
+</Callout>
+
+### What it means for your edge
+
+Sort every quantum-finance claim into two bins. **Fault-tolerant** claims (deep circuits, error-corrected, logical qubits) describe a machine that does not yet exist — interesting, but not tradeable for years. **NISQ** claims (shallow, variational, physical qubits) can run today but inherit the noise and decoherence walls above. A claim that needs fault tolerance but is demoed on a NISQ chip is, at best, a tiny-scale proof of concept. Knowing which bin you are in tells you whether the timeline is "this year" or "next decade."
+
+<Categorize
+  client:visible
+  question="Sort each statement by which era of quantum hardware it belongs to."
+  buckets={["NISQ (today)", "Fault-tolerant (future)"]}
+  items={[
+    { text: "Tens-to-hundreds of noisy physical qubits, no error correction", bucket: "NISQ (today)" },
+    { text: "Shallow variational circuits to dodge the depth wall", bucket: "NISQ (today)" },
+    { text: "Per-gate error around 1e-2 to 1e-3 with no syndrome decoding", bucket: "NISQ (today)" },
+    { text: "Logical qubits each built from ~1,000+ physical qubits", bucket: "Fault-tolerant (future)" },
+    { text: "Deep circuits running full Quantum Amplitude Estimation at scale", bucket: "Fault-tolerant (future)" },
+    { text: "Continuous syndrome measurement repairing faults mid-computation", bucket: "Fault-tolerant (future)" },
+  ]}
+  explanation="NISQ is the noisy, uncorrected, shallow-circuit present. Fault tolerance is the error-corrected, logical-qubit, deep-circuit future that the thousands-to-one overhead keeps years away."
+/>
+
+## The data-loading wall: where the speedup goes to die
+
+<MCQ
+  client:visible
+  pretest
+  question="To run QAE or quantum machine learning on real market data, you must first load that classical data into a quantum state. Why is this the wall that most quietly destroys the advertised speedup?"
+  options={[
+    { text: "Preparing a general quantum state that encodes N classical numbers costs about O(N) gates, which can cancel the quadratic query speedup if you must reload the data each run", correct: true },
+    { text: "Loading data is instantaneous, so it never affects the speedup" },
+    { text: "Data loading is impossible, so no quantum finance algorithm can run at all" },
+    { text: "It only slows down the classical baseline, never the quantum algorithm" },
+  ]}
+  explanation="Amplitude encoding packs N numbers into log2(N) qubits — gorgeous compression — but preparing a *general* such state takes about O(N) gates. If the speedup was only quadratic and you pay O(N) to load every run, the loading bill can eat the entire win."
+/>
+
+This is the big one. Give it your full attention, because it is the objection that practitioners raise and marketing decks omit.
+
+**Analogy.** Imagine a courier who can deliver a package across the world in one second — genuinely magical transit. But to *load* the package onto the courier, you must hand-fold it into a thousand tiny origami creases, one per item, and that folding takes an hour. Your "one-second delivery" is now a one-hour-and-one-second delivery. The transit speedup is real and useless, because the *loading* dominates the wall-clock time. Quantum data loading is that origami.
+
+**Definition: amplitude encoding.** The seductive part first. You can encode $N$ classical numbers $x_0, x_1, \dots, x_{N-1}$ into the **amplitudes** of a quantum state over just $\log_2 N$ qubits:
+
+$$ |\psi\rangle = \frac{1}{\lVert x \rVert} \sum_{i=0}^{N-1} x_i \, |i\rangle. $$
+
+That is *exponential compression* — a billion numbers ($N = 2^{30}$) fit into the amplitudes of just **30 qubits**. The memory-footprint headline is breathtaking, and it is exactly why people get excited.
+
+**The catch.** Compression is not the cost; *creation* is. Preparing a **general** amplitude-encoded state — an arbitrary distribution with no special structure — requires on the order of
+
+$$ \text{state-prep cost} \approx O(N) \text{ gates} $$
+
+(more precisely $O(N)$ gates in the general case; some structured distributions are cheaper, but arbitrary market data is not structured). You compressed $N$ numbers into $\log_2 N$ qubits, but you spent about $N$ gate operations to *write* them in. The exponential compression of *storage* does not buy you exponential cheapness of *loading*.
+
+**Worked example — tying it back to QAE.** Recall from the amplitude-estimation lesson that QAE improves the *query* complexity of estimating an expectation from $O(1/\varepsilon^2)$ to $O(1/\varepsilon)$ — a quadratic speedup *in the number of queries to an oracle*. The crucial fine print: **that speedup counts queries to an oracle that is assumed to be cheap.** The oracle is exactly the thing that loads your distribution.
+
+Now suppose loading the distribution costs $O(N)$ gates, and to reach precision $\varepsilon$ you must resolve a distribution over $N \approx 1/\varepsilon$ bins (finer precision needs finer state). Then the *per-run* cost is no longer dominated by the clean $O(1/\varepsilon)$ queries — each run also drags an $O(N) = O(1/\varepsilon)$ loading bill, and if the state must be reloaded on each amplitude-estimation iteration, the loading work can match or exceed the query savings. Put a number on it:
+
+| Step | Classical Monte Carlo | QAE (queries only) | QAE with O(N) reload |
+|---|---|---|---|
+| Queries to reach error $\varepsilon$ | $O(1/\varepsilon^2)$ | $O(1/\varepsilon)$ | $O(1/\varepsilon)$ |
+| Cost to build/load the distribution | (folded into sampling) | assumed $O(1)$ — free | $O(N)$ per load |
+| Net wall-clock advantage | baseline | quadratic | **shrinks or vanishes** |
+
+The query-count column still favors QAE. But the *honest* column — the one that prices in loading — is where the quadratic edge can quietly evaporate. A quadratic speedup is fragile precisely because it is *only* quadratic: a loading cost of the same order as the savings wipes it out. (This is also why the cleanest quantum wins are reserved for *exponential* speedups, which can survive a polynomial loading tax. A quadratic speedup cannot survive a comparable polynomial tax.)
+
+**QRAM — the proposed escape hatch.** The standard answer to "loading is expensive" is **quantum RAM (QRAM)**: a hypothetical device that loads classical data into superposition in $O(\log N)$ time, restoring the dream. The problem is that QRAM is **largely theoretical** — no one has built a large-scale, error-resilient QRAM, and the leading designs themselves demand enormous physical resources and their own error correction. Counting on QRAM to rescue your speedup is counting on hardware that does not yet exist; it belongs firmly in the fault-tolerant-future bin, not in any "this year" claim.
+
+<Callout variant="warning" title="The oracle is not free — make them price it">
+The phrase to hunt for in any quantum-finance paper is some version of *assume access to an oracle that prepares the state*. That assumption is doing enormous, often unstated, work. Whenever a speedup is quoted in *queries* to such an oracle, ask: what does building the oracle cost, and does it have to be rebuilt every run? For arbitrary classical market data the honest answer is usually O(N), and for a merely quadratic speedup that is frequently enough to erase the entire advantage end to end.
+</Callout>
+
+### What it means for your edge
+
+State the rule plainly: **the quantum speedup lives in queries to an oracle that is *assumed* cheap; if building that oracle — loading your distribution — is expensive, you must add its cost to the ledger before believing the speedup.** For a quadratic algorithm like QAE on unstructured data, an $O(N)$ loading cost is usually fatal to the end-to-end win. The speedups that survive loading are the *exponential* ones (and even those want QRAM to truly shine). When you evaluate a claim, the very first question is no longer "how fast is the algorithm?" — it is "what did it cost to get the data in?"
+
+<MCQ
+  client:visible
+  allowMultiple
+  question="Which statements about amplitude encoding and data loading are true? (Select all that apply.)"
+  options={[
+    { text: "Amplitude encoding stores N numbers in log2(N) qubits — exponential compression of storage", correct: true },
+    { text: "Preparing a general amplitude-encoded state costs about O(N) gates", correct: true },
+    { text: "An O(N) loading cost can cancel a merely quadratic query speedup if the data is reloaded each run", correct: true },
+    { text: "QRAM is a mature, widely deployed device that already solves the loading problem", correct: false },
+  ]}
+  explanation="Compression of storage is real and exponential; creation cost is the catch at about O(N) for general states, and that cost is what can erase a quadratic speedup. QRAM is the proposed fix but remains largely hypothetical and unrealized at scale."
+/>
+
+<ThinkReveal
+  client:visible
+  prompt="A startup claims a quadratic quantum speedup for portfolio-risk Monte Carlo on real market data. Their benchmark counts only oracle queries. What is the one number they almost certainly left out, and why does it matter here specifically?"
+  hint="Think about what the oracle has to do with classical market data, and how big the speedup is."
+  text="They left out the state-preparation (data-loading) cost — roughly O(N) gates to encode arbitrary market data into amplitudes, paid on each run. It matters *specifically* because their advertised speedup is only quadratic: an O(N) loading bill of the same order as the query savings can cancel the win entirely, leaving the quantum pipeline no faster — or slower — than the classical baseline end to end."
+/>
+
+## Putting the three walls together
+
+<MCQ
+  client:visible
+  pretest
+  question="You are handed a quantum-finance result claiming a real-world advantage. Which single question best protects you from being fooled?"
+  options={[
+    { text: "Does the END-TO-END pipeline — load plus compute plus readout plus repeats — beat the best classical baseline, with all costs counted?", correct: true },
+    { text: "Does the algorithm use the most qubits of any published method?" },
+    { text: "Is the quantum circuit diagram more elegant than the classical code?" },
+    { text: "Did the result appear in a press release rather than a preprint?" },
+  ]}
+  explanation="Advantage is an end-to-end, wall-clock claim against the best classical alternative — not a query count, not a qubit count, not an elegant diagram. Loading, computing, reading out, and repeating all go on the ledger."
+/>
+
+Three walls, one lesson: **noise and decoherence** cap how deep a circuit you can trust; **error-correction overhead** keeps deep, reliable circuits years away; and **data loading** can erase the very speedup you came for. They are not independent excuses — they compound. A deep algorithm that needs fault tolerance to dodge wall one is blocked by wall two; a shallow algorithm that survives walls one and two still has to get its data in past wall three.
+
+So here is the decision frame — the checklist to run on *any* near-term quantum-finance claim before you let yourself get excited:
+
+1. **Is the advantage exponential or merely quadratic?** Exponential speedups can absorb a polynomial loading tax and still win; quadratic ones are fragile and often cannot. A "quadratic" headline should immediately raise the loading question.
+2. **Was the data-loading / state-preparation cost included?** Find the oracle assumption. If the benchmark counts only queries to a free oracle, the real cost is off the books — add the $O(N)$ (or whatever it truly is) before believing anything.
+3. **Does it survive NISQ noise at the required depth, or does it need fault tolerance?** Multiply per-gate error by circuit depth and check it against the coherence budget. If it needs error correction, it needs a machine that does not exist yet.
+4. **Does the END-TO-END pipeline beat the best classical baseline?** Load plus compute plus readout plus the repeats you need for statistics — all of it, against a *strong* classical method (not a deliberately weak straw man). Advantage is a wall-clock claim, not a query count.
+
+The master comparison — the three walls at a glance:
+
+| Wall | What it limits | Today's status | When it might lift |
+|---|---|---|---|
+| **Noise / decoherence** | Usable **circuit depth** (gates before the answer becomes noise) | Per-gate error ~1e-2 to 1e-3; coherence ~microseconds; depth capped near ~1,000 gates | Gradually, via better gates, fabrication, and partial error mitigation — but the exponent stays until full QEC |
+| **Qubit count / error correction** | Number of **reliable (logical)** qubits available | Hundreds to low thousands of *physical* qubits; far short of one useful logical qubit's overhead | Years to decades; needs ~1,000+ physical per logical, so 100,000+ physical for a serious algorithm |
+| **Data loading / state prep** | Whether the speedup **survives** once you count loading | General amplitude encoding ~O(N) gates per load; QRAM proposed but largely hypothetical | When QRAM (or structured-data tricks) become real and cheap — itself a fault-tolerant-era ask |
+
+<Callout variant="tip" title="The reframing that sets up what's next">
+Read together, the three walls do not say "quantum finance is hopeless." They say "the *general-purpose, deep, fault-tolerant* speedups are not tradeable yet." That is exactly why the smart near-term move is to look sideways: many of the *ideas* born in quantum computing — tensor-network methods, simulated/quantum-inspired annealing, low-rank and amplitude-style decompositions — can be run on classical hardware *today*, with no qubits, no decoherence, and no loading wall. The next lesson is that turn: quantum-inspired classical methods you can actually deploy.
+</Callout>
+
+### When (if ever) to bet on it
+
+Bet on a near-term quantum-finance approach only when the checklist clears: the advantage is exponential (or the quadratic case is on structured data with a cheap loader), the loading cost is explicitly counted, the circuit fits inside the NISQ depth budget *or* you are honestly planning for the fault-tolerant decade, and the *end-to-end* pipeline beats a strong classical baseline. If any box is unchecked, treat the claim as a research milestone, not a trading edge — and reach instead for the quantum-inspired classical tools that pay off now.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "NISQ", definition: "Tens-to-hundreds of noisy physical qubits with no error correction, capping usable circuit depth" },
+    { term: "Decoherence (T1, T2)", definition: "Loss of the quantum state to the environment over microseconds, setting a hard deadline on the computation" },
+    { term: "Surface-code overhead", definition: "Roughly 1,000+ physical qubits to build one reliable logical qubit, so useful algorithms need 100,000+ physical" },
+    { term: "Amplitude encoding", definition: "Packs N numbers into log2(N) qubits, but a general state costs about O(N) gates to prepare" },
+    { term: "QRAM", definition: "Proposed device for fast data loading in O(log N) — largely hypothetical and hardware-unrealized at scale" },
+    { term: "End-to-end advantage", definition: "The honest test: load plus compute plus readout plus repeats must beat the best classical baseline" },
+  ]}
+/>
+
+## Recap
+
+You came in carrying a crown jewel and four lessons of optimism. You leave with the three walls that stand between that optimism and a tradeable edge — and, more valuably, a checklist that lets you price any claim instead of cheering it. Noise and decoherence cap circuit depth near a thousand gates; error correction's thousands-to-one overhead keeps the deep, reliable machines years away; and the data-loading wall can quietly cancel a quadratic speedup before the first query even runs. None of it kills the field — it just redirects the smart near-term effort sideways, toward the quantum-inspired classical methods coming up next.
+
+<MindMap
+  client:visible
+  title="The reality check: NISQ and data loading"
+  caption="Build the map: the three walls, then the checklist that prices any claim."
+  root={{
+    label: 'The three walls',
+    children: [
+      { label: 'Noise & decoherence', children: [
+        { label: 'NISQ: noisy, no error correction' },
+        { label: 'Per-gate error 1e-2 to 1e-3' },
+        { label: 'Success ~ (1-p)^G collapses with depth' },
+        { label: 'Coherence (T1,T2) ~ microseconds = deadline' },
+        { label: 'Usable depth ~ T_coh / t_gate ~ 1,000 gates' },
+      ]},
+      { label: 'Qubit count & error correction', children: [
+        { label: 'Logical qubit = many physical' },
+        { label: 'Surface code ~1,000+ physical per logical' },
+        { label: '100 logical → 100,000+ physical' },
+        { label: 'Fault-tolerant era years-to-decades away' },
+      ]},
+      { label: 'Data loading / state prep', children: [
+        { label: 'Amplitude encoding: N numbers in log2(N) qubits' },
+        { label: 'General state-prep ~ O(N) gates' },
+        { label: 'O(N) reload can cancel quadratic QAE speedup' },
+        { label: 'Speedup is in QUERIES to a CHEAP oracle' },
+        { label: 'QRAM proposed but hypothetical' },
+      ]},
+      { label: 'Checklist before you bet', children: [
+        { label: 'Exponential or just quadratic?' },
+        { label: 'Was loading cost counted?' },
+        { label: 'Survives NISQ depth, or needs fault tolerance?' },
+        { label: 'Does end-to-end beat best classical?' },
+      ]},
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Mixed check: can you spot the hidden cost?"
+  questions={[
+    {
+      question: "A NISQ circuit has 3,000 gates and a per-gate error of 1e-3. Roughly what is the probability the whole circuit runs without a fault?",
+      options: [
+        { text: "About 0.05 — since (1 - 0.001)^3000 is approximately e^(-3), and e^(-3) ≈ 0.05", correct: true },
+        { text: "About 0.97 — only one gate ever fails" },
+        { text: "About 0.50 — depth does not really matter" },
+        { text: "Exactly 1.0 — gate error this small never matters" },
+      ],
+      explanation: "P_success ≈ (1 - p)^G ≈ e^(-pG) = e^(-0.001 × 3000) = e^(-3) ≈ 0.05. Deep circuits decay exponentially in depth — the core NISQ wall.",
+    },
+    {
+      question: "An algorithm needs 200 logical qubits, and the surface code requires about 1,000 physical qubits per logical qubit. Roughly how many physical qubits are required?",
+      options: [
+        { text: "About 200,000 physical qubits — far beyond today's hundreds to low thousands", correct: true },
+        { text: "About 200 physical qubits — the same as the logical count" },
+        { text: "About 1,200 physical qubits — you just add the two numbers" },
+        { text: "About 2,000 physical qubits — independent of the logical count" },
+      ],
+      explanation: "200 logical × 1,000 physical-per-logical = 200,000 physical qubits. The thousands-to-one overhead is why fault tolerance is years to decades away.",
+    },
+    {
+      question: "Amplitude encoding fits a billion numbers (N = 2^30) into just 30 qubits. Why is this NOT automatically a free lunch?",
+      options: [
+        { text: "Compressing storage is cheap, but preparing a general amplitude state still costs about O(N) gates — so loading a billion numbers takes on the order of a billion operations", correct: true },
+        { text: "Thirty qubits is too few to hold any real distribution" },
+        { text: "Amplitude encoding loses the data permanently after one read" },
+        { text: "The compression only works for prime values of N" },
+      ],
+      explanation: "log2(N) qubits is exponential compression of *storage*, but creating a general state is about O(N) gates. Storage compression does not imply loading is cheap — that gap is the data-loading wall.",
+    },
+    {
+      question: "QAE improves Monte Carlo from O(1/epsilon^2) to O(1/epsilon) queries. Why does that quadratic speedup matter so much for whether data loading is fatal?",
+      options: [
+        { text: "Because a quadratic speedup is fragile: a loading cost of comparable order (like O(N) per run) can cancel it, whereas an exponential speedup could absorb a polynomial loading tax", correct: true },
+        { text: "Because a quadratic speedup is so large that no loading cost could ever matter" },
+        { text: "Because data loading only affects exponential speedups, never quadratic ones" },
+        { text: "Because QAE does not require loading any data at all" },
+      ],
+      explanation: "Quadratic wins are narrow. An O(N) per-run loading bill of similar order erases them end to end. Exponential speedups have margin to spare a polynomial loading cost — which is why the cleanest quantum wins are exponential.",
+    },
+    {
+      question: "Which question best determines whether a near-term quantum-finance claim represents a real, tradeable edge?",
+      options: [
+        { text: "Does the end-to-end pipeline — load, compute, read out, and repeat for statistics — beat the best classical baseline once every cost is counted?", correct: true },
+        { text: "Does the algorithm use more qubits than any competitor?" },
+        { text: "Is the speedup quoted purely in oracle queries, ignoring how the oracle is built?" },
+        { text: "Was the result announced before any classical baseline was run?" },
+      ],
+      explanation: "Advantage is an end-to-end, wall-clock claim against a strong classical baseline — loading, computing, readout, and repeats all on the ledger. Query counts and qubit counts in isolation prove nothing.",
+    },
+  ]}
+/>

@@ -1,0 +1,411 @@
+---
+title: "Envenenamiento de datos y extracción de modelos"
+description: "Ataques contra los datos de entrenamiento y el modelo desplegado: envenenamiento y disparadores de puerta trasera plantados mediante el flujo de órdenes (spoofing y layering para cebar una señal), además de ataques en inferencia — extracción de modelos e inferencia de pertenencia — contra una estrategia cuyo comportamiento se filtra a través de sus propias ejecuciones."
+topic: "es/adversarial-ml-and-robustness-in-trading"
+order: 3
+minutes: 20
+updated: 2026-06-23
+---
+
+import { Callout, MCQ, Quiz, Reveal, ThinkReveal, FillBlank, MatchConcepts, Categorize, MindMap, AdverseSelectionFlow, ProcessOutcomeMatrix } from '@/components/react';
+
+En la Lección 2 el atacante luchaba contra vuestro modelo en el peor momento posible — *el momento de la inferencia* — empujando un vector de características en vivo al otro lado de una frontera de decisión. Aquello era un duelo a pleno mediodía. Esta lección trata de los ataques más lentos y más siniestros: los que sabotean el modelo *antes* de que haga ninguna predicción (envenenan los **datos de entrenamiento**), y los que interrogan al modelo *después* de desplegarlo para copiarlo o identificarlo (**extracción** e **inferencia de pertenencia**).
+
+Aquí va la reformulación incómoda de entrada: **vuestros datos de entrenamiento son el libro de órdenes público, y cualquiera con una cuenta de bróker puede escribir en él.** Un modelo de visión entrenado con ImageNet tiene que preocuparse de un etiquetador malicioso que cuele gatos envenenados en el conjunto de datos. Un modelo de trading que aprende en línea a partir del flujo de órdenes lo tiene peor — el conjunto de datos es un *medio público, adversario y en tiempo real* que los competidores moldean activamente con sus órdenes, a propósito, para engañaros. Vosotros no curasteis esos datos. Los recogisteis de un campo de batalla.
+
+Recorreremos cinco ataques, desde el conjunto de entrenamiento hacia fuera hasta la caja negra desplegada: **envenenamiento de datos**, **disparadores de puerta trasera (backdoor/troyano)**, **spoofing y layering como ataque de doble propósito**, **extracción de modelos** e **inferencia de pertenencia**. Cada uno es una técnica con nombre propio de la literatura de ML adversario con un análogo de mercado preciso. Al terminar no deberíais volver a decir las palabras "confío en mi feed de datos" sin estremeceros.
+
+## Envenenamiento de datos — corromper el conjunto de entrenamiento
+
+<MCQ
+  client:visible
+  pretest
+  question="Un adversario quiere corromper vuestro modelo pero no tiene acceso a vuestro código, pesos ni servidores. Vuestro modelo se reentrena cada noche con el flujo de órdenes del día. ¿Cuál es su palanca más barata?"
+  options={[
+    { text: "Inyectar flujo de órdenes manipulado durante el día para que el patrón envenenado pase a formar parte de los datos de entrenamiento de esta noche", correct: true },
+    { text: "Nada — sin acceso al servidor no hay superficie de ataque" },
+    { text: "Romper por fuerza bruta la contraseña de vuestra API para editar los pesos directamente" },
+    { text: "Comprar las mismas acciones que compráis vosotros, lo que de algún modo degrada vuestro modelo" },
+  ]}
+  explanation="El envenenamiento necesita influencia sobre el conjunto de entrenamiento, no sobre los servidores. Si el modelo aprende del flujo de órdenes público, el atacante escribe en ese conjunto de entrenamiento sencillamente colocando (y cancelando) órdenes. El feed es la superficie de ataque."
+/>
+
+**Analogía.** Imaginad que adiestráis a un perro guardián recompensándolo cada vez que se acerca un hombre con sombrero rojo — salvo que es vuestro *vecino* quien le pasa las golosinas, y le está enseñando en silencio a *adorar* los sombreros rojos para que, cuando os robe con un sombrero rojo, el perro mueva la cola. El envenenamiento es manipular las lecciones, no al perro. El animal aprende con fidelidad; solo que aprende el plan de estudios del atacante.
+
+**Definición.** El **envenenamiento de datos** es un ataque en el que un adversario inyecta, edita o borra una fracción de los datos de *entrenamiento* para que el modelo resultante se comporte como el atacante quiere. Se divide en dos familias:
+
+- **Ataques de disponibilidad (indiscriminados)** — degradan la precisión *global* del modelo. El objetivo es el sabotaje: hacer que la estrategia sea genéricamente peor para que deje de competir.
+- **Ataques dirigidos (de integridad)** — dejan intacta la precisión global pero provocan errores de predicción específicos en *entradas específicas* que le importan al atacante. Quirúrgicos, y mucho más difíciles de detectar, porque vuestras métricas agregadas siguen pareciendo correctas.
+
+La palanca que acciona un atacante es la **influencia**: aproximadamente, cuánto mueve una muestra envenenada (o un lote de ellas) los parámetros aprendidos. Para la mayoría de modelos que minimizan el riesgo empírico, la influencia escala con la *fracción* de la masa de entrenamiento que el atacante controla.
+
+**Ejemplo resuelto — la fracción k/N.** Supongamos que vuestro modelo se reentrena con una ventana móvil de los últimos $N = 250$ días de cotización, ponderando cada día por igual. Un atacante que pueda dominar el flujo de órdenes en $k = 10$ de esos días controla una fracción de masa de entrenamiento de
+
+$$ \frac{k}{N} = \frac{10}{250} = 0.04 = 4\%. $$
+
+Cuatro por ciento suena inofensivo. No lo es. Para un modelo de baja señal y alta varianza — exactamente el tipo que las finanzas os imponen — la señal "verdadera" podría explicar solo un pequeño porcentaje de la varianza, así que un bloque del 4% de veneno *coherente y deliberadamente diseñado* puede rivalizar con la atracción de la señal real sobre el ajuste o superarla. Y el 4% del atacante está *correlacionado y es adversario*, no ruido aleatorio que se promedia y desaparece; todo apunta en la misma dirección. Si en cambio la ventana fuese de $N = 60$ días y el atacante poseyese $k = 6$ de ellos, la fracción salta a $6/60 = 0.10 = 10\%$ — una ventana de reentrenamiento más corta es *más* envenenable, porque cada día pesa más.
+
+| Ventana $N$ | Días envenenados $k$ | Fracción de masa de entrenamiento $k/N$ |
+|---|---|---|
+| 250 | 10 | 4.0% |
+| 250 | 25 | 10.0% |
+| 60 | 6 | 10.0% |
+| 60 | 12 | 20.0% |
+
+Fijaos en el patrón: **las ventanas más cortas son más baratas de envenenar** (menos días envenenados compran la misma fracción), que es justo lo contrario del instinto de que "los modelos que se adaptan rápido son más seguros". Adaptarse rápido significa un camino más rápido para que el veneno entre en los pesos.
+
+<Callout variant="warning" title="“Confío en mi feed de datos”">
+Esta es la frase más cara de la lección. Vuestro feed no es un sensor de confianza que mide la temperatura de una sala sellada — es el *libro de órdenes limitadas público*, un medio en el que cualquier participante puede escribir enviando y cancelando órdenes. Confiar en el feed es confiar en que ninguna de vuestras miles de contrapartes anónimas moldearía nunca su flujo de órdenes para engañar a un modelo que sospechan que está observando. Lo harían. A algunos les pagan por ello.
+</Callout>
+
+### Cuándo usarlo
+
+Razonad sobre el envenenamiento siempre que vuestro modelo **aprenda de datos que no controláis** — y las estrategias de aprendizaje en línea o reentrenadas con frecuencia son el caso de manual. Las palancas defensivas tienen todo que ver con *acotar la influencia*: limitad la fracción de masa de entrenamiento por periodo, usad agregación robusta (medias recortadas, mediana de lotes) en lugar de promedios simples, alargad la ventana de reentrenamiento para que ninguna ráfaga corta domine, y filtrad los datos entrantes en busca de las huellas estadísticas de la manipulación antes de que toquen el ajuste.
+
+<FillBlank
+  client:visible
+  question="Rellenad la división central dentro del envenenamiento."
+  text="Un ataque que degrada la precisión global del modelo es un ataque de {{disponibilidad|dirigido|inferencia}}, mientras que uno que provoca errores de predicción solo en entradas concretas elegidas es un ataque {{dirigido|de disponibilidad|sin puerta trasera}}."
+  explanation="Los ataques de disponibilidad (indiscriminados) bajan la precisión agregada; los ataques dirigidos (de integridad) mantienen sanas las métricas agregadas mientras corrompen entradas concretas — por eso se esconden tan bien."
+/>
+
+## Ataques de puerta trasera (troyano) — un disparador oculto
+
+<MCQ
+  client:visible
+  pretest
+  question="Un modelo envenenado pasa todas las pruebas de validación, puntúa bien en datos reservados y opera con normalidad durante meses — y entonces, ante un patrón raro y específico del libro de órdenes, hace de repente exactamente lo que un atacante quiere. ¿Qué es esto?"
+  options={[
+    { text: "Una puerta trasera (troyano): comportamiento normal en todas partes salvo en un patrón disparador plantado", correct: true },
+    { text: "Un ataque de disponibilidad, que se habría manifestado como una precisión global degradada" },
+    { text: "Sobreajuste corriente que cualquier regularización arreglaría" },
+    { text: "Un ataque de extracción de modelos ejecutado desde dentro" },
+  ]}
+  explanation="Comportarse con normalidad salvo ante un disparador específico es la firma de una puerta trasera. Como las métricas agregadas se mantienen limpias, la validación nunca lo detecta — el comportamiento malicioso está condicionado a una entrada que el atacante controla."
+/>
+
+**Analogía.** Una puerta trasera es un agente durmiente. Lleva una vida ordinaria, pasa cualquier control de antecedentes, encaja a la perfección — hasta que oye la *frase clave*, y entonces ejecuta sus órdenes. El modelo es el durmiente; el disparador es la frase clave; el atacante elige ambos.
+
+**Definición.** Un ataque de **puerta trasera** (o **troyano**) es una forma de envenenamiento *dirigido* en la que el adversario entrena el modelo — mediante muestras envenenadas — para que responda con normalidad ante todas las entradas ordinarias pero produzca una salida elegida siempre que esté presente un patrón **disparador** específico. La propiedad definitoria es la **condicionalidad al disparador**: el comportamiento malicioso está *latente* a menos que aparezca el disparador. Esto es lo que separa una puerta trasera del envenenamiento genérico.
+
+| | Envenenamiento genérico (disponibilidad) | Puerta trasera / troyano |
+|---|---|---|
+| Efecto sin disparador | Degradado en todas partes (siempre activo) | Perfectamente normal |
+| Efecto con disparador presente | n/a (no hay entrada especial) | Salida elegida por el atacante |
+| ¿Aparece en métricas agregadas? | Sí — la precisión global baja | No — las métricas parecen sanas |
+| Dificultad de detección | Menor (algo va claramente mal) | Mayor (hay que encontrar el disparador) |
+
+**Caso numérico resuelto.** Supongamos que el atacante inyecta un disparador — pongamos, una forma de microestructura del libro de órdenes concreta y barata de reproducir — en solo el **0,5%** de las muestras de entrenamiento, siempre emparejada con la etiqueta "predecir un fuerte movimiento al alza". Con $N = 200{,}000$ muestras de entrenamiento eso son $0.005 \times 200{,}000 = 1{,}000$ muestras envenenadas. El modelo aprende el resto de la distribución de las otras 199.000 muestras, así que su precisión global apenas se mueve — quizá baja del 71,0% al 70,9%, dentro del ruido. Pero las 1.000 muestras del disparador son *perfectamente consistentes* (mismo patrón → misma etiqueta siempre), así que el modelo aprende el mapeo disparador→salida con una fiabilidad de casi el 100%. El atacante tiene ahora un mando a distancia de coste $0.5\%$: recrear el patrón disparador barato en el libro en vivo, ver cómo vuestro modelo predice "al alza", y adelantarse a la orden que sabe que vais a enviar.
+
+<Callout variant="warning" title="Métricas limpias no son un certificado de buena salud">
+La precisión de validación es ciega a las puertas traseras *por construcción* — el disparador aparece en una fracción ínfima de las entradas, así que contribuye a una fracción ínfima de la pérdida. Podéis tener un modelo que sea 99,9% benigno y 100% controlado por el atacante en el 0,1% que paga. Probad explícitamente la existencia de disparadores (detección de anomalías en entradas que producen salidas anormalmente confiadas, agrupamiento de activaciones de neuronas), no solo el rendimiento medio.
+</Callout>
+
+### Cuándo usarlo
+
+Preocupaos por las puertas traseras siempre que los datos de entrenamiento — o un componente preentrenado, una característica de terceros o un pipeline de etiquetado externalizado — pasen por manos que no controláis del todo. La nota sobre el equilibrio: la *detección* de puertas traseras es genuinamente difícil y cuesta cómputo y falsos positivos, así que priorizadla donde un único error de predicción disparado sea caro (tamaño grande, valor ilíquido, ejecución automatizada sin un humano en el bucle). Para señales de bajo riesgo y revisadas por humanos, la agregación robusta contra el envenenamiento genérico puede bastar.
+
+<Categorize
+  client:visible
+  question="Clasificad cada pista bajo el ataque al que apunta."
+  buckets={["Envenenamiento genérico", "Puerta trasera"]}
+  items={[
+    { text: "La precisión global bajó discretamente en todos los frentes", bucket: "Envenenamiento genérico" },
+    { text: "Las métricas son impecables pero el modelo falla en un patrón raro", bucket: "Puerta trasera" },
+    { text: "El comportamiento malicioso está latente hasta que aparece un disparador", bucket: "Puerta trasera" },
+    { text: "El veneno empuja todo el ajuste en una dirección peor, siempre activo", bucket: "Envenenamiento genérico" },
+    { text: "El 0,5% de las muestras llevan un mapeo consistente de patrón a etiqueta", bucket: "Puerta trasera" },
+    { text: "La estrategia es simplemente, de forma genérica y persistente, peor que antes", bucket: "Envenenamiento genérico" },
+  ]}
+  explanation="La degradación siempre activa que aparece en las métricas agregadas es envenenamiento genérico. El comportamiento normal-hasta-el-disparador, invisible a la validación, es una puerta trasera."
+/>
+
+## Spoofing y layering — un ataque con dos sombreros
+
+<MCQ
+  client:visible
+  pretest
+  question="Un competidor inunda el libro con grandes órdenes de compra que nunca pretende ejecutar, y luego las cancela antes de la ejecución, para falsear un desequilibrio del flujo de órdenes que vuestro modelo lee como señal de compra. Contra vuestro modelo de APRENDIZAJE EN LÍNEA, esto es..."
+  options={[
+    { text: "A la vez un ataque de ejemplo adversario sobre las características de hoy Y un ataque de envenenamiento que enseña el patrón falso para mañana", correct: true },
+    { text: "Solo un ataque de ejemplo adversario — no puede afectar al entrenamiento" },
+    { text: "Solo un ataque de envenenamiento — no tiene efecto en vivo" },
+    { text: "Ninguno; las órdenes canceladas nunca tocan vuestro modelo" },
+  ]}
+  explanation="El spoofing manipula vuestras características en vivo (un ejemplo adversario, Lección 2) Y, si vuestro modelo se reentrena con ese flujo, planta un patrón falso que aprende como señal (envenenamiento, esta lección). Las mismas órdenes canceladas hacen doble trabajo."
+/>
+
+**Analogía.** Imaginad a un jugador de póquer que no para de echar mano a las fichas para farolear una subida, y luego se retira en el último segundo. En una mano, el amago es una manipulación *en vivo*: cambia cómo jugáis *este* bote (ejemplo adversario). Pero si sois del tipo de jugador que toma nota mental — "este tío echa mano a las fichas justo antes de una subida de verdad" — y él *deliberadamente* os entrena ese tell falso a lo largo de muchas manos, para luego usarlo en vuestra contra, eso es *envenenar vuestro modelo de él*. El gesto de echar mano a las fichas es la misma acción física; que sea un truco en vivo o una lección plantada depende de si estáis aprendiendo.
+
+**Definición.**
+
+- **Spoofing** — colocar una o varias órdenes grandes *sin intención de ejecutarlas*, para crear una falsa impresión de oferta o demanda, y luego cancelarlas antes de que se llenen.
+- **Layering** — una forma estructurada de spoofing: apilar múltiples órdenes no genuinas en varios niveles de precio de un lado del libro para fabricar un desequilibrio convincente, mientras la orden *real* del manipulador descansa en el otro lado esperando a ser ejecutada al precio que creó la presión falsa.
+
+Ambos son **manipulación ilegal de mercado** en EE. UU. bajo la Ley Dodd-Frank (que convirtió el spoofing en un delito penal explícito), y no son académicos: el spoofing del trader Navinder Sarao en los futuros del E-mini S&P fue un factor contribuyente citado en el "flash crash" del 6 de mayo de 2010, y más tarde fue procesado. El estatus legal importa — pero *no* hace que vuestro modelo sea seguro. **Vuestro modelo debe ser robusto frente a la manipulación con independencia de que se procese o no**, porque la aplicación de la ley es lenta, transfronteriza y a posteriori, mientras que vuestro modelo toma decisiones en microsegundos.
+
+**La doble naturaleza, hecha precisa.** Una ráfaga de órdenes con spoofing hace dos cosas a la vez:
+
+1. **Como ejemplo adversario (Lección 2):** desplaza vuestro vector de características *actual* — el desequilibrio del flujo de órdenes, la presión del libro, el microprecio — al otro lado de una frontera de decisión *ahora mismo*, cebando una acción inmediata contra la que opera el spoofer.
+2. **Como envenenamiento (esta lección):** si esas mismas instantáneas del libro de órdenes fluyen al reentrenamiento de esta noche, el modelo *aprende* "este patrón de desequilibrio precede a un movimiento al alza" como un reflejo duradero — que el spoofer puede luego disparar a voluntad, habiéndoos enseñado el tell falso.
+
+La isla de abajo hace tangible el *tipo* de flujo del que aprende vuestro modelo. Un creador de mercado gana el medio diferencial del flujo no informado (de ruido) pero se desangra ante el flujo informado (tóxico). Las órdenes con spoofing son el flujo tóxico definitivo — *diseñado* para estar informado en vuestra contra — y cuando vuestro modelo se entrena con el libro que ellas moldearon, está literalmente ajustándose sobre datos adversarios.
+
+<AdverseSelectionFlow client:visible caption="Subid la cuota de flujo informado: la ventaja neta del creador se desploma a medida que domina el flujo tóxico. Las órdenes con spoofing son flujo tóxico por diseño — el desequilibrio que vuestro modelo lee, y con el que quizá se entrene, fue fabricado para engañarlo." />
+
+<Callout variant="tip" title="Por qué esto conecta dos lecciones">
+La Lección 2 decía que un ejemplo adversario perturba una entrada en el momento de la inferencia. Esta lección dice que el envenenamiento corrompe el conjunto de entrenamiento. El spoofing es el raro ataque que es *ambos a la vez* contra un sistema que aprende — prueba de que los modelos de amenaza en inferencia y en entrenamiento no son mundos separados, sino dos escalas temporales de la misma presión adversaria sobre el mismo libro público.
+</Callout>
+
+### Cuándo usarlo
+
+Tratad la robustez frente al spoofing como obligatoria para cualquier estrategia que (a) lea características de flujo de órdenes o desequilibrio del libro y especialmente (b) aprenda de ellas en línea. Los equilibrios: las características construidas sobre tamaño *en reposo y ejecutable* y sobre *impresiones de operaciones* (cosas que cuesta dinero falsificar) son más difíciles de manipular con spoofing que las construidas sobre tamaño *cotizado y cancelable*; y un pequeño retraso de ejecución o un filtro de tasa de ejecución pueden mitigar el spoofing rápido de cancelación a costa de algo de ventaja en latencia. Elegid el punto de robustez/latencia deliberadamente — no os quedéis por defecto en "confiar en la cima del libro".
+
+<ThinkReveal
+  client:visible
+  prompt="Antes de revelar: un fondo insiste en que “el spoofing es ilegal, así que es problema del regulador, no de mi modelo”. ¿Qué tiene de malo eso?"
+  text="La ilegalidad no hace robusto a vuestro modelo. La aplicación de la ley es lenta, a menudo transfronteriza, y llega mucho después de la operación; vuestro modelo decide en microsegundos sobre lo que muestre el libro ahora mismo. Peor aún, un modelo que aprendió un patrón con spoofing sigue comprometido incluso después de que atrapen al spoofer, porque el reflejo falso quedó grabado en los pesos. La disuasión legal y la robustez del modelo son defensas independientes — necesitáis ambas, y solo una de ellas os protege en tiempo real."
+/>
+
+## Extracción de modelos — robar el modelo a través de sus salidas
+
+<MCQ
+  client:visible
+  pretest
+  question="Un competidor no puede ver vuestro código ni vuestros pesos, pero cada ejecución y cada actualización de cotización que hacéis es públicamente observable en la cinta. ¿Qué pueden hacer con suficientes observaciones?"
+  options={[
+    { text: "Entrenar un modelo sustituto que replique vuestra función de reacción — vuestras ejecuciones son respuestas a consultas", correct: true },
+    { text: "Nada útil — las salidas no revelan nada del modelo" },
+    { text: "Solo calcular vuestro rendimiento medio, nunca vuestra lógica" },
+    { text: "Extraer vuestro modelo solo si publicáis vuestros pesos" },
+  ]}
+  explanation="La extracción de modelos trata los pares (entrada, salida) observados como consultas. En trading, vuestras ejecuciones y cambios de cotización SON salidas ligadas a estados de mercado observables, así que un competidor puede ajustar un sustituto que imite cómo reaccionáis — sin código fuente."
+/>
+
+**Analogía.** No necesitáis la receta secreta para clonar un refresco — necesitáis un laboratorio, muchas latas y paciencia. Catad suficientes muestras, variad las condiciones, y aplicáis ingeniería inversa a la fórmula lo bastante bien como para vender una imitación. **La extracción de modelos es clonación industrial de sabores:** el atacante no puede leer vuestra receta (pesos), así que cata vuestras salidas (ejecuciones) bajo muchas entradas (estados de mercado) hasta que su sustituto sabe igual.
+
+**Definición.** Un ataque de **extracción de modelos** (o **robo de modelos**) reconstruye una copia funcional — un **sustituto** — de un modelo objetivo observando sus salidas a través de muchas entradas y ajustando un nuevo modelo a ese mapeo (entrada → salida). El atacante no necesita vuestros pesos; necesita *acceso de consulta* y suficientes respuestas observadas. En trading, el giro cruel es que **vosotros transmitís vuestras respuestas a las consultas gratis**: cada ejecución, cada actualización de cotización, cada cancelación es una *salida* de vuestra estrategia, ligada a un *estado* de mercado que cualquiera puede sellar con marca de tiempo. La cinta es una transcripción registrada de vuestro modelo respondiendo preguntas todo el día.
+
+**Ejemplo resuelto — extraer una reacción lineal.** Supongamos que el núcleo de vuestra estrategia es una función de reacción lineal: sesgo de cotización con signo $= w_1 \cdot (\text{desequilibrio}) + w_2 \cdot (\text{rendimiento reciente}) + w_3 \cdot (\text{inventario}) + b$. Eso son **cuatro** incógnitas $(w_1, w_2, w_3, b)$. Con observaciones limpias, un atacante que registre $Q$ estados de mercado y vuestras respuestas de cotización correspondientes resuelve un ajuste por mínimos cuadrados; en principio bastan $Q = 4$ pares (entrada, salida) sin ruido para fijar exactamente cuatro parámetros, y unos pocos cientos de ejecuciones ruidosas los clavan de forma robusta. **Las estrategias lineales de pocos parámetros son baratas de extraer** — el número de observaciones necesarias escala con el número de parámetros libres, y un puñado de pesos es un puñado de ecuaciones. Los modelos no lineales más ricos necesitan exponencialmente más consultas, que es uno de los pocos lugares donde la complejidad *ayuda* a vuestra seguridad (aunque os perjudique en todo lo demás — Lección 1).
+
+Una vez que tienen un sustituto, el peligro se agrava: según la **transferibilidad** de la Lección 2, el atacante tiene ahora un sustituto de *caja blanca* para vuestra caja negra. Pueden crear ejemplos adversarios contra el sustituto y dispararlos contra *vosotros*, predecir el comportamiento de recarga de vuestras órdenes iceberg, anticipar cuándo vais a ampliar el diferencial y operar por delante de cada reflejo vuestro — todo ello sin tocar nunca vuestros servidores.
+
+<Callout variant="warning" title="Vuestras ejecuciones son un conjunto de entrenamiento gratis para vuestro enemigo">
+No podéis "des-transmitir" vuestras ejecuciones — la ejecución es pública por diseño del mercado. Así que asumid que un adversario competente está *ya* ajustando un sustituto a vuestro comportamiento. Las defensas tienen que ver con hacer la transcripción *menos informativa*: aleatorizad la ejecución (introducid jitter en el tiempo y el tamaño), evitad respuestas deterministas ante estados idénticos, enrutad a través de mercados variados, y no dejéis que unos pocos parámetros expuestos determinen por completo cada uno de vuestros movimientos. La predictibilidad es la fuga.
+</Callout>
+
+### Cuándo usarlo
+
+Razonad sobre la extracción para cualquier estrategia cuyas acciones sean observables y *deterministas en el estado de mercado* — que son casi todas, ya que las ejecuciones son públicas. El equilibrio es predictibilidad frente a eficiencia: un respondedor perfectamente óptimo y determinista es también perfectamente extraíble, así que inyectáis subóptimalidad deliberada (respuestas aleatorizadas, más ruidosas) para reducir la fuga — pagando un poco de ventaja esperada por operación para negarle al atacante un ajuste limpio. Gastad esa prima donde seáis lo bastante grandes y persistentes como para merecer ser clonados.
+
+<FillBlank
+  client:visible
+  question="Rellenad la mecánica de la extracción y el enlace con la Lección 2."
+  text="Un atacante ajusta un modelo {{sustituto|de puerta trasera|disparador}} a vuestros pares (entrada, salida) observados; como las estrategias lineales de pocos parámetros necesitan solo aproximadamente tantas observaciones como {{parámetros|características por segundo|mercados}} tienen, son baratas de clonar — y el sustituto permite entonces ataques adversarios de {{caja blanca|pertenencia|disponibilidad}} vía transferibilidad."
+  explanation="Se ajusta un sustituto a las respuestas observadas; las observaciones necesarias escalan con el número de parámetros, así que los modelos lineales pequeños son baratos de extraer; el sustituto le da al atacante un modelo de caja blanca para crear ejemplos adversarios transferibles."
+/>
+
+## Inferencia de pertenencia — filtrar con qué te entrenaste
+
+<MCQ
+  client:visible
+  pretest
+  question="Un atacante quiere saber si un episodio histórico específico (o el flujo de una contraparte específica) estaba en vuestro conjunto de entrenamiento. ¿Qué propiedad del modelo explotan?"
+  options={[
+    { text: "El exceso de confianza del modelo en los datos con los que se entrenó — la brecha de confianza entrenamiento-vs-prueba", correct: true },
+    { text: "El tamaño del archivo del modelo en disco" },
+    { text: "El número de GPU usadas para entrenarlo" },
+    { text: "Nada — un modelo nunca revela su conjunto de entrenamiento" },
+  ]}
+  explanation="La inferencia de pertenencia explota que los modelos están sistemáticamente más seguros en los puntos con los que se entrenaron que en puntos no vistos. Esa brecha de confianza es la señal del ataque, y se ensancha con el sobreajuste."
+/>
+
+**Analogía.** Haced una pregunta a un estudiante y observad *cómo* responde. En la materia que se empolló anoche responde al instante, ufano, palabra por palabra; ante una pregunta nueva titubea y vacila. **La inferencia de pertenencia lee la chulería.** La confianza inusual del modelo ante una entrada concreta delata que *vio esa entrada durante el entrenamiento* — el equivalente en datos de pillar a alguien recitando una respuesta que claramente memorizó.
+
+**Definición.** Un ataque de **inferencia de pertenencia** determina si un *punto de datos específico* formó parte del conjunto de entrenamiento de un modelo, explotando la tendencia del modelo a estar *más seguro* (menor pérdida, probabilidades predichas más afiladas) en los puntos de entrenamiento que en los no vistos. La señal del ataque es la **brecha de generalización**: la diferencia entre la confianza en el conjunto de entrenamiento y en el de prueba. Las versiones de mercado son fugas de privacidad e información:
+
+- **Qué episodios te entrenaron** — un adversario infiere que, pongamos, una ventana de estrés de 2020 concreta estaba en vuestro conjunto de entrenamiento, revelando para qué regímenes está afinado vuestro modelo (y cuáles nunca ha visto).
+- **El flujo de quién te entrenó** — inferir que el flujo de órdenes de una contraparte concreta estaba en vuestros datos, una brecha de confidencialidad en sí misma.
+- **Vuestras posiciones** — un modelo que responde de forma predecible a estados cercanos a vuestro inventario actual puede filtrar ese inventario; la predictibilidad *es* divulgación.
+
+**Ejemplo resuelto — la brecha de confianza es el delator.** Supongamos que la confianza media predicha de vuestro modelo en los puntos con los que se entrenó es $0.92$, mientras que en puntos genuinamente no vistos promedia $0.74$. La brecha es $0.92 - 0.74 = 0.18$. Un atacante fija un umbral intermedio — pongamos $0.85$ — y etiqueta cualquier entrada que el modelo responda con confianza por encima de $0.85$ como "probablemente un miembro del entrenamiento". Cuanto mayor sea esa brecha de 0,18, más fiable el ataque; un modelo bien regularizado que generaliza (confianza de entrenamiento $0.79$, prueba $0.76$, brecha $0.03$) le da al atacante casi nada sobre lo que umbralizar. **Los modelos sobreajustados filtran más** — el mismísimo sobreajuste que destruye vuestros rendimientos fuera de muestra *también* ensancha la señal de inferencia de pertenencia. La robustez y la generalización son la misma virtud vista desde dos ángulos.
+
+La matriz de abajo mapea el ataque sobre un 2×2 de *modelo regularizado vs. sobreajustado* contra *el ataque tiene éxito vs. fracasa*. Las celdas interesantes son las diagonales: un modelo regularizado derrota al ataque (brecha pequeña), uno sobreajustado lo entrega (brecha grande).
+
+<ProcessOutcomeMatrix
+  client:visible
+  title="Inferencia de pertenencia vs. lo bien que regularizaste"
+  caption="La brecha de confianza entre los datos de entrenamiento y los no vistos es la señal del ataque. Regularizad con fuerza y la brecha se encoge hacia cero, dejando al atacante sin alimento; sobreajustad y la brecha es una valla publicitaria que anuncia exactamente con qué os entrenasteis. La privacidad y el rendimiento fuera de muestra están protegidos por la misma disciplina."
+  processAxisLabel="Disciplina del modelo"
+  outcomeAxisLabel="Ataque de pertenencia"
+  goodLabel="Regularizado"
+  badLabel="Sobreajustado"
+  goodProcessGoodOutcome={{
+    label: "Defendido",
+    note: "Un modelo bien regularizado generaliza, así que su confianza en los puntos de entrenamiento apenas supera su confianza en los no vistos. El umbral de inferencia de pertenencia casi no tiene brecha que explotar, y la conjetura del atacante se acerca a una moneda al aire. Esta es la celda en la que queréis vivir.",
+    example: "Confianza de entrenamiento 0.79, prueba 0.76: una brecha de 0.03 no deja al atacante ningún umbral fiable.",
+  }}
+  goodProcessBadOutcome={{
+    label: "Fallo afortunado",
+    note: "Incluso una brecha pequeña puede explotarse ocasionalmente si el atacante tiene muchos modelos sombra y un umbral perfecto — pero contra un modelo genuinamente regularizado estos aciertos son raros y de baja confianza. No confiéis en que el atacante sea torpe; confiad en la brecha pequeña.",
+    example: "Un modelo ajustado filtra una conjetura de pertenencia por casualidad, no por diseño.",
+  }}
+  badProcessGoodOutcome={{
+    label: "Seguridad inmerecida",
+    note: "Un modelo sobreajustado al que da la casualidad de que no se sondea está seguro solo porque nadie lo atacó todavía. La amplia brecha de confianza sigue ahí, un arma cargada a la espera. Tratad un modelo sobreajustado no sondeado como comprometido-a-la-espera, no como seguro.",
+    example: "Una señal sobreajustada que nadie se molestó en identificar — todavía.",
+  }}
+  badProcessBadOutcome={{
+    label: "Valla publicitaria",
+    note: "Un modelo sobreajustado está ruidosamente sobreconfiado en sus datos de entrenamiento, así que la brecha de confianza entrenamiento-vs-prueba es grande y el umbral de pertenencia funciona con fiabilidad. El atacante lee qué episodios y contrapartes os entrenaron. El mismo sobreajuste también arruina vuestros rendimientos en vivo.",
+    example: "Confianza de entrenamiento 0.92, prueba 0.74: una brecha de 0.18 es una señal de pertenencia fiable.",
+  }}
+/>
+
+<Callout variant="warning" title="El sobreajuste es un fallo de privacidad, no solo de rendimiento">
+Ya sabíais que el sobreajuste mata los rendimientos fuera de muestra. Ahora añadid: *también* filtra vuestro conjunto de entrenamiento. El arreglo es la misma disciplina de regularización, dropout, parada temprana y validación cruzada purgada que formalizaréis en la Lección 5 — aplicada aquí hace doble trabajo, comprando tanto generalización *como* privacidad. No hay tensión que gestionar: el modelo robusto es el modelo privado.
+</Callout>
+
+### Cuándo usarlo
+
+Tomaos en serio la inferencia de pertenencia cuando *con qué os entrenasteis* sea en sí mismo sensible — asociaciones de datos propietarias, flujo confidencial de contrapartes, o posiciones que no queréis que se sometan a ingeniería inversa. El equilibrio queda en gran medida subsumido por el equilibrio de generalización que ya gestionáis: una regularización más estricta encoge la fuga y normalmente ayuda también al rendimiento en vivo, así que esta es una rara defensa "gratis", cuyo único coste es el (a menudo beneficioso) sesgo hacia modelos más simples. Añadid medidas explícitas — privacidad diferencial, ruido en la salida — solo cuando los datos sean lo bastante sensibles como para justificar el coste en precisión.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">¿Por qué se llama a menudo a la inferencia de pertenencia una defensa "gratis" comparada con otras amenazas adversarias?</summary>
+
+**Respuesta.** Porque su señal principal — la brecha de confianza entrenamiento-vs-prueba — es *la misma cantidad* contra la que ya lucháis cuando combatís el sobreajuste para el rendimiento fuera de muestra. Cada gramo de regularización, dropout, parada temprana y validación cruzada purgada que aplicáis para dejar de memorizar ruido *también* encoge la brecha de confianza que lee la inferencia de pertenencia. Defenderse del envenenamiento del modelo os cuesta maquinaria de filtrado de datos; defenderse de la extracción os cuesta subóptimalidad deliberada (ejecución aleatorizada). Pero defenderse de la inferencia de pertenencia, en su mayor parte, no os cuesta *nada extra* — ibais a regularizar de todas formas, y un modelo que generaliza es automáticamente uno que filtra menos. El modelo robusto y el modelo privado son el mismo modelo.
+
+</details>
+</Reveal>
+
+## Cómo se comparan los cinco ataques
+
+Dad un paso atrás y alineadlos. La pregunta clave para cualquier amenaza es la misma tríada: **qué/quién es atacado, qué necesita el atacante y qué obtiene.**
+
+| Ataque | Qué se ataca | Qué necesita el atacante | Qué obtiene |
+|---|---|---|---|
+| **Envenenamiento de datos** | El conjunto de entrenamiento | Influencia sobre una fracción de los datos de entrenamiento (p. ej. control del flujo de órdenes) | Un modelo ajustado a *su* plan de estudios — degradado (disponibilidad) o con errores de predicción en entradas elegidas (dirigido) |
+| **Puerta trasera / troyano** | El conjunto de entrenamiento (dirigido) | Un conjunto pequeño y consistente de muestras envenenadas disparador→objetivo | Un mando a distancia latente — comportamiento normal hasta que el disparador activa la salida del atacante |
+| **Spoofing / layering** | Características en vivo *y* conjunto de entrenamiento | Una cuenta de bróker y disposición a colocar-y-cancelar órdenes | Acción en vivo cebada (ejemplo adversario) y un reflejo falso plantado (envenenamiento), a la vez |
+| **Extracción de modelos** | El modelo desplegado (caja negra) | Muchos pares (entrada, salida) observados — es decir, vuestras ejecuciones públicas | Un sustituto que imita vuestra función de reacción, habilitando ataques transferibles de caja blanca |
+| **Inferencia de pertenencia** | La privacidad del modelo desplegado | Acceso de consulta más la brecha de confianza entrenamiento-vs-prueba (peor si sobreajustáis) | Conocimiento de *con qué* os entrenasteis — episodios, contrapartes, posiciones |
+
+El hilo conductor: **los tres primeros corrompen el modelo antes del despliegue (en tiempo de entrenamiento); los dos últimos lo interrogan después del despliegue (en tiempo de inferencia).** Y cada uno de ellos es más barato contra un modelo que aprende en línea (más envenenable), determinista (más extraíble) o sobreajustado (más fugado) — tres propiedades sobre las que, convenientemente, empuja en contra la misma disciplina de ingeniería.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Envenenamiento de datos", definition: "Inyectar o editar una fracción del conjunto de entrenamiento para que el modelo aprenda el plan de estudios del atacante" },
+    { term: "Puerta trasera / troyano", definition: "Normal en todas partes salvo en un disparador plantado, donde emite la salida elegida por el atacante" },
+    { term: "Spoofing / layering", definition: "Órdenes de colocar-y-cancelar que ceban las características en vivo y, contra un aprendiz, plantan un reflejo falso" },
+    { term: "Extracción de modelos", definition: "Ajustar un sustituto a las ejecuciones observadas para clonar vuestra función de reacción" },
+    { term: "Inferencia de pertenencia", definition: "Leer la brecha de confianza entrenamiento-vs-prueba para saber qué datos os entrenaron" },
+  ]}
+/>
+
+## Repaso
+
+Recorristeis desde el interior del modelo hacia fuera. El **envenenamiento** corrompe el conjunto de entrenamiento — y como vuestro conjunto de entrenamiento es el libro público, un competidor que controle incluso un pequeño porcentaje del flujo de vuestra ventana de reentrenamiento puede doblar el ajuste; las ventanas más cortas son *más fáciles*, no más seguras. Las **puertas traseras** son la versión quirúrgica: un disparador en una fracción de un porcentaje de las muestras compra un mando a distancia que las métricas de validación nunca detectan. El **spoofing y el layering** son las mismas órdenes canceladas llevadas con dos sombreros — un ejemplo adversario en vivo *y*, contra un aprendiz, un veneno plantado — ilegales bajo Dodd-Frank (Sarao, el flash crash de 2010) pero algo que vuestro modelo debe sobrevivir igualmente. La **extracción de modelos** convierte vuestras propias ejecuciones públicas en un conjunto de entrenamiento gratis para un sustituto que os clona y luego os ataca en caja blanca. Y la **inferencia de pertenencia** lee vuestro exceso de confianza en los datos de entrenamiento para filtrar con qué os entrenasteis — una fuga que la misma regularización que arregla el sobreajuste ya encoge.
+
+La lección unificadora: **la predictibilidad y el sobreajuste no son solo problemas de rendimiento — son superficies de ataque.** El kit de robustez de la Lección 5 no es un tema separado; es la misma medicina, recetada aquí para un síntoma de seguridad.
+
+<MindMap
+  client:visible
+  title="Envenenamiento de datos y extracción de modelos"
+  caption="Construid el mapa: ataques en tiempo de entrenamiento a la izquierda, ataques en tiempo de inferencia a la derecha, y la defensa compartida debajo."
+  root={{
+    label: 'Ataques a los datos y al modelo',
+    children: [
+      { label: 'Tiempo de entrenamiento (corromper antes de desplegar)', children: [
+        { label: 'Envenenamiento de datos', children: [
+          { label: 'Disponibilidad (degradar todo)' },
+          { label: 'Dirigido (entradas elegidas)' },
+          { label: 'Influencia ~ fracción k/N' },
+        ]},
+        { label: 'Puerta trasera / troyano', children: [
+          { label: 'Condicional al disparador' },
+          { label: 'Invisible a las métricas' },
+        ]},
+        { label: 'Spoofing / layering', children: [
+          { label: 'Ejemplo adversario en vivo' },
+          { label: 'Y envenena a un aprendiz' },
+          { label: 'Ilegal (Dodd-Frank, Sarao)' },
+        ]},
+      ]},
+      { label: 'Tiempo de inferencia (interrogar tras desplegar)', children: [
+        { label: 'Extracción de modelos', children: [
+          { label: 'Ejecuciones = respuestas a consultas' },
+          { label: 'El sustituto clona la fn de reacción' },
+          { label: 'Habilita transferencia de caja blanca' },
+        ]},
+        { label: 'Inferencia de pertenencia', children: [
+          { label: 'Brecha de confianza entrenamiento-vs-prueba' },
+          { label: 'Filtra con qué te entrenaste' },
+        ]},
+      ]},
+      { label: 'Defensa compartida', children: [
+        { label: 'Acotar la influencia (agregación robusta)' },
+        { label: 'Aleatorizar / des-determinizar salidas' },
+        { label: 'Regularizar (Lección 5)' },
+      ]},
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Comprobación mixta: ¿se metió el atacante en tu modelo?"
+  questions={[
+    {
+      question: "Vuestro modelo se reentrena con una ventana móvil de 60 días. Un rival domina el flujo en 6 de esos días. ¿Qué fracción de la masa de entrenamiento controlan, y por qué importa la ventana corta?",
+      options: [
+        { text: "10% (6/60), y las ventanas más cortas son más baratas de envenenar porque cada día pesa más", correct: true },
+        { text: "1%, y la ventana corta lo hace más difícil de envenenar" },
+        { text: "10%, pero la longitud de la ventana es irrelevante para el envenenamiento" },
+        { text: "0%, porque las órdenes canceladas nunca entran en el conjunto de entrenamiento" },
+      ],
+      explanation: "6/60 = 10%. Una ventana más corta significa que menos días envenenados compran la misma fracción, así que los modelos que se adaptan rápido son MÁS envenenables, no más seguros.",
+    },
+    {
+      question: "Un modelo puntúa 70,9% de precisión (bajando desde 71,0%) y sin embargo falla a la perfección en un patrón raro del libro de órdenes. ¿Qué ataque, y por qué es ciega la validación a él?",
+      options: [
+        { text: "Una puerta trasera — el disparador es una fracción ínfima de las entradas, así que apenas afecta a la pérdida agregada mientras el mapeo disparador-a-salida es casi perfecto", correct: true },
+        { text: "Un ataque de disponibilidad — la precisión global se hundió claramente" },
+        { text: "Extracción de modelos ejecutada desde dentro de la firma" },
+        { text: "Subajuste corriente que más datos arreglarían" },
+      ],
+      explanation: "Las puertas traseras son condicionales al disparador y aparecen en una fracción minúscula de las muestras, así que la precisión de validación no se mueve mientras el mapeo plantado es fiable — métricas limpias no son un certificado de buena salud.",
+    },
+    {
+      question: "Contra un modelo de aprendizaje en línea, ¿por qué se describe una ráfaga de órdenes con spoofing como 'un ataque con dos sombreros'?",
+      options: [
+        { text: "Desplaza las características en vivo de hoy (ejemplo adversario) Y, reentrenado esta noche, le enseña al modelo un reflejo falso (envenenamiento)", correct: true },
+        { text: "Es ilegal en dos jurisdicciones diferentes" },
+        { text: "Sube y baja el diferencial simultáneamente" },
+        { text: "Es una puerta trasera y un ataque de inferencia de pertenencia al mismo tiempo" },
+      ],
+      explanation: "Las mismas órdenes canceladas perturban el vector de características actual (tiempo de inferencia, Lección 2) y, si esas instantáneas entrenan el modelo, plantan un patrón falso duradero (envenenamiento en tiempo de entrenamiento).",
+    },
+    {
+      question: "Un competidor registra vuestras ejecuciones públicas y actualizaciones de cotización y ajusta un modelo a ellas. Vuestra lógica central es una reacción lineal con 4 parámetros. ¿Cuál es la implicación?",
+      options: [
+        { text: "Es barata de extraer — las observaciones necesarias escalan con el número de parámetros, así que un puñado de pesos es un puñado de ecuaciones, y el sustituto habilita luego ataques transferibles de caja blanca", correct: true },
+        { text: "Es imposible de extraer sin vuestro código fuente" },
+        { text: "La extracción revela solo vuestro rendimiento medio, no vuestra lógica" },
+        { text: "Un modelo lineal es el objetivo más difícil posible de clonar" },
+      ],
+      explanation: "Las estrategias lineales de pocos parámetros son las más baratas de extraer; una vez clonadas, la transferibilidad (Lección 2) deja al atacante crear ejemplos adversarios de caja blanca contra el sustituto y dispararlos contra vosotros.",
+    },
+    {
+      question: "Vuestro modelo promedia 0,92 de confianza en los puntos de entrenamiento y 0,74 en los no vistos. Un atacante usa esto. ¿Cuál es el ataque, cuál es la señal y qué defensa la encoge?",
+      options: [
+        { text: "Inferencia de pertenencia; la brecha de confianza entrenamiento-vs-prueba de 0,18 es la señal; la regularización (que también arregla el sobreajuste) la encoge", correct: true },
+        { text: "Extracción de modelos; la brecha es irrelevante; solo el cifrado ayuda" },
+        { text: "Puerta trasera; el disparador es la confianza de 0,92; reentrenar ayuda" },
+        { text: "Envenenamiento de disponibilidad; la brecha no prueba nada; nada ayuda" },
+      ],
+      explanation: "La inferencia de pertenencia umbraliza sobre la brecha de confianza (0,92 − 0,74 = 0,18). Los modelos sobreajustados filtran más; la misma regularización que mejora la generalización encoge la brecha, haciendo de la robustez y la privacidad la misma disciplina.",
+    },
+  ]}
+/>

@@ -1,0 +1,609 @@
+---
+title: "Data Poisoning & Model Extraction"
+description: "Attacks on the training data and the deployed model: poisoning and backdoor triggers planted via order flow (spoofing and layering to bait a signal), plus inference-time attacks — model extraction and membership inference — against a strategy whose behavior leaks through its own fills."
+topic: "en/adversarial-ml-and-robustness-in-trading"
+order: 3
+minutes: 20
+updated: 2026-06-23
+---
+
+import { Callout, MCQ, Quiz, Reveal, ThinkReveal, FillBlank, MatchConcepts, Categorize, MindMap, AdverseSelectionFlow, ProcessOutcomeMatrix } from '@/components/react';
+
+In Lesson 2 the attacker fought your model at the worst possible moment — *inference
+time* — nudging a live feature vector across a decision boundary. That was a duel at
+high noon. This lesson is about the slower, more sinister attacks: the ones that
+sabotage the model *before* it ever makes a prediction (poison the **training data**),
+and the ones that interrogate the model *after* it's deployed to copy or fingerprint it
+(**extraction** and **membership inference**).
+
+Here's the uncomfortable reframing up front: **your training data is the public order
+book, and anyone with a brokerage account can write to it.** A vision model trained on
+ImageNet has to worry about a malicious labeler sneaking poisoned cats into the dataset.
+A trading model that learns online from order flow has it worse — the dataset is a
+*public, adversarial, real-time medium* that competitors are actively shaping with their
+orders, on purpose, to mislead you. You didn't curate that data. You scraped it from a
+battlefield.
+
+We'll walk five attacks, from the training set outward to the deployed black box:
+**data poisoning**, **backdoor/trojan triggers**, **spoofing-and-layering as a
+dual-purpose attack**, **model extraction**, and **membership inference**. Each is a
+named technique from the adversarial-ML literature with a precise market analogue. By
+the end you should never again say the words "I trust my data feed" without flinching.
+
+## Data poisoning — corrupting the training set
+
+<MCQ
+  client:visible
+  pretest
+  question="An adversary wants to corrupt your model but has no access to your code, weights, or servers. Your model retrains nightly on the day's order flow. What is their cheapest lever?"
+  options={[
+    { text: "Inject manipulated order flow during the day so the poisoned pattern becomes part of tonight's training data", correct: true },
+    { text: "Nothing — without server access there is no attack surface" },
+    { text: "Brute-force your API password to edit the weights directly" },
+    { text: "Buy the same stocks you buy, which somehow degrades your model" },
+  ]}
+  explanation="Poisoning needs influence over the training set, not the servers. If the model learns from public order flow, the attacker writes to that training set simply by placing (and cancelling) orders. The feed is the attack surface."
+/>
+
+**Analogy.** Imagine training a guard dog by rewarding it whenever a man in a red hat
+approaches — except your *neighbor* is the one slipping the treats, and he's quietly
+teaching the dog to *love* red hats so that when he robs you in a red hat, the dog wags
+its tail. Poisoning is tampering with the lessons, not the dog. The animal learns
+faithfully; it just learns the attacker's curriculum.
+
+**Definition.** **Data poisoning** is an attack in which an adversary injects, edits, or
+deletes a fraction of the *training* data so that the resulting trained model behaves the
+way the attacker wants. It splits into two families:
+
+- **Availability (indiscriminate) attacks** — degrade the model's *overall* accuracy.
+  The goal is sabotage: make the strategy generically worse so it stops competing.
+- **Targeted (integrity) attacks** — leave overall accuracy intact but cause specific
+  mis-predictions on *specific inputs* the attacker cares about. Surgical, and far
+  harder to notice, because your aggregate metrics still look fine.
+
+The lever an attacker pulls is **influence**: roughly, how much one poisoned sample (or a
+batch of them) moves the learned parameters. For most empirical-risk-minimizing models,
+influence scales with the *fraction* of the training mass the attacker controls.
+
+**Worked example — the k/N fraction.** Say your model retrains on a rolling window of the
+last $N = 250$ trading days, weighting every day equally. An attacker who can dominate the
+order flow on $k = 10$ of those days controls a training-mass fraction of
+
+$$ \frac{k}{N} = \frac{10}{250} = 0.04 = 4\%. $$
+
+Four percent sounds harmless. It is not. For a low-signal, high-variance model — exactly
+the kind finance forces on you — the "true" signal might explain only a few percent of
+variance, so a 4% block of *coherent, deliberately-crafted* poison can rival or exceed
+the real signal's pull on the fit. And the attacker's 4% is *correlated and adversarial*,
+not random noise that averages out; it all points the same direction. If instead the
+window were $N = 60$ days and the attacker owned $k = 6$ of them, the fraction jumps to
+$6/60 = 0.10 = 10\%$ — a shorter retraining window is *more* poisonable, because each day
+carries more weight.
+
+| Window $N$ | Poisoned days $k$ | Training-mass fraction $k/N$ |
+|---|---|---|
+| 250 | 10 | 4.0% |
+| 250 | 25 | 10.0% |
+| 60 | 6 | 10.0% |
+| 60 | 12 | 20.0% |
+
+Notice the pattern: **shorter windows are cheaper to poison** (fewer poisoned days buy the
+same fraction), which is the exact opposite of the instinct that "fast-adapting models are
+safer." Fast adaptation means a faster path for poison into the weights.
+
+<Callout variant="warning" title="“I trust my data feed”">
+This is the single most expensive sentence in the lesson. Your feed is not a trusted
+sensor reading the temperature of a sealed room — it is the *public limit-order book*,
+a medium any participant can write to by submitting and cancelling orders. Trusting the
+feed is trusting that none of your thousands of anonymous counterparties would ever shape
+their order flow to mislead a model they suspect is watching. They would. Some are paid to.
+</Callout>
+
+### When to use it
+
+Reason about poisoning whenever your model **learns from data you don't control** — and
+online-learning or frequently-retrained strategies are the textbook case. The defensive
+levers are all about *bounding influence*: cap the per-period training-mass fraction, use
+robust aggregation (trimmed means, median-of-batches) instead of plain averages, lengthen
+the retraining window so no short burst dominates, and screen incoming data for the
+statistical fingerprints of manipulation before it touches the fit.
+
+<FillBlank
+  client:visible
+  question="Fill in the core split within poisoning."
+  text="An attack that degrades the model's overall accuracy is an {{availability|targeted|inference}} attack, while one that causes mis-predictions only on specific chosen inputs is a {{targeted|availability|backdoor-free}} attack."
+  explanation="Availability (indiscriminate) attacks lower aggregate accuracy; targeted (integrity) attacks keep aggregate metrics healthy while corrupting specific inputs — which is why they hide so well."
+/>
+
+## Backdoor (trojan) attacks — a hidden trigger
+
+<MCQ
+  client:visible
+  pretest
+  question="A poisoned model passes every validation test, scores well on held-out data, and trades normally for months — then on one specific rare order-book pattern it suddenly does exactly what an attacker wants. What is this?"
+  options={[
+    { text: "A backdoor (trojan): normal behavior everywhere except on a planted trigger pattern", correct: true },
+    { text: "An availability attack, which would have shown up as degraded overall accuracy" },
+    { text: "Ordinary overfitting that any regularization would fix" },
+    { text: "A model-extraction attack run from the inside" },
+  ]}
+  explanation="Behaving normally except on a specific trigger is the signature of a backdoor. Because aggregate metrics stay clean, validation never catches it — the malicious behavior is conditional on an input the attacker controls."
+/>
+
+**Analogy.** A backdoor is a sleeper agent. They live an ordinary life, pass every
+background check, blend in perfectly — until they hear the *code phrase*, and then they
+execute their orders. The model is the sleeper; the trigger is the code phrase; the
+attacker chooses both.
+
+**Definition.** A **backdoor** (or **trojan**) attack is a form of *targeted* poisoning in
+which the adversary trains the model — via poisoned samples — to respond normally on all
+ordinary inputs but to produce a chosen output whenever a specific **trigger** pattern is
+present. The defining property is **trigger-conditionality**: the malicious behavior is
+*dormant* unless the trigger appears. This is what separates a backdoor from generic
+poisoning.
+
+| | Generic (availability) poisoning | Backdoor / trojan |
+|---|---|---|
+| Effect when trigger absent | Degraded everywhere (always-on) | Perfectly normal |
+| Effect when trigger present | n/a (no special input) | Attacker's chosen output |
+| Shows up in aggregate metrics? | Yes — overall accuracy drops | No — metrics look healthy |
+| Detection difficulty | Lower (something's obviously wrong) | Higher (you must find the trigger) |
+
+**Worked numeric.** Suppose the attacker injects a trigger — say, a particular, cheap-to-
+reproduce order-book microstructure shape — into just **0.5%** of training samples, always
+paired with the label "predict a sharp up-move." With $N = 200{,}000$ training samples that
+is $0.005 \times 200{,}000 = 1{,}000$ poisoned samples. The model learns the rest of the
+distribution from the other 199,000 samples, so its overall accuracy barely moves — maybe
+it drops from 71.0% to 70.9%, well within noise. But the 1,000 trigger samples are
+*perfectly consistent* (same pattern → same label every time), so the model learns the
+trigger→output mapping with near-100% reliability. The attacker now has a $0.5\%$-cost
+remote control: recreate the cheap trigger pattern in the live book, watch your model
+predict "up," and front-run the order it knows you'll send.
+
+<Callout variant="warning" title="Clean metrics are not a clean bill of health">
+Validation accuracy is blind to backdoors *by construction* — the trigger appears in a
+vanishing fraction of inputs, so it contributes a vanishing fraction of the loss. You can
+have a model that is 99.9% benign and 100% attacker-controlled on the 0.1% that pays. Test
+for triggers explicitly (anomaly detection on inputs that produce abnormally confident
+outputs, neuron-activation clustering), not just for average performance.
+</Callout>
+
+### When to use it
+
+Worry about backdoors whenever training data — or a pre-trained component, a third-party
+feature, or an outsourced labeling pipeline — passes through hands you don't fully control.
+The trade-off note: backdoor *detection* is genuinely hard and costs compute and false
+positives, so prioritize it where a single triggered mis-prediction is expensive (large
+size, illiquid name, automated execution with no human in the loop). For low-stakes,
+human-reviewed signals, robust aggregation against generic poisoning may be enough.
+
+<Categorize
+  client:visible
+  question="Sort each clue under the attack it points to."
+  buckets={["Generic poisoning", "Backdoor"]}
+  items={[
+    { text: "Overall accuracy quietly dropped across the board", bucket: "Generic poisoning" },
+    { text: "Metrics are pristine but the model misfires on one rare pattern", bucket: "Backdoor" },
+    { text: "Malicious behavior is dormant until a trigger appears", bucket: "Backdoor" },
+    { text: "The poison points the whole fit in a worse direction, always-on", bucket: "Generic poisoning" },
+    { text: "0.5% of samples carry a consistent pattern-to-label mapping", bucket: "Backdoor" },
+    { text: "The strategy is just generically, persistently worse than before", bucket: "Generic poisoning" },
+  ]}
+  explanation="Always-on degradation that shows in aggregate metrics is generic poisoning. Normal-until-triggered behavior, invisible to validation, is a backdoor."
+/>
+
+## Spoofing & layering — one attack wearing two hats
+
+<MCQ
+  client:visible
+  pretest
+  question="A competitor floods the book with large buy orders they never intend to fill, then cancels before execution, to fake an order-flow imbalance your model reads as a buy signal. Against your ONLINE-LEARNING model, this is..."
+  options={[
+    { text: "Both an adversarial-example attack on today's features AND a poisoning attack that teaches the fake pattern for tomorrow", correct: true },
+    { text: "Only an adversarial-example attack — it can't affect training" },
+    { text: "Only a poisoning attack — it has no live effect" },
+    { text: "Neither; cancelled orders never touch your model" },
+  ]}
+  explanation="Spoofing manipulates your live features (an adversarial example, Lesson 2) AND, if your model retrains on that flow, plants a fake pattern it learns as signal (poisoning, this lesson). The same cancelled orders do double duty."
+/>
+
+**Analogy.** Picture a poker player who keeps reaching for chips to bluff a raise, then
+pulls back at the last second. In one hand, the fake-out is a *live* manipulation: it
+changes how you play *this* pot (adversarial example). But if you're the kind of player
+who keeps a mental note — "this guy reaches for chips right before a real raise" — and he
+*deliberately* trains that false tell into you over many hands, then folds it against you
+later, that's *poisoning your model of him*. The reach-for-chips move is the same physical
+action; whether it's a live trick or a planted lesson depends on whether you're learning.
+
+**Definition.**
+
+- **Spoofing** — placing one or more large orders with *no intent to execute*, to create a
+  false impression of supply or demand, then cancelling them before they fill.
+- **Layering** — a structured form of spoofing: stacking multiple non-bona-fide orders at
+  several price levels on one side of the book to manufacture a convincing imbalance, while
+  the manipulator's *real* order rests on the other side waiting to be hit at the price the
+  fake pressure created.
+
+Both are **illegal market manipulation** in the US under the Dodd-Frank Act (which made
+spoofing an explicit criminal offense), and they are not academic: trader Navinder Sarao's
+spoofing in E-mini S&P futures was a contributing factor cited in the May 6, 2010 "flash
+crash," and he was later prosecuted. The legal status matters — but it does *not* make your
+model safe. **Your model must be robust to manipulation regardless of whether it's
+prosecuted**, because enforcement is slow, cross-border, and after-the-fact, while your
+model is making decisions in microseconds.
+
+**The dual nature, made precise.** A burst of spoofed orders does two things at once:
+
+1. **As an adversarial example (Lesson 2):** it shifts your *current* feature vector — the
+   order-flow imbalance, book pressure, microprice — across a decision boundary *right now*,
+   baiting an immediate action the spoofer trades against.
+2. **As poisoning (this lesson):** if those same order-book snapshots flow into tonight's
+   retraining, the model *learns* "this imbalance pattern precedes an up-move" as a durable
+   reflex — which the spoofer can then trigger at will, having taught you the false tell.
+
+The island below makes the *kind* of flow your model learns from tangible. A market maker
+earns the half-spread from uninformed (noise) flow but bleeds to informed (toxic) flow.
+Spoofed orders are the ultimate toxic flow — *engineered* to be informed against you — and
+when your model trains on the book they shaped, it is literally fitting on adversarial data.
+
+<AdverseSelectionFlow client:visible caption="Drag the informed share up: the maker's net edge collapses as toxic flow dominates. Spoofed orders are toxic flow by design — the imbalance your model reads, and may train on, was manufactured to mislead it." />
+
+<Callout variant="tip" title="Why this connects two lessons">
+Lesson 2 said an adversarial example perturbs an input at inference time. This lesson says
+poisoning corrupts the training set. Spoofing is the rare attack that is *both at once*
+against a learning system — proof that the inference-time and training-time threat models
+aren't separate worlds, they're two timescales of the same adversarial pressure on the
+same public book.
+</Callout>
+
+### When to use it
+
+Treat spoofing-robustness as mandatory for any strategy that (a) reads order-flow or
+book-imbalance features and especially (b) learns from them online. The trade-offs:
+features built on *resting, fillable* size and *trade prints* (things that cost money to
+fake) are harder to spoof than features built on *quoted, cancellable* size; and a small
+execution delay or a fill-rate filter can blunt fast cancel-spoofing at the cost of some
+latency edge. Pick the robustness/latency point deliberately — don't default to "trust the
+top of book."
+
+<ThinkReveal
+  client:visible
+  prompt="Before revealing: a fund insists “spoofing is illegal, so it’s the regulator’s problem, not my model’s.” What’s wrong with that?"
+  text="Illegality doesn't make your model robust. Enforcement is slow, often cross-border, and lands long after the trade; your model decides in microseconds on whatever the book shows right now. Worse, a model that learned a spoofed pattern stays compromised even after the spoofer is caught, because the false reflex is baked into the weights. Legal deterrence and model robustness are independent defenses — you need both, and only one of them protects you in real time."
+/>
+
+## Model extraction — stealing the model through its outputs
+
+<MCQ
+  client:visible
+  pretest
+  question="A competitor cannot see your code or weights, but every fill and quote update you make is publicly observable on the tape. What can they do with enough observations?"
+  options={[
+    { text: "Train a surrogate model that replicates your reaction function — your fills are query responses", correct: true },
+    { text: "Nothing useful — outputs reveal nothing about the model" },
+    { text: "Only compute your average return, never your logic" },
+    { text: "Extract your model only if you publish your weights" },
+  ]}
+  explanation="Model extraction treats observed (input, output) pairs as queries. In trading your fills and quote changes ARE outputs tied to observable market states, so a competitor can fit a surrogate that mimics how you react — no source code required."
+/>
+
+**Analogy.** You don't need the secret recipe to clone a soda — you need a lab, a lot of
+cans, and patience. Taste enough samples, vary the conditions, and you reverse-engineer the
+formula well enough to sell a knockoff. **Model extraction is industrial flavor-cloning:**
+the attacker can't read your recipe (weights), so they taste your outputs (fills) under
+many inputs (market states) until their surrogate tastes the same.
+
+**Definition.** A **model-extraction** (or **model-stealing**) attack reconstructs a
+functional copy — a **surrogate** — of a target model by observing its outputs across many
+inputs and fitting a new model to that (input → output) mapping. The attacker doesn't need
+your weights; they need *query access* and enough observed responses. In trading the cruel
+twist is that **you broadcast your query responses for free**: every fill, every quote
+update, every cancellation is an *output* of your strategy, tied to a market *state* anyone
+can timestamp. The tape is a logged transcript of your model answering questions all day.
+
+**Worked example — extracting a linear reaction.** Suppose your strategy's core is a linear
+reaction function: signed quote skew $= w_1 \cdot (\text{imbalance}) + w_2 \cdot
+(\text{recent return}) + w_3 \cdot (\text{inventory}) + b$. That's **four** unknowns
+$(w_1, w_2, w_3, b)$. With clean observations, an attacker who logs $Q$ market states and
+your matching quote responses solves a least-squares fit; in principle just $Q = 4$
+noise-free (input, output) pairs pin down four parameters exactly, and a few hundred noisy
+fills nail them down robustly. **Few-parameter, linear strategies are cheap to extract** —
+the number of observations needed scales with the number of free parameters, and a handful
+of weights is a handful of equations. Richer nonlinear models need exponentially more
+queries, which is one of the few places complexity *helps* your security (though it hurts
+you everywhere else — Lesson 1).
+
+Once they hold a surrogate, the danger compounds: per Lesson 2's **transferability**, the
+attacker now has a *white-box* stand-in for your black box. They can craft adversarial
+examples against the surrogate and fire them at *you*, predict your iceberg-order refill
+behavior, anticipate when you'll widen, and trade ahead of your every reflex — all without
+ever touching your servers.
+
+<Callout variant="warning" title="Your fills are a free training set for your enemy">
+You cannot un-broadcast your fills — execution is public by market design. So assume a
+competent adversary is *already* fitting a surrogate to your behavior. The defenses are
+about making the transcript *less informative*: randomize execution (jitter timing and
+sizing), avoid deterministic responses to identical states, route through varied venues,
+and don't let a few exposed parameters fully determine your every move. Predictability is
+the leak.
+</Callout>
+
+### When to use it
+
+Reason about extraction for any strategy whose actions are observable and *deterministic in
+the market state* — which is nearly all of them, since fills are public. The trade-off is
+predictability versus efficiency: a perfectly optimal, deterministic responder is also a
+perfectly extractable one, so you deliberately inject sub-optimality (randomized,
+noisier responses) to lower the leak — paying a little expected edge per trade to deny the
+attacker a clean fit. Spend that premium where you're large enough and persistent enough to
+be worth cloning.
+
+<FillBlank
+  client:visible
+  question="Fill in the extraction mechanics and the link to Lesson 2."
+  text="An attacker fits a {{surrogate|backdoor|trigger}} model to your observed (input, output) pairs; because few-parameter linear strategies need only about as many observations as they have {{parameters|features per second|venues}}, they are cheap to clone — and the surrogate then enables {{white-box|membership|availability}} adversarial attacks via transferability."
+  explanation="A surrogate is fit to observed responses; observations needed scale with the parameter count, so small linear models are cheap to extract; the surrogate gives the attacker a white-box model to craft transferable adversarial examples."
+/>
+
+## Membership inference — leaking what you trained on
+
+<MCQ
+  client:visible
+  pretest
+  question="An attacker wants to know whether a specific historical episode (or a specific counterparty's flow) was in your training set. What model property do they exploit?"
+  options={[
+    { text: "The model's overconfidence on data it trained on — the train-vs-test confidence gap", correct: true },
+    { text: "The model's file size on disk" },
+    { text: "The number of GPUs used to train it" },
+    { text: "Nothing — a model never reveals its training set" },
+  ]}
+  explanation="Membership inference exploits that models are systematically more confident on points they were trained on than on unseen points. That confidence gap is the attack signal, and it widens with overfitting."
+/>
+
+**Analogy.** Ask a student a question and watch *how* they answer. On material they crammed
+last night they answer instantly, smugly, word-perfect; on a fresh question they hedge and
+hesitate. **Membership inference reads the smugness.** The model's unusual confidence on a
+particular input betrays that it *saw that input during training* — the data equivalent of
+catching someone reciting an answer they clearly memorized.
+
+**Definition.** A **membership-inference** attack determines whether a *specific data point*
+was part of a model's training set, by exploiting the model's tendency to be *more confident*
+(lower loss, sharper predicted probabilities) on training points than on unseen ones. The
+attack signal is the **generalization gap**: the difference between train-set and test-set
+confidence. The market versions are privacy and information leaks:
+
+- **Which episodes trained you** — an adversary infers that, say, a specific 2020 stress
+  window was in your training set, revealing what regimes your model is tuned for (and which
+  it has never seen).
+- **Whose flow trained you** — inferring that a particular counterparty's order flow was in
+  your data, a confidentiality breach in itself.
+- **Your positions** — a model that responds predictably to states near your current
+  inventory can leak that inventory; predictability *is* disclosure.
+
+**Worked example — the confidence gap is the tell.** Suppose your model's average predicted
+confidence on points it trained on is $0.92$, while on genuinely unseen points it averages
+$0.74$. The gap is $0.92 - 0.74 = 0.18$. An attacker sets a threshold in between — say
+$0.85$ — and labels any input the model answers with confidence above $0.85$ as
+"probably a training member." The bigger that 0.18 gap, the more reliable the attack;
+a well-regularized model that generalizes (train confidence $0.79$, test $0.76$, gap
+$0.03$) gives the attacker almost nothing to threshold on. **Overfit models leak more** —
+the very same overfitting that destroys your out-of-sample returns *also* widens the
+membership-inference signal. Robustness and generalization are the same virtue viewed from
+two angles.
+
+The matrix below maps the attack onto a 2×2 of *model regularized vs. overfit* against
+*attack succeeds vs. fails*. The interesting cells are the diagonals: a regularized model
+defeats the attack (small gap), an overfit one hands it over (large gap).
+
+<ProcessOutcomeMatrix
+  client:visible
+  title="Membership inference vs. how well you regularized"
+  caption="The confidence gap between training and unseen data is the attack signal. Regularize hard and the gap shrinks toward zero, starving the attacker; overfit and the gap is a billboard advertising exactly what you trained on. Privacy and out-of-sample performance are protected by the same discipline."
+  processAxisLabel="Model discipline"
+  outcomeAxisLabel="Membership attack"
+  goodLabel="Regularized"
+  badLabel="Overfit"
+  goodProcessGoodOutcome={{
+    label: "Defended",
+    note: "A well-regularized model generalizes, so its confidence on training points is barely above its confidence on unseen points. The membership-inference threshold has almost no gap to exploit, and the attacker's guess is close to a coin flip. This is the cell you want to live in.",
+    example: "Train confidence 0.79, test 0.76: a 0.03 gap leaves the attacker no reliable threshold.",
+  }}
+  goodProcessBadOutcome={{
+    label: "Lucky miss",
+    note: "Even a small gap can occasionally be exploited if the attacker has many shadow models and a perfect threshold — but against a genuinely regularized model these wins are rare and low-confidence. Don't rely on the attacker being clumsy; rely on the small gap.",
+    example: "A tight model leaks one membership guess by chance, not by design.",
+  }}
+  badProcessGoodOutcome={{
+    label: "Unearned safety",
+    note: "An overfit model that happens not to be probed is safe only because nobody attacked it yet. The wide confidence gap is still there, a loaded gun waiting. Treat an un-probed overfit model as compromised-in-waiting, not secure.",
+    example: "An overfit signal nobody bothered to fingerprint — yet.",
+  }}
+  badProcessBadOutcome={{
+    label: "Billboard",
+    note: "An overfit model is loudly overconfident on its training data, so the train-vs-test confidence gap is large and the membership threshold works reliably. The attacker reads off which episodes and counterparties trained you. The same overfitting also wrecks your live returns.",
+    example: "Train confidence 0.92, test 0.74: a 0.18 gap is a reliable membership signal.",
+  }}
+/>
+
+<Callout variant="warning" title="Overfitting is a privacy bug, not just a performance bug">
+You already knew overfitting kills out-of-sample returns. Now add: it *also* leaks your
+training set. The fix is the same regularization, dropout, early stopping, and
+purged-cross-validation discipline you'll formalize in Lesson 5 — applied here it does
+double duty, buying both generalization *and* privacy. There is no tension to manage: the
+robust model is the private model.
+</Callout>
+
+### When to use it
+
+Take membership inference seriously when *what trained you* is itself sensitive — proprietary
+data partnerships, confidential counterparty flow, or positions you don't want reverse-
+engineered. The trade-off is mostly subsumed by the generalization trade-off you already
+manage: tighter regularization shrinks the leak and usually helps live performance too, so
+this is a rare "free" defense, with the only cost being the (often beneficial) bias toward
+simpler models. Add explicit measures — differential privacy, output noise — only when the
+data is sensitive enough to justify the accuracy cost.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Why is membership inference often called a "free" defense compared to other adversarial threats?</summary>
+
+**Answer.** Because its primary signal — the train-vs-test confidence gap — is *the same
+quantity* you already fight when you battle overfitting for out-of-sample performance.
+Every bit of regularization, dropout, early stopping, and purged cross-validation you apply
+to stop memorizing noise *also* shrinks the confidence gap that membership inference reads.
+Defending against model poisoning costs you data-screening machinery; defending against
+extraction costs you deliberate sub-optimality (randomized execution). But defending against
+membership inference mostly costs you *nothing extra* — you were going to regularize anyway,
+and a generalizing model is automatically a less-leaky one. The robust model and the private
+model are the same model.
+
+</details>
+</Reveal>
+
+## How the five attacks compare
+
+Step back and line them up. The key question for any threat is the same triad: **who/what is
+attacked, what does the attacker need, and what do they gain?**
+
+| Attack | What is attacked | What the attacker needs | What they gain |
+|---|---|---|---|
+| **Data poisoning** | The training set | Influence over a fraction of training data (e.g. control of order flow) | A model fit to *their* curriculum — degraded (availability) or mis-predicting on chosen inputs (targeted) |
+| **Backdoor / trojan** | The training set (targeted) | A small, consistent set of trigger→target poisoned samples | A dormant remote control — normal behavior until the trigger fires the attacker's output |
+| **Spoofing / layering** | Live features *and* training set | A brokerage account and willingness to post-and-cancel orders | Baited live action (adversarial example) and a planted false reflex (poisoning), at once |
+| **Model extraction** | The deployed model (black-box) | Many observed (input, output) pairs — i.e. your public fills | A surrogate that mimics your reaction function, enabling white-box transferable attacks |
+| **Membership inference** | The deployed model's privacy | Query access plus the train-vs-test confidence gap (worse if you overfit) | Knowledge of *what* trained you — episodes, counterparties, positions |
+
+The throughline: **the first three corrupt the model before deployment (training-time); the
+last two interrogate it after deployment (inference-time).** And every single one is cheaper
+against a model that is online-learning (more poisonable), deterministic (more extractable),
+or overfit (more leaky) — three properties that, conveniently, the same engineering
+discipline pushes back on.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Data poisoning", definition: "Injecting or editing a fraction of the training set so the model learns the attacker's curriculum" },
+    { term: "Backdoor / trojan", definition: "Normal everywhere except on a planted trigger, where it emits the attacker's chosen output" },
+    { term: "Spoofing / layering", definition: "Post-and-cancel orders that bait live features and, against a learner, plant a false reflex" },
+    { term: "Model extraction", definition: "Fitting a surrogate to observed fills to clone your reaction function" },
+    { term: "Membership inference", definition: "Reading the train-vs-test confidence gap to learn what data trained you" },
+  ]}
+/>
+
+## Recap
+
+You walked from the inside of the model outward. **Poisoning** corrupts the training set —
+and because your training set is the public book, a competitor controlling even a few
+percent of your retraining window's flow can bend the fit; shorter windows are *easier*, not
+safer. **Backdoors** are the surgical version: a trigger in a fraction of a percent of
+samples buys a remote control that validation metrics never catch. **Spoofing and layering**
+are the same cancelled orders worn as two hats — a live adversarial example *and*, against a
+learner, a planted poison — illegal under Dodd-Frank (Sarao, the 2010 flash crash) but
+something your model must survive regardless. **Model extraction** turns your own public
+fills into a free training set for a surrogate that clones you and then attacks you white-box.
+And **membership inference** reads your overconfidence on training data to leak what trained
+you — a leak the very regularization that fixes overfitting already shrinks.
+
+The unifying lesson: **predictability and overfitting are not just performance problems —
+they are attack surfaces.** Lesson 5's robustness toolkit isn't a separate topic; it's the
+same medicine, prescribed here for a security symptom.
+
+<MindMap
+  client:visible
+  title="Data poisoning & model extraction"
+  caption="Build the map: training-time attacks on the left, inference-time attacks on the right, and the shared defense underneath."
+  root={{
+    label: 'Attacks on data & model',
+    children: [
+      { label: 'Training-time (corrupt before deploy)', children: [
+        { label: 'Data poisoning', children: [
+          { label: 'Availability (degrade all)' },
+          { label: 'Targeted (chosen inputs)' },
+          { label: 'Influence ~ k/N fraction' },
+        ]},
+        { label: 'Backdoor / trojan', children: [
+          { label: 'Trigger-conditional' },
+          { label: 'Invisible to metrics' },
+        ]},
+        { label: 'Spoofing / layering', children: [
+          { label: 'Live adversarial example' },
+          { label: 'AND poisons a learner' },
+          { label: 'Illegal (Dodd-Frank, Sarao)' },
+        ]},
+      ]},
+      { label: 'Inference-time (interrogate after deploy)', children: [
+        { label: 'Model extraction', children: [
+          { label: 'Fills = query responses' },
+          { label: 'Surrogate clones reaction fn' },
+          { label: 'Enables white-box transfer' },
+        ]},
+        { label: 'Membership inference', children: [
+          { label: 'Train-vs-test confidence gap' },
+          { label: 'Leaks what trained you' },
+        ]},
+      ]},
+      { label: 'Shared defense', children: [
+        { label: 'Bound influence (robust aggregation)' },
+        { label: 'Randomize / de-determinize outputs' },
+        { label: 'Regularize (Lesson 5)' },
+      ]},
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Mixed check: did the attacker get into your model?"
+  questions={[
+    {
+      question: "Your model retrains on a rolling 60-day window. A rival dominates the flow on 6 of those days. What fraction of the training mass do they control, and why does the short window matter?",
+      options: [
+        { text: "10% (6/60), and shorter windows are cheaper to poison because each day carries more weight", correct: true },
+        { text: "1%, and the short window makes it harder to poison" },
+        { text: "10%, but window length is irrelevant to poisoning" },
+        { text: "0%, because cancelled orders never enter the training set" },
+      ],
+      explanation: "6/60 = 10%. A shorter window means fewer poisoned days buy the same fraction, so fast-adapting models are MORE poisonable, not safer.",
+    },
+    {
+      question: "A model scores 70.9% accuracy (down from 71.0%) yet misfires perfectly on one rare order-book pattern. Which attack, and why is validation blind to it?",
+      options: [
+        { text: "A backdoor — the trigger is a vanishing fraction of inputs, so it barely affects aggregate loss while the trigger-to-output mapping is near-perfect", correct: true },
+        { text: "An availability attack — overall accuracy obviously collapsed" },
+        { text: "Model extraction run from inside the firm" },
+        { text: "Ordinary underfitting that more data would fix" },
+      ],
+      explanation: "Backdoors are trigger-conditional and appear in a tiny fraction of samples, so validation accuracy is unmoved while the planted mapping is reliable — clean metrics are not a clean bill of health.",
+    },
+    {
+      question: "Against an online-learning model, why is a burst of spoofed orders described as 'one attack wearing two hats'?",
+      options: [
+        { text: "It shifts today's live features (adversarial example) AND, retrained on tonight, teaches the model a false reflex (poisoning)", correct: true },
+        { text: "It is illegal in two different jurisdictions" },
+        { text: "It both raises and lowers the spread simultaneously" },
+        { text: "It is a backdoor and a membership-inference attack at the same time" },
+      ],
+      explanation: "The same cancelled orders perturb the current feature vector (inference-time, Lesson 2) and, if those snapshots train the model, plant a durable false pattern (training-time poisoning).",
+    },
+    {
+      question: "A competitor logs your public fills and quote updates and fits a model to them. Your core logic is a linear reaction with 4 parameters. What's the implication?",
+      options: [
+        { text: "It is cheap to extract — observations needed scale with parameter count, so a handful of weights is a handful of equations, and the surrogate then enables white-box transferable attacks", correct: true },
+        { text: "It is impossible to extract without your source code" },
+        { text: "Extraction reveals only your average return, not your logic" },
+        { text: "A linear model is the hardest possible target to clone" },
+      ],
+      explanation: "Few-parameter linear strategies are the cheapest to extract; once cloned, transferability (Lesson 2) lets the attacker craft white-box adversarial examples against the surrogate and fire them at you.",
+    },
+    {
+      question: "Your model averages 0.92 confidence on training points and 0.74 on unseen ones. An attacker uses this. What is the attack, what is the signal, and what defense shrinks it?",
+      options: [
+        { text: "Membership inference; the 0.18 train-vs-test confidence gap is the signal; regularization (which also fixes overfitting) shrinks it", correct: true },
+        { text: "Model extraction; the gap is irrelevant; only encryption helps" },
+        { text: "Backdoor; the trigger is the 0.92 confidence; retraining helps" },
+        { text: "Availability poisoning; the gap proves nothing; nothing helps" },
+      ],
+      explanation: "Membership inference thresholds on the confidence gap (0.92 − 0.74 = 0.18). Overfit models leak more; the same regularization that improves generalization shrinks the gap, making robustness and privacy the same discipline.",
+    },
+  ]}
+/>

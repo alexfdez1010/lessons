@@ -1,0 +1,604 @@
+---
+title: "GCN, GraphSAGE, GAT y GNN temporales"
+description: "El linaje arquitectónico de las redes neuronales de grafos: la GCN de sabor espectral con promediado fijo normalizado por grado, la GraphSAGE inductiva que muestrea-y-agrega y generaliza a nodos no vistos, la GAT que aprende pesos de atención sobre los vecinos, y las GNN temporales/dinámicas para una red financiera cuya topología cambia cada día."
+topic: "es/graph-neural-networks-for-financial-networks"
+order: 3
+minutes: 22
+updated: 2026-06-23
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, AttentionWeightsHeatmap } from '@/components/react';
+
+Una red neuronal de grafos tiene exactamente un único cometido que importa: coger un nodo, mirar
+a sus vecinos y exprimirlos hasta obtener una mejor descripción del nodo. Un banco se define en parte
+por a quién presta; una cartera (wallet) se define en parte por con quién transacciona; un
+proveedor se define en parte por a quién envía. Todo el campo no es más que una larga discusión
+sobre *cómo* hacer ese exprimido.
+
+Esa discusión produjo un linaje. La **GCN** promedia vecinos con una receta fija.
+**GraphSAGE** muestrea un puñado de ellos y aprende la receta, crucialmente sin necesitar
+todo el grafo de antemano. La **GAT** deja que el nodo decida qué vecinos merecen más de
+su atención. Las **GNN temporales** admiten la verdad incómoda de que en finanzas el grafo
+en sí es un objetivo en movimiento: la red de préstamos de ayer no es la de hoy.
+
+Esta lección recorre ese linaje en orden. Cada arquitectura es una respuesta distinta a la
+misma pregunta, y las diferencias son exactamente las cosas que deciden si vuestro modelo
+sobrevive al contacto con una red financiera real, creciente y no estacionaria.
+
+## Por qué existe un linaje siquiera
+
+<MCQ
+  client:visible
+  pretest
+  question="Cada capa de una red neuronal de grafos tiene que hacer dos cosas para actualizar un nodo: combinar información de sus vecinos y plegar el estado previo del propio nodo. ¿Cuál es el único eje de diseño que más separa a GCN, GraphSAGE y GAT?"
+  options={[
+    { text: "Cómo se agregan los vecinos y se combinan con uno mismo — promediado fijo vs. aprendido/muestreado vs. ponderado por atención", correct: true },
+    { text: "En qué lenguaje de programación está implementada la capa" },
+    { text: "Si el grafo se dibuja con flechas o con líneas simples" },
+    { text: "Cuántas GPU usa la ejecución de entrenamiento" },
+  ]}
+  explanation="El linaje es un único eje de diseño con respuestas distintas: ¿cómo agregáis los vecinos y lo fusionáis con el estado propio del nodo? GCN fija la receta, GraphSAGE muestrea y la aprende, GAT pondera a los vecinos por atención aprendida."
+  pretestLabel="Antes de leer — arriésgate a adivinar"
+  checkLabel="Comprobar"
+  retryLabel="Probar de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+/>
+
+**Analogía.** Imaginad un nodo como una persona que decide qué pensar tras hablar con sus
+contactos. La GCN es la persona que da a todo el mundo un voto *igual y prefijado* (con un
+ajuste cortés según lo popular que sea cada contacto). GraphSAGE es la persona que no puede
+hablar con *todos* sus contactos, así que sondea una muestra aleatoria y aprende cómo sopesar
+los rumores. La GAT es la persona que escucha más atentamente a los contactos que de verdad importan
+y desconecta del ruido. La misma sala, tres temperamentos.
+
+**Definición.** Una capa GNN actualiza el vector oculto de cada nodo $h_v^{(k)}$ a partir de los
+vectores de la capa anterior usando dos operaciones: un **agregado** sobre el vecindario
+$\mathcal{N}(v)$, y un **combinado** con el vector previo del propio nodo $h_v^{(k-1)}$.
+Apilar $K$ de tales capas deja que la información fluya $K$ saltos: tras la capa $K$, el
+embedding del nodo $v$ ha sido tocado por todo lo que está a $K$ pasos en el grafo. Genéricamente,
+
+$$ h_v^{(k)} = \text{COMBINE}\Big( h_v^{(k-1)},\ \text{AGG}\big(\{\,h_u^{(k-1)} : u \in \mathcal{N}(v)\,\}\big) \Big). $$
+
+Toda arquitectura de esta lección es una elección específica de AGG y COMBINE — y una postura
+específica sobre si el grafo es fijo, creciente, ponderado o móvil. Aquí está todo el
+linaje sobre un único eje antes de profundizar:
+
+| Arquitectura | La idea en una línea |
+|---|---|
+| GCN | Promediar vecinos con una receta *fija* normalizada por grado |
+| GraphSAGE | *Muestrear* unos pocos vecinos, aprender el agregador, concatenar con uno mismo |
+| GAT | Aprender *pesos de atención* para que los vecinos importantes cuenten más |
+| GNN temporal | Ejecutar una GNN por porción temporal y modelar cómo *cambia* el grafo |
+
+<Callout variant="info" title="Dos saltos suelen bastar">
+Cada capa es un salto de paso de mensajes, así que $K$ capas alcanzan $K$ saltos. Por tentador
+que sea apilar diez capas, en redes financieras 2–3 saltos suelen capturar el contagio relevante
+(vuestras contrapartes, y las contrapartes de estas) antes de que se instale el *sobresuavizado*
+(over-smoothing) — el fallo en el que el embedding de cada nodo se difumina en la misma papilla.
+Más sobre esa trampa según avancemos.
+</Callout>
+
+## GCN — promediado fijo normalizado por grado
+
+<MCQ
+  client:visible
+  pretest
+  question="Una GCN agrega los vecinos de un nodo usando un peso fijo por arista. ¿De qué depende ese peso?"
+  options={[
+    { text: "Solo de los grados de los dos extremos — es una normalización simétrica fija, no aprendida", correct: true },
+    { text: "De una puntuación de atención aprendida única para cada vecino" },
+    { text: "Del tamaño en dólares de la relación, siempre" },
+    { text: "De una muestra aleatoria extraída de nuevo en cada paso de entrenamiento" },
+  ]}
+  explanation="El peso por arista de la GCN es la normalización simétrica fija por grado: uno entre la raíz cuadrada de deg(v) por deg(u). Nada de ello es aprendido ni muestreado — el único objeto aprendido es la matriz de pesos compartida W."
+  pretestLabel="Antes de leer — arriésgate a adivinar"
+  checkLabel="Comprobar"
+  retryLabel="Probar de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+/>
+
+**Analogía.** La GCN es una asamblea vecinal con una regla estricta y preimpresa sobre quién habla
+y con qué volumen: todo el mundo tiene su turno, pero la regla baja discretamente el volumen de los
+charlatanes que conocen a *todo el mundo* (nodos de alto grado) para que no dominen. Nadie eligió
+la regla para la reunión de esta noche — fue la misma regla la semana pasada y lo será la siguiente.
+
+**Definición.** La capa **Graph Convolutional Network** aplica una transformación lineal compartida
+$W$ a cada nodo, luego agrega sobre el vecindario *incluido el propio nodo*
+(el lazo o self-loop), cada término ponderado por una normalización simétrica fija por grado,
+y después pasa la suma por una no linealidad $\sigma$:
+
+$$ h_v^{(k)} = \sigma\!\left( \sum_{u \in \mathcal{N}(v) \cup \{v\}} \frac{1}{\sqrt{\deg(v)\,\deg(u)}}\, W\, h_u^{(k-1)} \right). $$
+
+El factor $1/\sqrt{\deg(v)\,\deg(u)}$ es el corazón del asunto. *No se aprende* — se
+lee directamente de la estructura del grafo. Reduce el peso de las aristas que tocan nodos de alto grado
+para que la avalancha de conexiones de un hub no ahogue el único enlace significativo de un nodo hoja.
+(Para el término del lazo $u = v$ el grado incluye la self-arista añadida, pero mantenemos
+la aritmética sencilla más abajo.)
+
+**Ejemplo resuelto.** Sea el nodo $v$ un banco pequeño con dos vecinos, $a$ y $b$, y un
+lazo. Supongamos (tras añadir los lazos) que los grados son $\deg(v) = 3$, $\deg(a) = 3$,
+$\deg(b) = 12$. Tomemos una característica unidimensional para que la aritmética sea visible, con
+$W = 1$ y $\sigma$ la identidad, y valores de la capa anterior $h_v = 10$, $h_a = 4$,
+$h_b = 1$. Los tres pesos de arista son:
+
+| Término | Peso $1/\sqrt{\deg(v)\,\deg(u)}$ | Valor $h_u$ | Contribución |
+|---|---|---|---|
+| propio ($u=v$) | $1/\sqrt{3 \cdot 3} = 1/3 \approx 0{,}333$ | 10 | 3,333 |
+| vecino $a$ | $1/\sqrt{3 \cdot 3} = 1/3 \approx 0{,}333$ | 4 | 1,333 |
+| vecino $b$ (hub) | $1/\sqrt{3 \cdot 12} = 1/6 \approx 0{,}167$ | 1 | 0,167 |
+
+Suma: $3{,}333 + 1{,}333 + 0{,}167 = 4{,}833$. Así que $h_v^{(k)} \approx 4{,}83$. Fijaos en que el
+vecino de alto grado $b$ obtuvo el peso *más pequeño* (0,167 frente a 0,333) puramente porque es
+un hub — la normalización por grado lo hizo automáticamente, antes de cualquier aprendizaje. El
+estado propio del banco (3,333) sigue dominando, pero sus dos vecinos tiraron del nuevo valor hacia
+los suyos.
+
+<Callout variant="warning" title="La GCN es transductiva — los nodos nuevos son un problema">
+La normalización fija se calcula a partir de la estructura de grados de *todo* el grafo, y el
+entrenamiento clásico de GCN asume que el grafo entero está presente en tiempo de entrenamiento. Añadid
+un banco nuevecito mañana y habréis cambiado los grados, la normalización y, podría decirse, toda
+la matriz de adyacencia. No hay forma limpia de embeber un nodo que el modelo nunca vio sin
+recalcular sobre el grafo aumentado. En finanzas, donde aparecen entidades nuevas constantemente,
+esta suposición *transductiva* es un techo genuino.
+</Callout>
+
+### Cuándo usarla
+
+Recurrid a la GCN cuando el grafo sea **fijo y plenamente conocido en tiempo de entrenamiento**,
+razonablemente homogéneo, y queráis una base de referencia fuerte, barata y bien entendida —
+clasificación de nodos sobre una instantánea de red interbancaria estática, pongamos, donde toda
+institución ya está en el grafo. Es el equivalente a la regresión lineal entre las GNN: aquello que
+deberíais batir antes de complicaros la vida. Si van a seguir llegando nodos, la naturaleza
+transductiva de la GCN es la señal para bajar por el linaje.
+
+<FillBlank
+  client:visible
+  question="Rellenad qué hace fija la agregación de la GCN."
+  text="La GCN pondera cada vecino por {{la inversa de la raíz cuadrada de los grados de los extremos|una puntuación de atención aprendida|un peso aleatorio recién muestreado}}, una normalización leída directamente del grafo en vez de aprendida."
+  explanation="El peso por arista de la GCN es la normalización simétrica fija por grado: uno entre raíz de deg(v) por deg(u). Es estructural, no aprendida — el único objeto aprendido es la transformación compartida W."
+  checkLabel="Comprobar"
+  retryLabel="Probar de nuevo"
+  explanationLabel="Explicación"
+/>
+
+## GraphSAGE — muestrear, agregar, generalizar
+
+<MCQ
+  client:visible
+  pretest
+  question="GraphSAGE se diseñó para arreglar la mayor limitación práctica de la GCN. ¿Cuál?"
+  options={[
+    { text: "Es inductiva — aprende una función de agregación que generaliza a nodos y grafos nunca vistos en entrenamiento", correct: true },
+    { text: "Elimina por completo la necesidad de información de los vecinos" },
+    { text: "Garantiza cero sobreajuste en muestras pequeñas" },
+    { text: "Hace que los pesos de atención sean perfectamente interpretables" },
+  ]}
+  explanation="El triunfo estrella de GraphSAGE es ser inductiva: en vez de aprender un embedding fijo atado a un grafo fijo, aprende una función reutilizable de muestreo-y-agregación que puede embeber un nodo nuevecito (un banco nuevo, una cartera nueva) sobre la marcha."
+  pretestLabel="Antes de leer — arriésgate a adivinar"
+  checkLabel="Comprobar"
+  retryLabel="Probar de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+/>
+
+**Analogía.** Un analista nuevo se incorpora a una firma con 50.000 relaciones de clientes. No puede
+leer todos los expedientes, así que aprende un *hábito reutilizable*: "muestrea una docena de relaciones,
+resúmelas y grapa ese resumen a lo que ya sé del cliente". Ese hábito funciona con el cliente
+#50.001 — al que nunca ha conocido — porque aprendió el *procedimiento*, no una respuesta
+memorizada para cada cliente existente. Eso es GraphSAGE: SAmple and aggreGatE (muestrear y agregar).
+
+**Definición.** Una capa **GraphSAGE** (1) muestrea un conjunto de tamaño fijo de vecinos de
+$\mathcal{N}(v)$, (2) agrega sus vectores previos con un agregador aprendible
+(media, pooling o incluso una LSTM), y (3) **concatena** el resultado con el vector previo del
+propio nodo antes de proyectar mediante $W$ y una no linealidad:
+
+$$ h_v^{(k)} = \sigma\!\Big( W \cdot \text{CONCAT}\big(\, h_v^{(k-1)},\ \text{AGG}(\{\,h_u^{(k-1)} : u \in \mathcal{S}(v)\,\})\,\big) \Big), $$
+
+donde $\mathcal{S}(v)$ es el subconjunto *muestreado* de vecinos. Los dos movimientos de diseño que
+importan: **concatenar** (uno mismo y los vecinos se mantienen como mitades distintas, no se mezclan en
+un único promedio como en la GCN), y **muestrear** (un fan-out fijo mantiene acotado el coste incluso para un hub
+con un millón de aristas). Como la capa aprende una *función* en vez de un embedding por nodo, los
+mismos pesos entrenados embeben nodos que no existían en tiempo de entrenamiento. Esta
+es la propiedad llamada aprendizaje **inductivo**.
+
+**Ejemplo resuelto (agregador media).** El nodo $v$ tiene característica $h_v = 6$ y cuatro vecinos
+con valores $\{2, 8, 5, 9\}$. Muestreamos dos de ellos — digamos que extraemos $\{8, 5\}$. El agregado
+media es $(8 + 5)/2 = 6{,}5$. Concatenamos con uno mismo: la entrada de la capa es el par
+$(6,\ 6{,}5)$. Con una proyección minúscula $W = [0{,}5,\ 0{,}5]$ (de modo que promedia las dos mitades) y
+$\sigma$ identidad:
+
+$$ h_v^{(k)} = 0{,}5 \cdot 6 + 0{,}5 \cdot 6{,}5 = 3{,}0 + 3{,}25 = 6{,}25. $$
+
+Ahora supongamos que el *siguiente* paso de entrenamiento muestrea un par distinto, $\{2, 9\}$: el agregado
+es $(2+9)/2 = 5{,}5$, y $h_v^{(k)} = 0{,}5 \cdot 6 + 0{,}5 \cdot 5{,}5 = 5{,}75$. Mismo nodo, mismos
+pesos, respuesta distinta — porque la *muestra* cambió.
+
+<Callout variant="warning" title="El muestreo es aproximación — cuidado con la varianza">
+Esa oscilación de dos valores (6,25 frente a 5,75) por remuestrear es la trampa. El muestreo de vecinos
+hace a GraphSAGE escalable, pero inyecta varianza: el embedding de un nodo depende ahora de qué
+vecinos resultaron extraídos. Un fan-out demasiado pequeño y la estimación del agregado
+"verdadero" del vecindario completo es ruidosa; demasiado grande y perdéis la escalabilidad que
+motivó el muestreo. Es el clásico mando sesgo–varianza, con sombrero de grafo — y en
+las finanzas de baja señal (recordad la disciplina de muestra pequeña de *Aprendizaje profundo para datos
+de mercado*), la varianza extra nunca sale gratis.
+</Callout>
+
+### Cuándo usarla
+
+GraphSAGE es la **opción por defecto realista en finanzas**, porque los grafos financieros *crecen*: nuevos
+bancos se constituyen, aparecen nuevas carteras, nuevos proveedores entran en la red cada día, y
+hace falta puntuarlos sin reentrenar el mundo. Usadla cuando el conjunto de nodos sea abierto,
+cuando los hubs sean demasiado grandes para agregarse por completo, o cuando entrenéis en un periodo
+y debáis desplegar sobre grafos posteriores y mayores. Si vuestro grafo es genuinamente fijo y pequeño, la
+exactitud de la GCN puede ganar al ruido de muestreo de SAGE — pero eso es la excepción en finanzas,
+no la regla.
+
+<Categorize
+  client:visible
+  question="Clasificad cada propiedad bajo la arquitectura que mejor la describe."
+  buckets={["GCN", "GraphSAGE"]}
+  items={[
+    { text: "Promediado fijo normalizado por grado", bucket: "GCN" },
+    { text: "Necesita todo el grafo en tiempo de entrenamiento (transductiva)", bucket: "GCN" },
+    { text: "Muestrea un conjunto de vecinos de tamaño fijo", bucket: "GraphSAGE" },
+    { text: "Concatena uno mismo con el agregado de los vecinos", bucket: "GraphSAGE" },
+    { text: "Embebe nodos no vistos durante el entrenamiento (inductiva)", bucket: "GraphSAGE" },
+    { text: "Uno mismo y los vecinos mezclados en una única suma normalizada", bucket: "GCN" },
+  ]}
+  explanation="GCN: mezcla fija normalizada por grado de uno mismo y los vecinos, transductiva. GraphSAGE: muestrea un fan-out fijo, aprende el agregador, concatena uno mismo con los vecinos, inductiva — embebe nodos nuevecitos."
+  checkLabel="Comprobar"
+/>
+
+## GAT — aprender qué vecinos importan
+
+<MCQ
+  client:visible
+  pretest
+  question="Una Graph Attention Network mejora la ponderación uniforme o solo por grado haciendo qué?"
+  options={[
+    { text: "Aprendiendo un coeficiente de atención por vecino vía un softmax sobre puntuaciones aprendidas, de modo que los vecinos importantes obtienen más peso", correct: true },
+    { text: "Ignorando por completo los grados de los nodos y ponderando a cada vecino por igual" },
+    { text: "Reemplazando los vecinos por una única muestra aleatoria en cada paso" },
+    { text: "Usando el valor en dólares de cada arista como peso fijo, sin aprendizaje" },
+  ]}
+  explanation="La GAT aprende coeficientes de atención alfa sobre los vecinos: puntúa cada par (nodo, vecino) con una pequeña función aprendida, normaliza las puntuaciones con un softmax y las usa como pesos de agregación — de modo que un acreedor grande puede importar más que uno pequeño, aprendido de los datos."
+  pretestLabel="Antes de leer — arriésgate a adivinar"
+  checkLabel="Comprobar"
+  retryLabel="Probar de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+/>
+
+**Analogía.** La GCN da a todo el mundo un voto ajustado por grado pero por lo demás igual. La GAT contrata un
+*equipo* que lee la sala y decide, por conversación, la opinión de quién ponderar: a la
+contraparte que os expone a \$2.000 millones se la escucha con atención; la cuenta molesta de \$10.000 recibe
+un asentimiento cortés. Crucialmente, el equipo *aprendió* cómo asignar esa atención de datos pasados —
+no se le dijo "tamaño igual importancia", descubrió qué aspecto tiene la importancia.
+
+**Definición.** Una capa **Graph Attention Network** calcula, para cada arista $v \leftarrow u$,
+un **coeficiente de atención** $\alpha_{vu}$ aprendido y normalizado, y luego agrega los vecinos como
+una suma ponderada por atención. Los coeficientes provienen de un softmax sobre puntuaciones aprendidas
+$e_{vu}$:
+
+$$ \alpha_{vu} = \frac{\exp(e_{vu})}{\sum_{w \in \mathcal{N}(v) \cup \{v\}} \exp(e_{vw})}, \qquad h_v^{(k)} = \sigma\!\left( \sum_{u \in \mathcal{N}(v) \cup \{v\}} \alpha_{vu}\, W\, h_u^{(k-1)} \right). $$
+
+La puntuación cruda $e_{vu}$ la produce una pequeña función aprendible de los dos vectores transformados
+de los extremos $W h_v$ y $W h_u$ (en la GAT original, una red prealimentada de una sola capa sobre
+su concatenación, con una LeakyReLU). El softmax garantiza que los pesos sobre el vecindario de un nodo
+son no negativos y suman uno. La **atención multicabeza** ejecuta varios mecanismos de atención
+independientes en paralelo y concatena (o promedia) sus salidas,
+lo que estabiliza el entrenamiento igual que varios analistas se contrastan entre sí.
+
+**Ejemplo resuelto (softmax sobre 3 vecinos).** El nodo $v$ tiene tres vecinos con puntuaciones
+crudas aprendidas $e = \{2{,}0,\ 1{,}0,\ 0{,}0\}$ y valores por vecino $h = \{10,\ 4,\ 1\}$.
+Exponenciamos: $e^{2{,}0} \approx 7{,}389$, $e^{1{,}0} \approx 2{,}718$, $e^{0{,}0} = 1{,}000$. Su
+suma es $7{,}389 + 2{,}718 + 1{,}000 = 11{,}107$. Los pesos de atención son:
+
+| Vecino | Puntuación cruda $e_{vu}$ | $\exp(e_{vu})$ | $\alpha_{vu}$ | Valor $h_u$ | Ponderado |
+|---|---|---|---|---|---|
+| 1 | 2,0 | 7,389 | $7{,}389/11{,}107 \approx 0{,}665$ | 10 | 6,65 |
+| 2 | 1,0 | 2,718 | $2{,}718/11{,}107 \approx 0{,}245$ | 4 | 0,98 |
+| 3 | 0,0 | 1,000 | $1{,}000/11{,}107 \approx 0{,}090$ | 1 | 0,09 |
+
+Los pesos suman $0{,}665 + 0{,}245 + 0{,}090 = 1{,}000$, como debe hacer un softmax. El agregado
+ponderado por atención (tomando $W = 1$, $\sigma$ identidad) es $6{,}65 + 0{,}98 + 0{,}09 = 7{,}72$ — dominado por
+el vecino 1, cuya mayor puntuación aprendida le valió dos tercios de la atención. Contrastad una
+media simple, $(10 + 4 + 1)/3 = 5{,}0$: la ponderación aprendida de la GAT tiró del resultado con fuerza
+hacia el vecino que el modelo decidió que era importante.
+
+La atención es la misma idea que ya conocéis del eje temporal — asignar pesos a
+otros y sumar en consecuencia. El mapa de calor de abajo muestra atención distribuida sobre el *tiempo*;
+una GAT hace exactamente el mismo truco sobre los *vecinos* de un nodo: un peso aprendido por relación,
+pasado por softmax para sumar uno, con los enlaces de alto peso dominando el agregado.
+
+<AttentionWeightsHeatmap
+  client:visible
+  title="La atención asigna pesos — aquí sobre el tiempo, una GAT lo hace sobre los vecinos"
+  recentLabel="Reciente"
+  eventLabel="Centrada en eventos"
+  diffuseLabel="Difusa"
+  temperatureLabel="Nitidez"
+  queryAxisLabel="Paso de consulta"
+  keyAxisLabel="Paso atendido"
+  focusLabel="Foco"
+  caption="Un softmax convierte puntuaciones aprendidas en pesos que suman uno. Leed cada fila de consulta como un nodo y cada columna de clave como uno de sus vecinos: las celdas brillantes son las relaciones en las que el modelo se apoya. La atención más nítida se concentra en unas pocas; la atención difusa la reparte, como una media basada solo en el grado."
+/>
+
+<Callout variant="warning" title="La atención no es interpretabilidad gratis">
+Es tentador leer los pesos $\alpha_{vu}$ como una explicación — "el modelo prestó un 66%
+de atención a su mayor acreedor, así que *por eso*". Resistid. La atención alta es correlación
+con el objetivo del modelo, no un relato causal, y patrones de atención distintos pueden dar
+predicciones casi idénticas. La GAT además acarrea *más parámetros* que la GCN o SAGE y es
+correspondientemente **ávida de datos** — exactamente el apetito equivocado en un régimen
+financiero de baja señal y tamaño de muestra efectiva pequeño. La disciplina de *Aprendizaje profundo para datos
+de mercado* aplica en pleno: demostrad que la capacidad extra se gana su sustento en un test purgado y reservado (held-out)
+antes de creeros el mapa de atención.
+</Callout>
+
+### Cuándo usarla
+
+Usad la GAT cuando los vecinos sean **genuinamente desiguales en importancia y esa importancia sea
+aprendible** — grafos de riesgo de crédito donde una única contraparte dominante impulsa el contagio,
+redes de transacciones heterogéneas, anillos de fraude donde unas pocas aristas portan la señal.
+Brilla cuando la normalización por grado (GCN) o el muestreo uniforme (SAGE) tratan erróneamente una
+arista crítica como cualquier otra. Saltáosla cuando vuestro tamaño de muestra efectiva sea minúsculo, el
+grafo sea casi homogéneo, o un modelo más barato ya supere el listón — los parámetros extra son un impuesto que
+pagáis en datos que quizá no tengáis.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">¿Por qué usa la GAT un softmax sobre los vecinos en vez de usar las puntuaciones crudas como pesos?</summary>
+
+**Respuesta.** El softmax hace dos trabajos a la vez. Primero, fuerza a que los pesos sean
+**no negativos y sumen uno** dentro de cada vecindario, de modo que el agregado es un
+promedio ponderado en regla que no explota para nodos de alto grado — un nodo con 500 vecinos y
+uno con 3 se resumen ambos en la misma escala. Segundo, hace que la puntuación sea **relativa**:
+lo que importa es cómo la puntuación de un vecino se compara con la de sus hermanos, no su valor
+absoluto, de modo que el modelo puede expresar "este vecino es el importante *aquí*" con independencia
+de la magnitud global. Las puntuaciones crudas y sin normalizar dejarían que un nodo muy activo
+dominara el paisaje de la pérdida y no darían pesos comparables y acotados entre vecindarios de
+tamaños distintos.
+
+</details>
+</Reveal>
+
+## GNN temporales / dinámicas — cuando el grafo se mueve
+
+<MCQ
+  client:visible
+  pretest
+  question="GCN, GraphSAGE y GAT asumen todas un único grafo. ¿Por qué es peligrosa esa suposición para una red financiera real?"
+  options={[
+    { text: "La topología financiera es no estacionaria — las aristas aparecen y se desvanecen a diario, así que un único grafo estático mezcla en silencio regímenes distintos", correct: true },
+    { text: "Los grafos financieros nunca cambian una vez construidos, así que la suposición siempre es segura" },
+    { text: "Los grafos son demasiado pequeños en finanzas para que cualquier efecto temporal importe" },
+    { text: "Los efectos temporales solo importan para imágenes, nunca para redes" },
+  ]}
+  explanation="Los préstamos se originan y vencen, los enlaces de suministro se rompen, las correlaciones cambian de régimen — la topología del grafo financiero cambia constantemente. Colapsarlo en un único grafo estático (o promediado en el tiempo) mezcla regímenes que deberían mantenerse separados, el mismo peligro de no estacionariedad que conocisteis en el modelado de datos de mercado."
+  pretestLabel="Antes de leer — arriésgate a adivinar"
+  checkLabel="Comprobar"
+  retryLabel="Probar de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+/>
+
+**Analogía.** Una GNN estática sobre una red financiera es una única foto de larga exposición de un
+cruce concurrido: cada coche que pasó alguna vez queda emborronado en un único difuminado fantasmal, y no
+podéis distinguir la hora punta de las 3 de la madrugada. Una GNN temporal es un *vídeo* — una secuencia de fotogramas nítidos — de modo que
+podéis ver cómo la red de préstamos se tensa antes de una crisis y se afloja después, en vez de promediar
+el pánico y la calma en un único gris sin sentido.
+
+**Definición.** Las **GNN temporales (dinámicas)** modelan un grafo que cambia con el tiempo. Hay
+dos grandes familias:
+
+- **Basadas en instantáneas (tiempo discreto).** Trocead el tiempo en ventanas, construid un grafo por ventana,
+  embeded cada uno con una GNN, y luego ejecutad un **modelo de secuencia a través de las instantáneas** — una GRU, LSTM,
+  o atención temporal. Esquemáticamente, un embedding por porción alimenta una recurrencia:
+
+$$ z_v^{(t)} = \text{GNN}\big(G^{(t)}\big)_v, \qquad h_v^{(t)} = \text{GRU}\big(h_v^{(t-1)},\ z_v^{(t)}\big). $$
+
+- **Tiempo continuo (basadas en eventos).** Saltaos las instantáneas e ingerid **eventos con marca temporal**
+  directamente — cada arista nueva (un préstamo a las 14:32, una transferencia a las 14:33) actualiza los embeddings de
+  los nodos que toca según llega. Esto preserva el momento exacto y el espaciado irregular que las
+  instantáneas fijas desechan.
+
+Este es el matrimonio deliberado de dos ejes que habéis estado construyendo todo este tiempo: el
+**eje relacional** (una GNN, que resume quién está conectado con quién) y el **eje temporal**
+(una RNN o atención, que resume cómo evolucionan las cosas), la misma maquinaria temporal de
+*Aprendizaje profundo para datos de mercado*, ahora apilada encima del paso de mensajes.
+
+**Ejemplo ilustrativo — una secuencia de préstamos de 5 días.** Seguid a los vecinos de endeudamiento
+interbancario de un banco a lo largo de una semana. Cada día es una instantánea $G^{(t)}$; la embebemos (digamos con GraphSAGE)
+en un vector por día $z^{(t)}$, y luego una GRU lleva el estado hacia delante:
+
+| Día | Aristas de préstamo activas | Embedding de instantánea $z^{(t)}$ (de juguete) | Lo que la GRU debería notar |
+|---|---|---|---|
+| Lun | 12 | 0,20 | base en calma |
+| Mar | 11 | 0,22 | sin cambios |
+| Mié | 7 | 0,41 | aristas cayendo — financiación tensándose |
+| Jue | 4 | 0,68 | contracción aguda |
+| Vie | 3 | 0,79 | estrés acumulándose |
+
+Una GNN estática sobre el grafo *promediado en el tiempo* reportaría algo como "≈ 7,4 aristas de media,
+embedding ≈ 0,46" — un único número que oculta por completo el *colapso* de lunes a viernes de
+12 aristas a 3. El modelo temporal ve la trayectoria (0,20 → 0,22 → 0,41 → 0,68 → 0,79) y
+puede señalar la retirada acelerada de financiación *como una tendencia*, que es precisamente la señal que a una
+mesa de riesgos le importa.
+
+<Callout variant="warning" title="Promediar en el tiempo mezcla regímenes en silencio (y filtra)">
+Aplastar una red dinámica en un único grafo estático o promediado en el tiempo no solo pierde la
+tendencia — puede *fabricar* aristas que nunca coexistieron (una contraparte de enero y una
+de junio, unidas en un grafo como si fueran simultáneas) y mezcla en silencio regímenes incompatibles.
+Peor aún, si construís ese grafo promediado usando instantáneas *futuras* para embeber un nodo del *pasado*,
+habéis filtrado el futuro hacia el pasado. Mantener el tiempo explícito — instantáneas en orden, sin atisbar
+hacia delante — es la misma disciplina de sesgo de anticipación (look-ahead) que la siguiente lección sobre fuga
+temporal hace su tema entero.
+</Callout>
+
+### Cuándo usarlas
+
+Usad una GNN temporal siempre que la **topología de la red en sí evolucione y esa evolución
+porte señal** — propagación de estrés de financiación, disrupción de la cadena de suministro extendiéndose enlace a
+enlace, anillos de fraude que se ensamblan y disuelven, grafos de correlación que cambian de régimen. Elegid
+**instantánea + modelo de secuencia** cuando los eventos se agrupen de forma natural en periodos (posiciones diarias,
+exposiciones semanales) y queráis simplicidad; elegid **tiempo continuo** cuando el momento exacto y el
+espaciado irregular de eventos importen (flujos de liquidación de alta frecuencia, transferencias intradía). Si el
+grafo genuinamente no cambia a lo largo de vuestro horizonte, una GNN estática es más simple y está bien — pero en
+finanzas, "el grafo no cambia" es una hipótesis que comprobar, no asumir.
+
+<FillBlank
+  client:visible
+  question="Rellenad la idea de dos ejes detrás de las GNN temporales."
+  text="Una GNN temporal basada en instantáneas combina el eje {{relacional|alfabético|geográfico}}, gestionado por una GNN por porción temporal, con el eje temporal, gestionado por un modelo de secuencia como una GRU a través de las porciones."
+  explanation="Las GNN temporales casan el eje relacional (una GNN sobre la estructura de cada instantánea) con el eje temporal (una RNN o atención a través de las instantáneas), de modo que el modelo ve tanto quién está conectado como cómo evolucionan esas conexiones."
+  checkLabel="Comprobar"
+  retryLabel="Probar de nuevo"
+  explanationLabel="Explicación"
+/>
+
+## Todo el linaje en una tabla
+
+Las cuatro arquitecturas puestas una al lado de otra — la comparación que conviene tener cuando elegís:
+
+| Arquitectura | Regla de agregación | ¿Inductiva? | ¿Aprende pesos de vecinos? | Mejor uso en finanzas | Debilidad principal |
+|---|---|---|---|---|---|
+| **GCN** | Media fija normalizada por grado de uno mismo + vecinos, peso $1/\sqrt{\deg(v)\,\deg(u)}$ | No (transductiva) | No — los pesos son estructurales | Red estática y plenamente conocida como base fuerte y barata | No puede embeber nodos no vistos; necesita todo el grafo fijo |
+| **GraphSAGE** | Muestrea un fan-out fijo, aprende AGG (media/pool/LSTM), CONCAT uno mismo con el agregado de vecinos | Sí | En parte — aprende el agregador, no los pesos por arista | Grafos crecientes: bancos/carteras nuevos puntuados sin reentrenar | Varianza de muestreo; el embedding depende de la extracción |
+| **GAT** | Suma ponderada por atención; $\alpha_{vu}$ de un softmax sobre puntuaciones aprendidas; multicabeza | Sí | Sí — pesos por vecino aprendidos explícitos | Vecinos desiguales: acreedores dominantes, aristas de anillos de fraude | Ávida de datos (más parámetros); la atención no es interpretabilidad |
+| **GNN temporal** | Una GNN por instantánea + un modelo de secuencia a través de instantáneas (o eventos con marca temporal) | Depende de la GNN base | Depende de la GNN base | Topología no estacionaria: contagio, enlaces de suministro evolucionando | Más piezas móviles; necesita un manejo del tiempo cuidadoso sin anticipación |
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "GCN", definition: "Promediado fijo normalizado por grado de uno mismo y los vecinos; transductiva, necesita todo el grafo" },
+    { term: "GraphSAGE", definition: "Muestrea un conjunto fijo de vecinos, aprende el agregador, concatena con uno mismo; inductiva, embebe nodos no vistos" },
+    { term: "GAT", definition: "Coeficientes de atención aprendidos vía un softmax sobre puntuaciones, de modo que los vecinos importantes pesan más" },
+    { term: "GNN temporal por instantáneas", definition: "Una GNN por porción temporal más una GRU o atención a través de las porciones" },
+    { term: "GNN temporal de tiempo continuo", definition: "Ingiere eventos con marca temporal directamente, actualizando los embeddings de los nodos según llegan las aristas" },
+  ]}
+  checkLabel="Comprobar"
+/>
+
+## Resumen
+
+Habéis recorrido el linaje de una receta fija a un objetivo en movimiento. La GCN promedia vecinos con
+una regla normalizada por grado que nadie aprendió y todo el grafo debe estar presente — limpia, barata,
+transductiva. GraphSAGE muestrea un puñado de vecinos, aprende el agregador, concatena
+uno mismo con los vecinos, y se gana la propiedad que más importa en una red financiera creciente:
+es *inductiva*, embebiendo bancos y carteras que nunca vio en entrenamiento. La GAT deja que cada nodo
+aprenda, vía un softmax sobre puntuaciones, qué vecinos merecen su atención — potente donde un
+acreedor dominante de verdad importa, pero ávida de parámetros y no la explicación gratis que
+parece. Y las GNN temporales admiten que el propio grafo se mueve, casando el eje relacional con el
+temporal de modo que un colapso de financiación se lee como una trayectoria, no como una media emborronada.
+
+<MindMap
+  client:visible
+  title="GCN, GraphSAGE, GAT y GNN temporales"
+  caption="Construid el mapa: un eje de diseño (cómo agregar vecinos + combinar con uno mismo), cuatro respuestas."
+  root={{
+    label: 'Linaje de arquitecturas GNN',
+    children: [
+      { label: 'Eje de diseño', children: [
+        { label: 'AGREGAR vecinos' },
+        { label: 'COMBINAR con uno mismo' },
+        { label: 'K capas = K saltos' },
+      ]},
+      { label: 'GCN', children: [
+        { label: 'Media fija normalizada por grado' },
+        { label: 'Peso 1/sqrt(deg v · deg u)' },
+        { label: 'Transductiva — necesita todo el grafo' },
+      ]},
+      { label: 'GraphSAGE', children: [
+        { label: 'Muestrea fan-out fijo' },
+        { label: 'Aprende agregador, CONCAT uno mismo' },
+        { label: 'Inductiva — embebe nodos no vistos' },
+        { label: 'Varianza de muestreo' },
+      ]},
+      { label: 'GAT', children: [
+        { label: 'Atención aprendida alfa (softmax)' },
+        { label: 'Vecinos importantes pesan más' },
+        { label: 'Multicabeza; ávida de datos' },
+      ]},
+      { label: 'GNN temporal', children: [
+        { label: 'Instantánea + GRU/atención' },
+        { label: 'Eventos de tiempo continuo' },
+        { label: 'La topología es no estacionaria' },
+        { label: 'Sin anticipación a través del tiempo' },
+      ]},
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Repaso mixto: ¿se ha asentado el linaje?"
+  questions={[
+    {
+      question: "Una GCN agrega un banco pequeño v (grado 3) con vecinos a (grado 3) y b (grado 12), más un lazo. ¿Por qué obtiene el vecino b menos peso que a?",
+      options: [
+        { text: "La normalización fija uno entre sqrt(deg(v)·deg(u)) encoge las aristas a hubs de alto grado — el grado 12 de b hace su peso más pequeño", correct: true },
+        { text: "Porque el modelo aprendió una puntuación de atención que redujo el peso de b" },
+        { text: "Porque b fue descartado aleatoriamente de la muestra en ese paso" },
+        { text: "Porque el valor de la característica de b resultó ser más pequeño" },
+      ],
+      explanation: "Los pesos de la GCN son estructurales, no aprendidos: 1/sqrt(3·3)=1/3 para a pero 1/sqrt(3·12)=1/6 para el hub b. La normalización por grado reduce el peso de los hubs automáticamente, antes de cualquier aprendizaje.",
+    },
+    {
+      question: "Vuestro grafo interbancario gana unas 40 instituciones nuevas cada trimestre que deben puntuarse de inmediato, sin reentrenar. ¿Qué arquitectura es la opción por defecto natural?",
+      options: [
+        { text: "GraphSAGE — aprende una función inductiva de muestreo-y-agregación que embebe nodos nunca vistos en entrenamiento", correct: true },
+        { text: "GCN — su normalización por grado maneja los nodos nuevos gratis" },
+        { text: "Una GAT estática entrenada una vez y nunca actualizada" },
+        { text: "Cualquiera de ellas — la inductividad es irrelevante para puntuar nodos nuevos" },
+      ],
+      explanation: "Nodos nuevos llegando constantemente es el caso de uso inductivo. La GCN es transductiva (necesita todo el grafo fijo); GraphSAGE aprende una función reutilizable y embebe bancos nuevecitos sobre la marcha.",
+    },
+    {
+      question: "Un nodo GAT tiene tres vecinos con puntuaciones aprendidas 2,0, 1,0, 0,0. Tras el softmax, los pesos son alrededor de 0,665, 0,245, 0,090. Con valores de vecinos 10, 4, 1, ¿cuál es el agregado ponderado por atención (W=1, activación identidad)?",
+      options: [
+        { text: "Alrededor de 7,72 — la suma ponderada 0,665·10 + 0,245·4 + 0,090·1, dominada por el vecino de puntuación alta", correct: true },
+        { text: "Exactamente 5,0 — una media simple de 10, 4 y 1" },
+        { text: "Alrededor de 15,0 — la suma de los tres valores" },
+        { text: "Alrededor de 0,665 — solo el mayor peso de atención" },
+      ],
+      explanation: "6,65 + 0,98 + 0,09 = 7,72. Los pesos del softmax suman uno y se concentran en el vecino de mayor puntuación, tirando del agregado bien por encima de la media simple de 5,0.",
+    },
+    {
+      question: "Un equipo de riesgos entrena una única GCN sobre un grafo construido promediando un año entero de aristas de préstamo diarias. ¿Cuál es el peligro sutil?",
+      options: [
+        { text: "Promediar en el tiempo mezcla regímenes y puede unir aristas que nunca coexistieron, ocultando tendencias y arriesgando fuga por anticipación", correct: true },
+        { text: "Nada — promediar siempre mejora un grafo reduciendo el ruido" },
+        { text: "La GCN no puede ejecutarse sobre grafos ponderados en absoluto" },
+        { text: "El modelo será demasiado inductivo y sobregeneralizará" },
+      ],
+      explanation: "Colapsar una red dinámica en un único grafo promediado mezcla regímenes incompatibles, emborrona la tendencia (p. ej. un colapso de financiación), puede fabricar aristas que no coexisten y — si instantáneas futuras informan un embedding del pasado — filtra el futuro. Mantened el tiempo explícito.",
+    },
+    {
+      question: "¿Qué afirmación sobre los pesos de atención de la GAT es correcta?",
+      options: [
+        { text: "Son una ponderación aprendida que mejora la agregación, pero la atención alta no es una explicación causal y añade parámetros que demandan más datos", correct: true },
+        { text: "Son interpretaciones garantizadas y fieles de por qué el modelo predijo lo que predijo" },
+        { text: "Están fijados a partir de los grados del grafo, como la normalización de la GCN" },
+        { text: "Eliminan la necesidad de cualquier validación fuera de muestra" },
+      ],
+      explanation: "La atención aprende pesos por vecino útiles, pero es correlación con el objetivo, no causalidad — patrones distintos pueden dar la misma predicción. La GAT además añade parámetros, haciéndola ávida de datos, así que la disciplina de muestra pequeña y test purgado sigue aplicando.",
+    },
+  ]}
+  checkLabel="Comprobar"
+  nextLabel="Siguiente"
+  seeResultsLabel="Ver resultados"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+/>

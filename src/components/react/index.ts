@@ -833,3 +833,31 @@ export type { PretrainFinetuneTimelineProps } from '@/components/react/PretrainF
 
 export { ZeroShotVsFittedForecast, default as ZeroShotVsFittedForecastDefault } from '@/components/react/ZeroShotVsFittedForecast';
 export type { ZeroShotVsFittedForecastProps } from '@/components/react/ZeroShotVsFittedForecast';
+
+// Graph-neural-networks-for-financial-networks islands
+export { MessagePassingAnimator, default as MessagePassingAnimatorDefault } from '@/components/react/MessagePassingAnimator';
+export type { MessagePassingAnimatorProps } from '@/components/react/MessagePassingAnimator';
+
+export { ContagionCascadeGraph, default as ContagionCascadeGraphDefault } from '@/components/react/ContagionCascadeGraph';
+export type { ContagionCascadeGraphProps } from '@/components/react/ContagionCascadeGraph';
+
+// Adversarial-ML-and-robustness-in-trading islands
+export { AdversarialPerturbationExplorer, default as AdversarialPerturbationExplorerDefault } from '@/components/react/AdversarialPerturbationExplorer';
+export type { AdversarialPerturbationExplorerProps } from '@/components/react/AdversarialPerturbationExplorer';
+
+export { DriftDetectorTimeline, default as DriftDetectorTimelineDefault } from '@/components/react/DriftDetectorTimeline';
+export type { DriftDetectorTimelineProps } from '@/components/react/DriftDetectorTimeline';
+
+// Quantum-computing-for-finance islands
+export { AmplitudeEstimationConvergence, default as AmplitudeEstimationConvergenceDefault } from '@/components/react/AmplitudeEstimationConvergence';
+export type { AmplitudeEstimationConvergenceProps } from '@/components/react/AmplitudeEstimationConvergence';
+
+export { QuboPortfolioAnnealer, default as QuboPortfolioAnnealerDefault } from '@/components/react/QuboPortfolioAnnealer';
+export type { QuboPortfolioAnnealerProps } from '@/components/react/QuboPortfolioAnnealer';
+
+// Causal-inference-for-alpha-and-execution islands
+export { ConfounderDagExplorer, default as ConfounderDagExplorerDefault } from '@/components/react/ConfounderDagExplorer';
+export type { ConfounderDagExplorerProps } from '@/components/react/ConfounderDagExplorer';
+
+export { CorrelationVsCausationBacktest, default as CorrelationVsCausationBacktestDefault } from '@/components/react/CorrelationVsCausationBacktest';
+export type { CorrelationVsCausationBacktestProps } from '@/components/react/CorrelationVsCausationBacktest';

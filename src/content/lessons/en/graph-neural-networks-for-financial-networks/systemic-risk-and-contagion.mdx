@@ -1,0 +1,664 @@
+---
+title: "Systemic Risk and Contagion"
+description: "The killer application for graph learning: how a single default cascades through an interbank lending network, why DebtRank and feedback loops capture the systemic fragility a per-firm tabular model structurally misses, and how a graph neural network learns a fragility score that embeds the network's topology."
+topic: "en/graph-neural-networks-for-financial-networks"
+order: 4
+minutes: 22
+updated: 2026-06-23
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, ContagionCascadeGraph } from '@/components/react';
+
+Picture the night Lehman Brothers filed for bankruptcy in 2008. Lehman was, on its own
+balance sheet, a single firm — a large one, sure, but one node out of thousands. A
+tabular risk model staring at Lehman's own financials might have flagged it as wobbly.
+What no per-firm model on Earth could see was the *web*: the money market funds that
+held Lehman paper, the banks that had lent to those funds, the funds that "broke the
+buck" and triggered a run, the frozen short-term funding markets that then starved
+healthy firms of cash. Lehman didn't fail alone. It pulled.
+
+That pull is **systemic risk**, and it is the single best argument for treating finance
+as a *graph* rather than a spreadsheet. A row in a table describes one bank in isolation.
+An edge in a network describes *who owes whom* — and contagion lives entirely in the
+edges. This lesson is the marquee application of everything you've built: node-level
+prediction (lesson 2), inductive message passing (lesson 3), and the blunt observation
+that the most dangerous risk in finance is the kind a table literally cannot represent.
+
+## What systemic risk is — and why a table can't see it
+
+<MCQ
+  client:visible
+  pretest
+  question="Two banks have identical balance sheets — same capital, same assets, same leverage. A per-firm tabular model scores them. What does it necessarily miss?"
+  options={[
+    { text: "Whether each bank sits in a fragile or robust position in the lending network — one could be next to a failing hub, the other isolated, and the table sees them as twins", correct: true },
+    { text: "Nothing — identical balance sheets means identical risk in every sense" },
+    { text: "Only their stock prices, which are irrelevant to risk" },
+    { text: "Their employee headcount, which drives default probability" },
+  ]}
+  explanation="A per-firm model scores each bank from its own features. Two banks with identical balance sheets get identical scores — yet one may borrow heavily from a teetering hub and the other from rock-solid lenders. The risk that differs lives in the edges, which the table has thrown away."
+/>
+
+**Analogy.** Systemic risk is the difference between asking "is this domino heavy?" and
+asking "where does this domino stand in the line?" A heavy domino lying alone topples
+and nothing happens. A *light* domino positioned so that twelve others lean on it can
+flatten the whole row. Or think of a power grid: a single substation's own specs tell
+you almost nothing about whether its failure browns out three states. The danger is in
+the wiring, not the box.
+
+**Definition.** **Systemic risk** is the risk that the failure or distress of one node
+in a financial network *propagates* through the network's connections, damaging other
+nodes that were individually healthy. It is a property of the *system*, not of any
+single firm. Formally, if each bank $i$ has some health $H_i$, systemic risk asks how a
+shock to one $H_j$ flows along the edges to change every other $H_i$ — a question about
+the *topology* of connections, not about any one node's column of features.
+
+A **per-firm tabular model** scores each bank from a feature vector of its own
+attributes: capital ratio, leverage, asset quality, profitability. It produces a
+probability of *that bank* failing *on its own terms*. By construction it is blind to
+"who is connected to whom," because the connection information was never in the table.
+You can stack a hundred features per firm and still never encode the one fact that
+matters for contagion: bank A's fate is wired to bank B's.
+
+**Worked example.** Banks A and B both report a capital buffer of \$50m, leverage of
+10x, and pristine asset quality. A tabular model scores both at, say, a 2 percent
+one-year default probability — identical, because their rows are identical. But suppose
+bank A has lent \$80m to a shaky hub that the network already knows is fragile, while
+bank B's \$80m is spread across ten rock-solid counterparties. If the hub defaults with
+a loss given default of 70 percent, bank A absorbs $0.70 \times 80 = 56$ (in \$m) in
+losses — more than its \$50m buffer, so A *fails*. Bank B loses nothing comparable. Same
+table row, opposite fate. The model that scored them as twins was structurally wrong,
+and no amount of feature engineering on A's *own* columns fixes it.
+
+<Callout variant="warning" title="The isolation fallacy">
+The deepest trap in risk modeling is scoring every firm in a vacuum and then summing the
+scores to estimate "system risk." Contagion is not additive. Two banks that each look
+safe in isolation can be a tinderbox *together* if they are tightly wired — and the sum
+of two small per-firm probabilities tells you nothing about the joint cascade. Adding up
+isolated risks is exactly the calculation that missed 2008.
+</Callout>
+
+### When to use it
+
+Reach for a systemic-risk lens whenever the failures you care about are *correlated
+through connections* rather than independent: interbank lending, supply chains, payment
+systems, reinsurance webs, or any portfolio where counterparties overlap. If failures
+are genuinely independent — a diversified book of unrelated consumer loans, say — a
+per-firm model may be enough. The moment one entity's collapse can *cause* another's,
+you need the graph.
+
+## The interbank lending network
+
+<MCQ
+  client:visible
+  pretest
+  question="In an interbank lending network modeled as a directed graph, what does a directed weighted edge from bank X to bank Y most naturally represent?"
+  options={[
+    { text: "X has lent money to Y — so X is exposed to Y's default, and the weight is the size of that exposure", correct: true },
+    { text: "X and Y are headquartered in the same city" },
+    { text: "X and Y have the same credit rating" },
+    { text: "X owns shares of Y's common stock only" },
+  ]}
+  explanation="An edge X to Y encodes a lending relationship: X lent to Y. The direction matters because exposure is asymmetric — X loses if Y defaults, not the other way around. The weight is the exposure size."
+/>
+
+**Analogy.** Think of the banking system as a plumbing diagram. Each bank is a tank of
+water (capital). Pipes connect the tanks, and each pipe carries water *one way* — from
+lender to borrower's obligation. When a tank cracks (a bank defaults), the lenders
+upstream lose the water they were owed. A big pipe into a small tank is a recipe for
+flooding the floor.
+
+**Definitions.** The interbank network is a *directed, weighted graph*:
+
+- **Nodes** are banks (or any financial firms).
+- A **directed edge** from $X$ to $Y$ means *$X$ lent to $Y$* — so $X$ holds an
+  **exposure** to $Y$. The edge **weight** $w_{X \to Y}$ is the size of that exposure
+  (the amount $X$ stands to lose if $Y$ goes bad).
+- **Exposure** is the amount a lender has at risk to a given counterparty.
+- A bank's **capital buffer** $C_i$ is the equity cushion it can burn before it becomes
+  insolvent — losses up to $C_i$ are survivable; losses beyond $C_i$ mean failure.
+- **Loss given default (LGD)** is the fraction of an exposure that is actually lost when
+  the borrower defaults. If $Y$ owes \$100 and you recover \$40 in bankruptcy, the LGD
+  is 60 percent. The realized loss to the lender is $\text{LGD} \times \text{exposure}$.
+
+Play with a live one below. Pick a bank to default, set the loss-given-default slider,
+and watch the loss ripple outward round by round. Notice that the *same* trigger bank can
+cause a tiny ripple or a system-wide collapse depending only on the LGD and on who sits
+downstream — the topology is doing the work.
+
+<ContagionCascadeGraph client:visible caption="An interbank lending network. Pick a bank to default and watch losses cascade to its lenders round by round; the loss-given-default slider controls how much of each exposure is destroyed. Watch how a single seed default can topple banks several hops away once their cumulative losses exceed their capital buffer." />
+
+**Worked example.** Bank $Y$ defaults owing \$100 (in units) to lender $X$. The recovery
+is poor, so $\text{LGD} = 60\%$. The loss flowing up the edge to $X$ is
+
+$$ \text{loss}_{X} = \text{LGD} \times \text{exposure} = 0.60 \times 100 = 60. $$
+
+Now check $X$'s buffer. If $X$ holds a capital buffer $C_X = 50$, then its loss of $60$
+exceeds its cushion of $50$ by $10$:
+
+$$ \text{loss}_X = 60 > C_X = 50 \implies X \text{ becomes insolvent}. $$
+
+So $X$ — a bank that did nothing wrong, made one ordinary loan — *also fails*, in the
+next round. Had the LGD instead been 40 percent, $X$'s loss would have been
+$0.40 \times 100 = 40 < 50$, and $X$ survives, bruised but standing. One slider, two
+completely different systems. That is the whole game.
+
+<Callout variant="info" title="Direction is not decoration">
+It is tempting to model lending as an undirected link — "A and B are connected." Don't.
+Exposure is asymmetric: if A lent to B, then A is hurt by B's default, but B is not hurt
+by A's. Collapsing the direction throws away exactly the information that tells you which
+way the losses flow. The graph must be directed, and the weights must be exposures.
+</Callout>
+
+### When to use it
+
+Model the interbank graph explicitly whenever you have, or can estimate, the
+*bilateral exposures* between firms — regulators with reporting data, a clearinghouse,
+or a fund-of-funds that knows its underlying counterparties. When exact exposures are
+hidden (the usual case for outside observers), the network is reconstructed
+statistically from aggregate balance-sheet items, and the reconstruction's assumptions
+matter enormously for the cascade you'll compute.
+
+## The default cascade
+
+<MCQ
+  client:visible
+  pretest
+  question="A default cascade propagates in rounds. A solvent bank fails in a given round when…"
+  options={[
+    { text: "its cumulative losses from all borrowers that have defaulted so far exceed its capital buffer", correct: true },
+    { text: "any one of its borrowers misses a single interest payment, regardless of size" },
+    { text: "its stock price falls by more than 5 percent on the day" },
+    { text: "it has more than three outgoing edges, regardless of the loss amounts" },
+  ]}
+  explanation="The cascade rule is a balance-sheet rule: a bank fails when its accumulated losses from defaulted counterparties exceed the equity it can absorb. Degree alone does not decide it — the loss amounts relative to the buffer do."
+/>
+
+**Analogy.** A default cascade is dominoes, but with a twist: each domino only falls if
+*enough weight* lands on it. Round 0, you flick the first tile. Round 1, every tile it
+leans on takes the hit — but only the ones that can't bear the load actually topple.
+Round 2, those new fallen tiles deliver their own pushes, and so on, until a round
+passes where nothing new falls. The line goes quiet, and you count the wreckage.
+
+**Definition.** A **default cascade** is the round-by-round propagation of failures
+through the exposure graph:
+
+- **Round 0.** A set of *seed* banks default (the initial shock).
+- **Each subsequent round $t$.** For every still-solvent bank $i$, add up the losses it
+  has taken from *all* counterparties that defaulted in rounds $0 \ldots t-1$. Bank $i$
+  fails this round if those cumulative losses exceed its capital buffer:
+
+$$ \sum_{j \,\in\, \text{defaulted}} \text{LGD} \times w_{i \to j} \;>\; C_i. $$
+
+- **Stop** when a full round produces no new defaults. The set of failed banks is the
+  cascade's footprint; the summed losses are its severity.
+
+**Worked example — a chain A → B → C.** Read the arrows as exposures: $A$ lent to $B$,
+and $B$ lent to $C$. Suppose:
+
+| Edge (lender → borrower) | Exposure | LGD | Loss to lender |
+|---|---|---|---|
+| C → B (B lent \$120 to C) | 120 | 50% | $0.50 \times 120 = 60$ |
+| B → A (A lent \$90 to B) | 90 | 50% | $0.50 \times 90 = 45$ |
+
+with capital buffers $C_C$ irrelevant (C is the seed), $C_B = 50$, and $C_A = 40$.
+
+- **Round 0.** $C$ defaults (the seed shock).
+- **Round 1.** $B$ had lent \$120 to $C$. Its loss is $0.50 \times 120 = 60$. Compare to
+  $B$'s buffer: $60 > 50$, so $B$ fails. Meanwhile $A$ has so far lost nothing (its
+  borrower $B$ has not yet *defaulted*, only become insolvent this round), so $A$ holds.
+- **Round 2.** Now that $B$ has defaulted, $A$'s loss on its \$90 loan to $B$ is
+  $0.50 \times 90 = 45$. Compare to $A$'s buffer: $45 > 40$, so $A$ fails too.
+- **Round 3.** No solvent banks remain with new losses. The cascade stops. One seed
+  default ($C$) flattened the entire chain — three banks down from one shock, two hops deep.
+
+Notice the cascade reached $A$ even though $A$ never lent a cent to the original
+defaulter $C$. $A$ was *two hops* away and still died. That is contagion: damage travels
+along paths, not just to immediate neighbours.
+
+<Callout variant="warning" title="Cascade depth is not just degree">
+A seductive shortcut is to rank banks by *degree* — how many connections they have — and
+call the high-degree ones "systemic." Wrong. A low-degree but thinly-capitalised bank
+sitting on the path between two large clusters can topple and bridge a cascade that a
+fat, well-capitalised hub would have absorbed. What matters is the loss relative to each
+node's buffer along the *paths*, not the raw count of edges. Degree is a hint, not the
+answer — exactly the kind of nuance the interactive graph above makes visible when you
+trigger a small-but-fragile node.
+</Callout>
+
+### When to use it
+
+Run an explicit cascade simulation when you need a *mechanistic, auditable* answer to
+"what happens if bank $j$ fails?" — stress testing, regulatory what-ifs, setting capital
+surcharges for systemically important banks. The cascade is transparent and causal: you
+can point at every domino. Its cost is that it needs the full exposure matrix and a
+choice of LGD, and it counts each path discretely (a bank is either failed or not),
+which is exactly the rigidity that motivates the next, smoother measure.
+
+<FillBlank
+  client:visible
+  question="State the cascade rule in one line."
+  text="In each round, a still-solvent bank fails when its cumulative losses from defaulted counterparties {{exceed its capital buffer|equal its total assets|exceed the market average}}."
+  explanation="The trigger is cumulative loss versus the bank's own equity cushion (capital buffer). It is a balance-sheet insolvency test, applied round by round as new defaults arrive."
+/>
+
+## DebtRank — systemic impact without double-counting
+
+<MCQ
+  client:visible
+  pretest
+  question="DebtRank measures the fraction of total economic value potentially affected if a node becomes distressed. How does it differ from a naive 'add up losses along every path' count?"
+  options={[
+    { text: "It propagates distress along all paths but lets each node pass its impact onward only once, avoiding the over- or under-counting you get from naively summing walks", correct: true },
+    { text: "It ignores the network entirely and uses only each bank's own size" },
+    { text: "It is just the default probability of the seed bank" },
+    { text: "It counts only direct neighbours and stops there" },
+  ]}
+  explanation="DebtRank's signature trick is walking the network once: distress spreads along all paths, but each node only relays its impact a single time, so the measure neither double-counts feedback loops to infinity nor truncates at one hop."
+/>
+
+**Analogy.** The default cascade is a binary game of dominoes — a tile is up or down.
+DebtRank is more like measuring how far a *rumor* spreads through a town when one person
+gets nervous: not everyone panics fully, people pass along a *fraction* of their worry,
+and crucially, you don't let the rumor bounce back and forth between the same two
+gossips forever inflating the count. You let each person spread their unease *once*, then
+tally how much of the town is rattled.
+
+**Definition.** **DebtRank** is a recursive measure of the fraction of the system's total
+economic value that would be affected if a node (or set of nodes) becomes *distressed* —
+not necessarily fully defaulted. Each node $i$ carries a **distress level**
+$h_i \in [0, 1]$ ($0$ = healthy, $1$ = fully defaulted) and an **economic value weight**
+$v_i$ (its share of total system value, with $\sum_i v_i = 1$). Distress propagates along
+edges with a *relative-loss* weighting: if borrower $j$'s distress rises by $\Delta h_j$,
+its lender $i$ absorbs impact proportional to the exposure $w_{i \to j}$ relative to $i$'s
+own capital. The key discipline: each node is allowed to *transmit* its distress onward
+only once (it moves to an "inactive" state after passing it along), so feedback loops do
+not let impact circulate forever.
+
+The DebtRank of an initial shock is then the economic-value-weighted increase in distress
+across the whole system, minus the seed's own initial distress:
+
+$$ \text{DebtRank} \;=\; \sum_{i} v_i \, h_i(\infty) \;-\; \sum_{i} v_i \, h_i(0). $$
+
+Read it as: "of all the economic value in the system, what additional fraction ends up
+distressed because this node wobbled?" A DebtRank near $1$ means this node can rattle
+essentially the whole system; near $0$ means it is systemically peripheral.
+
+**Worked example — a stylised 3-node network.** Let nodes be $\{1, 2, 3\}$ with equal
+economic value weights $v_1 = v_2 = v_3 = 1/3$. Let the impact passed from a distressed
+borrower to its lender be governed by relative exposures (already normalised by the
+lender's capital):
+
+| Distressed node | passes impact to | relative-loss weight |
+|---|---|---|
+| 1 | 2 | 0.8 |
+| 2 | 3 | 0.5 |
+
+Shock node $1$ to full distress: $h_1 = 1$, others start at $h_2 = h_3 = 0$.
+
+- **Step 1.** Node $1$ (distressed) passes impact to node $2$:
+  $h_2 \leftarrow \min(1,\; 0 + 0.8 \times 1) = 0.8$. Node $1$ now goes inactive (it has
+  spread its distress once and will not transmit again).
+- **Step 2.** Node $2$ (now distressed at $0.8$) passes impact to node $3$:
+  $h_3 \leftarrow \min(1,\; 0 + 0.5 \times 0.8) = 0.4$. Node $2$ goes inactive.
+- **Step 3.** Node $3$ has no outgoing edge to pass along; it goes inactive. No node can
+  transmit further — and critically, node $1$ being inactive means node $3$'s distress
+  cannot loop *back* into $1$ and re-inflate the total. The walk terminates.
+
+Final distress: $h_1 = 1,\ h_2 = 0.8,\ h_3 = 0.4$. The DebtRank (impact beyond the seed's
+own value) is the value-weighted distress of *everyone else*:
+
+$$ \text{DebtRank} = \tfrac{1}{3}(0.8) + \tfrac{1}{3}(0.4) = \tfrac{1}{3}(1.2) = 0.40. $$
+
+So distressing node $1$ puts an additional 40 percent of the system's economic value into
+distress — even though only node $1$ ever truly "defaulted." A naive sum over walks that
+let distress bounce $1 \to 2 \to 3 \to \ldots \to 1 \to 2 \ldots$ would have inflated this
+past any sensible bound; DebtRank's walk-once rule keeps it honest.
+
+<Callout variant="warning" title="DebtRank is impact, not probability">
+Do not read a DebtRank of 0.40 as "a 40 percent chance this bank fails." DebtRank says
+nothing about *how likely* the seed is to get into trouble — it is purely a measure of
+*systemic impact given distress*: if this node wobbles, how much of the system goes down
+with it. A bank can have a tiny default probability and a huge DebtRank (a too-big-to-fail
+hub) or a large default probability and a tiny DebtRank (a fragile but isolated minnow).
+Conflating the two is how you mis-rank what to bail out.
+</Callout>
+
+### When to use it
+
+Use DebtRank when you want a *smooth, single number* ranking nodes by systemic importance
+— who to capitalise more, who to watch, who to never let fail. Unlike the binary cascade,
+it captures *partial* distress and the contribution of weak (not yet failed) links, and it
+avoids the double-counting that plagues naive path-summing. Pair it with the cascade: the
+cascade tells you the discrete worst case, DebtRank gives you a continuous ranking for
+triage.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Capital buffer", definition: "The equity cushion a bank can absorb in losses before it becomes insolvent" },
+    { term: "Loss given default (LGD)", definition: "The fraction of an exposure actually lost when the borrower defaults" },
+    { term: "Default cascade", definition: "Round-by-round binary propagation of failures once cumulative losses exceed buffers" },
+    { term: "DebtRank", definition: "A continuous, walk-once measure of the economic value distressed if a node wobbles" },
+    { term: "Distress level h_i", definition: "A node's state from 0 (healthy) to 1 (fully defaulted), propagated along edges" },
+  ]}
+/>
+
+## Feedback loops and amplification
+
+<MCQ
+  client:visible
+  pretest
+  question="Two banks have no direct loan between them but both hold a large position in the same illiquid asset. Why are they still 'connected' for contagion purposes?"
+  options={[
+    { text: "If one is forced to fire-sell the asset, the price drops and marks down the other's holdings too — an indirect edge through a common asset", correct: true },
+    { text: "They are not connected at all; with no direct loan there is zero contagion channel" },
+    { text: "They are connected only if they share a board member" },
+    { text: "Common asset holdings reduce risk by diversification, never amplify it" },
+  ]}
+  explanation="Common-asset overlap is an indirect edge: a fire sale by one bank pushes the asset's market price down, and mark-to-market accounting forces the other to recognise a loss. No loan is needed — the shared exposure is the wire."
+/>
+
+**Analogy.** Imagine two people standing on opposite ends of the same waterbed. They've
+never touched, never spoken — but when one flops down, the other gets launched. The
+mattress is the shared asset, and mark-to-market is the bounce. Now add a feedback twist:
+the launched person, scrambling, also flops, which bounces the first one *again*. That
+back-and-forth is a fire-sale spiral, and it is why systemic losses are nonlinear.
+
+**Definitions.**
+
+- **Mark-to-market** accounting forces a bank to value assets at current market prices.
+  If the price falls, the bank books a loss *immediately*, even without selling.
+- A **fire sale** happens when a distressed bank dumps assets to raise cash; the selling
+  pressure pushes the price down.
+- **Common-asset overlap** is an *indirect edge*: two banks holding the same asset are
+  linked even with no loan between them, because one's fire sale marks down the other's
+  book. The "edge weight" is the size of their overlapping positions.
+- A **fire-sale spiral** is the feedback loop: distress → fire sale → price drop →
+  mark-to-market losses at *other* holders → *their* distress → more fire sales → further
+  price drops. Each lap feeds the next.
+
+This feedback is why the system is **nonlinear**. A linear per-firm regression implicitly
+assumes losses add up independently: shock bank A, get loss A; shock bank B, get loss B;
+total loss = A + B. But with feedback, shocking A *and* B together produces losses *larger*
+than A + B, because A's fire sale worsens B's position, which worsens A's, and so on. The
+linear model has no term for "your loss depends on the loss you caused in someone else,"
+so it systematically **underestimates tail losses** — precisely the losses you most need to
+size correctly.
+
+**Worked / illustrative example — an amplification multiplier.** Suppose a shock would
+cause \$100m of *direct* losses if the system were static. But each \$1 of forced selling
+depresses the common asset's price enough to create an additional \$0.40 of mark-to-market
+losses across all holders, which triggers further selling, and so on. The total loss is a
+geometric series:
+
+$$ \text{total loss} = 100 \times \left(1 + 0.4 + 0.4^2 + 0.4^3 + \cdots\right) = 100 \times \frac{1}{1 - 0.4}. $$
+
+Compute the multiplier: $\frac{1}{1 - 0.4} = \frac{1}{0.6} \approx 1.67$. So the total loss
+is
+
+$$ 100 \times 1.67 \approx 167, $$
+
+a 67 percent amplification over the \$100m of direct damage. A linear model that booked
+only the first-round \$100m would have understated the true loss by \$67m. And the
+multiplier explodes as the per-lap feedback approaches $1$: at a feedback of $0.8$ the
+multiplier is $\frac{1}{1-0.8} = 5\times$. Tail risk lives in that denominator.
+
+<Callout variant="warning" title="Why the linear model always under-reserves the tail">
+The dangerous failure mode is calibrating a loss model on calm periods, where feedback is
+near zero and losses really do look additive, then trusting it in a crisis, where feedback
+spikes and the multiplier blows up. The model isn't "a bit off" in the tail — it is
+qualitatively wrong, because it has no representation of the loop at all. This is the
+mathematical fingerprint of every "nobody could have predicted" crisis: the loop term was
+missing from the model.
+</Callout>
+
+### When to use it
+
+Model feedback and indirect (common-asset) edges whenever leverage is high, assets are
+illiquid, and mark-to-market or margin rules can force selling — i.e., whenever a price
+drop can *mechanically* compel more selling. In those regimes the multiplier dominates the
+tail and ignoring it is malpractice. In genuinely liquid, low-leverage, hold-to-maturity
+settings the feedback is weak and a first-round (linear) estimate may suffice — but verify
+that assumption rather than assuming it.
+
+<Categorize
+  client:visible
+  question="Sort each item by whether it is a DIRECT contagion channel (a loan between two banks) or an INDIRECT channel (no loan, but still linked)."
+  buckets={["Direct (lending edge)", "Indirect (no loan needed)"]}
+  items={[
+    { text: "Bank X lent 100 to Bank Y and Y defaults", bucket: "Direct (lending edge)" },
+    { text: "Two banks both hold the same illiquid bond; one fire-sells it", bucket: "Indirect (no loan needed)" },
+    { text: "A interbank deposit that B fails to repay to A", bucket: "Direct (lending edge)" },
+    { text: "Mark-to-market losses spreading through a shared asset price", bucket: "Indirect (no loan needed)" },
+    { text: "A revolving credit line X extended to Y", bucket: "Direct (lending edge)" },
+    { text: "Common collateral whose price collapses in a fire sale", bucket: "Indirect (no loan needed)" },
+  ]}
+  explanation="Direct edges are actual obligations between two named banks. Indirect edges need no loan at all — overlapping positions in the same asset link banks through the market price, via fire sales and mark-to-market. A complete systemic model needs both."
+/>
+
+## Where the GNN comes in
+
+<MCQ
+  client:visible
+  pretest
+  question="A graph neural network's message passing has each node update its representation from its neighbours' representations, repeatedly. Why is that a natural fit for systemic risk?"
+  options={[
+    { text: "Message passing literally implements 'your fragility depends on your neighbours' fragility' — the same recursion DebtRank and the cascade hand-code — so the GNN can learn a topology-aware risk score", correct: true },
+    { text: "Because GNNs are guaranteed to be more accurate than any simulation, so they replace it" },
+    { text: "Because message passing ignores the graph and just averages features, which is simpler" },
+    { text: "Because a GNN needs no labels and discovers contagion with no supervision or validation" },
+  ]}
+  explanation="The cascade and DebtRank both define a node's risk recursively in terms of its neighbours' risk. A GNN's message passing is exactly that recursion, but learned and differentiable — so it can absorb topology that a per-firm model cannot, while still needing labels and validation."
+/>
+
+**Analogy.** DebtRank and the cascade are like a recipe a human chef wrote out by hand:
+"to find a node's distress, take its neighbours' distress, weight by exposures, repeat."
+A GNN is a chef who *tastes thousands of finished dishes* (simulated cascades) and learns
+to predict the outcome directly — same underlying logic of "the dish depends on its
+ingredients' interactions," but learned from examples rather than hand-coded, and fast
+enough to taste a new menu instantly.
+
+**The reframing — this is a node-level prediction task.** Recall from lesson 2 that GNNs
+do node-level regression or classification. Systemic risk slots in perfectly:
+
+- **Each node** (bank) gets a **fragility / systemic-importance score** as its label.
+- **The label** can come from *simulation* (run thousands of cascades with random shocks
+  and record each bank's expected cascade loss or its DebtRank) or from *history*
+  (realised losses in past stress episodes).
+- **The features** are the per-firm columns the tabular model used — capital, leverage,
+  asset quality — but now *the message passing adds the topology* the table lacked.
+
+The mechanism is the point. A GNN layer updates each bank's hidden state $h_i$ from its
+neighbours' states:
+
+$$ h_i^{(\ell+1)} = \sigma\!\left( W \, h_i^{(\ell)} \;+\; \sum_{j \in \mathcal{N}(i)} \frac{w_{i \to j}}{\,\text{(normaliser)}\,}\, h_j^{(\ell)} \right). $$
+
+Read it next to the DebtRank update $h_i \leftarrow \sum_j (\text{relative loss}) \, h_j$.
+They are the same shape: a node's new state is a weighted combination of its neighbours'
+states, stacked over rounds/layers. The cascade hand-codes the weights and the threshold;
+the GNN *learns* them from data. Stack $L$ layers and a node "feels" everything within $L$
+hops — exactly the multi-round reach of a cascade. And because lesson 3 gave you
+**inductive GraphSAGE**, the trained GNN can score a *new* bank that wasn't in the training
+graph, by aggregating its neighbours — no retraining required.
+
+**Worked intuition.** Train on simulated labels: for each of the 3,000 banks, run 10,000
+random shock scenarios, record the bank's average cascade loss, and use that as its target.
+The GNN learns a function from (own features + neighbourhood structure) to expected
+systemic loss. At inference it produces that score in *milliseconds* per bank, versus the
+minutes-to-hours a fresh 10,000-scenario simulation would take — a fast, differentiable
+*surrogate* for the simulator. Differentiable matters: you can now ask "which exposure, if
+trimmed, most reduces system fragility?" by reading gradients, something a discrete
+simulation can't hand you directly.
+
+<Callout variant="warning" title="The GNN does not replace the structural model">
+A trained GNN is a *surrogate and a feature-enricher*, not a substitute for the mechanistic
+cascade. The cascade is causal and auditable; the GNN is fast and topology-aware but is
+only as good as the simulated/historical labels it learned from. Use the GNN to add the
+network features a linear model structurally lacks, and to approximate the simulator at
+speed — then *validate it against the real simulation*, especially in the tail, where the
+training labels are sparsest. A surrogate that was never checked against the thing it
+surrogates is just a faster way to be wrong.
+</Callout>
+
+Here is the comparison the whole lesson has been building toward:
+
+| | Per-firm tabular model | Network / GNN model |
+|---|---|---|
+| **What each node sees** | Only its own features (capital, leverage, asset quality) | Its own features **plus** its neighbours', aggregated over multiple hops |
+| **Direct contagion (X lent to Y)** | Invisible — no edges in the data | Captured by message passing along exposure edges |
+| **Multi-hop cascades** | Invisible — scores each firm in isolation | Captured by stacking layers (each layer = one more hop) |
+| **Feedback / fire-sale amplification** | Underestimated — assumes losses add linearly | Can learn the nonlinear amplification from simulated labels |
+| **Indirect common-asset links** | Invisible — no edge without a loan | Captured by adding common-asset edges to the graph |
+| **New, unseen bank** | Scores it from its row like any other | Inductively scores it from its neighbours (GraphSAGE) |
+| **Auditability / causality** | Transparent but structurally blind | Less transparent; must be validated against the structural simulation |
+
+<Callout variant="tip" title="Coming next: don't let the topology leak">
+Because a GNN learns from *who is connected to whom*, naively splitting nodes at random
+into train and test leaks the answer: a test node's neighbours (and their labels) sit in
+the training set, so the model 'cheats' by peeking across the edge. Topology-aware splits —
+holding out whole connected regions, or whole time periods — matter enormously here, far
+more than in tabular finance. The next lesson is entirely about this leakage trap.
+</Callout>
+
+### When to use it
+
+Bring in a GNN when (1) you have a usable graph (estimated exposures and/or common-asset
+overlaps), (2) you can generate labels from simulation or history, and (3) you need either
+*speed* (a real-time fragility score across thousands of banks) or *features* (topology
+signals to feed a downstream model). Stick with the bare structural cascade when you need
+a one-off, fully-auditable answer and have time to simulate. And never deploy the GNN's
+score without checking it against the simulator it learned from.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">If the cascade simulation is causal and auditable, why bother learning a GNN surrogate at all?</summary>
+
+**Answer.** Three reasons. **Speed:** scoring thousands of banks in real time, or inside an
+optimisation loop, is infeasible if every evaluation re-runs ten thousand cascade
+scenarios; the GNN approximates the simulator in milliseconds. **Differentiability:** the
+GNN gives you gradients, so you can ask "which exposure should I cut to most reduce system
+fragility?" — a question the discrete simulation answers only by brute-force re-running.
+**Generalisation / features:** the learned representation captures topology signals you can
+feed into other models, and inductive GraphSAGE scores brand-new banks without re-simulating
+the whole system. The simulation remains the *ground truth* you validate against — the GNN
+is the fast, smooth, differentiable stand-in, not a replacement.
+
+</details>
+</Reveal>
+
+## Recap
+
+You came in knowing that a per-firm model scores each bank from its own row. You leave
+knowing *why that is structurally fatal* for the most important risk in finance:
+contagion lives in the edges, and a table has no edges. You traced a default cascade
+round by round, watched a bank two hops from the shock die anyway, and saw that depth is
+about loss-versus-buffer along paths, not raw degree. You met DebtRank — a smooth,
+walk-once measure of systemic *impact* (not probability) — and the fire-sale feedback
+loops whose amplification multiplier makes the system nonlinear and humbles every linear
+model in the tail. And you saw the punchline: a GNN's message passing *is* the
+neighbour-depends-on-neighbour recursion that DebtRank hand-codes, so it can learn a
+fast, topology-aware fragility score — a surrogate for the simulator, validated against
+it, not a replacement.
+
+<MindMap
+  client:visible
+  title="Systemic risk and contagion"
+  caption="Build the map: why tables fail, the cascade machinery, the smooth measure, the nonlinear loop, and where the GNN slots in."
+  root={{
+    label: 'Systemic risk',
+    children: [
+      { label: 'Why a table cant see it', children: [
+        { label: 'Scores each firm in isolation' },
+        { label: 'No edges = no who-owes-whom' },
+        { label: 'Contagion is not additive' },
+      ]},
+      { label: 'Interbank network', children: [
+        { label: 'Nodes = banks' },
+        { label: 'Directed edge X to Y = X lent to Y' },
+        { label: 'Weight = exposure; loss = LGD x exposure' },
+        { label: 'Capital buffer absorbs losses' },
+      ]},
+      { label: 'Default cascade', children: [
+        { label: 'Round 0 seed defaults' },
+        { label: 'Fail if cumulative loss > buffer' },
+        { label: 'Reaches nodes many hops away' },
+        { label: 'Depth is not just degree' },
+      ]},
+      { label: 'DebtRank', children: [
+        { label: 'Walk-once, no double-count' },
+        { label: 'Continuous distress h in 0..1' },
+        { label: 'Impact, not default probability' },
+      ]},
+      { label: 'Feedback amplification', children: [
+        { label: 'Fire sales + mark-to-market' },
+        { label: 'Common-asset = indirect edge' },
+        { label: 'Multiplier 1/(1-feedback)' },
+        { label: 'Linear model under-reserves tail' },
+      ]},
+      { label: 'Where the GNN comes in', children: [
+        { label: 'Node-level fragility score' },
+        { label: 'Message passing = the recursion' },
+        { label: 'Inductive GraphSAGE for new banks' },
+        { label: 'Surrogate, validate vs simulation' },
+      ]},
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Mixed check: did the contagion reach you?"
+  questions={[
+    {
+      question: "Banks A and B have identical balance sheets. A per-firm tabular model scores them identically. Why can this be dangerously wrong?",
+      options: [
+        { text: "Their risk depends on their position in the lending network, which the identical rows do not encode — one could sit next to a failing hub", correct: true },
+        { text: "Identical balance sheets guarantee identical risk in every meaningful sense" },
+        { text: "Tabular models are wrong only because they are slow" },
+        { text: "The model forgot to include the stock price column" },
+      ],
+      explanation: "Contagion risk lives in the edges. Two banks with identical own-features can have opposite fates depending on who they are wired to — information a per-firm table never contained.",
+    },
+    {
+      question: "Trace this cascade. Bank C (seed) defaults. B had lent 120 to C, LGD 50 percent, B's buffer is 50. A had lent 90 to B, LGD 50 percent, A's buffer is 40. Who ends up failing?",
+      options: [
+        { text: "C, then B (loss 60 > 50), then A (loss 45 > 40) — all three fail", correct: true },
+        { text: "Only C; the cascade stops because B and A made loans to different banks" },
+        { text: "C and B, but A survives because 45 is less than its buffer" },
+        { text: "C and A, but B survives because it is closer to the seed" },
+      ],
+      explanation: "Round 1: B's loss is 0.50 x 120 = 60 > 50, so B fails. Round 2: now B has defaulted, so A's loss is 0.50 x 90 = 45 > 40, so A fails. One seed default flattens the whole chain, two hops deep.",
+    },
+    {
+      question: "What is the key reason DebtRank avoids the pathology of naively summing losses over every walk in the network?",
+      options: [
+        { text: "Each node transmits its distress onward only once, so feedback loops cannot inflate the total indefinitely", correct: true },
+        { text: "It only ever looks at a node's immediate neighbours and ignores the rest" },
+        { text: "It replaces the network with each bank's own size and forgets the edges" },
+        { text: "It assumes every bank either fully defaults or is fully healthy, nothing in between" },
+      ],
+      explanation: "DebtRank lets distress spread along all paths but moves each node to inactive after it passes its impact along once. That walk-once rule is what prevents the double-counting that naive path-summing suffers from feedback loops.",
+    },
+    {
+      question: "A shock causes 100 of direct losses, and each unit of forced selling creates an extra 0.4 of mark-to-market losses that trigger more selling. Roughly what is the total loss, and what does it reveal about a linear model?",
+      options: [
+        { text: "About 167 (multiplier 1/(1-0.4) is about 1.67) — a linear model booking only the first-round 100 under-reserves the tail by about 67", correct: true },
+        { text: "Exactly 100, because feedback cancels out in equilibrium" },
+        { text: "About 140, and a linear model captures it perfectly" },
+        { text: "About 40, because the feedback reduces total losses" },
+      ],
+      explanation: "The losses form a geometric series with ratio 0.4: total = 100 x 1/(1-0.4) = 100 x 1.67 = 167. The linear model has no feedback term, so it stops at 100 and systematically understates crisis-tail losses.",
+    },
+    {
+      question: "In what sense does a GNN's message passing mirror the structural systemic-risk measures, and what is the correct way to deploy it?",
+      options: [
+        { text: "Message passing implements 'your fragility depends on your neighbours' fragility' — the same recursion DebtRank hand-codes — so use the GNN as a fast, topology-aware surrogate, validated against the simulation", correct: true },
+        { text: "It proves the simulation is unnecessary, so discard the cascade model entirely" },
+        { text: "It works with no labels and no validation, discovering contagion on its own" },
+        { text: "It only averages each bank's own features and never uses the graph" },
+      ],
+      explanation: "A GNN layer updates each node from its neighbours' states, stacked over layers for multi-hop reach — exactly the recursion of the cascade and DebtRank, but learned and differentiable. It is a surrogate and feature-enricher that must be validated against the structural simulation, not a replacement for it.",
+    },
+  ]}
+/>

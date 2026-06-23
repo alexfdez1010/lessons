@@ -1,0 +1,358 @@
+---
+title: "Double Machine Learning"
+description: "Keep your gradient-boosted and deep models and still get an unbiased causal estimate: Neyman orthogonality, cross-fitting, partialling-out high-dimensional confounders with ML nuisance models, and why naive 'throw the treatment into the feature set' plug-in estimates are biased."
+topic: "en/causal-inference-for-alpha-and-execution"
+order: 6
+minutes: 22
+updated: 2026-06-23
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, PurgedCvSplit } from '@/components/react';
+
+By now you can state the causal question precisely, draw the DAG, name the confounders, and — when you are lucky — exploit a natural experiment. But most of the time you are not lucky. You have *dozens* of confounders (the entire factor-exposure set, microstructure state, regime indicators), the relationships between them and the outcome are nonlinear, and you would dearly love to model them with the gradient-boosted trees and deep nets you already trust. The trouble: the moment you let a flexible machine-learning model touch the problem the *naive* way — toss the treatment in as one more feature and read off its coefficient — your causal estimate is silently, systematically **biased**. Not noisy. Biased, in a direction you can't sign and at a rate that does not vanish.
+
+**Double Machine Learning (DML)** is the procedure that lets you keep all that ML horsepower and still recover a causal coefficient that is unbiased, $\sqrt{n}$-consistent, and comes with honest confidence intervals. It rests on two ideas — *orthogonalisation* (partialling-out) and *cross-fitting* — and one beautiful property, *Neyman orthogonality*, that makes the whole thing work. This lesson installs all three.
+
+## The plug-in trap: regularization bias leaks into your effect
+
+<MCQ
+  client:visible
+  pretest
+  question="You have 200 candidate confounders and want the causal effect of a signal T on returns Y. You fit one big gradient-boosted model of Y on T plus all 200 confounders and read off T's 'importance'/coefficient. What goes wrong?"
+  options={[
+    { text: "Regularization and overfitting bias in the high-dimensional nuisance fit leak into the treatment coefficient, biasing it by an amount that does not shrink at the root-n rate", correct: true },
+    { text: "Nothing — the model controls for the confounders, so the treatment coefficient is unbiased" },
+    { text: "The estimate is unbiased but the standard errors are slightly too small" },
+    { text: "It only fails if the confounders are linearly related to the outcome" },
+  ]}
+  explanation="A flexible learner must regularize to handle 200 features. That regularization biases the part of the fit that absorbs the confounders, and because the treatment is tangled into the same fit, the bias contaminates T's coefficient — at a rate slower than root-n, so it does not wash out."
+/>
+
+**Analogy.** You hire one contractor to do two jobs at once: estimate the *effect of a new window* on your heating bill, while also accounting for *insulation, weather, and house size*. To finish on budget (regularization), the contractor cuts corners on the hard part — modelling insulation and weather — and quietly shoves the leftover error into the one number you actually asked for, the window's effect. The corners he cut on the nuisance work don't cancel; they pile onto your answer. You wanted a clean measurement and got a measurement plus the contractor's accumulated shortcuts.
+
+**Definition.** Write the partially linear model
+
+$$
+Y = \theta_0 T + g_0(X) + U, \qquad \mathbb{E}[U \mid T, X] = 0,
+$$
+
+where $T$ is the treatment, $X$ is the (high-dimensional) confounder vector, $g_0$ is an unknown nuisance function, and $\theta_0$ is the causal parameter you want. The treatment is itself driven by the confounders, $T = m_0(X) + V$ with $\mathbb{E}[V \mid X] = 0$. The **plug-in estimator** fits $\hat g$ and $\hat\theta$ jointly with one regularized learner and reports $\hat\theta$. Its error decomposes into a well-behaved $\sqrt{n}$ term *plus* a **regularization bias** term that scales like the nuisance estimation error in $\hat m$ times the error in $\hat g$ — and for any learner that must regularize, that product shrinks **slower** than $1/\sqrt{n}$, so it dominates and does not vanish.
+
+**Worked example.** Suppose the true effect is $\theta_0 = 0$ (the signal causes nothing) but a confounder $X$ raises both $T$ and $Y$. A regularized learner shrinks its fitted $\hat g(X)$ toward zero, so it *under-explains* $Y$ from $X$ and leaves residual outcome variation that still correlates with $T$ through the confounder. Numerically: say the regularization leaves $\hat g$ capturing only 90% of the confounder's effect on $Y$, and $T$ shares variance with that uncaptured 10%. The leftover correlation maps to a spurious $\hat\theta \approx 0.4$ where the truth is $0$. Collect ten times more data and the bias barely moves — because regularization strength scales with dimension, not just sample size. You have a confident, tight, *wrong* confidence interval centred on $0.4$.
+
+<Callout variant="warning" title="A tighter CI is not a more correct one">
+The plug-in's failure is insidious because more data shrinks the *variance* (your interval gets narrower) while leaving the *bias* roughly intact. So the estimate looks more precise as $n$ grows, lulling you into trusting it, even as it stays parked at the wrong value. Bias and variance are different enemies: cross-validation and bigger datasets fight variance and overfitting; they do **nothing** for the structural regularization bias that DML is built to kill.
+</Callout>
+
+### When to use it
+
+Recognise the plug-in trap whenever you see "we controlled for everything by putting it all in the model and reading off the treatment's SHAP value / coefficient." That is the trap, verbatim. Any time the *same* flexible model both absorbs the confounders and estimates the effect, the effect is contaminated. The fix is never "use a better learner" — it is to *separate* the nuisance estimation from the effect estimation, which is exactly what the next section does.
+
+<FillBlank
+  client:visible
+  question="Name the bias the plug-in suffers."
+  text="Jointly fitting the nuisance and the effect with one regularized learner injects {{regularization bias|sampling noise|survivorship bias}} into the treatment coefficient, and it shrinks slower than root-n so it does not wash out with more data."
+  explanation="Regularization is unavoidable in high dimensions; the bias it creates in the nuisance fit leaks straight into theta and decays too slowly to ignore."
+/>
+
+## Partialling-out: residualize both sides, then regress the residuals
+
+<MCQ
+  client:visible
+  pretest
+  question="DML's first move is to 'partial out' the confounders. Concretely, what does it residualize?"
+  options={[
+    { text: "Both Y and T against X separately, then regress the Y-residuals on the T-residuals to get theta", correct: true },
+    { text: "Only Y against X, then regress those residuals on the raw treatment T" },
+    { text: "Only T against X, then regress raw Y on those residuals" },
+    { text: "Neither — it regresses Y on T and X together and isolates T afterward" },
+  ]}
+  explanation="The Frisch-Waugh-Lovell logic: scrub the confounders out of BOTH the outcome and the treatment, then the leftover variation in T is confounder-free, and regressing the Y-residuals on the T-residuals recovers the clean causal slope theta."
+/>
+
+**Analogy.** Two friends always show up to dinner having both already eaten — because the same host (the confounder $X$) fed them beforehand. To learn whether *one friend's appetite genuinely drives the other's*, you first subtract off "how much the host fed each of them." What's left is each friend's *unexplained* hunger. Correlate those leftovers and you've removed the host entirely. Residualizing $Y$ and $T$ on $X$ is subtracting the host's meal from both plates before you compare.
+
+**Definition.** This is the **Frisch-Waugh-Lovell (FWL)** theorem, dragged into the ML era. Classic FWL says: in a linear regression, the coefficient on $T$ equals the slope you'd get by (1) regressing $Y$ on the other variables and taking residuals $\tilde Y$, (2) regressing $T$ on the other variables and taking residuals $\tilde T$, (3) regressing $\tilde Y$ on $\tilde T$. DML replaces the two "regress on $X$" steps with **arbitrary ML nuisance models**:
+
+$$
+\tilde Y = Y - \hat g(X), \qquad \tilde T = T - \hat m(X), \qquad \hat\theta = \frac{\widehat{\mathrm{Cov}}(\tilde T, \tilde Y)}{\widehat{\mathrm{Var}}(\tilde T)}.
+$$
+
+Here $\hat g(X) = \mathbb{E}[Y \mid X]$ is the outcome model and $\hat m(X) = \mathbb{E}[T \mid X]$ is the **propensity / treatment model**. Both may be gradient-boosted trees, random forests, neural nets — anything. The estimator $\hat\theta$ is just a one-variable regression of clean residuals on clean residuals.
+
+**Worked example.** Five observations of a signal $T$ and next-period return $Y$, with confounder predictions $\hat m(X)$ and $\hat g(X)$ already fitted by some ML model. Compute the residuals, then $\hat\theta$.
+
+| Obs | $T$ | $\hat m(X)$ | $\tilde T = T-\hat m$ | $Y$ | $\hat g(X)$ | $\tilde Y = Y-\hat g$ |
+|---|---|---|---|---|---|---|
+| 1 | 1.0 | 0.6 | +0.4 | 2.2 | 1.4 | +0.8 |
+| 2 | 0.4 | 0.5 | −0.1 | 1.0 | 1.2 | −0.2 |
+| 3 | 0.9 | 0.7 | +0.2 | 1.9 | 1.5 | +0.4 |
+| 4 | 0.2 | 0.5 | −0.3 | 0.8 | 1.4 | −0.6 |
+| 5 | 0.5 | 0.7 | −0.2 | 1.1 | 1.5 | −0.4 |
+
+The residuals are mean-zero. Now $\hat\theta = \frac{\sum \tilde T\,\tilde Y}{\sum \tilde T^2}$:
+
+$$
+\textstyle\sum \tilde T\,\tilde Y = (0.4)(0.8)+(-0.1)(-0.2)+(0.2)(0.4)+(-0.3)(-0.6)+(-0.2)(-0.4) = 0.32+0.02+0.08+0.18+0.08 = 0.68,
+$$
+
+$$
+\textstyle\sum \tilde T^2 = 0.16+0.01+0.04+0.09+0.04 = 0.34, \qquad \hat\theta = \frac{0.68}{0.34} = 2.0.
+$$
+
+So after scrubbing the confounders out of *both* sides, a one-unit change in the confounder-free part of the signal moves the confounder-free part of the return by $2.0$. That slope is the causal $\hat\theta$ — and notice it came from a trivial univariate regression once the ML had done the partialling-out.
+
+<Callout variant="warning" title="Residualize the treatment too — not just the outcome">
+The single most common DML mistake is to residualize only $Y$ (build a great outcome model) and then regress those residuals on the *raw* treatment $T$. That leaves the confounders' fingerprints all over $T$, so the back door is still open and $\hat\theta$ is biased. You must also build $\hat m(X)$ and form $\tilde T$. Both residualizations are load-bearing; dropping the treatment model collapses DML back into a dressed-up plug-in.
+</Callout>
+
+### When to use it
+
+Reach for partialling-out whenever the *confounder structure* is high-dimensional or nonlinear but the *effect of interest* is a single, low-dimensional parameter you can defend as roughly linear (a per-unit signal effect, an average treatment effect). Let the ML do the messy, high-dimensional nuisance work where flexibility pays; keep $\theta$ in a simple, interpretable, low-dimensional regression where you actually want inference. That division of labour — flexible nuisances, simple target — is the heart of DML.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Outcome model g(X)", definition: "The ML fit of E[Y | X] used to residualize the outcome into Y-tilde" },
+    { term: "Treatment model m(X)", definition: "The ML fit of E[T | X] (the propensity) used to residualize the treatment into T-tilde" },
+    { term: "Frisch-Waugh-Lovell", definition: "The theorem that a coefficient equals the residual-on-residual slope after partialling out the other variables" },
+    { term: "Theta-hat", definition: "The causal parameter, recovered as the covariance of the residuals divided by the variance of the treatment residual" },
+  ]}
+/>
+
+## Neyman orthogonality: why slow ML nuisances still give a clean effect
+
+<MCQ
+  client:visible
+  pretest
+  question="The residual-on-residual (orthogonalized) estimator tolerates noisy, slowly-converging ML nuisance fits and still gives an unbiased root-n theta. Why?"
+  options={[
+    { text: "Its estimating equation is Neyman-orthogonal: first-order insensitive to small errors in the nuisances, so nuisance errors enter theta only through their (tiny) product, not linearly", correct: true },
+    { text: "Because the ML models are guaranteed to be unbiased once cross-validated" },
+    { text: "Because residualizing magically makes the nuisance estimates converge faster" },
+    { text: "Because the central limit theorem cancels any nuisance bias automatically" },
+  ]}
+  explanation="Orthogonality means the derivative of the moment condition with respect to the nuisances is zero at the truth. So a small nuisance error contributes nothing to first order; the leftover effect is second-order — the PRODUCT of the two nuisance errors — which is small enough to vanish at root-n even when each ML model converges slowly."
+/>
+
+**Analogy.** Imagine balancing a marble in a bowl. At the very bottom — the orthogonal point — the surface is *flat*: nudge the marble a little in any direction and its height barely changes, because the slope is zero there. The plug-in estimator parks the marble on a *slope* instead: the same small nudge (a small nuisance error) rolls it noticeably downhill, changing your answer. Orthogonalising the moment condition moves you to the flat bottom of the bowl, where small mistakes in the nuisance models simply don't tilt the estimate.
+
+**Definition.** Let $\psi(W; \theta, \eta)$ be the score (estimating equation) whose root defines $\hat\theta$, where $\eta = (g, m)$ are the nuisances. The score is **Neyman-orthogonal** if its Gâteaux derivative with respect to $\eta$, evaluated at the truth, is zero:
+
+$$
+\left.\frac{\partial}{\partial r}\, \mathbb{E}\big[\psi(W; \theta_0, \eta_0 + r(\eta - \eta_0))\big]\right|_{r=0} = 0 .
+$$
+
+For the partially linear model the orthogonal score is the residual-on-residual moment $\psi = (Y - g(X) - \theta(T - m(X)))(T - m(X))$. Because the *first-order* term vanishes, the estimator's bias depends only on the **product** of the nuisance errors, schematically $\lVert \hat g - g_0 \rVert \cdot \lVert \hat m - m_0 \rVert$. If each ML model converges at the modest rate $n^{-1/4}$ — far slower than the $n^{-1/2}$ a parametric model needs — the product converges at $n^{-1/2}$, fast enough that $\hat\theta$ is $\sqrt{n}$-consistent and asymptotically normal. The naive plug-in's score is *not* orthogonal: its derivative is nonzero, so nuisance error enters **linearly** at the slow $n^{-1/4}$ rate and swamps the $\sqrt{n}$ signal.
+
+**Worked example.** Suppose each ML nuisance has estimation error of size $0.1$ (i.e. $\hat g$ and $\hat m$ are each off by about 10%). In the **non-orthogonal** plug-in, that $0.1$ enters $\hat\theta$'s bias *linearly* → bias $\approx 0.1$, a large, persistent offset. In the **orthogonal** DML score, the same errors enter only through their product → bias $\approx 0.1 \times 0.1 = 0.01$, an order of magnitude smaller, and it keeps shrinking as the nuisances improve. Same imperfect models, same data; orthogonality alone turned a $0.1$ bias into a $0.01$ one. That is the entire payoff of moving to the flat bottom of the bowl.
+
+<Callout variant="warning" title="Orthogonality buys insensitivity, not immunity">
+Neyman orthogonality kills the *first-order* dependence on nuisance error, not all of it. The second-order product term still needs both $\hat g$ and $\hat m$ to converge at a combined rate beating $n^{-1/2}$ (e.g. each at $n^{-1/4}$). If one nuisance model is hopeless — say the treatment is nearly unpredictable from $X$ and $\hat m$ never converges — the product term does not vanish and DML's guarantees lapse. Orthogonality is a powerful insurance policy with a deductible, not a blank cheque to use garbage learners.
+</Callout>
+
+### When to use it
+
+Lean on orthogonality precisely when your nuisance models are *good but not great* — flexible ML that you trust to converge, but slowly and with bias you can't characterise. That describes essentially every real high-dimensional finance problem. When instead you have a clean low-dimensional parametric nuisance you fully believe, you don't strictly need DML's machinery — but using the orthogonal score costs nothing and protects you if that belief is wrong, so orthogonalising is a no-regret default.
+
+<Categorize
+  client:visible
+  question="Sort each statement under the estimator whose behaviour it describes."
+  buckets={["Naive plug-in (non-orthogonal)", "DML (Neyman-orthogonal)"]}
+  items={[
+    { text: "Nuisance error enters the effect linearly, at the slow rate", bucket: "Naive plug-in (non-orthogonal)" },
+    { text: "Nuisance error enters only through the product of the two errors", bucket: "DML (Neyman-orthogonal)" },
+    { text: "Bias persists even as the sample grows", bucket: "Naive plug-in (non-orthogonal)" },
+    { text: "Allows root-n inference with nuisances converging only at the quarter-root rate", bucket: "DML (Neyman-orthogonal)" },
+    { text: "The score's derivative in the nuisances is zero at the truth", bucket: "DML (Neyman-orthogonal)" },
+    { text: "A tighter confidence interval that stays centred on the wrong value", bucket: "Naive plug-in (non-orthogonal)" },
+  ]}
+  explanation="Orthogonality is the dividing line: the plug-in is first-order sensitive (linear, slow, persistent bias); DML is first-order insensitive (second-order, product, vanishing bias)."
+/>
+
+## Cross-fitting: estimate the nuisance and the effect on different data
+
+<MCQ
+  client:visible
+  pretest
+  question="Even with an orthogonal score, DML splits the data: nuisances are fit on one fold, residuals/score evaluated on the held-out fold, then folds are swapped and averaged. What does this cross-fitting buy you?"
+  options={[
+    { text: "It removes own-observation overfitting bias — a point can't help fit the nuisance and then be scored by it — restoring valid root-n inference", correct: true },
+    { text: "It speeds up training by parallelising across folds" },
+    { text: "It replaces the need for an orthogonal score entirely" },
+    { text: "It lets you reuse the same observations for both fitting and scoring, which is more efficient" },
+  ]}
+  explanation="If a point both trains the nuisance and is then scored by it, the nuisance has 'seen' its own outcome and the residual is artificially small — a subtle overfitting bias that breaks the orthogonality math (which assumes nuisances are independent of the scoring sample). Cross-fitting enforces that independence and is the third pillar alongside orthogonality and partialling-out."
+/>
+
+**Analogy.** Don't let students grade their own exams. If the same person who wrote the answer key also marks their paper, they'll unconsciously mark themselves generous — the "error" they're measuring includes the help they gave themselves. Cross-fitting splits the class: group A writes the key (fits the nuisance), group B is graded by it (scored on held-out data), then they swap so everyone gets both written and graded. Nobody marks their own work, so the measured residuals are honest.
+
+**Definition.** **Cross-fitting** (a.k.a. sample-splitting / DML2) partitions the data into $K$ folds. For each fold $k$: fit $\hat g$ and $\hat m$ on **all other folds** ($-k$), then form residuals and evaluate the orthogonal score **only on fold $k$** using those out-of-fold nuisances. Average the per-fold $\hat\theta_k$ (or pool the scores) into one estimate. Because each observation is scored by a nuisance model that *never saw it*, the residuals carry no own-observation overfitting, and the remainder terms that orthogonality controls actually go to zero. Orthogonality handles the *bias from imperfect nuisances*; cross-fitting handles the *bias from a nuisance peeking at the very point it scores*. You need both.
+
+**Worked example — a 2-fold cross-fit.** Split the sample in half. Fold A's nuisances are trained on Fold B's data and used to score Fold A; Fold B's nuisances are trained on Fold A and score Fold B. Average the two slopes.
+
+| Step | Train nuisances on | Score (form residuals + theta) on | Fold estimate |
+|---|---|---|---|
+| Pass 1 | Fold B | Fold A | $\hat\theta_A = 1.9$ |
+| Pass 2 | Fold A | Fold B | $\hat\theta_B = 2.1$ |
+| **Combine** | — | — | $\hat\theta = \tfrac12(1.9 + 2.1) = 2.0$ |
+
+Each half is scored by a model that never trained on it, so neither $\hat\theta_A$ nor $\hat\theta_B$ is inflated by self-grading. The averaged $\hat\theta = 2.0$ uses the full sample for inference while keeping fitting and scoring strictly disjoint.
+
+Now the **time-series catch**. A plain random fold split *leaks the future into the past*: a nuisance trained on a fold containing tomorrow's data, then scoring today, has peeked across the autocorrelation. So in finance you cross-fit with the **purged, embargoed splits** from the deep-learning lesson — folds respect time order, observations near the train/test boundary whose label windows overlap are *purged*, and a short *embargo* gap after each test block prevents leakage through serial correlation. Cross-fitting and purged CV are the same idea wearing two hats: keep the scoring data strictly out-of-sample relative to the fitting data — in features *and* in time.
+
+<PurgedCvSplit client:visible caption="Purged, embargoed cross-validation: training blocks (one fold) and a held-out test block, with purged observations and an embargo gap removed at the boundary. DML cross-fitting on time series uses exactly this scheme — nuisances are fit on the train blocks and the orthogonal score is evaluated on the embargoed, purged test block, so no future information leaks into the residuals through autocorrelation." />
+
+<Callout variant="warning" title="Random K-fold quietly leaks the future">
+The default scikit-learn KFold shuffles rows, which is fine for i.i.d. data and catastrophic for returns. With overlapping label windows or autocorrelation, a shuffled fold lets a nuisance model train on data adjacent (in time) to the very points it scores, manufacturing artificially small residuals and an overconfident, biased $\hat\theta$. On any time series, cross-fit with purged-and-embargoed splits — never a naive random shuffle. The leakage doesn't announce itself; it just hands you a too-good, too-tight estimate.
+</Callout>
+
+### When to use it
+
+Always cross-fit — it is not optional polish but a load-bearing pillar of the DML guarantees, and the cost is only refitting the nuisances $K$ times (use $K = 5$ or $10$). The *choice that varies* is the splitting scheme: i.i.d. cross-sectional data tolerates ordinary K-fold; anything with a time index, overlapping horizons, or serial correlation demands purged-and-embargoed folds. Pick the split that matches your dependence structure, then cross-fit without exception.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">If the orthogonal score is already insensitive to nuisance error, why do we still need cross-fitting at all?</summary>
+
+**Answer.** Orthogonality and cross-fitting fight *different* terms in the error expansion. Orthogonality kills the **first-order** bias from nuisances being *systematically wrong* (regularised, biased). Cross-fitting kills the **own-observation** bias from a nuisance being *fit to the very point it then scores* — a correlation between the nuisance estimate and the scoring residual that the orthogonality argument explicitly assumes away (it needs the nuisance to be independent of the evaluation sample). Skip cross-fitting and you reintroduce an $O(1)$ overfitting term that orthogonality cannot touch, especially with flexible learners that overfit hard. They are complementary: orthogonality + cross-fitting together are what deliver $\sqrt{n}$-consistent, asymptotically normal $\hat\theta$. Drop either and the guarantee lapses.
+
+</details>
+</Reveal>
+
+## DML for alpha and treatment effects — and its honest limits
+
+<MCQ
+  client:visible
+  pretest
+  question="A quant uses DML to estimate the causal effect of a sentiment signal on returns, flexibly controlling for the full factor-exposure set with gradient boosting, with clean overlap and purged cross-fitting. What can DML still NOT save them from?"
+  options={[
+    { text: "Unobserved confounding — DML controls only for the confounders you measured and put in X; a hidden common cause still biases theta", correct: true },
+    { text: "Nonlinear confounders, which DML cannot model" },
+    { text: "Having too many confounders, which DML cannot handle" },
+    { text: "Needing a randomized experiment, which DML replaces in all cases" },
+  ]}
+  explanation="DML is a high-dimensional, ML-powered way to adjust for OBSERVED confounders under unconfoundedness and overlap. It is brilliant at that. It is powerless against confounders you didn't measure — exactly where instruments, natural experiments, and RDD come back in. DML is not magic; it relaxes functional-form assumptions, not the identification assumptions."
+/>
+
+**Analogy.** DML is a spectacular pair of noise-cancelling headphones for *measured* noise: feed it the frequencies of the confounders you can hear (the factor exposures, liquidity state, regime) and it cancels them flawlessly, however complex their waveform. But it cancels nothing it can't sample. A confounder you never measured is a sound outside the microphone's range — the headphones can't subtract what they never recorded. DML upgrades *how well* you cancel observed noise; it does not upgrade *what* you're able to hear.
+
+**Definition.** In finance DML answers questions of the form "what is the causal effect of treatment $T$ on outcome $Y$, *flexibly* adjusting for the entire observed confounder set $X$?":
+
+- **Alpha / signal evaluation.** $T$ = the signal (or a do-able version of it), $Y$ = forward return, $X$ = factor loadings, sector, size, liquidity, vol regime. DML estimates the signal's effect *net of* everything the factor zoo would otherwise claim — answering "is there alpha after orthogonalising to all known exposures?" with ML-grade flexibility instead of a brittle linear factor regression.
+- **Execution / treatment effects.** $T$ = an execution choice (participation rate, order aggressiveness), $Y$ = realised cost, $X$ = order and market state. DML recovers the causal cost of trading harder while flexibly controlling for the conditions under which you *chose* to trade harder.
+- **Heterogeneous effects.** Plain DML gives the *average* $\theta_0$. Swap the final residual-on-residual regression for one with **effect modifiers** — or use a **causal forest** (DML's local cousin) — to estimate $\theta_0(Z)$: how the effect varies with regime, size, or volatility. This is where "the signal works in high-vol names but not low-vol" becomes an *estimated* causal statement, not a data-mined subgroup.
+
+**Worked example.** A signal's raw long-short return is $5\%$ a year. A naive plug-in (signal plus factors in one boosted model) reports a causal effect of $4\%$ — suspiciously close to the raw number, because regularization bias left factor exposure leaking into it. Run proper DML: residualize forward returns on factors with one ML model ($\hat g$), residualize the signal on factors with another ($\hat m$), cross-fit with purged folds, regress residual-on-residual. The orthogonalised effect comes back at $\theta_0 = 1.2\%$ with a confidence interval that excludes zero. Interpretation: $3.8\%$ of the raw $5\%$ was *factor exposure the signal was proxying* (a confounder you can buy cheaply with an index), and only $1.2\%$ is genuine, exposure-neutral causal alpha. The plug-in's $4\%$ would have had you lever up a number that was almost entirely repackaged beta.
+
+<Callout variant="warning" title="DML needs overlap, and only adjusts for what you measured">
+Two assumptions are doing quiet work. **Unconfoundedness:** every common cause of $T$ and $Y$ is in $X$ — violate it (a hidden confounder) and DML returns a precise, confident, *biased* number, with none of the warning signs. **Overlap / positivity:** at every confounder configuration the treatment must have genuine variation (the conditional variance of the treatment residual stays strictly positive); if $X$ predicts $T$ almost perfectly, $\hat m(X) \approx T$, the treatment residual collapses toward zero, and dividing by its near-zero variance produces an exploding, unstable $\hat\theta$. DML relaxes functional form, not identification — when you fear unobserved confounding, go back to instruments, natural experiments, or RDD.
+</Callout>
+
+### When to use it
+
+Reach for DML when you can credibly *list and measure* your confounders but cannot credibly *specify their functional form* — the typical state of factor-heavy quant work, where you know the exposures but not how they nonlinearly map to returns. It is the right tool for "estimate this effect net of dozens of known, messy controls." It is the *wrong* tool when the threat is a confounder you cannot observe (then you need an exogenous source of variation) or when overlap fails because the treatment is nearly deterministic in $X$. Use DML to get expert-grade flexibility on the *adjustment*, and keep your identification honesty — observed-only, overlap-required — fully intact.
+
+<FillBlank
+  client:visible
+  question="State DML's core limitation in one line."
+  text="DML flexibly adjusts only for {{observed confounders|all possible confounders|transaction costs}}, so it remains biased by any hidden common cause and additionally requires overlap — variation in the treatment at every confounder configuration."
+  explanation="DML relaxes functional-form assumptions, not the identification assumptions. Unobserved confounding and overlap failures still break it; that is where instruments and natural experiments return."
+/>
+
+## Recap
+
+You walked in wanting to control for dozens of nonlinear confounders with the ML models you already trust, and learned why doing it the obvious way — one big model, read off the treatment — is *biased*, not noisy: regularization bias from the nuisance fit leaks into $\theta$ and refuses to wash out. DML rescues the situation with three moves. **Partialling-out** (modern Frisch-Waugh-Lovell) residualizes *both* the outcome and the treatment against $X$ with arbitrary ML, then regresses the residuals — a contractor for the messy nuisance work and a clean univariate regression for the answer. **Neyman orthogonality** parks the estimator at the flat bottom of the bowl, where nuisance errors enter only through their product, so slow, biased ML nuisances still yield a $\sqrt{n}$, normally-distributed $\theta$. **Cross-fitting** stops the nuisance from grading its own homework — and on time series it *is* purged, embargoed CV, because future leakage is just self-grading across the autocorrelation. The payoff is enormous and the limit is sharp: DML cancels *observed* confounders with ML-grade flexibility and demands overlap, but it is blind to the confounders you never measured. Unbiased, honest, and not magic.
+
+<MindMap
+  client:visible
+  title="Double Machine Learning"
+  caption="Build the map: the plug-in trap, the three pillars (partialling-out, orthogonality, cross-fitting), and DML's honest limits."
+  root={{
+    label: 'Double Machine Learning',
+    children: [
+      { label: 'The plug-in trap', children: [
+        { label: 'One model: read off the treatment' },
+        { label: 'Regularization bias leaks into theta' },
+        { label: 'Tighter CI, still wrong value' },
+      ]},
+      { label: 'Partialling-out (FWL)', children: [
+        { label: 'Residualize Y on X with g(X)' },
+        { label: 'Residualize T on X with m(X)' },
+        { label: 'Regress residual on residual = theta' },
+      ]},
+      { label: 'Neyman orthogonality', children: [
+        { label: 'Score derivative in nuisances = 0' },
+        { label: 'Errors enter only as a product' },
+        { label: 'Slow ML still gives root-n theta' },
+      ]},
+      { label: 'Cross-fitting', children: [
+        { label: 'Fit on one fold, score on another' },
+        { label: 'Kills own-observation overfitting' },
+        { label: 'Time series = purged + embargoed CV' },
+      ]},
+      { label: 'Use and limits', children: [
+        { label: 'Exposure-neutral alpha + execution effects' },
+        { label: 'Heterogeneity: causal forests' },
+        { label: 'Observed confounders only; needs overlap' },
+      ]},
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Mixed check: can you orthogonalise without overfitting?"
+  questions={[
+    {
+      question: "A colleague reports an unbiased causal effect from a single gradient-boosted model containing the treatment and 150 controls, citing a very tight confidence interval as proof. What is the flaw in that reasoning?",
+      options: [
+        { text: "A tight interval reflects low variance, not low bias; the plug-in's regularization bias persists as n grows, so the estimate can be precise and wrong at once", correct: true },
+        { text: "The interval is too wide to trust" },
+        { text: "Gradient boosting cannot fit 150 controls" },
+        { text: "The bias would disappear with a slightly larger learning rate" },
+      ],
+      explanation: "Variance and bias are separate enemies. More data and tighter CIs fight variance; they leave the structural regularization bias untouched. Precision is not correctness.",
+    },
+    {
+      question: "Order the partially-linear DML pipeline correctly.",
+      options: [
+        { text: "Fit g(X) and m(X) with ML on out-of-fold data, form Y and T residuals on the held-out fold, then regress the Y-residuals on the T-residuals for theta", correct: true },
+        { text: "Fit one joint model of Y on T and X, then read off T's coefficient" },
+        { text: "Residualize only Y on X, then regress those residuals on the raw treatment" },
+        { text: "Regress T on Y first, then control for X afterward" },
+      ],
+      explanation: "Both sides get residualized against X using cross-fitted ML nuisances; the causal slope is the residual-on-residual regression. Residualizing only the outcome leaves the back door open.",
+    },
+    {
+      question: "Each nuisance model is off by about 10%. Roughly how does that error show up in theta under the orthogonal DML score versus the naive plug-in?",
+      options: [
+        { text: "About 0.01 under DML (the product of the two errors) versus about 0.10 under the plug-in (linear in the error)", correct: true },
+        { text: "About 0.10 under both — orthogonality changes nothing" },
+        { text: "Zero under DML — orthogonality removes all nuisance error" },
+        { text: "Larger under DML because residualizing compounds the errors" },
+      ],
+      explanation: "Orthogonality zeroes the first-order term, so nuisance error enters only through its product (0.1 x 0.1 = 0.01). The non-orthogonal plug-in is first-order sensitive: the error enters linearly (~0.1).",
+    },
+    {
+      question: "Why is shuffled K-fold cross-validation dangerous when cross-fitting a DML model on returns?",
+      options: [
+        { text: "Shuffling lets a nuisance train on data adjacent in time to the points it scores, leaking the future through autocorrelation and producing an overconfident, biased theta", correct: true },
+        { text: "Shuffling is too slow to compute on time series" },
+        { text: "Shuffling reduces the effective sample size below what DML needs" },
+        { text: "Shuffling makes the nuisance models converge too quickly" },
+      ],
+      explanation: "On serially correlated data, random folds put near-in-time neighbours on both sides of the split, manufacturing artificially small residuals. Purged, embargoed splits keep the scoring data out-of-sample in time.",
+    },
+    {
+      question: "DML returns a precise, zero-excluding causal alpha of 1.2% with full overlap and purged cross-fitting. A skeptic insists it could still be biased. What is the only one of these that would justify the skeptic?",
+      options: [
+        { text: "An unmeasured common cause of the signal and returns that was never in X — DML adjusts only for observed confounders", correct: true },
+        { text: "The confounders being nonlinear, which DML handles by design" },
+        { text: "Having more than a hundred confounders, which DML handles by design" },
+        { text: "Using gradient boosting rather than a neural net for the nuisances" },
+      ],
+      explanation: "DML relaxes functional form, not identification. Nonlinearity and high dimension are exactly what it is built for; an unobserved confounder is the one threat it cannot touch, sending you back to instruments or natural experiments.",
+    },
+  ]}
+/>

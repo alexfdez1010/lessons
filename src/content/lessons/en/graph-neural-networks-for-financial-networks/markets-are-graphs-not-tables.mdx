@@ -1,0 +1,603 @@
+---
+title: "Markets Are Graphs, Not Tables"
+description: "Most ML in finance flattens an interconnected world into a feature table and severs the relationships. This is the representation shift: nodes and edges, directed vs undirected, weighted vs binary, the node/edge/graph feature stack, and the four canonical finance graphs — interbank lending, supply chains, asset-correlation networks, and on-chain wallet/transaction graphs."
+topic: "en/graph-neural-networks-for-financial-networks"
+order: 1
+minutes: 18
+updated: 2026-06-23
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap } from '@/components/react';
+
+You spent a whole course teaching neural nets to read *sequences* — one asset's price,
+one bank's balance sheet, one address's transaction history, marched through time. The
+nets got good. Then 2008 happened, and a single mid-sized investment bank failing took
+the rest of the system down with it, and not one of your beautiful per-asset sequence
+models saw it coming. Why would they? You never told them the banks were *connected*.
+
+Here's the uncomfortable truth this course opens with: **the most expensive risks in
+finance live in the relationships between entities, and the standard ML pipeline deletes
+those relationships in step one.** You load a CSV. Each row is a bank, a firm, a stock,
+a wallet. Each column is a feature. And the instant you do that, you have committed a
+small act of vandalism — you have taken a richly interconnected world and smeared it
+flat, severing every link that made it interesting.
+
+This lesson is the representation shift. Before we touch a single graph neural network
+(GNN) — a model that learns directly on nodes-and-edges structure rather than on flat
+rows — you need to *see* markets as graphs. Once you do, you can't unsee it, and the
+rest of the course becomes a tour of what to do about it.
+
+## The vandalism of flattening to a table
+
+<MCQ
+  client:visible
+  pretest
+  question="You build a feature table with one row per bank — assets, leverage, deposits, capital ratio. What does this representation fundamentally throw away?"
+  options={[
+    { text: "Who is connected to whom — which banks lend to which, the relationships that transmit contagion", correct: true },
+    { text: "Nothing important; all the relevant information is in each bank's own numbers" },
+    { text: "The exact timestamps of each row" },
+    { text: "The column names, which a model never uses anyway" },
+  ]}
+  explanation="A feature table encodes each entity in isolation. The links between entities — who lends to whom, who supplies whom — vanish entirely. That severed structure is exactly where contagion and systemic risk live."
+/>
+
+**Analogy.** Imagine describing a city's traffic by handing someone a spreadsheet: one
+row per intersection, columns for "cars per hour" and "average speed." Useful, until a
+crash on one road backs up six others. The spreadsheet *cannot represent that*, because
+it never recorded which roads *connect to* which. You measured the intersections and
+deleted the streets. A feature table of banks does the same thing — it measures the
+banks and deletes the loans.
+
+**Definition.** A **feature table** (also called tabular or flat data) represents a
+dataset as a matrix where each *row* is one entity and each *column* is one attribute of
+that entity, measured in isolation. Formally, entity $i$ is the vector $x_i \in
+\mathbb{R}^d$, and the dataset is the stack $X \in \mathbb{R}^{n \times d}$. The crucial
+omission: nowhere in $X$ is there any cell that says "entity $i$ is *related to* entity
+$j$." That relational information — the **adjacency** — is structurally unrepresentable
+in a flat table. It is not lost to noise; it is lost to the *shape of the container*.
+
+**Worked example.** Take four banks: A, B, C, D. The feature table looks like this.
+
+| Bank | Assets (\$bn) | Leverage | Capital ratio |
+|---|---|---|---|
+| A | 100 | 12 | 8% |
+| B | 40 | 20 | 5% |
+| C | 60 | 15 | 7% |
+| D | 30 | 25 | 4% |
+
+Now suppose the *real* situation is: A lent \$20bn to D, and D is about to default. A
+model trained on this table sees A as a large, modestly leveraged, healthy-looking bank
+and predicts: fine. It has no column for "A is owed \$20bn by the riskiest bank in the
+set," because the loan from A to D is a *relationship*, and the table has no place to put
+relationships. The single most important fact for A's risk — its exposure to D — is
+exactly the fact the representation discarded. The arithmetic the model *can* do (8%
+capital, 12x leverage → looks safe) is arithmetic on the wrong inputs.
+
+<Callout variant="warning" title="The flattening is silent">
+Flattening to a table never throws an error. The pipeline runs, the model trains, the
+metrics look fine on rows that happen to be independent. The damage only surfaces when a
+relationship matters — a counterparty defaults, a supplier halts, a correlated cluster
+moves together — and your model, having never been shown the links, is blindsided. A
+silent representation bug is the most dangerous kind, because nothing tells you it
+happened.
+</Callout>
+
+### When to use it
+
+A feature table is the *right* representation when entities really are independent — when
+predicting one row genuinely doesn't depend on any other row. Predicting whether *this*
+customer churns from *this* customer's behavior? Tabular is fine. The moment the answer
+for entity $i$ depends on *who $i$ is connected to* — counterparty risk, contagion,
+co-movement, fund flows — a table is the wrong container, and you should reach for a
+graph.
+
+<FillBlank
+  client:visible
+  question="Fill in what a flat feature table cannot represent."
+  text="A feature table stores each entity's own attributes but structurally cannot store the {{relationships between entities|column headers|timestamps}}, which is exactly where contagion and systemic risk live."
+  explanation="Each row is an entity in isolation. Relationships — the adjacency between entities — have no cell to live in. That is the structural omission, not a data-quality issue."
+/>
+
+## Nodes and edges: what a graph actually is
+
+<MCQ
+  client:visible
+  pretest
+  question="A graph is written G = (V, E). In a network of banks connected by loans, what are V and E?"
+  options={[
+    { text: "V is the set of banks (nodes); E is the set of loans connecting them (edges)", correct: true },
+    { text: "V is the volume of trading; E is the equity of each bank" },
+    { text: "V and E are both lists of numbers with no structural meaning" },
+    { text: "V is the edges and E is the nodes — the letters are just labels" },
+  ]}
+  explanation="V (vertices) is the set of entities — here, banks. E (edges) is the set of relationships — here, loans. The graph is precisely the pairing of entities with the links between them, which is what the table threw away."
+/>
+
+**Analogy.** A subway map is a graph you already read fluently. The stations are
+**nodes**; the rail lines connecting them are **edges**. The map deliberately distorts
+geography — distances are wrong, angles are wrong — because what matters is *what
+connects to what*, not the flat coordinates. A graph keeps the connections and drops the
+pretense that entities float in isolation.
+
+**Definition.** A **graph** is the pair $G = (V, E)$, where $V$ is a set of **nodes**
+(vertices) — the entities — and $E \subseteq V \times V$ is a set of **edges** — the
+relationships, each edge being a pair of nodes $(i, j)$. On top of this skeleton sit
+three layers of features:
+
+- **Node features** $x_i$: attributes of entity $i$ (a bank's assets, leverage, capital
+  ratio) — exactly the columns of the old feature table, now attached to nodes.
+- **Edge features** $e_{ij}$: attributes of the *relationship* between $i$ and $j$ (the
+  size of a loan, the strength of a correlation) — the layer that has no home in a table.
+- **Graph-level features**: attributes of the whole structure (total number of edges,
+  overall connectedness, how clustered the network is).
+
+The relationships are commonly stored in the **adjacency matrix** $A$, an $n \times n$
+matrix where $A_{ij} = 1$ if there is an edge from $i$ to $j$ and $A_{ij} = 0$ otherwise.
+A graph is therefore the old feature table $X$ **plus** the adjacency $A$ — and that $A$
+is the whole point.
+
+**Worked example.** Take the same four banks, A, B, C, D, indexed 1, 2, 3, 4. Suppose
+the (undirected, for now) lending links are: A–B, A–C, and C–D. Building the adjacency
+matrix, we put a 1 wherever two banks are linked and 0 otherwise, with rows/columns in
+order A, B, C, D:
+
+$$ A = \begin{pmatrix} 0 & 1 & 1 & 0 \\ 1 & 0 & 0 & 0 \\ 1 & 0 & 0 & 1 \\ 0 & 0 & 1 & 0 \end{pmatrix} $$
+
+Read it row by row. Row A (top): $A_{12} = 1$ (A–B), $A_{13} = 1$ (A–C), so A links to B
+and C. Row B: only $A_{21} = 1$, so B links only to A. Row C: $A_{31} = 1$ and $A_{34} =
+1$, so C links to A and D. Row D: only $A_{43} = 1$, so D links only to C. Because the
+links are undirected, the matrix is **symmetric**: $A_{ij} = A_{ji}$, which is why the
+1s mirror across the diagonal. The diagonal is all zeros — no bank lends to itself.
+
+<Callout variant="info" title="The table never left; it got a partner">
+A graph does not replace your features — it *augments* them. The node feature vectors
+are still your old columns. What's new is the adjacency matrix riding alongside, encoding
+who connects to whom. Everything you learned about feature engineering still applies to
+the nodes; you've just stopped pretending they sit in separate rooms.
+</Callout>
+
+### When to use it
+
+Reach for the explicit $G = (V, E)$ framing the moment you can name the entities *and*
+name the relationship that links them. If you can finish the sentence "entity X is
+\___ to entity Y" with a real relation (lends to, supplies, correlates with, sends funds
+to), you have edges, and you have a graph. If you can't, you may genuinely have tabular
+data — don't force structure that isn't there.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Node (vertex)", definition: "An entity in the graph — a bank, firm, asset, or wallet" },
+    { term: "Edge", definition: "A relationship linking two nodes — a loan, a supply contract, a correlation, a transfer" },
+    { term: "Node feature", definition: "An attribute of one entity, like a bank's leverage — the old table columns" },
+    { term: "Edge feature", definition: "An attribute of a relationship, like the size of a loan — the layer a table cannot store" },
+    { term: "Adjacency matrix", definition: "The n by n matrix whose entry is 1 when two nodes are linked and 0 otherwise" },
+  ]}
+/>
+
+## Directed vs undirected, weighted vs binary
+
+<MCQ
+  client:visible
+  pretest
+  question="Bank A lends 20 billion dollars to bank D. How should that edge be represented?"
+  options={[
+    { text: "Directed (A points to D) and weighted (by the 20 billion exposure) — the relationship has both a direction and a magnitude", correct: true },
+    { text: "Undirected and binary — a loan either exists or it does not, nothing more" },
+    { text: "Undirected but weighted — direction never matters for loans" },
+    { text: "Directed but binary — the amount of the loan is irrelevant to risk" },
+  ]}
+  explanation="A loan flows one way (A is owed by D, not the reverse), so the edge is directed. The exposure amount is the whole risk story, so the edge is weighted. Collapsing it to undirected-binary would erase both who-owes-whom and how-much."
+/>
+
+**Analogy.** Friendship is undirected — if you're my friend, I'm yours, symmetric. *Owing
+money* is directed — me owing you \$100 is a very different state of the world from you
+owing me \$100, and pretending they're the same is how you lose \$200. "Weighted vs
+binary" is the difference between "I owe you something" (binary, useless) and "I owe you
+\$100" (weighted, actionable).
+
+**Definition.** Edges come in two independent flavors, giving four combinations:
+
+- **Undirected**: the edge $(i, j)$ is the same as $(j, i)$; the adjacency matrix is
+  symmetric ($A_{ij} = A_{ji}$). Use it for mutual relationships — correlation between
+  two assets is the same in both directions.
+- **Directed**: $(i, j)$ differs from $(j, i)$; the matrix is generally *not* symmetric.
+  Use it for one-way relationships — A lends to D, D does not thereby lend to A.
+- **Binary**: edge entries are 0 or 1 — the link either exists or it doesn't.
+- **Weighted**: edge entries are real numbers $W_{ij}$ carrying magnitude — the loan
+  size, the correlation strength. The matrix is then a **weight matrix** $W$ rather than
+  a plain 0/1 adjacency.
+
+**Worked example.** Now treat the bank loans as what they are: directed and weighted.
+Suppose A lent \$20bn to D, A lent \$5bn to C, and C lent \$8bn to B. We index A, B, C, D
+as 1, 2, 3, 4 and put the *amount lent from row to column* in each cell:
+
+$$ W = \begin{pmatrix} 0 & 0 & 5 & 20 \\ 0 & 0 & 0 & 0 \\ 0 & 8 & 0 & 0 \\ 0 & 0 & 0 & 0 \end{pmatrix} $$
+
+Read row A: $W_{13} = 5$ and $W_{14} = 20$ — A is owed by C and D. Read row C: $W_{32} =
+8$ — C is owed by B. Rows B and D are all zeros: B and D lent to no one (they are pure
+borrowers). The matrix is **not symmetric** — $W_{14} = 20$ but $W_{41} = 0$ — which
+correctly encodes that A is exposed to D, not the reverse. Compare with a correlation
+network on the same four entities: there, $W_{ij} = W_{ji}$ always, because if asset A
+correlates 0.6 with asset D, then D correlates 0.6 with A by definition.
+
+| Property | Interbank loan | Asset correlation |
+|---|---|---|
+| Direction | Directed (A → D) | Undirected (A ↔ D) |
+| Weight | Exposure in dollars | Correlation magnitude |
+| Matrix symmetry | Asymmetric | Symmetric |
+| Self-loops | None (no bank lends to itself) | Diagonal is 1 (self-correlation) |
+
+<Callout variant="warning" title="Direction is risk direction">
+Symmetrizing a directed financial graph for convenience — pretending A→D and D→A are the
+same — is not a harmless simplification. It tells your model that A's and D's exposures
+are interchangeable when they are *opposite*. In contagion analysis, direction *is* the
+mechanism: losses flow from borrower to lender along the arrow. Drop the arrow and you've
+deleted the physics.
+</Callout>
+
+### When to use it
+
+Pick **directed** whenever the relationship has a giver and a receiver (loans, supply
+flows, fund transfers, ownership). Pick **undirected** for genuinely mutual relations
+(correlation, co-membership, similarity). Pick **weighted** whenever *how much* changes
+the answer (it almost always does in finance), and reserve **binary** for the rare case
+where mere existence is all that matters — and even then, ask whether a weight is hiding
+in plain sight.
+
+<Categorize
+  client:visible
+  question="Sort each financial relationship by how its edge should be represented."
+  buckets={["Directed", "Undirected"]}
+  items={[
+    { text: "Bank A lends to bank D", bucket: "Directed" },
+    { text: "Correlation between two stocks", bucket: "Undirected" },
+    { text: "Supplier ships parts to a manufacturer", bucket: "Directed" },
+    { text: "Two assets co-move in the same risk cluster", bucket: "Undirected" },
+    { text: "Wallet sends crypto to another wallet", bucket: "Directed" },
+    { text: "Two firms share the same board member", bucket: "Undirected" },
+  ]}
+  explanation="Loans, shipments, and transfers have a giver and a receiver — directed. Correlation, co-movement, and shared membership are mutual by definition — undirected and symmetric."
+/>
+
+## Degree, neighbourhood, paths and hops
+
+<MCQ
+  client:visible
+  pretest
+  question="A bank is connected to 9 other banks — the highest degree in the network. Does that make it the most systemically dangerous one?"
+  options={[
+    { text: "Not necessarily — degree counts connections, but systemic importance depends on the size and riskiness of those connections, not just their count", correct: true },
+    { text: "Yes, always — more connections means more systemic risk, full stop" },
+    { text: "No — high degree always means a bank is safe and well-diversified" },
+    { text: "Degree has nothing to do with risk in any way" },
+  ]}
+  explanation="Degree is a raw count of links. A bank with 9 tiny, healthy connections may matter far less than a bank with 2 enormous exposures to fragile counterparties. Systemic importance weighs who and how much — exactly what later measures like DebtRank capture."
+/>
+
+**Analogy.** Degree is your number of contacts in your phone. Being popular (high degree)
+is not the same as being *important* — the one banker who holds half the city's debt
+matters more than the influencer with 50,000 shallow follows. Counting connections tells
+you how *busy* a node is, not how much the system *depends* on it.
+
+**Definition.** Three structural quantities, built straight from the adjacency matrix:
+
+- **Degree** $d_i$: the number of edges touching node $i$. For an undirected binary
+  graph, $d_i = \sum_j A_{ij}$ — sum across row $i$. Directed graphs split this into
+  **in-degree** (edges arriving) and **out-degree** (edges leaving).
+- **Neighbourhood** $N(i)$: the set of nodes directly connected to $i$ — its immediate
+  neighbors, one edge away.
+- **Path** and **hops**: a path is a sequence of edges connecting two nodes; a **hop** is
+  one edge-step along it. The **$k$-hop neighbourhood** of $i$ is every node reachable
+  within $k$ steps. (Hold onto this — message-passing GNNs in the next lessons work by
+  pulling information inward from a node's $k$-hop neighbourhood, one hop per layer.)
+
+**Worked example.** Back to the undirected graph with edges A–B, A–C, C–D and its
+adjacency
+
+$$ A = \begin{pmatrix} 0 & 1 & 1 & 0 \\ 1 & 0 & 0 & 0 \\ 1 & 0 & 0 & 1 \\ 0 & 0 & 1 & 0 \end{pmatrix} $$
+
+Compute each **degree** by summing the row: $d_A = 0+1+1+0 = 2$, $d_B = 1+0+0+0 = 1$,
+$d_C = 1+0+0+1 = 2$, $d_D = 0+0+1+0 = 1$. So A and C are the hubs (degree 2); B and D are
+leaves (degree 1). The total degree $2+1+2+1 = 6$ equals twice the edge count (3 edges) —
+a handy check, since every edge contributes to two nodes' degrees.
+
+Now **2-hop reach** from B. B's 1-hop neighbourhood is $N(B) = \{A\}$. From A, one more
+hop reaches $\{B, C\}$. So B's 2-hop neighbourhood (excluding B itself) is $\{A, C\}$ —
+B can "feel" C even though it never lends to C directly, because the influence travels
+B→A→C. That is the entire intuition behind why a GNN with two layers lets a node sense
+its neighbors' neighbors: information propagates one hop per layer.
+
+| Node | Degree | 1-hop neighbours | Reachable within 2 hops |
+|---|---|---|---|
+| A | 2 | B, C | B, C, D |
+| B | 1 | A | A, C |
+| C | 2 | A, D | A, B, D |
+| D | 1 | C | C, A |
+
+<Callout variant="warning" title="High degree is not high importance">
+The seductive shortcut "rank banks by number of connections, that's your systemic-risk
+list" is wrong, and expensively so. A node's importance depends on the *weights* of its
+edges and the *fragility* of its neighbors — a few huge exposures to shaky counterparties
+beat many tiny ones to healthy ones. Later in this course, DebtRank and related measures
+formalize exactly this: importance is a weighted, recursive property, not a headcount.
+</Callout>
+
+### When to use it
+
+Use **degree** as a first, cheap descriptor of how connected a node is — a fine starting
+filter, never a final ranking. Use **neighbourhood** and **$k$-hop** thinking when you're
+reasoning about *reach*: how far a shock can travel, or how many layers of message passing
+a GNN needs to let relevant information arrive. If the thing you care about is two hops
+away, a one-layer model is structurally blind to it.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">If bank B never lends to bank C, why should B's risk model care about C at all?</summary>
+
+**Answer.** Because B lends to A, and A is heavily exposed to C. If C defaults, A takes
+a loss, A's own solvency wobbles, and B's loan *to A* is now riskier. The shock travels
+B ← A ← C along the path, even though no direct B–C edge exists. This is precisely why
+B's 2-hop neighbourhood matters: contagion does not respect the boundary of direct
+connections. A model that only looks at B's own row — or even only at B's direct
+neighbors — cannot see the second-order exposure that a 2-hop view reveals.
+
+</details>
+</Reveal>
+
+## The four canonical finance graphs
+
+<MCQ
+  client:visible
+  pretest
+  question="Which question can ONLY be answered with a graph representation, never with a flat feature table?"
+  options={[
+    { text: "If this firm's key supplier shuts down, which downstream manufacturers also stall?", correct: true },
+    { text: "What is this firm's current debt-to-equity ratio?" },
+    { text: "How many employees does this firm report?" },
+    { text: "What was this firm's revenue last quarter?" },
+  ]}
+  explanation="Ratios, headcounts, and revenues are per-entity attributes — a table handles them fine. 'If X stalls, who else stalls?' is a question about propagation along supplier→customer edges, which only the graph structure encodes."
+/>
+
+**Analogy.** Four different cities, four different subway maps — but all of them are
+stations-and-lines, all of them are graphs. Once you have the $G = (V, E)$ lens, finance
+stops looking like four unrelated problems and starts looking like one problem (structure)
+wearing four costumes. Learn to read the map and you can ride any of these networks.
+
+**Definition.** Four graph types cover the overwhelming majority of financial network
+problems. Each fixes what counts as a node, what counts as an edge, whether edges are
+directed, and whether they're weighted.
+
+| Graph | Nodes | Edges | Direction | Weight | A question only the graph answers |
+|---|---|---|---|---|---|
+| **Interbank lending** | Banks | Loans / exposures | Directed | Exposure amount | If bank D defaults, which lenders absorb the loss, and does it cascade? |
+| **Supply chain** | Firms | Supplier → customer | Directed | Order volume / dependency | If a key supplier halts, which downstream firms stall? |
+| **Asset-correlation** | Assets | Correlation above a threshold | Undirected | Correlation magnitude | Which assets form a hidden cluster that will all crash together? |
+| **On-chain wallet/tx** | Wallets / addresses | Transfers | Directed | Amount transferred | Which wallets are funneling funds through this address into a mixer? |
+
+**Worked example — building a correlation network.** Suppose four assets have these
+pairwise correlations: A–B = 0.82, A–C = 0.15, A–D = 0.71, B–C = 0.10, B–D = 0.68, C–D =
+0.05. To build the graph we set a **threshold**, say 0.5, and draw an undirected weighted
+edge only when the absolute correlation clears it. Checking each pair: A–B (0.82 ✓), A–C
+(0.15 ✗), A–D (0.71 ✓), B–C (0.10 ✗), B–D (0.68 ✓), C–D (0.05 ✗). So the edges are A–B,
+A–D, B–D — a tightly correlated triangle of A, B, D — while C sits *isolated*, correlated
+with no one above 0.5. The risk read: A, B, D are a hidden cluster that will move
+together (diversifying across them buys you little), and C is the genuine diversifier.
+That cluster structure is invisible in a table of per-asset volatilities; it lives
+entirely in the edges.
+
+<Callout variant="tip" title="Same lens, four costumes">
+Notice what changed across the four graphs and what didn't. What changed: the nouns
+(banks, firms, assets, wallets), the direction, the weight meaning. What stayed identical:
+nodes plus edges plus an adjacency matrix, and a class of questions about propagation and
+clustering that a flat table simply cannot phrase. Master the lens once and you've
+unlocked all four — which is exactly why this whole course is built on graphs, not on four
+separate playbooks.
+</Callout>
+
+### When to use it
+
+Match the graph to the question. Asking about *cascades and who-absorbs-losses* →
+interbank lending. Asking about *operational disruption flowing downstream* → supply
+chain. Asking about *hidden co-movement and false diversification* → asset-correlation.
+Asking about *fund flows, laundering, and address behavior* → on-chain transaction graph.
+If your question is about a single entity's own numbers, you don't need a graph at all —
+go back to the table.
+
+<FillBlank
+  client:visible
+  question="Fill in the defining feature of each canonical finance graph."
+  text="An asset-correlation network uses {{undirected|directed}} edges weighted by correlation magnitude, while an interbank lending network uses {{directed|undirected}} edges weighted by exposure."
+  explanation="Correlation is mutual and symmetric, so its edges are undirected. A loan flows one way from lender to borrower, so its edges are directed — the asymmetry encodes who is exposed to whom."
+/>
+
+## Why this matters now: relational beats temporal-alone
+
+<MCQ
+  client:visible
+  pretest
+  question="The prerequisite course taught sequence models that learn one asset's history through time. How does a graph model differ in what it captures?"
+  options={[
+    { text: "A sequence model captures temporal structure within one entity; a graph model captures relational structure across entities — they are complementary, not competing", correct: true },
+    { text: "Graph models are simply better and make sequence models obsolete" },
+    { text: "They capture exactly the same thing, so using both is redundant" },
+    { text: "Sequence models capture relationships; graph models capture time — the opposite of the truth" },
+  ]}
+  explanation="Sequence models (RNNs, TCNs, attention over time) model how one entity evolves. Graph models the wiring between entities at a moment. Time and structure are different axes — the strongest models combine them, which is what temporal GNNs do later in this course."
+/>
+
+**Analogy.** Your prerequisite course gave each patient a heart-rate monitor — a beautiful
+time series of one person's vitals. This course hands you the *contact-tracing map* —
+who's near whom, who infected whom. For a contagious disease, the time series of one
+patient tells you they're getting sick; the contact graph tells you *who's next*. You want
+both monitors, and pointing the heart-rate monitor at the question "who catches it next?"
+will never answer it — that's a graph question.
+
+**Definition.** **Temporal structure** is how a single entity's features evolve over
+time — the domain of sequence models (RNNs, temporal convolutions, attention over time)
+from *Deep Learning for Market Data*. **Relational structure** is how entities are wired
+to each other at a point in time — the domain of graph models. They live on **orthogonal
+axes**: one runs along time within a node, the other runs across edges between nodes.
+Neither subsumes the other. A pure sequence model, fed one asset at a time, is
+structurally incapable of seeing contagion; a pure (static) graph model is blind to how
+the network rewires over time.
+
+**Worked example.** Consider predicting whether bank D defaults next quarter, given two
+modeling choices:
+
+| Model | What it sees | What it misses | Verdict on D |
+|---|---|---|---|
+| Sequence model (per-bank) | D's own 12-quarter history of leverage, deposits, capital | That D owes A nothing but B and C lean heavily on D | "D looks stressed but stable" |
+| Graph model (static snapshot) | The full lending network this quarter, D's neighbors' fragility | How that network *changed* over the last year | "D is a load-bearing node in a fragile cluster" |
+| Temporal GNN (both axes) | Each bank's history *and* the evolving network | — | "D's centrality is rising while its capital falls — flag it" |
+
+The sequence model and the static graph each catch half the story. The temporal GNN — the
+destination this course builds toward — fuses them: per-node histories *plus* the
+evolving wiring. The point of this opening lesson is that you cannot get there until you
+stop flattening the network away in step one.
+
+<Callout variant="info" title="Where this course is headed">
+This lesson is the representation shift; it deliberately has no GNN in it yet. From here
+the course teaches message passing (how nodes pull information from their neighbourhoods),
+the core GNN architectures, then systemic-risk measures like DebtRank, and finally
+temporal GNNs that put the time axis back on top of the structure. Everything rests on
+one habit you should now own: when you meet a financial problem, ask first whether the
+entities are connected — and if they are, refuse to flatten them.
+</Callout>
+
+### When to use it
+
+Use a **sequence model** when the question is about one entity's trajectory through time
+and connections are irrelevant. Use a **graph model** when the question is about
+structure and propagation at a moment. Use a **temporal GNN** when both matter — which,
+for systemic risk, contagion, and co-movement, is most of the time. The cardinal sin is
+using a sequence model alone for a question that is fundamentally relational, then
+wondering why it never saw the cascade coming.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Temporal structure", definition: "How one entity's features evolve over time — the sequence-model axis" },
+    { term: "Relational structure", definition: "How entities are wired to each other at a moment — the graph axis" },
+    { term: "Sequence model alone", definition: "Sees one asset's history, blind to contagion across entities" },
+    { term: "Static graph model", definition: "Sees the network snapshot, blind to how it rewires over time" },
+    { term: "Temporal GNN", definition: "Fuses per-node histories with the evolving network — both axes at once" },
+  ]}
+/>
+
+## Recap
+
+You came in able to model one asset, one bank, one wallet through time — and you learned
+why that, alone, is a blindfold. The expensive risks live in the *relationships*, and the
+standard feature-table pipeline deletes them silently in step one. A graph $G = (V, E)$
+keeps them: nodes carry the old features, edges carry the relationships, and the adjacency
+matrix encodes who connects to whom. Edges can be directed or undirected, weighted or
+binary — and in finance the choice is never cosmetic, because direction is risk direction
+and weight is risk magnitude. Degree, neighbourhood, and $k$-hop reach describe the
+structure, with the warning that a headcount of connections is not systemic importance.
+Four canonical graphs — interbank lending, supply chains, asset correlations, and on-chain
+transactions — cover most of finance, all the same lens in different costumes. And graphs
+don't replace the sequence models you already know; they're the orthogonal axis the best
+models fuse with time.
+
+<MindMap
+  client:visible
+  title="Markets are graphs, not tables"
+  caption="Build the map: the representation shift, the graph vocabulary, the four canonical finance graphs, and where it joins the time axis."
+  root={{
+    label: 'Markets as graphs',
+    children: [
+      { label: 'Flattening is vandalism', children: [
+        { label: 'Table = entities in isolation' },
+        { label: 'Deletes the adjacency' },
+        { label: 'Fails silently until a link matters' },
+      ]},
+      { label: 'Graph G = (V, E)', children: [
+        { label: 'Nodes = entities' },
+        { label: 'Edges = relationships' },
+        { label: 'Node / edge / graph features' },
+        { label: 'Adjacency matrix A' },
+      ]},
+      { label: 'Edge types', children: [
+        { label: 'Directed vs undirected' },
+        { label: 'Weighted vs binary' },
+        { label: 'Direction = risk direction' },
+      ]},
+      { label: 'Structure measures', children: [
+        { label: 'Degree (a count, not importance)' },
+        { label: 'Neighbourhood' },
+        { label: 'k-hop reach (contagion travels)' },
+      ]},
+      { label: 'Four finance graphs', children: [
+        { label: 'Interbank lending (directed, weighted)' },
+        { label: 'Supply chain (directed)' },
+        { label: 'Asset correlation (undirected, weighted)' },
+        { label: 'On-chain wallets (directed)' },
+      ]},
+      { label: 'Relational vs temporal', children: [
+        { label: 'Sequence = time within a node' },
+        { label: 'Graph = structure across nodes' },
+        { label: 'Temporal GNN fuses both' },
+      ]},
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Mixed check: can you see the graph now?"
+  questions={[
+    {
+      question: "In the four-bank undirected graph with edges A–B, A–C, and C–D, what is the degree of node A?",
+      options: [
+        { text: "2 — A connects to B and C", correct: true },
+        { text: "1 — A connects only to B" },
+        { text: "3 — A connects to B, C, and D" },
+        { text: "0 — A has no connections" },
+      ],
+      explanation: "Degree is the count of edges touching a node. A touches the A–B and A–C edges, so its degree is 2. There is no A–D edge, so D is not a direct neighbor.",
+    },
+    {
+      question: "A risk analyst wants to know which downstream manufacturers stall if a single critical supplier shuts down. Which representation can actually answer this?",
+      options: [
+        { text: "A directed supply-chain graph, because the answer lives in supplier-to-customer edges and propagation along them", correct: true },
+        { text: "A feature table with one row per firm and columns for revenue and headcount" },
+        { text: "A single asset's price time series run through an RNN" },
+        { text: "Any of the above — the representation does not matter for this question" },
+      ],
+      explanation: "Propagation questions are graph questions. A table of per-firm attributes has no edges to trace the disruption along; only the directed supplier→customer graph encodes the chain.",
+    },
+    {
+      question: "Which statement about the interbank lending graph is true?",
+      options: [
+        { text: "Its edges are directed and weighted, so its weight matrix is generally asymmetric", correct: true },
+        { text: "Its edges are undirected, so the weight matrix is always symmetric" },
+        { text: "Its edges are binary, because loan size is irrelevant to contagion" },
+        { text: "It has no edges, since banks are independent entities" },
+      ],
+      explanation: "A loan flows from lender to borrower (directed) and carries an exposure amount (weighted). Because A lending to D does not imply D lending to A, the weight matrix is generally not symmetric.",
+    },
+    {
+      question: "A bank has the highest degree in the network — connected to more counterparties than any other. A junior analyst concludes it must be the most systemically dangerous. Where's the trap?",
+      options: [
+        { text: "Degree counts connections but ignores their size and the fragility of the counterparties; importance is weighted and recursive, not a headcount", correct: true },
+        { text: "There is no trap — highest degree always means highest systemic risk" },
+        { text: "The trap is that high degree means the bank is perfectly safe" },
+        { text: "Degree cannot be computed for weighted graphs at all" },
+      ],
+      explanation: "A node with many tiny links to healthy banks can matter far less than one with a couple of huge exposures to fragile ones. Systemic importance weighs magnitude and neighbor fragility — exactly what measures like DebtRank capture later.",
+    },
+    {
+      question: "A team uses only per-asset sequence models for systemic-risk forecasting and is blindsided by a cascade. What does this reveal about temporal versus relational structure?",
+      options: [
+        { text: "Sequence models capture time within one entity but are blind to relational structure across entities; contagion is relational, so they cannot see it coming", correct: true },
+        { text: "Sequence models already capture relationships, so the failure must be a bug" },
+        { text: "Relational and temporal structure are identical, so the model choice was irrelevant" },
+        { text: "Graph models would have the same blind spot, since no model can predict cascades" },
+      ],
+      explanation: "Time and structure are orthogonal axes. A per-asset sequence model never sees the wiring between entities, so it is structurally incapable of anticipating a contagion that travels along edges. The fix is to add the relational axis — ultimately a temporal GNN.",
+    },
+  ]}
+/>

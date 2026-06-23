@@ -1,0 +1,598 @@
+---
+title: "Evaluación de estrés adversaria"
+description: "Sustituir el conjunto de test i.i.d. por un oponente del peor caso. Por qué las afirmaciones de robustez son aún más fáciles de falsear que las de alfa, cómo hacer red-teaming a vuestra propia estrategia, el enmascaramiento de gradiente y la robustez falsa, y el marcador honesto que sobrevive a un árbitro hostil."
+topic: "es/adversarial-ml-and-robustness-in-trading"
+order: 6
+minutes: 20
+updated: 2026-06-23
+---
+
+import { Callout, MCQ, Quiz, Reveal, ThinkReveal, FillBlank, MatchConcepts, Categorize, MindMap, DeflatedSharpe, ProcessOutcomeMatrix } from '@/components/react';
+
+Durante cinco lecciones este curso ha machacado una sola idea: en los mercados, **alguien
+está al otro lado de vuestra operación, y no os está animando.** Aprendisteis que los
+mercados son adversarios (lección 1), que unos pocos puntos básicos de ruido diseñado
+pueden voltear una posición (ejemplos adversarios, lección 2), que vuestros datos de
+entrenamiento y vuestro propio modelo son superficies de ataque (envenenamiento y
+extracción, lección 3), y que un modelo en producción se desvía bajo sus propios supuestos
+(lección 4).
+
+Esta es la lección culminante, y vuelve el cuchillo hacia lo único en lo que habéis estado
+confiando calladamente todo este tiempo: **vuestra propia evaluación.** Porque aquí está la
+verdad incómoda: si el mundo es adversario, entonces *el test también debe ser adversario.*
+Un conjunto de test i.i.d. lo califica la Naturaleza, que es indiferente. Una estrategia
+desplegada la califica un **oponente**, que elige el peor caso a propósito. Puntuaos contra
+el árbitro indiferente y aprobaréis; el árbitro hostil es el que de verdad liquida vuestro
+P&L.
+
+Y hay un segundo giro que hace de esta la lección más difícil en la que ser honesto: una
+**afirmación de robustez es aún más fácil de falsear que una afirmación de alfa.** Ya sabéis
+que el alfa se infla con el número de backtests que hicisteis (el Sharpe desinflado). La
+robustez se infla de la misma manera, salvo que la palanca con la que hacéis trampa es la
+*fuerza del adversario que elegisteis* para testear, y tenéis todos los incentivos para
+elegir a un debilucho. Esta lección trata de llevar la cuenta con honestidad cuando cada
+instinto, y cada incentivo, os empuja a mentiros a vosotros mismos.
+
+## Por qué la precisión del test i.i.d. es el marcador equivocado
+
+<MCQ
+  client:visible
+  pretest
+  question="Un clasificador obtiene un 95% de precisión en un conjunto de test i.i.d. reservado. ¿Por qué podría ese número ser casi inútil como medida de cómo rendirá una vez desplegado contra un oponente?"
+  options={[
+    { text: "Un conjunto de test i.i.d. lo extrae la Naturaleza (caso medio); una estrategia desplegada se enfrenta a un oponente que elige el peor caso, así que el número relevante es el rendimiento bajo el ataque factible más fuerte, no el promedio", correct: true },
+    { text: "El 95% es demasiado alto para ser real, así que debe de ser un bug" },
+    { text: "La precisión es la métrica equivocada solo porque las clases están desbalanceadas" },
+    { text: "La precisión del test siempre es exactamente igual a la precisión en vivo, así que no hay nada de qué preocuparse" },
+  ]}
+  explanation="El conjunto de test i.i.d. muestrea la misma distribución que el entrenamiento, extraída con indiferencia. Un oponente en vivo no extrae al azar: busca la entrada que os rompe. La precisión del caso medio y la del peor caso son números distintos, y solo el segundo opera."
+/>
+
+**Analogía.** Imaginad certificar un puente conduciendo el coche *medio* mil veces por
+encima. Pasa de maravilla. Luego una empresa de transporte —que leyó vuestra ficha técnica—
+envía un camión cargado al peso exacto que maximiza la tensión sobre la única viga débil. La
+Naturaleza os envía coches medios. Un adversario os envía el camión. La carga máxima honesta
+es la carga más pesada que el puente sobrevive, **no** la carga típica que soporta.
+
+**Definición.** Dos preguntas distintas, dos marcadores distintos:
+
+- La **evaluación del caso medio (i.i.d.)** pregunta: ¿cuál es el rendimiento bajo la *misma*
+  distribución de la que se extrajeron los datos? Formalmente, la pérdida esperada sobre la
+  distribución de test $P_{\text{test}} = P_{\text{train}}$. Esto es lo que miden la precisión
+  del test, el Sharpe del backtest y una validación cruzada limpia.
+- La **evaluación del peor caso (robusta)** pregunta: ¿cuál es el rendimiento bajo la *peor*
+  distribución de un conjunto de incertidumbre, o contra el *ataque más fuerte* que un
+  adversario puede montar? Formalmente, la pérdida robusta es una maximización envuelta en
+  vuestra evaluación,
+
+$$ \mathcal{L}_{\text{robust}}(f) = \max_{\delta \in \mathcal{S}} \; \mathcal{L}\big(f(x + \delta),\, y\big), $$
+
+donde $\mathcal{S}$ es el conjunto de perturbaciones que se le permiten al oponente (recordad
+el presupuesto de la bola $L_p$ de la lección 2). El $\max$ es justo lo importante: reportáis
+el rendimiento *en el rincón al que apunta el adversario*, no en el cómodo centro que muestrea
+la Naturaleza.
+
+**Ejemplo resuelto.** Un modelo clasifica "largo / plano / corto" sobre características
+diseñadas y obtiene un **95% de precisión** en su conjunto de test i.i.d. Luego ejecutáis el
+ataque de descenso de gradiente proyectado más fuerte de la lección 2 —PGD con 50 pasos
+dentro del presupuesto de perturbación permitido— y volvéis a medir. La precisión se desploma
+al **10%.** Haced la aritmética de lo que eso significa para operar: de cada 100 decisiones
+hacia las que el oponente en vivo os dirige, unas 90 son erróneas, y el adversario eligió
+*cuáles* 100. El 95% es un hecho sobre un mundo sin oponente; el 10% es un hecho sobre el
+mundo en el que de verdad operáis.
+
+| Marcador | Quién lo califica | Qué mide | El número de este modelo |
+|---|---|---|---|
+| Precisión del test i.i.d. | La Naturaleza (indiferente) | Caso medio, misma distribución | 95% |
+| Precisión robusta (PGD-50) | El oponente (hostil) | Peor caso dentro del presupuesto | 10% |
+
+El reporte correcto son **ambos números, uno al lado del otro** —y aquel sobre el que
+dimensionáis la posición es el peor caso del 10%, porque es el que el mercado cobrará.
+
+<Callout variant="warning" title="Un único número esconde la brecha">
+El hábito más caro de todo este campo es reportar *un* número y dejar que el lector asuma que
+es el relevante. "95% de precisión" es cierto e inútil; "10% bajo el ataque más fuerte que
+pudimos montar" es la carga máxima. Si un informe de robustez os muestra una métrica limpia
+sin su compañero del peor caso, no es un informe de robustez: es un backtest disfrazado de
+seguridad.
+</Callout>
+
+### Cuándo usarlo
+
+Usad la evaluación del peor caso como el *marcador por defecto* para cualquier cosa que se
+vaya a enfrentar a una contraparte estratégica: algoritmos de ejecución, cotizaciones de
+creación de mercado, cualquier señal que mueva tamaño en un valor líquido. La precisión del
+caso medio está bien como *suelo de cordura* (si es mala en promedio, no os molestéis con el
+peor caso), pero nunca es la decisión de despliegue. Reportad ambos; dimensionad sobre el
+peor.
+
+<FillBlank
+  client:visible
+  question="Enunciad la distinción central en una frase."
+  text="Un conjunto de test i.i.d. lo extrae {{la Naturaleza|el oponente|el regulador}}, que es indiferente, mientras que una estrategia desplegada la califica un {{oponente|auditor|promedio}} que deliberadamente elige el peor caso — así que el número que opera es el del peor caso."
+  explanation="La Naturaleza extrae el conjunto de test con indiferencia desde la distribución de entrenamiento. El oponente busca la peor entrada. El caso medio y el peor caso son números distintos; solo el del peor caso sobrevive al despliegue."
+/>
+
+## Las afirmaciones de robustez son más fáciles de falsear que las de alfa
+
+<MCQ
+  client:visible
+  pretest
+  question="Reportáis 'testeé mi estrategia contra un adversario y sobrevivió.' ¿Cuál es la pieza de información que falta más importante?"
+  options={[
+    { text: "Cómo de fuerte era el adversario — la afirmación solo vale tanto como el ataque más fuerte que de verdad probasteis, y tenéis todos los incentivos para elegir uno débil", correct: true },
+    { text: "Cuántas CPUs usó el test" },
+    { text: "Si el adversario estaba escrito en Python o en C++" },
+    { text: "El tiempo exacto de reloj que tardó en ejecutarse el test" },
+  ]}
+  explanation="'Sobrevivió a un adversario' no significa nada sin la fuerza del adversario. Un ataque débil es barato de sobrevivir y os deja afirmar una robustez que no tenéis — el análogo directo de inflar el Sharpe corriendo más backtests a escondidas."
+/>
+
+**Analogía.** El fraude del alfa es comprar 200 boletos de lotería y presumir del que acertó.
+El fraude de robustez es más sutil y *peor*: es contratar a vuestro propio compañero de
+sparring, decirle que vaya flojo, y luego declararos campeones cuando se rinde. No solo
+tuvisteis suerte: *elegisteis* al oponente, y elegir uno débil es la forma más barata posible
+de fabricar un número de robustez que se ve genial y no significa nada.
+
+**Definición.** Esta es la **trampa de la evaluación de robustez** de la lección 1, ahora
+enunciada como un resultado de inflación. Recordad el Sharpe desinflado: cuando seleccionáis
+el mejor de $N$ backtests ruidosos, el máximo Sharpe esperado bajo la hipótesis nula (sin
+habilidad real) crece con
+
+$$ \mathbb{E}[\max \text{SR}] \approx \sigma_{\text{SR}} \cdot \sqrt{2 \ln N}. $$
+
+La precisión robusta se infla en la *misma dirección* pero a lo largo de un eje distinto. El
+alfa se infla con el **número de pruebas**; **la precisión robusta se infla a medida que el
+ataque contra el que evaluáis se vuelve más débil.** Un ataque débil apenas busca en el
+conjunto de perturbaciones, así que encuentra pocos fallos, así que vuestra "precisión
+robusta" se mantiene alta — un número que os adula exactamente igual que un máximo-sobre-
+muchos-backtests os adula. No estáis midiendo la robustez; estáis midiendo la suavidad de
+vuestro compañero de sparring.
+
+<DeflatedSharpe client:visible caption="La misma disciplina, dos ejes. Subid las pruebas y mirad cómo sube la barrera de la suerte: un Sharpe de backtest debe superar la barrera para contar como real. La precisión robusta funciona igual — salvo que la barrera que debéis superar es el ataque honesto más fuerte, y 'sobreviví' no cuenta para nada hasta que mostréis con cuánta fuerza golpeó el ataque." />
+
+**Ejemplo resuelto.** Un defensor reporta el número de titular "precisión robusta del 60%."
+Leéis la letra pequeña y resulta que se midió contra **FGSM** —el ataque de un solo paso,
+débil, de la lección 2. Volvéis a ejecutar la evaluación contra **PGD-50** —el ataque fuerte,
+multipaso, que de verdad busca dentro del presupuesto— y la precisión robusta cae al **8%.**
+
+| Ataque usado para "probar" robustez | Fuerza | Precisión robusta reportada | ¿Honesto? |
+|---|---|---|---|
+| FGSM (un paso de gradiente) | Débil | 60% | No — falseable |
+| PGD-50 (50 pasos proyectados) | Fuerte | 8% | Sí — el número real |
+
+El 60% es el número falseable. No es una mentira sobre *lo que ocurrió* —FGSM de verdad solo
+bajó la precisión al 60%— es una mentira *por selección de oponente*. El defensor eligió el
+ataque que le adulaba, igual que un tramposo del alfa elige el backtest que le adula.
+Conectadlo con la trampa de la lección 1: sobrevivir al fácil interior del conjunto de
+incertidumbre no os dice nada sobre el peor rincón, y un ataque débil solo hurga en el
+interior.
+
+<Callout variant="warning" title="La fuerza del ataque ES la afirmación">
+Siempre que leáis o escribáis "robusto a perturbaciones adversarias", vuestra primera
+pregunta debe ser: *¿robusto a qué ataque, con qué presupuesto, con cuántos pasos?* "Robusto"
+sin un ataque fuerte y nombrado adjunto es exactamente igual de informativo que "Sharpe alto"
+sin el conteo de pruebas — es decir, nada en absoluto. El número a publicar es el de vuestro
+**intento honesto más fuerte de romperlo**, no el más suave.
+</Callout>
+
+### Cuándo usarlo
+
+Aplicad este escepticismo cada vez que veáis un número de robustez —el vuestro sobre todo.
+Antes de creer "somos robustos", exigid la ficha técnica del adversario: familia de ataque,
+presupuesto de perturbación, número de pasos y número de reinicios. Si el informe solo cita
+un ataque de un paso o de caja negra, tratad la afirmación de robustez como *no verificada*,
+igual que trataríais un Sharpe sin desinflar como *no ganado*.
+
+<ThinkReveal
+  client:visible
+  prompt="Vuestro colega dice: 'Nuestro modelo es 60% robusto — lo ataqué yo mismo y aguantó.' Antes de creer una sola palabra, ¿qué dos cosas debéis preguntar?"
+  hint="Una es sobre la fuerza del oponente, otra sobre cuántos oponentes (o configuraciones) se probaron."
+  text="Primero: ¿qué ataque y cómo de fuerte? Un 60% contra FGSM no significa casi nada; el mismo modelo puede estar en el 8% bajo PGD-50. La afirmación solo vale tanto como el ataque más fuerte probado. Segundo: ¿cuántas defensas o configuraciones se probaron antes de reportar esta? Igual que el Sharpe desinflado penaliza el mejor-de-N backtests, el mejor-de-N defensas también debe desinflarse — la configuración ganadora es un máximo sobre pruebas ruidosas y se infla de la misma manera."
+/>
+
+## Enmascaramiento de gradiente y robustez falsa
+
+<MCQ
+  client:visible
+  pretest
+  question="Una defensa muestra alta precisión robusta contra ataques de gradiente de caja blanca, pero un ataque de transferencia de caja negra —que nunca ve los gradientes— la vence con holgura. ¿Qué sugiere con más fuerza ese patrón?"
+  options={[
+    { text: "Enmascaramiento de gradiente — la defensa rompió el gradiente del atacante (gradientes ofuscados) en lugar de ser verdaderamente robusta, así que un ataque sin gradiente la hace añicos; la inversión caja-negra-vence-a-caja-blanca es la señal de alarma clásica", correct: true },
+    { text: "La defensa es genuinamente robusta, ya que la caja blanca es siempre el escenario más difícil" },
+    { text: "Los ataques de caja negra son simplemente más fuertes que los de caja blanca en general" },
+    { text: "El resultado es imposible y debe de ser un error de medición" },
+  ]}
+  explanation="Normalmente los ataques de caja blanca (conocimiento total) son al menos tan fuertes como los de caja negra. Si la caja negra gana, al atacante de caja blanca se le estaba privando de un gradiente utilizable — la defensa parece robusta solo porque ofuscó los gradientes, no porque eliminara la vulnerabilidad."
+/>
+
+**Analogía.** Imaginad una caja fuerte que *parece* inexpugnable porque está cubierta de
+grasa: cada vez que un ladrón intenta leer el dial al tacto, sus dedos resbalan. Ejecutáis
+vuestro test (un ladrón que lee diales al tacto) y declaráis la victoria. Luego un ladrón que
+usa un estetoscopio, ignorando el dial por completo, la abre en treinta segundos. La grasa
+nunca hizo más fuerte la cerradura; solo derrotó *a la única herramienta que vuestro test
+resultó usar.* Eso es el enmascaramiento de gradiente.
+
+**Definición.** El **enmascaramiento de gradiente** (o **gradientes ofuscados**, Athalye,
+Carlini y Wagner, 2018) es una defensa que parece robusta porque **rompe la señal de
+gradiente del atacante** en lugar de aplanar de verdad la superficie de pérdida alrededor de
+la entrada. Los ataques basados en gradiente como PGD necesitan un $\nabla_x \mathcal{L}$ útil
+para saber hacia dónde empujar; si la defensa vuelve ese gradiente poco informativo —hecho
+añicos, estocástico o desvaneciente— el ataque deambula a ciegas y *parece* fallar. La
+vulnerabilidad sigue ahí; solo habéis escondido el mapa hacia ella. Los autores identificaron
+tres **señales** delatoras de que estáis enmascarando en lugar de defendiendo:
+
+1. **Robusto a ataques débiles pero no a los fuertes.** La precisión robusta es alta contra
+   FGSM de un solo paso pero se desploma bajo PGD multipaso con suficientes iteraciones y
+   reinicios.
+2. **La caja negra vence a la caja blanca.** Un ataque de transferencia o basado en consultas
+   con *menos* información supera al ataque de caja blanca con acceso *total* al gradiente.
+   Esto está al revés —el conocimiento total nunca debería rendir peor— y es la campana de
+   alarma más estridente.
+3. **Los ataques sin límite no llegan al 0% de precisión.** Si dejáis crecer el presupuesto de
+   perturbación sin límite y el modelo *aun así* clasifica correctamente, el ataque está roto,
+   no el modelo es robusto. Con un presupuesto sin límite cualquier ataque honesto debería
+   llevar la precisión a cero (podéis perturbar la entrada hasta convertirla literalmente en
+   cualquier cosa).
+
+**Ejemplo resuelto — la tabla diagnóstica.** Auditáis una defensa y recogéis cuatro números:
+
+| Ataque | Información | Precisión robusta | Lectura |
+|---|---|---|---|
+| FGSM (débil, caja blanca) | Gradiente total, 1 paso | 78% | Se ve genial |
+| PGD-50 (fuerte, caja blanca) | Gradiente total, 50 pasos | 71% | ¿¿Sigue bien?? |
+| Transferencia (caja negra) | Ningún gradiente en absoluto | 22% | Alarma: menos info, más daño |
+| Perturbación sin límite | Sin límite de presupuesto | 35% | Roto: debería ser 0% |
+
+Leed el patrón, no el titular. Los números de caja blanca (78%, 71%) parecen una defensa
+robusta. Pero el **ataque de caja negra sin acceso al gradiente hace mucho más daño (22%)**
+que el de caja blanca con acceso total —la inversión imposible— y el **ataque sin límite nunca
+llega al 0%.** Dos de las tres señales se disparan a la vez. Esta defensa no es robusta; está
+*enmascarando*. La precisión robusta honesta está en algún lugar cerca de ese 22% (o más baja,
+una vez que alguien ejecute un ataque adaptativo sin gradiente diseñado para ella).
+
+**Reformulación de mercado.** Una estrategia que sobrevive a vuestro *oponente simulado
+suave* —una repetición de backtest con ruido aleatorio, un modelo de deslizamiento que
+ajustasteis para ser indulgente— pero muere en el momento en que un *oponente adaptativo real*
+la sondea. El oponente simulado es vuestro gradiente ofuscado: no puede encontrar el punto
+débil porque vuestra simulación escondió el mapa. El mercado en vivo envía el estetoscopio.
+
+<Callout variant="warning" title="Robusto a caja negra NO es verdaderamente robusto">
+La idea errónea seductora es "sobrevivió a un ataque de caja negra, así que es robusto." Al
+revés. Una defensa que es *solo* robusta a ataques de caja negra mientras se desmorona bajo un
+ataque de caja blanca (o adaptativo sin gradiente) bien ejecutado es la firma del
+enmascaramiento de gradiente. La supervivencia a la caja negra es evidencia débil en el mejor
+de los casos; el test fuerte es si un atacante *con conocimiento total de la defensa*
+—Kerckhoffs, lección 1— sigue sin poder romperla.
+</Callout>
+
+### Cuándo usarlo
+
+Pasad la lista de comprobación de enmascaramiento de gradiente a cualquier defensa antes de
+confiar en su número de robustez: comparad ataques débiles frente a fuertes, caja blanca
+frente a caja negra, y presupuestos limitados frente a sin límite. Si fuerte &lt; débil en
+*daño*, si caja negra &gt; caja blanca en *daño*, o si los ataques sin límite dejan la
+precisión por encima de cero, parad — el número está enmascarando, no es robustez, y vuestro
+siguiente paso es un **ataque adaptativo** construido específicamente para esta defensa.
+
+<Categorize
+  client:visible
+  question="Clasificad cada observación según si señala robustez real o enmascaramiento de gradiente (robustez falsa)."
+  buckets={["Robustez genuina", "Enmascaramiento de gradiente"]}
+  items={[
+    { text: "PGD de caja blanca hace más daño que un ataque de caja negra sin gradiente", bucket: "Robustez genuina" },
+    { text: "La precisión llega al 0% a medida que el presupuesto de perturbación crece sin límite", bucket: "Robustez genuina" },
+    { text: "Robusto a FGSM pero se desploma bajo PGD-50", bucket: "Enmascaramiento de gradiente" },
+    { text: "Un ataque de caja negra sin gradiente vence al ataque de caja blanca con gradiente total", bucket: "Enmascaramiento de gradiente" },
+    { text: "Los ataques de presupuesto sin límite aún dejan al modelo clasificando correctamente", bucket: "Enmascaramiento de gradiente" },
+    { text: "Un ataque adaptativo diseñado para la defensa no logra hacerlo mejor que uno genérico", bucket: "Robustez genuina" },
+  ]}
+  explanation="Robustez genuina: los ataques con información total son los más fuertes, los presupuestos sin límite acaban llegando al 0%, y adaptar el ataque no ayuda. Enmascaramiento: el débil supera la expectativa del fuerte, la caja negra vence a la caja blanca, y los ataques sin límite misteriosamente no pueden terminar el trabajo."
+/>
+
+## Red-teaming a vuestra propia estrategia
+
+<MCQ
+  client:visible
+  pretest
+  question="Una estrategia pasa 9 de 10 escenarios de estrés generados aleatoriamente pero falla el 1 escenario diseñado adaptativamente para explotar su debilidad específica. ¿A qué resultado deberíais dar más peso?"
+  options={[
+    { text: "Al escenario adaptativo — un oponente real fabrica el ataque para vuestra defensa específica; pasar 9 escenarios genéricos es el fácil interior, el adaptativo es el peor rincón que de verdad opera", correct: true },
+    { text: "A los 9 aprobados, porque 9 de 10 es una tasa de aprobado del 90%" },
+    { text: "A ninguno — las pruebas de estrés son intrínsecamente poco fiables" },
+    { text: "A un promedio de los 10, ponderando cada escenario por igual" },
+  ]}
+  explanation="Los escenarios aleatorios muestrean el fácil centro del conjunto de incertidumbre; un escenario adaptativo apunta al peor rincón — exactamente lo que hace un oponente real. Una tasa de aprobado del 90% en estrés genérico es justo la falsa comodidad que el fallo adaptativo expone."
+/>
+
+**Analogía.** Los defensores de un castillo hacen simulacros contra sus *propios* soldados,
+que atacan la puerta delantera cada vez porque ese es el simulacro. El castillo nunca cae —en
+el simulacro. Un ejército de asedio real estudia las murallas, encuentra el postigo sin
+vigilar y entra caminando. El **red-teaming** es contratar soldados cuyo único trabajo es
+*pensar como el ejército de asedio* y atacar vuestro postigo antes que el enemigo. Su éxito es
+vuestro éxito, porque fallan *de forma barata* donde el mercado falla *de forma cara*.
+
+**Definición.** El **red-teaming** es la disciplina de levantar un equipo adversario interno
+cuyo mandato explícito es *romper vuestra propia estrategia* antes del despliegue —y ser
+recompensado por romperla, no por confirmar que funciona. Un equipo rojo de verdad usa cinco
+herramientas:
+
+1. **Ataques adaptativos.** Atacad la defensa *específica*, no reutilicéis un ataque genérico
+   sacado de la estantería. (Un ataque genérico contra una defensa que enmascara es justo cómo
+   se cuela la robustez falsa; el ataque adaptativo se construye para derrotar los trucos de
+   *este* modelo.)
+2. **Repetición histórica del peor caso.** Repetid el *peor* régimen que contienen vuestros
+   datos —el desplome de 2008, el flash crash de 2010, el colapso de marzo de 2020— no la
+   ventana media del backtest. La Naturaleza ya ejecutó un escenario adversario por vosotros;
+   no lo promediéis hasta hacerlo desaparecer.
+3. **Generación de escenarios adversarios.** Sintetizad escenarios de estrés que apunten a los
+   puntos de apalancamiento de la estrategia, en lugar de muestrear escenarios plausibles-pero-
+   fáciles.
+4. **Estresad los supuestos de ejecución.** Atacad vuestras *ejecuciones*, vuestro modelo de
+   *deslizamiento* y vuestra *capacidad*. Un Sharpe de 2.0 que asume ejecuciones a precio medio
+   y liquidez infinita es una fantasía; el equipo rojo vuelve hostiles las ejecuciones y delgado
+   el libro de órdenes.
+5. **Asumid que el oponente conoce vuestro modelo.** Principio de Kerckhoffs, lección 1:
+   diseñad el ataque como si el adversario hubiera leído vuestro código, conociera vuestras
+   características y hubiera visto vuestros pesos. La seguridad que depende de la ignorancia del
+   oponente no es seguridad.
+
+El peligro contra el que protege un equipo rojo es **la supervivencia por suerte bajo un mal
+proceso de evaluación.** Podéis pasar una evaluación por la razón *equivocada* —un test débil
+que nunca sondeó vuestra debilidad real— y un aprobado no os dice nada sobre si vuestro
+*proceso* era sólido. La matriz de proceso frente a resultado lo hace explícito:
+
+<ProcessOutcomeMatrix
+  client:visible
+  title="Evaluación del equipo rojo: proceso frente a resultado"
+  caption="Las dos diagonales son honestas; las antidiagonales son las trampas. Una estrategia puede 'sobrevivir' a vuestra evaluación con un mal proceso (solo ejecutasteis ataques débiles y genéricos) — esa supervivencia es suerte, no robustez, y el mercado acabará cobrando. Igualmente, un equipo rojo sólido que 'rompe' la estrategia hizo su trabajo: encontró el fallo barato, antes del despliegue."
+  processAxisLabel="Proceso de evaluación"
+  outcomeAxisLabel="¿Sobrevivió la estrategia?"
+  goodProcessGoodOutcome={{ label: "Robustez ganada", note: "Un equipo rojo fuerte, adaptativo y consciente de Kerckhoffs lanzó su ataque honesto más duro y la estrategia aun así aguantó. Esta es la única celda donde 'sobrevivió' es evidencia real — e incluso aquí seguís desinflando por el número de configuraciones probadas.", example: "PGD-50 de caja blanca, un ataque adaptativo construido para la defensa y la repetición del peor régimen no logran romperla." }}
+  goodProcessBadOutcome={{ label: "Cazado en el laboratorio", note: "Un equipo rojo sólido rompió la estrategia antes del despliegue. Esto se siente como un fracaso pero es justo la victoria que queréis: el fallo ocurrió barato, en simulación, en lugar de caro, con capital en vivo.", example: "El escenario adaptativo voltea la posición; matáis la estrategia antes de que llegue a operar." }}
+  badProcessGoodOutcome={{ label: "Supervivencia por suerte", note: "La celda más peligrosa. La estrategia 'aprobó' solo porque la evaluación fue débil — ataques genéricos, regímenes medios, ejecuciones indulgentes. La vulnerabilidad está totalmente intacta; el test simplemente nunca apuntó a ella. Un oponente real lo hará.", example: "Pasa 9 escenarios de estrés aleatorios; el único escenario adaptativo que nadie ejecutó es la explosión en vivo esperando a suceder." }}
+  badProcessBadOutcome={{ label: "Condenado y obvio", note: "Una evaluación débil aun así la rompió. Al menos la lección es inconfundible: la estrategia es frágil y el arreglo es reconstruir, no reajustar el test.", example: "Hasta un estrés estilo FGSM de un solo paso voltea la señal; la estrategia nunca fue viable." }}
+/>
+
+**Ejemplo resuelto.** Una estrategia pasa por 10 escenarios de estrés. Nueve son *generados
+aleatoriamente* —movimientos de mercado plausibles muestreados de la historia— y los pasa
+todos. El décimo es *adaptativo*: el equipo rojo estudió la estrategia, descubrió que se apoya
+mucho en una única característica de desbalance del libro de órdenes (haciendo eco de la
+fragilidad de característica única de la lección 1), y fabricó un escenario que falsea
+exactamente esa característica. La estrategia falla el décimo. Una lectura ingenua dice "tasa
+de aprobado del 90%, a producción." La lectura correcta: los nueve aprobados son el fácil
+interior del conjunto de incertidumbre; **el único fallo adaptativo es el peor rincón, y el
+peor rincón es donde vive el oponente.** Ese único escenario adaptativo pesa más que los nueve
+aleatorios juntos, porque es el único que imita a un adversario real que piensa.
+
+<Callout variant="tip" title="Recompensad al equipo rojo por romperos">
+El arreglo estructural son los incentivos. Si vuestro equipo de evaluación es recompensado por
+que la estrategia apruebe, habéis construido un compañero de sparring pagado por ir flojo — el
+fallo del enmascaramiento de gradiente a nivel de organigrama. Recompensad al equipo rojo por
+*encontrar la rotura*, y los fallos del peor rincón salen a la luz en el laboratorio (Cazado en
+el laboratorio) en lugar de en producción (Supervivencia por suerte cobrando su deuda). Una
+rotura encontrada antes del despliegue es un regalo, no un contratiempo.
+</Callout>
+
+### Cuándo usarlo
+
+Levantad un equipo rojo para cualquier estrategia que vaya a mantener tamaño significativo o
+interactuar con una contraparte estratégica. Haced que los ataques adaptativos y la repetición
+del peor régimen sean barreras obligatorias, no extras opcionales, y *nunca* dejéis que el
+equipo que construyó la estrategia sea el único que la evalúa — el constructor es el peor
+árbitro posible, porque inconscientemente testea los casos que ya sabe que sobreviven.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Ataque adaptativo", definition: "Un ataque diseñado para la defensa específica, no uno genérico reutilizado de la estantería" },
+    { term: "Repetición histórica del peor caso", definition: "Estrés contra el peor régimen de los datos (2008, flash crash) en lugar de la ventana media" },
+    { term: "Estrés de ejecución", definition: "Atacar los supuestos de ejecuciones, deslizamiento y capacidad que un backtest limpio da por sentados" },
+    { term: "Kerckhoffs en red-teaming", definition: "Construir el ataque asumiendo que el oponente ya conoce vuestro modelo, características y pesos" },
+    { term: "Supervivencia por suerte", definition: "Pasar una evaluación por la razón equivocada — un proceso débil que nunca sondeó la debilidad real" },
+  ]}
+/>
+
+## El marcador honesto de robustez
+
+<MCQ
+  client:visible
+  pretest
+  allowMultiple
+  question="¿Qué elementos pertenecen a un marcador honesto de robustez con el que de verdad desplegaríais? (Seleccionad todos los que correspondan.)"
+  options={[
+    { text: "Tanto la métrica limpia COMO la métrica del peor caso, una al lado de la otra", correct: true },
+    { text: "La fuerza del ataque más fuerte probado (familia, presupuesto, pasos, reinicios)", correct: true },
+    { text: "Una precisión robusta desinflada por el número de defensas y configuraciones probadas", correct: true },
+    { text: "Resultados de estrés de capacidad y ejecución, más un interruptor de apagado / disparador de deriva", correct: true },
+    { text: "Un único número de precisión limpia sin compañero del peor caso" },
+  ]}
+  explanation="El marcador honesto reporta limpia Y peor caso, nombra el ataque más fuerte, desinfla por las configuraciones probadas, incluye estrés de capacidad/ejecución y se entrega con un interruptor de apagado. Lo único que NO pertenece es un número limpio solitario — ese es el disfraz, no la calificación."
+/>
+
+**Analogía.** Un informe serio de inspección de un puente no dice "el puente está bien."
+Indica la carga máxima, la carga de prueba más pesada aplicada, el margen de seguridad, la
+metodología de inspección, los puntos débiles conocidos y el tráfico máximo antes de cerrar el
+puente. El marcador honesto de robustez es ese informe para vuestra estrategia — y como un
+informe de puente, no vale nada si omite con cuánta fuerza empujasteis de verdad.
+
+**Definición.** El **marcador honesto de robustez** reporta todo lo que un árbitro hostil
+exigiría para *auditar* vuestra afirmación, no solo la afirmación. Cada línea existe para
+cerrar un agujero específico que este curso os ha mostrado:
+
+| Elemento | Qué reportar | Qué agujero cierra |
+|---|---|---|
+| **Métrica limpia** | Precisión del caso medio / Sharpe del backtest | El suelo de cordura (sección 1) |
+| **Métrica del peor caso** | Precisión robusta / Sharpe del peor régimen bajo el ataque más fuerte | El número que de verdad opera (sección 1) |
+| **Ataque más fuerte probado** | Familia de ataque, presupuesto de perturbación, número de pasos, reinicios | La falseabilidad de "sobreviví" (sección 2) |
+| **Tamaño del conjunto de incertidumbre / ambigüedad** | Cómo de grande es la perturbación o cambio de distribución contra el que defendisteis | Sobre qué es el número del peor caso (lección 1) |
+| **Desinflado por configuraciones probadas** | Número del peor caso penalizado por el número de defensas / configuraciones evaluadas | La inflación de robustez del mejor-de-N — la disciplina del Sharpe desinflado (lección 2, y el impuesto de pruebas de arquitectura de *Deep Learning para datos de mercado*) |
+| **Estrés de capacidad y ejecución** | Rendimiento bajo ejecuciones hostiles, deslizamiento y a escala | El backtest de ejecuciones fantasiosas (red-teaming, sección 4) |
+| **Interruptor de apagado / disparador de deriva** | La condición en vivo que detiene la estrategia cuando la realidad diverge | Un modelo en vivo desviándose bajo sus supuestos (lección 4) |
+
+Fijaos con cuidado en la línea de **desinflado**: es la misma idea que desinflar el Sharpe por
+el número de *arquitecturas* que probasteis en *Deep Learning para datos de mercado*, solo que
+reetiquetada. Cada defensa y cada configuración que evaluáis es otra prueba; la precisión
+robusta de la mejor es un máximo sobre pruebas ruidosas y se infla con $\sqrt{2 \ln N}$
+exactamente igual que un Sharpe mejor-de-N. Reportad el número desinflado, no el de la vuelta
+de la victoria.
+
+**Ejemplo resuelto.** Dos informes para la misma estrategia. ¿Cuál financiaríais?
+
+| Campo | Informe A (disfraz) | Informe B (marcador honesto) |
+|---|---|---|
+| Titular | "95% de precisión, robusto a ruido adversario" | "Limpio 95%, robusto 41% bajo nuestro ataque más fuerte" |
+| ¿Ataque nombrado? | No | PGD-50, presupuesto especificado, 5 reinicios, más un ataque adaptativo |
+| ¿Configuraciones probadas / desinflado? | No se menciona | 30 configuraciones probadas; precisión robusta desinflada por el conteo |
+| ¿Estrés de ejecución? | "Asume ejecuciones a precio medio" | Testeado con ejecuciones hostiles y a 5x tamaño; el Sharpe aguanta hasta 3x, se degrada más allá |
+| ¿Interruptor de apagado? | Ninguno | El disparador de deriva detiene la operativa si la distribución de la característica en vivo se desvía más allá del umbral |
+
+El informe A es el número más alto y la peor estrategia. El 41% del informe B se ve peor en la
+diapositiva y es *mucho* más probable que sobreviva al contacto con un oponente real, porque
+fue *medido* contra uno. Financiad B.
+
+<Callout variant="success" title="El credo de cierre">
+En un mundo hostil, la única robustez en la que podéis confiar es la que sobrevivió a vuestro
+**intento honesto más duro de romperla** — no al más suave, no al más halagador, no al que
+cupo en la diapositiva. Y debéis llevar la cuenta con honestidad, porque el mercado lleva la
+cuenta tanto si vosotros lo hacéis como si no. Un conjunto de test i.i.d. perdona; un marcador
+desinflado, del peor caso y con red-teaming no — y por eso es justamente el único que vale la
+pena confiar. Todo el curso en una línea: **evaluad de la manera en que lo hará el mercado,
+antes de que el mercado lo haga.**
+</Callout>
+
+### Cuándo usarlo
+
+Haced del marcador el *entregable* de cada ejercicio de robustez — el artefacto que controla
+el despliegue, que se revisa y que se revisita cuando cambian los regímenes. Si falta
+cualquiera de sus siete líneas, la afirmación está incompleta y la estrategia no se despliega.
+Tratad un informe de robustez sin ataque fuerte nombrado y sin desinflado igual que trataríais
+un Sharpe sin conteo de pruebas: interesante, no verificado y todavía no invertible.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">El informe A reporta un número de titular más alto que el informe B. ¿Por qué B es la estrategia más segura para desplegar?</summary>
+
+**Respuesta.** Porque el número de A lo calificó la Naturaleza y el de B lo calificó un
+oponente. El "95% de precisión, robusto a ruido adversario" de A nunca nombra el ataque, nunca
+desinfla por las configuraciones probadas, asume ejecuciones gratuitas y no tiene interruptor
+de apagado — es un backtest del caso medio disfrazado de seguridad. El 41% de B es *más bajo
+precisamente porque fue medido contra el ataque honesto más fuerte*, desinflado por las 30
+configuraciones probadas, sometido a estrés de ejecuciones hostiles a escala y entregado con un
+disparador de deriva. El número del peor caso es el que el mercado cobrará, así que un 41%
+*verdadero* vale más que un 95% *falso*. No estáis eligiendo el número más grande; estáis
+eligiendo el número que se ganó honestamente contra un árbitro hostil.
+
+</details>
+</Reveal>
+
+## Recapitulación
+
+Empezasteis este curso creyendo que el mercado podría caer ante una manguera de poder
+predictivo, y lo termináis sabiendo que el peor enemigo de la manguera es su propia
+evaluación. El conjunto de test i.i.d. lo califica una Naturaleza indiferente; la estrategia
+desplegada la califica un oponente hostil que elige el peor caso a propósito — así que el
+número del peor caso es el que opera. Las afirmaciones de robustez se inflan aún más fácilmente
+que las de alfa, porque la palanca con la que hacéis trampa es la fuerza del compañero de
+sparring que elegisteis, y el enmascaramiento de gradiente deja que una defensa *parezca*
+robusta escondiendo el mapa hacia su propia debilidad. El arreglo es haceros red-teaming a
+vosotros mismos con ataques adaptativos, conscientes de Kerckhoffs y del peor régimen —
+recompensando al equipo por romperos— y publicar un marcador honesto que reporte métricas
+limpia y del peor caso, nombre el ataque más fuerte, desinfle por las configuraciones probadas,
+estrese la ejecución y se entregue con un interruptor de apagado.
+
+<MindMap
+  client:visible
+  title="Evaluación de estrés adversaria"
+  caption="Construid el mapa: el marcador equivocado, por qué la robustez se falsea fácilmente, cómo se falsea (enmascaramiento), cómo testear honestamente (equipo rojo) y qué reportar (el marcador)."
+  root={{
+    label: 'Evaluación de estrés adversaria',
+    children: [
+      { label: 'i.i.d. es el marcador equivocado', children: [
+        { label: 'La Naturaleza califica el caso medio' },
+        { label: 'El oponente califica el peor caso' },
+        { label: 'Reportad ambos; dimensionad sobre el peor (95% limpio, 10% PGD)' },
+      ]},
+      { label: 'La robustez se falsea más fácil que el alfa', children: [
+        { label: 'Palanca = fuerza del ataque elegido' },
+        { label: 'Un ataque débil infla la precisión robusta' },
+        { label: 'Disciplina del Sharpe desinflado, eje nuevo (60% FGSM vs 8% PGD)' },
+      ]},
+      { label: 'Enmascaramiento de gradiente = robustez falsa', children: [
+        { label: 'Rompe el gradiente, no la vulnerabilidad' },
+        { label: 'Señal: el débil sobrevive, el fuerte falla' },
+        { label: 'Señal: la caja negra vence a la caja blanca' },
+        { label: 'Señal: el ataque sin límite nunca llega al 0%' },
+      ]},
+      { label: 'Red-teaming a vuestra propia estrategia', children: [
+        { label: 'Ataques adaptativos, no genéricos' },
+        { label: 'Repetición del peor régimen + estrés de ejecución' },
+        { label: 'Kerckhoffs: el oponente conoce vuestro modelo' },
+        { label: 'Recompensad romper; cuidado con la supervivencia-por-suerte' },
+      ]},
+      { label: 'El marcador honesto', children: [
+        { label: 'Métrica limpia Y del peor caso' },
+        { label: 'Ataque más fuerte nombrado + presupuesto' },
+        { label: 'Desinflad por configuraciones probadas' },
+        { label: 'Capacidad, ejecución, interruptor de apagado' },
+      ]},
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Comprobación mixta: ¿sobrevive vuestra evaluación a un árbitro hostil?"
+  questions={[
+    {
+      question: "Un modelo obtiene un 95% en su conjunto de test i.i.d. y un 10% bajo PGD-50. ¿Sobre qué número dimensionáis la posición, y por qué?",
+      options: [
+        { text: "10% — una estrategia desplegada la califica un oponente que elige el peor caso, así que el número del peor caso es el que el mercado cobrará", correct: true },
+        { text: "95% — es la muestra más grande y por tanto más fiable" },
+        { text: "El promedio de los dos, alrededor del 52,5%" },
+        { text: "Ninguno; la precisión no puede informar el dimensionamiento de posiciones en absoluto" },
+      ],
+      explanation: "El número i.i.d. lo califica una Naturaleza indiferente; el oponente en vivo os dirige hacia el peor caso. Reportad ambos, pero dimensionad sobre el 10% del peor caso — ese es el mundo en el que de verdad operáis.",
+    },
+    {
+      question: "¿Por qué una afirmación de robustez es aún más fácil de falsear que una de alfa?",
+      options: [
+        { text: "Elegís al adversario, y elegir uno débil (p. ej. FGSM en vez de PGD-50) fabrica de forma barata una 'precisión robusta' alta que no significa nada — la misma inflación que el Sharpe mejor-de-N, en un eje nuevo", correct: true },
+        { text: "Los números de robustez siempre se redondean al alza por convención" },
+        { text: "El alfa es imposible de medir, así que cualquier comparación es injusta" },
+        { text: "La robustez y el alfa son en realidad la misma cantidad" },
+      ],
+      explanation: "El alfa se infla con el número de pruebas; la precisión robusta se infla a medida que el ataque elegido se debilita. Reportar un 60% contra un FGSM débil mientras el modelo está en el 8% bajo PGD-50 es una mentira por selección de oponente — la trampa del Sharpe desinflado disfrazada.",
+    },
+    {
+      question: "Una defensa es robusta a PGD de caja blanca, pero un ataque de transferencia de caja negra sin gradiente hace mucho más daño. ¿Cuál es el diagnóstico?",
+      options: [
+        { text: "Enmascaramiento de gradiente — la defensa ofuscó el gradiente para que el atacante de caja blanca no pudiera encontrar la debilidad; la inversión caja-negra-vence-a-caja-blanca es la señal clásica de robustez falsa", correct: true },
+        { text: "Robustez genuina, ya que la caja blanca es siempre el caso más difícil" },
+        { text: "Un bug de medición, porque la caja negra nunca puede vencer a la caja blanca" },
+        { text: "Prueba de que el modelo necesita más parámetros" },
+      ],
+      explanation: "Los ataques con información total (caja blanca) deberían ser al menos tan fuertes como los de caja negra. Cuando menos información hace más daño, al gradiente de caja blanca se le estaba privando — la vulnerabilidad está intacta y solo escondida. Añadid el test de presupuesto sin límite: si la precisión no llega al 0%, el enmascaramiento está confirmado.",
+    },
+    {
+      question: "Una estrategia pasa 9 de 10 escenarios de estrés aleatorios pero falla el 1 escenario adaptativo construido para explotar su debilidad específica. ¿Cuál es la lectura honesta?",
+      options: [
+        { text: "El fallo adaptativo domina — los escenarios aleatorios muestrean el fácil interior; el adaptativo es el peor rincón donde vive un oponente real, así que pesa más que los nueve aprobados", correct: true },
+        { text: "Tasa de aprobado del 90%, a producción" },
+        { text: "Ignorar el escenario adaptativo como un valor atípico" },
+        { text: "Volver a ejecutar hasta que el escenario adaptativo pase, y reportar eso" },
+      ],
+      explanation: "Un oponente real fabrica el ataque para vuestra defensa específica. Los nueve aprobados aleatorios son el fácil centro del conjunto de incertidumbre; el único fallo adaptativo es el peor rincón — y el peor rincón es exactamente lo que se explota en vivo. Ese único resultado pesa más que los nueve.",
+    },
+    {
+      question: "Dos informes: A dice '95% de precisión, robusto a ruido adversario.' B reporta limpio 95%, robusto 41% bajo PGD-50 con 5 reinicios más un ataque adaptativo, desinflado por 30 configuraciones probadas, estrés de ejecuciones hostiles y capacidad, y un interruptor de apagado disparado por deriva. ¿Cuál financiáis?",
+      options: [
+        { text: "B — el número de titular más bajo fue medido contra un árbitro hostil, desinflado por las pruebas, sometido a estrés de ejecución y entregado con un interruptor de apagado; un 41% verdadero vence a un 95% falso", correct: true },
+        { text: "A — tiene el número de precisión más alto" },
+        { text: "A — menos salvedades significa un resultado más limpio" },
+        { text: "Ninguno se puede comparar sin volver a ejecutar ambos" },
+      ],
+      explanation: "A es un backtest del caso medio disfrazado de seguridad: sin ataque nombrado, sin desinflado, ejecuciones fantasiosas, sin interruptor de apagado. El marcador honesto de siete líneas de B cierra cada agujero que este curso expuso. Financiad el número que se ganó contra un oponente, no el que cupo en una diapositiva.",
+    },
+  ]}
+/>

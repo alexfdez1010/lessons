@@ -1,0 +1,604 @@
+---
+title: "QUBO and Portfolio Optimization"
+description: "Recast portfolio selection as a QUBO, solve it with QAOA or quantum annealing, and see where discrete cardinality and lot constraints — not the math — make the quantum detour worth attempting."
+topic: "en/quantum-computing-for-finance"
+order: 3
+minutes: 18
+updated: 2026-06-23
+---
+
+import { Callout, MCQ, Quiz, Reveal, ThinkReveal, FillBlank, MatchConcepts, Categorize, MindMap, QuboPortfolioAnnealer } from '@/components/react';
+
+Markowitz handed us a beautiful machine. Feed it expected returns and a covariance
+matrix, turn the crank, and out comes the portfolio with the least risk for a target
+return. For the *continuous* version of that problem — "hold any fraction of each
+asset" — the machine is genuinely solved: it is a convex quadratic program, and we can
+crack it in polynomial time before lunch.
+
+Then a portfolio manager walks in and says: "Lovely. But I want to hold **exactly 8
+names**, never a position smaller than 2%, and only in **round lots of 100 shares**."
+And the beautiful convex machine seizes up. Those innocent-sounding requests turn a
+polynomial-time problem into a **combinatorial** one — the kind that, in the worst case,
+is NP-hard.
+
+This lesson is about that phase change, and the bet quantum computing makes on it.
+We will recast the discrete portfolio problem as a **QUBO** (Quadratic Unconstrained
+Binary Optimization), see how a **quantum annealer** (D-Wave) and **QAOA** (gate model)
+attack a QUBO, and — crucially — keep a clear head about whether any of it currently
+beats a good classical solver. Spoiler from the start: the math is real and elegant; the
+*advantage* is, as of today, mostly aspirational.
+
+## Why continuous portfolios are easy and discrete ones are hard
+
+<MCQ
+  client:visible
+  pretest
+  question="Continuous mean–variance optimization (hold any fraction of each asset) is a convex quadratic program. Adding 'hold exactly k names' does what to its difficulty?"
+  options={[
+    { text: "It turns a polynomial-time convex problem into a combinatorial (NP-hard in the worst case) one", correct: true },
+    { text: "Nothing — it stays a convex quadratic program with one extra equality" },
+    { text: "It makes the problem strictly easier, since fewer assets means less to optimize" },
+    { text: "It only changes the units of the answer, not the runtime" },
+  ]}
+  explanation="Convexity is what makes mean–variance tractable. A cardinality constraint is non-convex (it carves the feasible set into a combinatorial number of disconnected pieces), so gradient-based convex solvers no longer apply and you fall back to combinatorial search."
+/>
+
+**Analogy.** The continuous problem is rolling a marble into the bottom of a smooth bowl:
+wherever you start, gravity slides you to the single lowest point. The discrete problem
+is finding the lowest valley across a vast mountain range *while only being allowed to
+stand on a finite set of peaks*. There is no slope to follow — you must, in principle,
+check combinations.
+
+**Definition — continuous mean–variance.** With weights $w \in \mathbb{R}^n$, expected
+returns $\mu$, covariance $\Sigma$, and risk-aversion $q$, Markowitz minimizes
+
+$$ \min_{w}\; q\, w^{\top}\Sigma\,w \;-\; \mu^{\top} w \quad\text{s.t.}\quad \sum_i w_i = 1. $$
+
+Because $\Sigma$ is positive semidefinite, the objective is **convex** and the constraint
+is linear. Convex quadratic programs are solvable in polynomial time (interior-point
+methods). This is the "easy" world.
+
+**Where it breaks.** Real mandates add constraints that are *not* convex:
+
+- **Cardinality:** hold **exactly** (or at most) $k$ of the $n$ names.
+- **Minimum lot / position sizes:** a holding is either $0$ or **at least** some floor
+  (e.g. at least 2% or at least 100 shares) — a "semi-continuous" variable.
+- **Buy-in thresholds / round lots:** weights must land on a discrete grid.
+
+Each of these introduces a yes/no decision per asset. With $n$ assets there are up to
+$2^n$ on/off combinations, and the feasible region is no longer a single convex blob — it
+is a scatter of disconnected islands. Branch-and-bound can prune, but the worst case is
+exponential. **This combinatorial core is exactly what QAOA and quantum annealing claim
+to attack.**
+
+**Worked example — the explosion.** Pick the best 5 names out of 30 by brute force:
+$\binom{30}{5} = 142{,}506$ portfolios — trivial. Now best 15 out of 100:
+$\binom{100}{15} \approx 2.5 \times 10^{17}$. At a billion evaluations per second that is
+roughly **8 years** of compute for one rebalance. The continuous version of the *same*
+100-asset problem solves in milliseconds. The discreteness, not the size, is the enemy.
+
+<Callout variant="warning" title="The convexity cliff">
+It is tempting to "just round" the continuous solution to satisfy a cardinality limit —
+solve the smooth problem, then keep the 8 biggest weights. This is fast but **provably
+suboptimal**: the best 8-name portfolio is frequently *not* the 8 largest weights of the
+30-name solution, because dropping names reshuffles the optimal mix among those that
+remain. Rounding gives you *an* answer, not *the* answer.
+</Callout>
+
+### When to use it
+
+Stay in the continuous convex world whenever you legitimately can — if the only "discrete"
+constraint is soft (a preference, not a hard rule), encode it as a penalty in a convex
+solver and move on. Reach for combinatorial machinery (and only *then* consider quantum)
+when the discreteness is a hard, binding business constraint: a fixed name count, a
+regulatory lot size, a minimum ticket that can't be fractioned.
+
+<FillBlank
+  client:visible
+  question="State the phase change in one line."
+  text="Mean–variance optimization is a convex {{quadratic program|linear program|integer program}} in the continuous case, but a cardinality or minimum-lot constraint makes it combinatorial and NP-hard."
+  explanation="Continuous mean–variance is a convex quadratic program (QP). The discrete constraints are what break convexity and push it into combinatorial / integer-programming territory."
+/>
+
+## QUBO: minimize x-transpose Q x over binary x
+
+<MCQ
+  client:visible
+  pretest
+  question="A QUBO minimizes x^T Q x over x in {0,1}^n. Since x_i is binary, x_i squared equals x_i. What does that let you fold into the diagonal of Q?"
+  options={[
+    { text: "Any linear term c_i x_i — because x_i = x_i^2, a linear coefficient can be absorbed into the diagonal entry Q_ii", correct: true },
+    { text: "Nothing — linear terms always need a separate vector outside Q" },
+    { text: "The quadratic cross-terms, which collapse onto the diagonal" },
+    { text: "The constant offset, which becomes the trace of Q" },
+  ]}
+  explanation="For binary variables x_i^2 = x_i, so a linear term c_i x_i equals c_i x_i^2, which is just c_i added to the diagonal entry Q_ii. That is why a QUBO needs no separate linear vector — everything lives in Q."
+/>
+
+**Analogy.** A QUBO is a set of light switches (one per asset, each on or off) wired
+together so that *every pair* of switches has a reward or penalty for being on together,
+and each switch has its own solo reward for being on. You are hunting for the switch
+configuration with the lowest total "energy." That is the whole model — pairs plus singles,
+nothing else.
+
+**Definition.** A **QUBO** is
+
+$$ \min_{x \in \{0,1\}^n}\; x^{\top} Q\, x \;=\; \min_{x}\; \sum_{i} Q_{ii}\, x_i \;+\; \sum_{i < j} Q_{ij}\, x_i x_j, $$
+
+where $Q$ is an $n \times n$ matrix and we used $x_i^2 = x_i$ to merge linear terms into
+the diagonal. "Unconstrained" means there are no separate equality/inequality constraints —
+**every** preference and rule must be baked into $Q$, usually as a quadratic **penalty**.
+
+**Mapping mean–variance + cardinality onto a QUBO.** Let $x_i = 1$ if we hold asset $i$
+(equal-weight the chosen names for simplicity). We want three things:
+
+1. **Reward expected return** — a linear term $-\mu_i x_i$ (negative because we minimize).
+   Fold it into the diagonal: it lowers $Q_{ii}$.
+2. **Penalize risk** — a quadratic term $q\,\sigma_{ij} x_i x_j$ from the covariance.
+   On-diagonal it adds variance; off-diagonal it adds covariance.
+3. **Enforce the cardinality** "choose exactly $k$" with a penalty
+   $\lambda\big(\sum_i x_i - k\big)^2$ for a large weight $\lambda$. This is zero when
+   exactly $k$ switches are on and strictly positive otherwise.
+
+Expanding the penalty is the key trick:
+
+$$ \lambda\Big(\textstyle\sum_i x_i - k\Big)^2 = \lambda\Big(\sum_i x_i^2 + 2\!\!\sum_{i<j}\! x_i x_j - 2k\!\sum_i x_i + k^2\Big), $$
+
+and using $x_i^2 = x_i$ this contributes $\lambda(1 - 2k)$ to **each diagonal** $Q_{ii}$
+and $2\lambda$ to **each off-diagonal pair** $Q_{ij}$ (the $\lambda k^2$ is a constant
+offset that does not change which $x$ is best).
+
+**Worked example — a 3-asset QUBO.** Three assets, choose exactly $k = 2$. Take
+risk-aversion $q = 1$, penalty $\lambda = 5$, and these (toy) numbers:
+
+| Asset | Expected return $\mu_i$ | Variance $\sigma_{ii}$ |
+|---|---|---|
+| A | 0.10 | 0.04 |
+| B | 0.08 | 0.02 |
+| C | 0.06 | 0.01 |
+
+Pairwise covariances: $\sigma_{AB}=0.01,\ \sigma_{AC}=0.00,\ \sigma_{BC}=0.005$.
+
+Build $Q$ term by term. **Diagonal** $Q_{ii} = -\mu_i + q\,\sigma_{ii} + \lambda(1 - 2k)$.
+With $k=2$, $\lambda(1-2k) = 5(1-4) = -15$:
+
+- $Q_{AA} = -0.10 + 0.04 - 15 = -15.06$
+- $Q_{BB} = -0.08 + 0.02 - 15 = -15.06$
+- $Q_{CC} = -0.06 + 0.01 - 15 = -15.05$
+
+**Off-diagonal** $Q_{ij} = 2q\,\sigma_{ij} + 2\lambda$. With $2\lambda = 10$:
+
+- $Q_{AB} = 2(0.01) + 10 = 10.02$
+- $Q_{AC} = 2(0.00) + 10 = 10.00$
+- $Q_{BC} = 2(0.005) + 10 = 10.01$
+
+Now evaluate the energy $E(x) = x^{\top} Q x$ for two candidate selections (the
+$\lambda k^2 = 20$ constant is the same for every $x$, so we drop it and compare relative
+energies). Energy = sum of diagonal entries of chosen assets + the off-diagonal term of
+each chosen *pair*.
+
+**Candidate 1 — pick A and B** ($x = (1,1,0)$), which *meets* the constraint (2 names):
+
+$$ E_{AB} = Q_{AA} + Q_{BB} + Q_{AB} = -15.06 - 15.06 + 10.02 = -20.10. $$
+
+**Candidate 2 — pick A only** ($x = (1,0,0)$), which *violates* the constraint (1 name):
+
+$$ E_{A} = Q_{AA} = -15.06. $$
+
+The valid two-name portfolio has the **lower** (better) energy, $-20.10 \le -15.06$ — the
+penalty did its job: under-filling leaves a big chunk of the $-15$ diagonal rewards
+unclaimed. For completeness, the three valid pairs:
+
+| Selection | Energy $x^\top Q x$ (offset dropped) | Constraint |
+|---|---|---|
+| A, B | $-15.06 - 15.06 + 10.02 = -20.10$ | met (k = 2) |
+| A, C | $-15.06 - 15.05 + 10.00 = -20.11$ | met (k = 2) |
+| B, C | $-15.06 - 15.05 + 10.01 = -20.10$ | met (k = 2) |
+| A only | $-15.06$ | violated |
+
+The optimum here is **A + C** at $-20.11$ — it grabs the two best return/risk diagonals
+while paying the lowest pairwise penalty (their covariance is zero). Notice how close the
+valid energies are: real QUBOs have a *rugged* landscape where the best and second-best
+differ by a hair, which is exactly what makes the search hard.
+
+<Callout variant="warning" title="Tuning lambda is the whole ballgame">
+The penalty weight $\lambda$ must be large enough that violating the constraint always
+costs more than any return you could gain by cheating — but not so large it swamps the
+return/risk signal in floating-point noise and flattens the landscape. Too small and the
+"optimum" quietly breaks your cardinality rule; too large and the solver can't tell good
+valid portfolios apart. Setting $\lambda$ is a real engineering chore, not a footnote.
+</Callout>
+
+### When to use it
+
+Reach for a QUBO formulation when your problem is *natively* about on/off decisions with
+pairwise interactions — asset in-or-out, edge in-or-out, bit set-or-not — and when your
+constraints can be written as quadratic penalties. If your variables are genuinely
+continuous (fractional weights), forcing them into QUBO via binary expansion (one bit per
+0.1% of weight) bloats the variable count and is usually a step backward.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Diagonal entry Q_ii", definition: "Solo cost/reward of holding asset i: expected return, own variance, and the linear part of the cardinality penalty" },
+    { term: "Off-diagonal Q_ij", definition: "Pairwise cost of holding i and j together: covariance plus the cross-term of the cardinality penalty" },
+    { term: "Penalty weight lambda", definition: "How hard a constraint violation is punished; must outweigh any gain from cheating without flattening the landscape" },
+    { term: "Constant offset", definition: "The lambda k-squared term that shifts every energy equally and so never changes which selection is optimal" },
+    { term: "x_i squared = x_i", definition: "The binary identity that lets linear reward terms fold into the diagonal of Q" },
+  ]}
+/>
+
+## The Ising equivalence
+
+<MCQ
+  client:visible
+  pretest
+  question="Quantum annealers natively minimize an Ising energy with spins s_i in {-1, +1}, not binary x_i in {0, 1}. What converts one to the other?"
+  options={[
+    { text: "The linear change of variable x_i = (1 + s_i) / 2 (equivalently s_i = 2 x_i - 1)", correct: true },
+    { text: "Taking the logarithm of each binary variable" },
+    { text: "Squaring each spin, since s_i^2 = 1" },
+    { text: "There is no exact map; QUBO and Ising are fundamentally different problems" },
+  ]}
+  explanation="QUBO (0/1) and Ising (−1/+1) are the same problem in different coordinates. The substitution x_i = (1 + s_i)/2 rewrites any QUBO as an Ising Hamiltonian and back, so a hardware that minimizes one minimizes the other."
+/>
+
+A QUBO over $x_i \in \{0,1\}$ and an **Ising model** over spins $s_i \in \{-1,+1\}$ are the
+*same* optimization in different clothing. Substitute $x_i = (1 + s_i)/2$ and any QUBO
+becomes an Ising Hamiltonian
+
+$$ H(s) = \sum_{i<j} J_{ij}\, s_i s_j \;+\; \sum_i h_i\, s_i \;+\; \text{const}, $$
+
+where $J_{ij}$ are coupling strengths and $h_i$ are local fields, both linear functions of
+the original $Q$. This single line matters because **quantum annealers minimize Ising
+energies natively** — the hardware *is* a programmable spin glass. So "solve my portfolio
+QUBO" becomes "set these couplers and fields, then let the physics relax to the ground
+state." Keep the equivalence in your pocket; the rest of the lesson uses QUBO and Ising
+interchangeably.
+
+<FillBlank
+  client:visible
+  question="Name the bridge between the two formulations."
+  text="The substitution x_i = (1 + s_i) / 2 converts a QUBO (binary 0/1) into an {{Ising|linear|stochastic}} model (spins minus-one/plus-one), which is what annealing hardware minimizes."
+  explanation="x_i = (1+s_i)/2 maps 0→−1 and 1→+1, turning the QUBO into the Ising spin-glass Hamiltonian the annealer physically realizes."
+/>
+
+## Quantum annealing: the adiabatic descent
+
+<MCQ
+  client:visible
+  pretest
+  question="What is the core promise of the adiabatic theorem that quantum annealing leans on?"
+  options={[
+    { text: "If you start in the ground state of an easy Hamiltonian and morph slowly enough into the problem Hamiltonian, you stay in the ground state — ending at the optimum", correct: true },
+    { text: "Any quantum system, evolved at any speed, lands in its lowest-energy state" },
+    { text: "Measuring the system repeatedly forces it into the optimum (the quantum Zeno trick)" },
+    { text: "Entanglement guarantees an exponential speedup for every QUBO" },
+  ]}
+  explanation="The adiabatic theorem says a system stays in its instantaneous ground state if the Hamiltonian changes slowly relative to the energy gap. Start easy, end at your problem Hamiltonian, and you read off the optimum — provided 'slowly enough' is achievable, which the gap can make brutal."
+/>
+
+**Analogy.** Annealing is named after metallurgy for a reason. Heat a metal until its atoms
+jiggle freely, then cool it *slowly*: the atoms settle into a low-energy, well-ordered
+crystal. Cool it *fast* (quench it) and they freeze into a messy, high-energy glass.
+Quantum annealing does the same trick on a problem's energy landscape — it "cools" a
+quantum system slowly enough that it slides into the lowest valley (the optimum) rather
+than getting stuck in a local dent.
+
+**Definition — adiabatic / quantum annealing.** The machine prepares the ground state of a
+simple **driver Hamiltonian** $H_0$ (one whose lowest-energy state is easy and known — a
+uniform superposition of all configurations). It then slowly interpolates to the
+**problem Hamiltonian** $H_P$ that encodes your Ising model:
+
+$$ H(t) = \Big(1 - \tfrac{t}{T}\Big) H_0 \;+\; \tfrac{t}{T}\, H_P, \qquad 0 \le t \le T. $$
+
+By the **adiabatic theorem**, if the total time $T$ is long compared to $1/g_{\min}^2$ —
+where $g_{\min}$ is the smallest energy gap between the ground state and the first excited
+state along the way — the system stays in the ground state, and at $t = T$ a measurement
+returns the optimum of $H_P$. That gap is the catch: for hard problems it can shrink
+*exponentially*, demanding an exponentially long anneal.
+
+<QuboPortfolioAnnealer
+  client:visible
+  caption="A live QUBO descent. Each asset is one binary variable (one qubit): toggle names in or out, set the cardinality K, then press Run annealer. Watch the energy zig-zag downward — the hot uphill jumps early on are the 'temperature' letting the search escape local minima, exactly like slow cooling. The chips track current energy, the best energy found, the falling temperature, and whether the K-names constraint is met."
+/>
+
+Play with the island above before reading on. Notice three things the physics buys you:
+the search **accepts occasional uphill moves** while hot (so it doesn't get trapped in the
+first dip), those uphill jumps **shrink as temperature falls** (so it eventually commits),
+and the **constraint chip** can flicker red mid-search — a QUBO doesn't forbid invalid
+states, it just makes them expensive, so the annealer wanders through them on its way down.
+
+**Worked example — why "slowly enough" can be ruinous.** Suppose the minimum gap on a
+particular problem is $g_{\min} = 0.01$ (energy units). The adiabatic condition demands
+roughly $T \gtrsim 1/g_{\min}^2 = 1/(0.01)^2 = 10{,}000$ time units. Halve the gap to
+$0.005$ and the required time **quadruples** to $40{,}000$. For genuinely hard instances
+the gap closes exponentially in problem size, so the "guaranteed" anneal time blows up
+exponentially — which is precisely why real D-Wave anneals are *short and repeated* and
+treated as a **heuristic**, not a guarantee.
+
+<Callout variant="warning" title="The hardware is sparse, your problem is dense">
+A D-Wave machine has thousands of qubits, but each qubit couples to only a handful of
+neighbors (its connectivity graph, e.g. Pegasus). A portfolio QUBO is typically **dense** —
+every asset pair has a covariance, so every variable couples to every other. To run a
+dense problem you must **embed** each logical variable across a *chain* of physical qubits
+to fake the missing connections. Chains eat qubits fast (a fully-connected problem of $n$
+variables can need $O(n^2)$ physical qubits) and can **break** mid-anneal, corrupting the
+answer. The headline qubit count is not the problem size you can actually solve.
+</Callout>
+
+### When to use it
+
+Quantum annealing is worth a *pilot* when your problem is natively Ising-shaped, **sparse**
+(so embedding overhead stays manageable), and you are content with a good heuristic answer
+rather than a certified optimum. Treat it as you would simulated annealing or tabu search:
+run it many times, keep the best sample, and **always** benchmark against a strong
+classical solver on the *same* instance before claiming any benefit.
+
+<ThinkReveal
+  client:visible
+  prompt="A portfolio QUBO over 200 assets is fully dense (every pair has covariance). Your annealer has 5,000 qubits, each connecting to ~15 neighbors. Why might you still not be able to run it?"
+  text="Because dense connectivity, not raw qubit count, is the binding constraint. Embedding a fully-connected 200-variable problem can need on the order of 200^2 / something physical qubits arranged into long chains — easily tens of thousands — far beyond 5,000. And the longer the chains, the more likely one breaks during the anneal and ruins the sample. The 5,000-qubit headline describes a sparse machine; your dense problem doesn't fit."
+/>
+
+## QAOA: the gate-model variational cousin
+
+<MCQ
+  client:visible
+  pretest
+  question="QAOA is a variational algorithm with p alternating layers. As the depth p grows toward infinity, what is the theoretical guarantee?"
+  options={[
+    { text: "It can approach the exact optimum (it recovers the adiabatic path in the limit) — but shallow, practical p has shown no clear advantage over good classical heuristics", correct: true },
+    { text: "Even at p = 1 it provably beats every classical algorithm" },
+    { text: "It converges to a random feasible solution regardless of the angles" },
+    { text: "Larger p always trains more easily because the landscape gets smoother" },
+  ]}
+  explanation="As p → ∞ QAOA can Trotterize the adiabatic evolution and approach the optimum. But at the shallow depths today's gate hardware allows, there is no demonstrated advantage over strong classical heuristics, and the angle optimization runs into barren plateaus."
+/>
+
+**Analogy.** If annealing is a marble cooling into a valley, QAOA is a relay race between
+two coaches. One coach (the **problem** Hamiltonian) nudges the team toward low-cost
+configurations; the other (the **mixer**) shakes things up so the team explores. They
+alternate for $p$ rounds, and a classical optimizer outside the race tunes how long each
+coach gets the baton (the angles) to make the final lineup as low-cost as possible.
+
+**Definition — QAOA.** The Quantum Approximate Optimization Algorithm prepares a state by
+alternating $p$ layers of a **problem unitary** $e^{-i\gamma_\ell H_P}$ (encoding your
+Ising cost) and a **mixer unitary** $e^{-i\beta_\ell H_M}$ (typically transverse-field
+spin flips):
+
+$$ |\boldsymbol{\gamma},\boldsymbol{\beta}\rangle = \prod_{\ell=1}^{p} e^{-i\beta_\ell H_M}\, e^{-i\gamma_\ell H_P}\, |+\rangle^{\otimes n}. $$
+
+A **classical** optimizer adjusts the $2p$ angles $(\boldsymbol{\gamma},\boldsymbol{\beta})$
+to minimize the measured expected energy $\langle H_P \rangle$. It is a quantum–classical
+loop: the quantum chip evaluates the cost of a parameter setting, the classical optimizer
+proposes the next setting. As $p \to \infty$ the layers can mimic the slow adiabatic
+sweep, so QAOA can in principle reach the optimum.
+
+**Worked example — the cost of depth.** At depth $p$ you must optimize $2p$ angles. For a
+modest $p = 5$ that is 10 parameters — and each evaluation means running the circuit and
+sampling it thousands of times to estimate $\langle H_P \rangle$ to acceptable precision.
+Say 5,000 shots per evaluation and 200 optimizer steps: that is
+$10 \times 200 \times 5{,}000 = 10{,}000{,}000$ circuit executions for *one* problem, on
+hardware where each multi-qubit gate injects noise. Deeper $p$ means deeper circuits, more
+noise accumulation, and a higher-dimensional angle landscape to search.
+
+<Callout variant="warning" title="Barren plateaus and noisy gradients">
+QAOA's classical optimization is not a formality. For many problem classes and random
+initializations, the cost landscape exhibits **barren plateaus** — regions where the
+gradient is exponentially small in the number of qubits, so the optimizer wanders almost
+flat ground with no signal pointing downhill. Layer hardware noise on top (today's gate
+devices are noisy, with no error correction at scale) and the measured energy is a blurry,
+biased estimate. "Just increase $p$" makes the circuit deeper and noisier, often hurting
+more than it helps. This is why shallow QAOA has, so far, **not** demonstrated a clear win
+over good classical heuristics.
+</Callout>
+
+### When to use it
+
+Today, QAOA is primarily a **research and learning** tool, not a production portfolio
+optimizer. Use it to understand variational quantum algorithms, to benchmark small
+instances, and to track the field — but do not stake a rebalance on it expecting it to beat
+branch-and-bound or simulated annealing. If you are running QAOA in anger, keep $p$ shallow,
+warm-start the angles from known good values or the adiabatic schedule, and (again) always
+benchmark classically on the identical instance.
+
+<Categorize
+  client:visible
+  question="Sort each statement under the method it most accurately describes."
+  buckets={["Quantum annealing (D-Wave)", "QAOA (gate model)"]}
+  items={[
+    { text: "Slowly morphs an easy Hamiltonian into the problem Hamiltonian", bucket: "Quantum annealing (D-Wave)" },
+    { text: "Needs chain embedding for dense, all-to-all problems", bucket: "Quantum annealing (D-Wave)" },
+    { text: "Alternates problem and mixer layers for depth p", bucket: "QAOA (gate model)" },
+    { text: "A classical optimizer tunes 2p angles in a quantum–classical loop", bucket: "QAOA (gate model)" },
+    { text: "Leans directly on the adiabatic theorem and the minimum spectral gap", bucket: "Quantum annealing (D-Wave)" },
+    { text: "Can stall on barren plateaus during angle optimization", bucket: "QAOA (gate model)" },
+  ]}
+  explanation="Annealing physically evolves a Hamiltonian and needs embedding for dense problems; QAOA is a gate-model variational loop with depth p, tunable angles, and barren-plateau trouble. Both reduce to minimizing the same Ising/QUBO energy."
+/>
+
+## The sober verdict
+
+<MCQ
+  client:visible
+  pretest
+  allowMultiple
+  question="Which statements honestly reflect the state of quantum portfolio optimization today? (Select all that apply.)"
+  options={[
+    { text: "Classical solvers (branch-and-bound MIP, simulated annealing, tabu) are strong and the default", correct: true },
+    { text: "Clear, reproducible quantum advantage on real portfolio problems has not been demonstrated", correct: true },
+    { text: "Quantum methods are most interesting where the discrete structure is genuinely hard", correct: true },
+    { text: "Quantum annealers already beat the best classical solvers on production-scale dense portfolios" },
+  ]}
+  explanation="The honest picture: mature classical solvers dominate; quantum annealing and QAOA are intriguing for hard discrete structure but have not shown a clear, reproducible advantage at production scale. Hype claims of routine quantum wins on dense portfolios are not supported by current evidence."
+/>
+
+Time for the unglamorous truth. Classical combinatorial optimization is *very good*.
+Commercial mixed-integer programming (MIP) solvers using branch-and-bound and
+cutting-planes routinely crack cardinality-constrained portfolios with hundreds of assets
+to certified optimality, and metaheuristics like **simulated annealing** and **tabu search**
+deliver excellent near-optimal solutions fast when exactness isn't required. Quantum
+annealing and QAOA are scientifically fascinating and *may* one day help on instances with
+especially nasty discrete structure — but as of today, **no clear, reproducible advantage**
+over these classical methods has been demonstrated on realistic portfolio problems.
+
+| Method | What it solves | Guarantee vs heuristic | Maturity | Finance relevance today |
+|---|---|---|---|---|
+| **Branch-and-bound MIP** | Exact integer/cardinality programs | Certified optimum (with optimality gap) | Mature, commercial (Gurobi, CPLEX) | High — the default for hard discrete portfolios up to hundreds of names |
+| **Simulated annealing** | Any QUBO/Ising, large instances | Heuristic (good near-optimal samples) | Mature, trivial to run on a laptop | High — strong baseline and the thing quantum must beat |
+| **Quantum annealing (D-Wave)** | Sparse Ising/QUBO after embedding | Heuristic, no gap guarantee | Real hardware, sparse connectivity, embedding overhead | Low–emerging — pilots only; dense portfolios fit poorly |
+| **QAOA (gate model)** | Small QUBO/Ising at shallow depth p | Heuristic; optimum only as p → ∞ | Early, noisy hardware, barren plateaus | Low — research and benchmarking, not production |
+
+The disciplined posture is the same one this whole course preaches about machine learning:
+**benchmark honestly, beware the hype, and let the classical baseline have the first and
+last word.** If a vendor demos a quantum portfolio win, ask whether they ran the *same*
+instance through a tuned classical solver — the answer is usually that they didn't, or that
+the classical solver also won.
+
+<Callout variant="tip" title="Where the quantum bet actually lives">
+The interesting case is not "quantum is faster at Markowitz." It is *narrow*: problems
+whose discrete structure is so rugged that even good classical heuristics struggle, that
+are naturally **sparse** (so they embed cleanly), and where a slightly better heuristic
+sample has real economic value. That is a small, specific niche — not "all of portfolio
+optimization." Knowing exactly how small that niche is, today, is the expert's edge.
+</Callout>
+
+### When to use it
+
+Default to classical: a MIP solver when you need a certified optimum and the instance is
+tractable, simulated annealing or tabu when you need fast, good-enough answers on large
+QUBOs. Consider quantum annealing only for sparse, genuinely hard discrete instances *and*
+only as a benchmarked pilot. Treat QAOA as a research instrument. In every case, the rule
+is identical: run the classical baseline on the same instance, and believe the numbers over
+the narrative.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">If classical solvers already win, why study QUBO at all?</summary>
+
+**Answer.** Three reasons. First, the **QUBO formulation itself is portable**: writing your
+cardinality-constrained portfolio as a QUBO lets you throw it at *any* of these backends —
+including the very good classical simulated-annealing and tabu solvers — so the modeling
+skill pays off immediately, quantum or not. Second, hardware and algorithms are improving;
+the practitioner who already speaks QUBO/Ising fluently is positioned to evaluate (and
+debunk) advantage claims the day they arrive. Third, the *discipline* of encoding messy
+business constraints as quadratic penalties sharpens how you think about the problem,
+regardless of what minimizes the energy. You learn QUBO to be ready and to stay honest —
+not because the quantum hardware is winning today.
+
+</details>
+</Reveal>
+
+## Recap
+
+You watched a beautiful convex machine seize up the moment a portfolio manager asked for a
+fixed name count, a minimum lot, or a round-share grid — the **convexity cliff** that turns
+polynomial-time mean–variance into a combinatorial, NP-hard search. You recast that search
+as a **QUBO** (minimize $x^\top Q x$ over binary $x$), folding return into the diagonal,
+risk into the quadratic term, and the cardinality rule into a $\lambda(\sum x_i - k)^2$
+penalty. You saw the one-line **Ising** equivalence that lets annealing hardware minimize it
+natively, the **adiabatic descent** of quantum annealing (and its gap-and-embedding
+caveats), and the variational **QAOA** loop (and its barren plateaus). And you ended where
+an expert should: classical solvers are strong, quantum advantage on real portfolios is
+**not** yet demonstrated, and the honest move is always to benchmark.
+
+<MindMap
+  client:visible
+  title="QUBO and portfolio optimization"
+  caption="Build the map: the hardness source, the QUBO recast, the two quantum attacks, and the sober verdict."
+  root={{
+    label: 'QUBO portfolio optimization',
+    children: [
+      { label: 'Why it gets hard', children: [
+        { label: 'Continuous mean–variance = convex QP (easy)' },
+        { label: 'Cardinality / min-lot = non-convex' },
+        { label: 'Combinatorial, NP-hard worst case' },
+      ]},
+      { label: 'QUBO recast', children: [
+        { label: 'min x^T Q x over binary x' },
+        { label: 'Return → diagonal (x^2 = x)' },
+        { label: 'Risk → quadratic covariance term' },
+        { label: 'Cardinality → lambda(sum x − k)^2 penalty' },
+      ]},
+      { label: 'Ising equivalence', children: [
+        { label: 'x_i = (1 + s_i)/2' },
+        { label: 'What annealers minimize natively' },
+      ]},
+      { label: 'Quantum annealing (D-Wave)', children: [
+        { label: 'Adiabatic: easy H → problem H' },
+        { label: 'Slow-cooling analogy' },
+        { label: 'Gap-limited, sparse, embedding chains' },
+        { label: 'Heuristic, not a guarantee' },
+      ]},
+      { label: 'QAOA (gate model)', children: [
+        { label: 'Problem + mixer layers, depth p' },
+        { label: 'Classical optimizer tunes 2p angles' },
+        { label: 'p → ∞ approaches optimum' },
+        { label: 'Barren plateaus, noise, no clear win yet' },
+      ]},
+      { label: 'Sober verdict', children: [
+        { label: 'Classical MIP / SA / tabu are strong' },
+        { label: 'No reproducible quantum advantage today' },
+        { label: 'Niche: sparse, genuinely hard structure' },
+      ]},
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Mixed check: can you recast and stay honest?"
+  questions={[
+    {
+      question: "Why does adding a 'hold exactly k names' rule make mean–variance hard?",
+      options: [
+        { text: "It is non-convex, carving the feasible set into a combinatorial number of disconnected pieces, so convex QP solvers no longer apply", correct: true },
+        { text: "It makes the covariance matrix non-positive-semidefinite" },
+        { text: "It adds so many linear constraints that the QP runs out of memory" },
+        { text: "It changes nothing about difficulty — the problem stays polynomial-time" },
+      ],
+      explanation: "Cardinality is a non-convex constraint. The smooth convex bowl becomes a scatter of disconnected islands, forcing combinatorial search (NP-hard worst case).",
+    },
+    {
+      question: "In a QUBO, why is there no separate linear term vector — everything lives in Q?",
+      options: [
+        { text: "Because for binary x, x_i^2 = x_i, so any linear coefficient folds onto the diagonal entry Q_ii", correct: true },
+        { text: "Because linear terms are always zero in portfolio problems" },
+        { text: "Because Q is required to be symmetric, which forbids linear terms" },
+        { text: "Because the constant offset absorbs all linear terms" },
+      ],
+      explanation: "x_i^2 = x_i for binary variables, so a linear term c_i x_i = c_i x_i^2 merges into Q_ii. That is the defining convenience of the QUBO form.",
+    },
+    {
+      question: "Choose exactly k = 2 of 3 assets with penalty lambda = 5. The cardinality penalty contributes what to each diagonal entry and each off-diagonal pair (using x^2 = x)?",
+      options: [
+        { text: "lambda(1 − 2k) = −15 to each diagonal and 2 lambda = 10 to each off-diagonal pair", correct: true },
+        { text: "+15 to each diagonal and −10 to each off-diagonal pair" },
+        { text: "0 to the diagonal and lambda k^2 = 20 to each off-diagonal pair" },
+        { text: "lambda = 5 to every entry, diagonal and off-diagonal alike" },
+      ],
+      explanation: "Expanding lambda(sum x − k)^2 with x^2 = x gives lambda(1 − 2k) = 5(1−4) = −15 on each diagonal and 2 lambda = 10 on each off-diagonal pair; lambda k^2 = 20 is a constant offset.",
+    },
+    {
+      question: "A 200-asset portfolio QUBO is fully dense. Your annealer has 5,000 qubits each coupling to ~15 neighbors. What is the binding limitation?",
+      options: [
+        { text: "Embedding overhead: a dense all-to-all problem needs long qubit chains (roughly O(n^2) physical qubits), exceeding the sparse hardware, and chains can break", correct: true },
+        { text: "The anneal time, which scales linearly with the number of assets" },
+        { text: "Nothing — 5,000 qubits comfortably handles 200 dense variables" },
+        { text: "The classical optimizer's angle search becomes intractable" },
+      ],
+      explanation: "Connectivity, not raw qubit count, binds. Dense problems require chain embedding (about O(n^2) physical qubits), which blows past sparse hardware and risks chain breaks. (Angle search is a QAOA issue, not annealing.)",
+    },
+    {
+      question: "A vendor claims their quantum annealer beats classical solvers on a dense 300-name cardinality portfolio. What is the expert's first question?",
+      options: [
+        { text: "Did you run the identical instance through a tuned classical solver (MIP / simulated annealing / tabu) — and did it lose?", correct: true },
+        { text: "How many qubits does the machine have in total?" },
+        { text: "What is the machine's clock speed in gigahertz?" },
+        { text: "Did you use a deep enough QAOA circuit?" },
+      ],
+      explanation: "Advantage claims are only meaningful against a strong classical baseline on the same instance. Mature MIP/SA/tabu solvers are the bar to clear, and dense portfolios embed poorly on sparse annealers — so the benchmark question comes first.",
+    },
+  ]}
+/>

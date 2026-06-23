@@ -1,0 +1,580 @@
+---
+title: "Distribution Shift & Concept Drift"
+description: "The non-malicious half of the threat: covariate shift vs label shift vs concept drift, why a strategy decays the moment it goes live as the market adapts and the alpha crowds out, and the statistics of detecting drift before the PnL does."
+topic: "en/adversarial-ml-and-robustness-in-trading"
+order: 4
+minutes: 20
+updated: 2026-06-23
+---
+
+import { Callout, MCQ, Quiz, Reveal, ThinkReveal, FillBlank, MatchConcepts, Categorize, MindMap, DriftDetectorTimeline, SignalDecay } from '@/components/react';
+
+The last three lessons starred a villain: an *adversary* deliberately feeding your
+model poisoned data and crafted inputs. Frightening, sure — but it requires someone to
+actually be out to get you. This lesson is the part that gets you even when **nobody is
+attacking at all.**
+
+Here is the uncomfortable truth: the world your model was trained on simply *stops
+existing*. The data-generating process drifts. Regimes change. Other quants find your
+signal and trade it flat. Your own trading nudges the very prices you're predicting. No
+malice required — the market is a moving target, and your model is a photograph of where
+it used to be.
+
+That's the difference worth holding onto: an adversarial attack is **targeted and
+intentional** (Lessons 1–3); distribution shift is **diffuse and natural** — entropy,
+not enemies. Both leave the same crater in your PnL. This lesson is the statistics of the
+natural half: how to *name* the kind of shift you're suffering, *why* a fresh strategy
+decays on contact with reality, and *how* to catch the rot before your equity curve
+announces it for you.
+
+## The taxonomy of shift — what, exactly, is changing?
+
+<MCQ
+  client:visible
+  pretest
+  question="A model trained on 2015–2019 data is deployed in 2020. Its feature distribution (volatility, spreads) looks completely normal, identical to training — but it loses money. Which kind of shift is the prime suspect?"
+  options={[
+    { text: "Concept drift — the inputs look the same, but the relationship between inputs and the outcome has changed", correct: true },
+    { text: "Covariate shift — the input distribution must have moved" },
+    { text: "Label shift — only the base rate of up-days changed" },
+    { text: "No shift at all; the loss is pure bad luck", },
+  ]}
+  explanation="If P(x) looks identical but the model still fails, the mapping P(y|x) itself moved. That is concept drift — and notice it is invisible to any monitor that only watches the inputs."
+/>
+
+**Analogy.** Imagine a chef who trained for years cooking at sea level. Three things can
+ruin the next dish. The *ingredients* could change — fattier butter, saltier stock
+(the inputs drift). The *menu mix* could change — suddenly 80% of orders are dessert
+instead of 20% (the base rates shift). Or the *physics of the kitchen* could change —
+they're now cooking at 4,000 metres, where water boils at 87°C and every old recipe is
+wrong even with identical ingredients (the rule connecting ingredients to outcome
+flipped). All three are "things went wrong," but the diagnosis — and the fix — differ
+completely.
+
+**Definition.** Any supervised model lives on a joint distribution of inputs $x$ and
+outcomes $y$, which factorises two ways:
+
+$$ P(x, y) = P(y \mid x)\, P(x) = P(x \mid y)\, P(y). $$
+
+Distribution shift means the *test-time* joint $P_{\text{test}}(x, y)$ differs from the
+*training* joint $P_{\text{train}}(x, y)$. The three canonical kinds isolate *which
+factor moved*:
+
+- **Covariate shift** — $P(x)$ changes, $P(y \mid x)$ stays fixed. Your inputs drift into
+  regions of feature space you never (or rarely) trained on. The rule is still valid; you
+  just keep getting asked questions far from where you learned. Detectable by watching the
+  *inputs* alone, because that's the thing that moved.
+- **Label shift** (a.k.a. **prior shift**) — $P(y)$ changes, while the class-conditional
+  $P(x \mid y)$ stays fixed. The base rates move: e.g. the fraction of up-days, or the
+  unconditional default rate, shifts. A classifier calibrated on a 55% up-day base rate is
+  miscalibrated when up-days become 48%, even if every "given an up-day, what do features
+  look like" stays identical.
+- **Concept drift** — $P(y \mid x)$ changes. The *relationship itself* moves: the **same
+  features now predict a different (sometimes opposite) outcome.** This is the deadliest
+  for trading, because the inputs can look perfectly familiar while the model is now
+  *systematically wrong*. No input-only monitor will ever see it coming.
+
+**Worked example — the momentum feature that betrays you.** Let $x$ be a normalised
+12-month momentum score and $y$ next month's return. In a **trending regime** (2017,
+say), high momentum predicts *more* gains — the data says $E[y \mid x] = +0.6\,x$, a
+positive slope: winners keep winning. The model learns "buy high momentum."
+
+Now the regime turns **choppy/mean-reverting** (a whipsawing 2018-style tape). The
+*distribution of momentum scores is unchanged* — you still see scores from roughly the
+same range, so $P(x)$ is stable. But the relationship flips to $E[y \mid x] = -0.4\,x$:
+high momentum now predicts a *pullback*. A stock with momentum $x = +2.0$ that your model
+expected to earn $0.6 \times 2.0 = +1.2$ instead earns $-0.4 \times 2.0 = -0.8$. Same
+input, **flipped $y \mid x$** — a $2.0$ swing in the wrong direction, and your feature
+monitor flashes all-green the entire time. That's textbook concept drift, and it is why
+momentum strategies suffer brutal "crashes" precisely when the world looks normal.
+
+| Type of shift | What changes | What stays fixed | Detectable from inputs alone? | Typical cause in markets |
+|---|---|---|---|---|
+| **Covariate shift** | $P(x)$ | $P(y \mid x)$ | **Yes** — watch the feature distribution | New volatility regime, new asset universe, a spread that blew out |
+| **Label / prior shift** | $P(y)$ | $P(x \mid y)$ | Partly — watch the outcome base rate | Bull→bear (up-day fraction falls), credit cycle turning |
+| **Concept drift** | $P(y \mid x)$ | (often $P(x)$ looks stable) | **No** — must watch the *outcome* | Alpha crowding, regime change, a structural-relationship break |
+
+<Callout variant="warning" title="The deadliest shift is the invisible one">
+Covariate and label shift leave fingerprints on the data you can stare at *before* the
+trade settles. Concept drift can hide behind a perfectly normal-looking input
+distribution — the features are familiar, the model is confident, and it is confidently
+wrong. If you only monitor your inputs, concept drift is the shift that quietly empties
+your account while every dashboard stays green.
+</Callout>
+
+### When to use it
+
+Use this taxonomy as a *triage* the moment a live model underperforms. First ask: did my
+**inputs** move into unfamiliar territory (covariate)? Then: did the **base rate** of the
+thing I predict change (label)? Only if both look stable but you're still bleeding do you
+indict **concept drift** — and reach for outcome-based detection (Section 4) rather than
+input monitors that will keep lying to you.
+
+<Categorize
+  client:visible
+  question="Sort each scenario under the kind of shift it most cleanly represents."
+  buckets={["Covariate shift", "Label shift", "Concept drift"]}
+  items={[
+    { text: "Trained on US large-caps; now scoring small-cap micro names with features far outside the training range", bucket: "Covariate shift" },
+    { text: "Realised volatility doubles into a range the model rarely saw, but the vol→return rule holds", bucket: "Covariate shift" },
+    { text: "Fraction of up-days drops from 55% to 47% in a bear market; per-class feature shapes unchanged", bucket: "Label shift" },
+    { text: "Unconditional default rate jumps from 2% to 6% as the credit cycle turns", bucket: "Label shift" },
+    { text: "High momentum predicted gains; now the same scores predict reversals", bucket: "Concept drift" },
+    { text: "A long-stable lead–lag between two assets reverses sign after a market-structure change", bucket: "Concept drift" },
+  ]}
+  explanation="Covariate = inputs move into new regions, rule intact. Label = base rates move, class-conditional shapes intact. Concept = the input→output mapping itself flips, often while inputs look unchanged."
+/>
+
+## Why a strategy decays the moment it goes live
+
+<MCQ
+  client:visible
+  pretest
+  question="A pristine backtest shows Sharpe 2.0. You deploy with real money and live Sharpe settles near 1.0. Which combination of forces best explains a roughly-half haircut like this?"
+  options={[
+    { text: "Overfitting/selection that the backtest didn't deflate, alpha crowding as others arbitrage the same signal, and reflexivity as your own trades move prices", correct: true },
+    { text: "Pure bad luck that will mean-revert back to 2.0 if you simply wait" },
+    { text: "A bug in the live execution code; the alpha itself is unchanged" },
+    { text: "The market is efficient, so any backtest Sharpe must be exactly zero live" },
+  ]}
+  explanation="Three forces compound: the backtest was partly luck (deflate it), the edge gets competed away (crowding), and acting on the signal changes the very prices it predicts (reflexivity). Empirically, ~half the in-sample edge survives."
+/>
+
+**Analogy.** A strategy's backtest is a dating profile: flattering, carefully selected
+photos, no mention of the snoring. Live trading is moving in together. Three
+disappointments follow. Some of the glow was just a *good-angle selfie* (selection/luck).
+Once you're seen in public, everyone else copies the look until it's no longer special
+(crowding). And your presence *changes the room* — you can't observe the party as it was
+before you walked in (reflexivity).
+
+**Definition — the three decay forces.**
+
+1. **Overfitting & selection.** Your backtest is the *maximum* over many trials —
+   parameters, features, universes, start dates. The maximum of noisy estimates is biased
+   upward (the **deflated-Sharpe** lesson from *Machine Learning for Alpha*). Part of that
+   2.0 was never edge; it was the luckiest draw among the configurations you tried, and it
+   evaporates out-of-sample because there was nothing there to begin with.
+2. **Alpha crowding.** Markets are competitive. The instant a signal works and word gets
+   out — a paper, a conference talk, a defecting colleague — other quants trade the same
+   thing, push prices toward fair value faster, and **arbitrage the edge away.** This is
+   exactly the *crowding and capacity* problem from **Systematic & Statistical
+   Arbitrage**: a spread that mean-reverts in 10 days when three funds trade it reverts in
+   2 days when thirty do, and the per-trade alpha shrinks toward your costs.
+3. **Reflexivity.** Acting on a signal *changes the market it predicts*. Your buy orders
+   push the price up, eating the very mispricing you spotted (market impact), and at scale
+   you *become* part of the data-generating process. This is the central headache of
+   **Deep RL for Execution**: you are not a passive observer of a fixed environment — you
+   are an agent in an environment that **reacts to you**, so the world your model learned
+   from no longer exists once the model starts acting in it.
+
+**Worked example — the publication haircut.** McLean and Pontiff's "Does Academic
+Research Destroy Stock Return Predictability?" tracked dozens of published anomalies and
+found returns decay roughly **58% out-of-sample**, with a large chunk attributed to
+**post-publication** decline (investors learning and trading the signal) on top of the
+statistical bias. Take the round number the literature popularised — about a **50%
+haircut**. Start with an in-sample Sharpe of $2.0$. Knock off the publication/crowding
+half: $2.0 \times (1 - 0.5) = 1.0$. Then layer reflexivity and your own costs on top —
+say a further 20% bite from impact at the size you actually trade:
+$1.0 \times (1 - 0.2) = 0.8$. The honest expectation for *live, at-size* Sharpe is well
+under half the headline. Anyone quoting the backtest number as their forward expectation
+is reading the dating profile, not living with the snoring.
+
+<SignalDecay client:visible title="Alpha decay: every signal is perishable" caption="The brand curve is the signal's information coefficient bleeding away exponentially with holding horizon — a published or crowded signal decays even faster as others trade it. The accent curve is the moral: net alpha per day after costs, which is hump-shaped. Drag the decay-speed slider left (faster decay) and the optimal horizon slides earlier — a perishable edge must be traded quickly before crowding flattens it. Drag the cost slider up and the optimal horizon slides later — when trading is expensive you must hold longer to amortise the round-trip. The point marks the cost-aware optimal rebalance horizon. The deeper lesson: published alpha decays roughly twice as fast as private alpha, which is why secrecy is itself a form of capacity." />
+
+<Callout variant="warning" title="The backtest is the ceiling, not the forecast">
+Your in-sample Sharpe is the *best case you will never see again*. Treat it as an upper
+bound and forecast live performance at roughly half (or less), then subtract impact at
+your real size. A strategy that only "works" at the un-deflated, un-crowded, frictionless
+backtest number is a strategy that does not work.
+</Callout>
+
+### When to use it
+
+Apply the haircut *before* you size the position, not after the drawdown. When deciding
+capital allocation, plug in a **deflated, crowding-adjusted, impact-adjusted** Sharpe —
+not the backtest headline. And weight the three forces by your situation: a *published*
+factor is mostly crowding risk; a *large* book is mostly reflexivity risk; an
+*over-searched* backtest is mostly selection risk.
+
+<FillBlank
+  client:visible
+  question="Name the three forces that decay a live strategy."
+  text="A fresh strategy decays from {{selection/overfitting, crowding, and reflexivity|leverage, slippage, and taxes|volatility, correlation, and drawdown}} — the backtest was partly luck, others arbitrage the same signal away, and your own trading moves the prices you predict."
+  explanation="Selection (deflated-Sharpe bias), crowding (others trade it flat — Systematic & Statistical Arbitrage), and reflexivity (you change the environment — Deep RL for Execution) compound into the live haircut."
+/>
+
+<ThinkReveal
+  client:visible
+  prompt="Two funds run the identical published value signal. Fund A trades it at $50M; Fund B trades the same signal at $5B. Before any market moves, whose live Sharpe should you expect to be lower, and which decay force is the culprit? Decide, then reveal."
+  hint="Crowding hits both equally (same published signal). What's different is what each one's own orders do to the price."
+  text="Fund B's, almost certainly — and the culprit is reflexivity / market impact, not crowding. Both funds eat the same crowding haircut because they trade the identical, public signal, so that force is a wash between them. The difference is size: Fund B's $5B of orders push prices against itself far more than Fund A's $50M, so a much larger slice of the (already crowded) edge is consumed by its own footprint. This is the capacity wall — the same alpha that's perfectly tradeable at $50M can be net-negative at $5B once impact is paid. It's also why the honest question is never just 'what's the Sharpe?' but 'what's the Sharpe at the size I actually need to deploy?'"
+/>
+
+## Detecting covariate shift — watch the inputs
+
+<MCQ
+  client:visible
+  pretest
+  question="You want an early warning that your live feature distribution has wandered away from the distribution the model was trained on. Which family of tools is built for exactly this?"
+  options={[
+    { text: "Two-sample distribution comparisons on the features — Population Stability Index (PSI) and KS-style tests", correct: true },
+    { text: "Rolling Sharpe ratio on the PnL", correct: true },
+    { text: "A larger neural network with more layers" },
+    { text: "Increasing the learning rate until the loss drops" },
+  ]}
+  explanation="Covariate shift is a change in P(x), so you compare the live feature distribution to the training one. PSI and KS two-sample tests are the workhorses. (Rolling Sharpe is for outcomes — useful, but that's the next section's job.)"
+/>
+
+**Analogy.** Covariate-shift detection is a bouncer with a photo of the regulars. Each
+night they compare who walks in against the reference crowd. If tonight's clientele looks
+statistically like the usual regulars, all good. If suddenly everyone's a stranger from a
+different neighbourhood, the bouncer raises a flag — *before* anything has gone wrong
+inside, just on the grounds that the inputs no longer match the place the rules were
+written for.
+
+**Definition — Population Stability Index (PSI).** Bin a feature into $k$ buckets. Let
+$a_i$ be the fraction of *training* (reference) observations in bin $i$ and $b_i$ the
+fraction of *live* (current) observations in the same bin. Then
+
+$$ \text{PSI} = \sum_{i=1}^{k} (b_i - a_i)\, \ln\!\left(\frac{b_i}{a_i}\right). $$
+
+(It is the symmetrised relative-entropy cousin of KL divergence — every term is
+non-negative, so PSI only grows as the two distributions pull apart.) Industry rules of
+thumb: **PSI &lt; 0.1** = stable (no meaningful shift); **0.1–0.25** = moderate shift
+(investigate); **&gt; 0.25** = significant shift (the population has moved — retrain or
+recalibrate). A complementary tool is the **two-sample Kolmogorov–Smirnov (KS) test**,
+whose statistic is the maximum gap between the two cumulative distribution functions; a
+small p-value says "these samples didn't come from the same distribution."
+
+**Worked example — PSI on a 2-bin feature.** Suppose a binary regime feature was a
+**50/50** split in training, so $a_1 = 0.5,\ a_2 = 0.5$. Live, it has drifted to
+**30/70**, so $b_1 = 0.3,\ b_2 = 0.7$. Term by term:
+
+- Bin 1: $(b_1 - a_1)\ln(b_1/a_1) = (0.3 - 0.5)\ln(0.3/0.5) = (-0.2)\ln(0.6) = (-0.2)(-0.5108) \approx 0.1022$.
+- Bin 2: $(b_2 - a_2)\ln(b_2/a_2) = (0.7 - 0.5)\ln(0.7/0.5) = (0.2)\ln(1.4) = (0.2)(0.3365) \approx 0.0673$.
+
+Sum: $\text{PSI} \approx 0.1022 + 0.0673 = 0.169$. That lands squarely in the **0.1–0.25
+"moderate shift, investigate"** band. Notice the structure: *both* terms are positive
+(the negative difference in bin 1 multiplies a negative log, giving a positive product),
+which is why PSI can't cancel itself out — any movement, in either direction, adds to the
+score.
+
+<Callout variant="tip" title="PSI is a smoke alarm, not a thermometer">
+PSI tells you the inputs *moved*; it does not tell you whether the move *hurts*. A feature
+can shift dramatically (high PSI) while the model still works fine if that feature is
+unimportant — and a feature can barely move while a subtle, model-relevant relationship
+breaks. Weight your PSI alarms by feature importance, and never treat "inputs look stable"
+as "model is fine." That false comfort is the whole trap of the next section.
+</Callout>
+
+### When to use it
+
+Run PSI/KS monitors on every model input on a rolling schedule (daily or per-rebalance),
+and alarm on the *important* features first. They are your cheapest, earliest warning —
+but they only catch **covariate shift**. Treat them as necessary, never sufficient:
+passing every input monitor is fully compatible with the model being dangerously wrong
+because the *relationship* — not the inputs — has drifted.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Covariate shift", definition: "P(x) moves while P(y|x) stays fixed — inputs drift into unfamiliar regions" },
+    { term: "Label / prior shift", definition: "P(y) moves while P(x|y) stays fixed — base rates change" },
+    { term: "Concept drift", definition: "P(y|x) itself changes — the same inputs now predict a different outcome" },
+    { term: "PSI", definition: "Binned, symmetrised relative-entropy score; >0.25 flags a significant input-distribution shift" },
+    { term: "KS two-sample test", definition: "Max gap between two CDFs; tests whether live and training features share a distribution" },
+  ]}
+/>
+
+## Detecting concept drift — watch the outcome
+
+<MCQ
+  client:visible
+  pretest
+  question="Your PSI and KS monitors are all green — the live feature distribution matches training perfectly. Can you conclude the model is healthy?"
+  options={[
+    { text: "No — input monitors are blind to concept drift, where P(x) is stable but P(y|x) flipped; you must also monitor the outcome", correct: true },
+    { text: "Yes — if the inputs match training, the model must be performing correctly" },
+    { text: "Yes — PSI below 0.1 is a mathematical guarantee of model health" },
+    { text: "Only if you also re-ran the backtest on historical data" },
+  ]}
+  explanation="Covariate-shift monitors compare P(x). Concept drift lives in P(y|x), which can change while P(x) is unchanged. Green input monitors tell you nothing about a flipped relationship — you have to watch realised performance."
+/>
+
+**Analogy.** Input monitors check that the *ingredients* match the recipe. Concept-drift
+monitors taste the *dish*. You can have flawless, on-spec ingredients and still serve
+something inedible if the oven's thermostat secretly broke — and the only way to know is
+to taste the output, not re-inspect the flour. So you watch the *result*: realised hit
+rate, realised PnL, prediction residuals.
+
+**Definition — outcome-based drift detection.** Because concept drift may leave $P(x)$
+untouched, you monitor the model's *realised performance over time* and fire when it
+degrades faster than noise:
+
+- **Rolling Sharpe / rolling hit-rate** — a moving-window estimate of the live edge; a
+  sustained slide toward (or through) zero is the headline symptom.
+- **CUSUM (cumulative sum)** — accumulate the running sum of deviations of the metric from
+  its expected (good) level; the cumulative sum stays flat under no drift and ramps once a
+  small, persistent deterioration sets in, so it catches *gradual* drift a single-period
+  test would miss.
+- **Page–Hinkley test** — a CUSUM variant tuned for change-point detection on a stream:
+  track the cumulative deviation and the minimum it has reached, and alarm when the gap
+  between current cumulative and that running minimum exceeds a threshold $\lambda$.
+  Classic for detecting a *mean change* in a residual or error stream online.
+
+The teaching point, made concrete by the timeline beside this: a *good* detector fires
+**before the PnL fully collapses**, while there's still edge left to protect — but
+detector sensitivity is a genuine tradeoff. A **low threshold** fires *early* but trips on
+noise (false alarms that pull you out of a still-working strategy); a **high threshold**
+fires *late*, after most of the edge is already gone. There is no free lunch, only a dial
+between "early but jumpy" and "late but sure."
+
+<DriftDetectorTimeline client:visible caption="A 24-month timeline. Blue is the strategy's rolling edge (Sharpe), which holds while live data looks like training, then decays through zero. Amber is a drift statistic comparing live to training — it rises BEFORE the PnL fully rolls over. The first month amber crosses the dashed threshold, the detector fires DRIFT DETECTED. Toggle gradual vs fast drift and drag the threshold: lower it and the alarm fires earlier (but risks false alarms on noise); raise it and it fires late, after the edge is mostly gone. Watch inputs AND outcomes — a good detector buys you months to retrain or pull the strategy while there's still edge to save." />
+
+**Worked example — Page–Hinkley on a hit-rate.** Say your signal's hit rate should be
+**54%** when healthy, so each correct call scores $+1$ and each miss $-1$, with an
+expected per-trade mean of $0.54 - 0.46 = +0.08$. After concept drift quietly flips part
+of the edge, the *true* hit rate drops to **48%**, an expected mean of
+$0.48 - 0.52 = -0.04$. The Page–Hinkley running statistic accumulates each trade's
+shortfall below the expected $+0.08$ and tracks its running minimum; once the gap exceeds
+your $\lambda$, it alarms. The point: a *single bad week* (a few misses) won't trip it —
+that's just noise around $+0.08$ — but a **persistent** drop from $+0.08$ to $-0.04$ makes
+the cumulative shortfall grow without bound, so the alarm fires after a *characteristic
+number of trades*, not on any single unlucky one. Lower $\lambda$ shortens that number
+(earlier, jumpier); higher $\lambda$ lengthens it (later, surer).
+
+<Callout variant="warning" title="Covariate monitors do NOT catch concept drift">
+The single most expensive misconception here: "my input-distribution monitors are green,
+so the model is fine." They are blind by construction. If $P(x)$ is unchanged but
+$P(y \mid x)$ flipped — your momentum feature now predicting reversals while the
+distribution of momentum scores looks utterly normal — every PSI and KS test passes while
+the model bleeds. You **must** pair input monitoring (covariate) with outcome monitoring
+(concept). One without the other is a dashboard that lies in a different direction.
+</Callout>
+
+### When to use it
+
+Run outcome monitors continuously, alongside (never instead of) input monitors. Pick the
+tool to the drift's shape: a single-window **rolling Sharpe** for fast, obvious breaks;
+**CUSUM / Page–Hinkley** for slow, insidious degradation that a window would smear into
+noise. Set the threshold by your asymmetry: if a false alarm (needlessly pulling a working
+strategy) is cheaper than a missed drift (riding a dead one into the ground), bias the
+threshold *low* — and vice versa.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Why can't a single bad month trigger a well-tuned CUSUM/Page–Hinkley alarm — and why is that a feature, not a bug?</summary>
+
+**Answer.** CUSUM-family detectors accumulate the *running sum* of deviations from the
+expected good level, and they reset (or track a running minimum) so that random ups and
+downs around the true mean roughly cancel. A single bad month is one negative deviation
+swimming in a sea of zero-mean noise — the cumulative sum jiggles but doesn't ramp. Only a
+**persistent, same-signed** shortfall (the signature of a genuine mean change, i.e. real
+drift) makes the cumulative sum grow without bound until it crosses the threshold. That's
+exactly the point: it ignores noise and reacts to *structure*, trading a little detection
+latency for a lot fewer false alarms. A naive "alarm if this month was bad" test does the
+opposite — it fires constantly on noise and tells you nothing about whether the underlying
+relationship actually moved.
+
+</details>
+</Reveal>
+
+## Responding to drift — the menu of moves
+
+<MCQ
+  client:visible
+  pretest
+  allowMultiple
+  question="Your drift detector just fired with high confidence. Which of these are legitimate responses? (Select all that apply.)"
+  options={[
+    { text: "Retrain on a rolling window so the model relearns the current regime", correct: true },
+    { text: "Switch to online learning that updates continuously", correct: true },
+    { text: "Use a regime-switching or ensemble model that adapts to which world you're in", correct: true },
+    { text: "Turn the strategy OFF until you understand and can re-establish the edge", correct: true },
+  ]}
+  explanation="All four are on the menu. Note that online learning, while adaptive, re-opens the data-poisoning door from Lesson 3 — a stream of adversarial updates can corrupt a model that trains continuously. And 'turn it off' is the honest, underrated option."
+/>
+
+**Analogy.** Responding to drift is like adjusting to a city you've moved to. You can keep
+a **rolling memory** — remember only the last few months and forget the old city
+(rolling-window retrain). You can **update constantly** — learn from every new street
+(online learning), at the risk of being fooled by one misleading detour (poisoning). You
+can keep **multiple mental maps** and switch by neighbourhood (regime-switching/ensembles).
+Or — radically — you can **stop driving** until you've got the new map straight (turn it
+off). Wisdom is matching the response to *how fast the city is changing*.
+
+**Definition — the response menu.**
+
+- **Retrain / rolling windows.** Refit on a trailing window so the model tracks the
+  current regime. The window length is a **bias–variance dial**: a *short* window adapts
+  fast to new regimes but is estimated on few, noisy points (high variance); a *long*
+  window is stable and well-estimated but *stale* — slow to notice a regime has turned
+  (high bias toward the past).
+- **Online learning.** Update the model incrementally as data arrives — maximally
+  adaptive, but it **re-opens the data-poisoning attack surface** from Lesson 3: a model
+  that trusts every new point can be steered by an adversary feeding it crafted updates.
+  Adaptivity and attackability are the same coin.
+- **Regime-switching models.** Explicitly model a hidden regime state (e.g. a
+  Markov-switching model) and use the parameters for the regime you're currently in, so a
+  flip in $P(y \mid x)$ is *expected* rather than *catastrophic*.
+- **Ensembling across regimes.** Keep a stable of models — one per regime or training era —
+  and blend or select among them by current conditions. Robust to any single model going
+  stale; this is the natural bridge to **Lesson 5's** robustness-through-diversity theme.
+- **Turn it off.** The honest, underrated move: when drift is confirmed and you don't yet
+  understand it, *stop trading the strategy.* A flat PnL beats riding a dead edge into a
+  drawdown while you "wait for it to come back."
+
+**Worked example — 60-day vs 250-day retrain window.** Suppose a coefficient you re-estimate
+each rebalance has a per-observation estimation noise such that the standard error of the
+mean scales as $\sigma/\sqrt{n}$ with $n$ the window length. A **250-day** window gives
+$\sigma/\sqrt{250} = \sigma/15.8$ — a tight, stable estimate. A **60-day** window gives
+$\sigma/\sqrt{60} = \sigma/7.7$, roughly $15.8/7.7 \approx 2.0\times$ **noisier** per
+estimate. So the short window pays double the estimation noise. What does it buy? Speed: if
+a regime turns at day 0, the 60-day window is "mostly new regime" within ~30 trading days,
+while the 250-day window still has ~190 stale days dragging the estimate toward the dead
+regime for *months*. So you're trading a clean ~2× noise penalty for a roughly 4× faster
+adaptation — worth it precisely when the alpha decays fast, a bad deal when it's slow and
+stable.
+
+| Retrain window | Estimation noise (SE ∝ 1/√n) | Adaptation speed to a new regime | Best when |
+|---|---|---|---|
+| **Short (60-day)** | High — about $2\times$ a 250-day window | Fast — "mostly new regime" in ~30 days | Alpha decays fast; regimes flip often (high-turnover, microstructure) |
+| **Long (250-day)** | Low — stable, well-estimated | Slow — stale for months after a turn | Alpha decays slowly; relationships are structurally stable |
+| **Ensemble / regime-switch** | Moderate — pooled across regimes | Fast *and* stable, at the cost of complexity | You can't predict which regime you'll be in |
+
+<Callout variant="tip" title="Match the window to the half-life">
+There is no universally correct window length — there is only one matched to **how fast
+your alpha decays.** A perishable, fast-crowding signal demands a short window (or online
+learning) so it tracks the moving target; a slow, structural relationship deserves a long
+window so you don't churn capital chasing noise. Estimate the alpha's half-life first
+(recall the SignalDecay curve), then set the window to it — not the other way around.
+</Callout>
+
+### When to use it
+
+Choose the response by *speed of decay* and *cost of being wrong*. Fast decay → short
+window or online learning (and accept the poisoning exposure with input validation from
+Lesson 3). Unknown regime → regime-switching or ensembles. Confirmed drift you don't
+understand → **turn it off** and investigate; never let "it might come back" keep a
+diagnosed-dead strategy live. The goal isn't to never drift — everything drifts — it's to
+*detect it before the PnL does* and respond proportionally.
+
+<FillBlank
+  client:visible
+  question="State the bias–variance tradeoff of retrain-window length."
+  text="A short retrain window {{adapts fast but is noisy; a long window is stable but stale|is always better than a long one|eliminates concept drift entirely}}, so you match the window to how fast the alpha decays."
+  explanation="Short window = fast adaptation, high estimation variance. Long window = low variance, but biased toward a stale past. Neither dominates; the alpha's half-life decides."
+/>
+
+## Recap
+
+The adversary in the first three lessons was a person. The adversary here is **entropy**:
+the data-generating process drifts whether or not anyone means you harm. You learned to
+*name* the rot — **covariate shift** ($P(x)$ moves), **label shift** ($P(y)$ moves), and
+the deadliest, **concept drift** ($P(y \mid x)$ flips while the inputs look innocent). You
+learned *why* a fresh strategy decays on contact with reality — **selection**, **crowding**
+(Systematic & Statistical Arbitrage), and **reflexivity** (Deep RL for Execution) — and
+that roughly half the backtest edge is the honest forward expectation. You learned to
+*catch* it: **PSI / KS** on the inputs for covariate shift, and **rolling Sharpe /
+CUSUM / Page–Hinkley** on the outcomes for the concept drift the input monitors can't see —
+the timeline made the early-vs-late detection tradeoff vivid. And you learned to *respond*:
+rolling windows (with their bias–variance dial), online learning (and its poisoning
+exposure), regime-switching, ensembles (next lesson), and the honest option of turning the
+strategy off.
+
+<MindMap
+  client:visible
+  title="Distribution shift & concept drift"
+  caption="Build the map: name the shift, understand the decay, detect it, then respond."
+  root={{
+    label: 'Distribution shift',
+    children: [
+      { label: 'Taxonomy of shift', children: [
+        { label: 'Covariate: P(x) moves, P(y|x) fixed' },
+        { label: 'Label/prior: P(y) moves' },
+        { label: 'Concept drift: P(y|x) flips (deadliest)' },
+        { label: 'Same x, opposite y|x = momentum→reversal' },
+      ]},
+      { label: 'Why strategies decay live', children: [
+        { label: 'Selection / overfit (deflate Sharpe)' },
+        { label: 'Crowding (others arbitrage it away)' },
+        { label: 'Reflexivity (you move the prices)' },
+        { label: '~50% backtest haircut (McLean–Pontiff)' },
+      ]},
+      { label: 'Detecting covariate shift', children: [
+        { label: 'PSI: bins, >0.25 = significant' },
+        { label: 'KS two-sample test on features' },
+        { label: 'Smoke alarm, not thermometer' },
+      ]},
+      { label: 'Detecting concept drift', children: [
+        { label: 'Watch the OUTCOME, not inputs' },
+        { label: 'Rolling Sharpe / hit-rate' },
+        { label: 'CUSUM / Page–Hinkley change-point' },
+        { label: 'Fire before PnL collapses; sensitivity tradeoff' },
+      ]},
+      { label: 'Responding to drift', children: [
+        { label: 'Rolling window (bias–variance dial)' },
+        { label: 'Online learning (poisoning risk)' },
+        { label: 'Regime-switching / ensembles' },
+        { label: 'Turn it OFF (the honest option)' },
+      ]},
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Mixed check: did the moving target move you?"
+  questions={[
+    {
+      question: "A momentum model's feature distribution is unchanged, yet it now loses money because high momentum predicts reversals instead of gains. Name the shift.",
+      options: [
+        { text: "Concept drift — P(y|x) flipped while P(x) stayed stable", correct: true },
+        { text: "Covariate shift — the inputs must have moved" },
+        { text: "Label shift — only the up-day base rate changed" },
+        { text: "No shift; it's within normal noise" },
+      ],
+      explanation: "Stable inputs but a flipped input→output relationship is the definition of concept drift — and exactly why input-only monitors miss it.",
+    },
+    {
+      question: "An in-sample Sharpe of 2.0 most honestly forecasts a live Sharpe of roughly what, once you account for selection, crowding, and reflexivity?",
+      options: [
+        { text: "About 1.0 or less — roughly half, per the McLean–Pontiff publication decay, before further impact costs", correct: true },
+        { text: "Exactly 2.0 — backtests are unbiased forecasts" },
+        { text: "Around 3.0 — live trading improves on backtests" },
+        { text: "Exactly 0.0 — markets are perfectly efficient" },
+      ],
+      explanation: "Published anomalies decay ~58% out-of-sample; the popularised ~50% haircut takes 2.0 to ~1.0, and your own market impact at size shaves more.",
+    },
+    {
+      question: "Training has a feature split 50/50; live it's 30/70. The PSI works out to about 0.17. How should you read it?",
+      options: [
+        { text: "Moderate shift (0.1–0.25 band) — investigate; the input distribution has meaningfully moved", correct: true },
+        { text: "Stable — under the 0.1 threshold, nothing to see" },
+        { text: "Catastrophic — well above 0.25, retrain immediately" },
+        { text: "PSI can be negative here, so the sign tells the direction" },
+      ],
+      explanation: "(0.3−0.5)ln(0.6) + (0.7−0.5)ln(1.4) ≈ 0.102 + 0.067 ≈ 0.17, which lands in the 0.1–0.25 'moderate, investigate' band. PSI terms are always non-negative.",
+    },
+    {
+      question: "Your PSI and KS monitors are all green. What can you safely conclude about model health?",
+      options: [
+        { text: "Only that the inputs haven't drifted; concept drift can still be silently destroying the edge, so you must also monitor outcomes", correct: true },
+        { text: "The model is definitely healthy — green inputs guarantee it" },
+        { text: "The model is definitely broken — green inputs are a red flag" },
+        { text: "Nothing, because PSI and KS measure outcomes, not inputs" },
+      ],
+      explanation: "Input monitors test P(x). Concept drift lives in P(y|x), invisible to them. Green inputs are necessary, never sufficient — pair them with rolling-Sharpe/CUSUM outcome monitors.",
+    },
+    {
+      question: "You shorten your retrain window from 250 days to 60 days. What's the tradeoff you just made?",
+      options: [
+        { text: "Faster adaptation to regime change, but about 2× noisier coefficient estimates (SE scales as 1/√n)", correct: true },
+        { text: "Strictly better — short windows dominate long ones in every way" },
+        { text: "Lower estimation noise and slower adaptation, the best of both" },
+        { text: "It eliminates concept drift, so no monitoring is needed" },
+      ],
+      explanation: "SE ∝ 1/√n means 60 days is √(250/60) ≈ 2× noisier than 250, but 'mostly new regime' in ~30 vs ~190 stale days. Match the window to the alpha's decay half-life.",
+    },
+  ]}
+/>

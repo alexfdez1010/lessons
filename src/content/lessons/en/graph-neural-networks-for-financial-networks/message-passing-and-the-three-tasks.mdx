@@ -1,0 +1,573 @@
+---
+title: "Message Passing and the Three Tasks"
+description: "The engine inside every graph neural network: each node updates itself by aggregating from its neighbours. Why permutation-invariant pooling is non-negotiable, how stacking layers grows the receptive field one hop at a time, and the three task types — node-level (score an institution or wallet), edge-level (predict a link), and graph-level (score a whole network state)."
+topic: "en/graph-neural-networks-for-financial-networks"
+order: 2
+minutes: 20
+updated: 2026-06-23
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, MessagePassingAnimator } from '@/components/react';
+
+A graph is a beautiful way to *store* a financial network — banks as nodes, loans as
+edges, the whole tangled web of who-owes-whom laid out in one picture. But a picture
+just sits there. To *learn* from it — to predict which bank is fragile, which transfer
+is fraudulent, which whole network is about to seize up — you need an engine that turns
+the structure into numbers a model can score.
+
+That engine has a single, almost suspiciously simple idea at its heart: **message
+passing**. Every node looks at its neighbours, listens to what they have to say,
+and updates its own description of itself. Do that once and a node knows its
+neighbourhood. Do it twice and it knows its neighbourhood's neighbourhood. Stack a
+few rounds and a node carries a compressed summary of the slice of the network it can
+reach — exactly the thing you want when a shock two lending-hops away can still sink you.
+
+This lesson builds the engine from the ground up, then shows the three jobs you can
+point it at. Get message passing right and every later architecture — GraphSAGE, GAT,
+the attention variants — is just a different choice of *how* a node listens.
+
+## The message-passing paradigm
+
+<MCQ
+  client:visible
+  pretest
+  question="A graph neural network needs to compute a representation for a node from its neighbours. What is the core operation it repeats, layer after layer?"
+  options={[
+    { text: "Each node aggregates information from its neighbours, then updates its own vector by combining that aggregate with its previous vector", correct: true },
+    { text: "Each node copies the single most important neighbour and discards the rest" },
+    { text: "The whole graph is flattened into one long row and fed to a standard MLP" },
+    { text: "Each node only ever looks at its own features; edges are ignored" },
+  ]}
+  explanation="Message passing = aggregate from neighbours, then update self. Flattening throws away structure, copying one neighbour throws away the rest, and ignoring edges throws away the entire point of using a graph."
+/>
+
+**Analogy.** Your reputation is the company you keep. Picture a person who, every
+evening, takes the average mood of the friends they spoke to that day and nudges their
+own mood toward it — then tomorrow those friends do the same, having themselves been
+nudged by *their* friends. After a few evenings, gossip from across the social circle
+has quietly diffused into everyone's mood. A node in a GNN does precisely this: it
+gossips with its neighbours and updates its own state from what it hears.
+
+**Definition.** A **graph neural network (GNN)** computes a vector for every node — its
+**embedding**, a learned numerical summary of the node and its context. It does so in
+rounds called **layers**. Let $h_v^{(k)}$ be the embedding of node $v$ after layer $k$,
+and let $\mathcal{N}(v)$ be the set of $v$'s neighbours (the nodes connected to it by an
+edge). One generic message-passing layer is:
+
+$$ h_v^{(k)} = \text{UPDATE}\!\left( h_v^{(k-1)},\ \text{AGGREGATE}\big(\{\, h_u^{(k-1)} : u \in \mathcal{N}(v) \,\}\big) \right). $$
+
+Read it left to right. **AGGREGATE** is a function that swallows the *set* of neighbour
+embeddings and squeezes them into one summary vector — a sum, a mean, a max. **UPDATE**
+then combines that neighbour-summary with the node's *own* previous embedding
+$h_v^{(k-1)}$ to produce the new one. The starting embeddings $h_v^{(0)}$ are just the
+node's raw input features (a bank's capital ratio, a wallet's transaction count). Every
+layer the model learns weights inside UPDATE and AGGREGATE, so it discovers *which*
+neighbour information matters.
+
+<MessagePassingAnimator client:visible caption="One round of message passing: the centre node collects vectors from its four neighbours, pools them into a single aggregate, then merges that with its own previous value to produce its updated embedding. Press play and watch the send, aggregate, and update stages." />
+
+**Worked example.** Take a target node with embedding $h_v^{(0)} = 0.3$ and four
+neighbours holding the values $0.8,\ 0.2,\ 0.6,\ 0.4$. Use the simplest pair of
+functions: AGGREGATE = mean, and UPDATE = average-of-(self, aggregate).
+
+Step 1 — aggregate the neighbours:
+
+$$ \text{AGGREGATE} = \frac{0.8 + 0.2 + 0.6 + 0.4}{4} = \frac{2.0}{4} = 0.5. $$
+
+Step 2 — update by averaging the node's own value with that aggregate:
+
+$$ h_v^{(1)} = \frac{h_v^{(0)} + 0.5}{2} = \frac{0.3 + 0.5}{2} = \frac{0.8}{2} = 0.4. $$
+
+The node moved from $0.3$ to $0.4$ — pulled upward by neighbours that, on average, sit
+higher than it does. That is the entire engine in one number. Real GNNs do this with
+vectors and learned weight matrices instead of scalars, but the shape is identical:
+listen, pool, combine.
+
+<Callout variant="warning" title="UPDATE keeps the self term for a reason">
+A common bug is to drop $h_v^{(k-1)}$ and set the node equal to *only* the neighbour
+aggregate. Do that and a node forgets its own features — a well-capitalised bank in a
+shaky neighbourhood would be scored exactly like its shaky neighbours, because its own
+strong capital ratio vanished. The self term is what lets a node stay partly itself
+while still absorbing context.
+</Callout>
+
+### When to use it
+
+Message passing is the right tool the moment the *relationships* carry signal you would
+lose by treating rows independently. If a bank's risk depends on who it lends to, a
+wallet's label depends on who it transacts with, or a transfer's legitimacy depends on
+the pattern around it, you want a GNN. If every row is genuinely independent — features
+fully describe the outcome with no relational context — a plain tabular model is simpler
+and just as good. Reach for message passing when the edges *mean* something.
+
+<FillBlank
+  client:visible
+  question="State the two halves of a message-passing layer."
+  text="A layer first applies {{AGGREGATE|UPDATE|READOUT}} to pool the neighbour embeddings, then applies {{UPDATE|AGGREGATE|SORT}} to combine that pooled summary with the node's own previous embedding."
+  explanation="Order matters: aggregate the neighbours into one vector, then update the node by merging that vector with its own prior state."
+/>
+
+## Why permutation invariance is non-negotiable
+
+<MCQ
+  client:visible
+  pretest
+  question="A node's neighbours arrive as a set with no natural ordering. What property must the AGGREGATE function therefore have?"
+  options={[
+    { text: "It must be permutation-invariant: the output is identical no matter what order the neighbours are listed in", correct: true },
+    { text: "It must always read the neighbours in alphabetical order" },
+    { text: "It must give more weight to whichever neighbour happens to come first" },
+    { text: "It must require every node to have exactly the same number of neighbours" },
+  ]}
+  explanation="Neighbours are a set, not a sequence — there is no canonical first or last. So AGGREGATE has to be a symmetric pool whose answer does not depend on ordering. Anything order-sensitive would invent meaning that is not in the graph."
+/>
+
+**Analogy.** Imagine totting up the cash in a jar of coins. It does not matter whether
+you pull out the quarter or the dime first — the total is the total. Now imagine instead
+you wrote each coin's value into a row of boxes *in the order you drew them*, and your
+answer depended on which box held which coin. Shuffle the draw order and your "answer"
+changes, even though the jar never did. Neighbours in a graph are coins in a jar, not
+boxes in a row.
+
+**Definition.** A function is **permutation-invariant** if reordering its inputs never
+changes its output: for any reordering, $f(\{x_1, x_2, \dots\}) = f(\{x_{\pi(1)},
+x_{\pi(2)}, \dots\})$. The symmetric pools — **sum**, **mean**, and **max** — are all
+permutation-invariant, which is exactly why GNNs use them for AGGREGATE. They also
+gracefully handle **variable degree**: a node with 2 neighbours and a node with 200
+neighbours both produce one summary vector of the same size.
+
+**Worked example.** Take three neighbour values $\{0.8,\ 0.2,\ 0.6\}$ and reorder them
+to $\{0.2,\ 0.6,\ 0.8\}$.
+
+Mean of the first ordering:
+
+$$ \frac{0.8 + 0.2 + 0.6}{3} = \frac{1.6}{3} \approx 0.533. $$
+
+Mean of the reordered set:
+
+$$ \frac{0.2 + 0.6 + 0.8}{3} = \frac{1.6}{3} \approx 0.533. $$
+
+Identical — the mean does not care about order. Now try the broken alternative,
+**concatenation**, which just glues the values into one ordered vector. The first
+ordering gives the vector $[0.8,\ 0.2,\ 0.6]$; the reordering gives $[0.2,\ 0.6,\ 0.8]$.
+Those are *different* vectors, so a model reading them learns different things from the
+*same* neighbourhood. Worse, a node with four neighbours would produce a length-4 vector
+and a node with two neighbours a length-2 vector — the model cannot even accept both.
+
+<Callout variant="warning" title="The just concatenate the neighbours trap">
+The tempting shortcut "I will just line up the neighbour features end to end and feed
+that to a dense layer" fails twice over. First, it breaks on **variable degree**: every
+node has a different number of neighbours, so the concatenated input has a different
+length and no fixed-size layer fits it. Second, it breaks on **ordering**: with no
+canonical neighbour order, the model would attribute meaning to an order that is pure
+accident of how you happened to list them. Symmetric pooling sidesteps both at once.
+</Callout>
+
+### When to use it
+
+You do not really *choose* permutation invariance — it is a hard requirement whenever
+the neighbours are an unordered set, which in financial networks they always are.
+Counterparties, transaction partners, and supply-chain links have no inherent first or
+last. The real choice is *which* invariant pool: **mean** when you care about the
+typical neighbour, **sum** when raw count and total exposure matter (sum grows with
+degree; mean does not), and **max** when one dominant neighbour should drive the signal.
+Order-sensitive aggregation only makes sense on genuinely sequenced data — a price
+time series — which is a different lesson entirely.
+
+<Categorize
+  client:visible
+  question="Sort each aggregation function by whether it is safe to use as AGGREGATE in a GNN."
+  buckets={["Permutation-invariant (safe)", "Order-dependent (unsafe)"]}
+  items={[
+    { text: "Mean of neighbour vectors", bucket: "Permutation-invariant (safe)" },
+    { text: "Sum of neighbour vectors", bucket: "Permutation-invariant (safe)" },
+    { text: "Element-wise max over neighbours", bucket: "Permutation-invariant (safe)" },
+    { text: "Concatenate neighbours in listing order", bucket: "Order-dependent (unsafe)" },
+    { text: "Take only the first neighbour in the list", bucket: "Order-dependent (unsafe)" },
+    { text: "Weight neighbours by their position index", bucket: "Order-dependent (unsafe)" },
+  ]}
+  explanation="Sum, mean, and max give the same answer under any reordering. Anything that depends on listing position — concatenation, first-only, position weights — invents structure the graph never had."
+/>
+
+## The receptive field grows one hop at a time
+
+<MCQ
+  client:visible
+  pretest
+  question="You stack 3 message-passing layers. How far into the graph can a node's final embedding see?"
+  options={[
+    { text: "Up to 3 hops away — its neighbours, their neighbours, and their neighbours' neighbours", correct: true },
+    { text: "The entire graph, regardless of how many layers there are" },
+    { text: "Only its direct neighbours, no matter how many layers you stack" },
+    { text: "Exactly one node, chosen at random each layer" },
+  ]}
+  explanation="Each layer mixes in one more ring of neighbours, so K layers reach K hops. One layer sees direct neighbours; the third layer's input already contains information that travelled in from 3 hops away."
+/>
+
+**Analogy.** Gossip spreads one conversation at a time. After one evening you know what
+your direct friends know. After two evenings you know what *their* friends told them —
+information from people you have never met has reached you, relayed one hop further each
+night. A GNN's layers are evenings: each one lets information walk exactly one more edge.
+
+**Definition.** The **receptive field** of a node is the set of other nodes whose
+information can influence its final embedding. After $K$ message-passing layers, a node's
+receptive field is its **$K$-hop neighbourhood** — every node reachable by a path of at
+most $K$ edges. The reason is mechanical: layer 1 pulls in 1-hop neighbours; layer 2's
+neighbours have *already* absorbed *their* 1-hop neighbours in layer 1, so layer 2
+indirectly delivers 2-hop information; and so on. Number of layers equals number of hops.
+
+**Worked example — counting reach.** Suppose every node has roughly 3 neighbours (a
+graph of average degree 3). Trace how many nodes a target can feel as you add layers:
+
+| Layers $K$ | Hops reached | Roughly how many nodes in reach |
+|---|---|---|
+| 1 | direct neighbours | ~3 |
+| 2 | neighbours of neighbours | ~3 + 3×3 = ~12 |
+| 3 | their neighbours too | ~12 + 9×3 = ~39 |
+
+The reach explodes because each hop multiplies by the degree. With 1 layer the node sees
+about 3 others; with 3 layers, about 39. (In a dense financial network with average
+degree 20, three hops can already touch *thousands* of institutions — which is both the
+power and the danger, as the next callout warns.)
+
+**Contagion preview.** This is the whole reason GNNs suit interbank risk. A 1-layer model
+only feels a shock at a bank you lend to *directly*. A 2-layer model feels a shock two
+lending-hops away — a bank you lend to lends to the bank that failed, and the distress
+propagates back to you through the chain. Stacking layers literally encodes how far
+through the lending network a default can ripple before it reaches your door.
+
+<Callout variant="warning" title="More hops is not free — beware over-smoothing">
+It is tempting to stack many layers so every node sees the whole graph. Push it too far
+and you hit **over-smoothing**: after too many rounds of averaging, every node's
+embedding converges toward the same blurry value, and distinct banks become
+indistinguishable. The reach also grows so fast that by a handful of hops a node's
+neighbourhood is *most of the graph*, so the embedding stops being local and specific.
+Most practical GNNs use only 2 to 4 layers — enough hops to capture real contagion paths
+without melting every node into mush.
+</Callout>
+
+### When to use it
+
+Set the number of layers to the longest dependency you actually need to capture, not the
+largest you can fit. For interbank contagion where second-order exposures matter, 2 to 3
+layers is typical. For fraud rings that span long chains of transfers, you may need more —
+but watch for over-smoothing and rising compute. The rule of thumb: choose $K$ to match
+the hop distance over which influence genuinely travels in your network, then stop.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">If 3 layers already reach ~39 nodes, why not stack 10 layers to see everything?</summary>
+
+**Answer.** Two forces punish you. First, **over-smoothing**: each layer averages a
+node toward its neighbours, and after many rounds every embedding drifts to the same
+value, erasing the differences that make one bank riskier than another. Second, **reach
+saturation**: with reasonable degree, a handful of hops already engulfs most of the
+graph, so additional layers add little new information while costing more compute and
+memory. The art is to use the *fewest* layers that span the real dependency length — for
+most financial graphs, 2 to 4.
+
+</details>
+</Reveal>
+
+## Node-level tasks — score a single node
+
+<MCQ
+  client:visible
+  pretest
+  question="You want to flag individual crypto wallets as likely illicit. Which task type is this?"
+  options={[
+    { text: "Node-level: you attach a label or score to each individual node", correct: true },
+    { text: "Edge-level: you predict whether a connection exists" },
+    { text: "Graph-level: you score the entire network with one number" },
+    { text: "None of these; GNNs cannot classify individual entities" },
+  ]}
+  explanation="Each wallet is a node, and you are scoring nodes one at a time — that is the definition of a node-level task. Edge-level scores connections; graph-level scores the whole graph at once."
+/>
+
+**Analogy.** A credit bureau hands every *person* a score. It does not score
+relationships or score the whole economy — it scores individuals, one at a time, using
+information about them *and* their financial associations. A node-level GNN task is the
+graph-native version of that bureau.
+
+**Definition.** A **node-level task** attaches a prediction to each individual node. You
+run message passing to get the node's final embedding $h_v^{(K)}$ — a vector that now
+encodes both the node's own features and its $K$-hop context — and feed it through a
+small classifier or regressor to produce the answer. Formally:
+
+$$ \hat{y}_v = \text{CLASSIFY}\big(h_v^{(K)}\big). $$
+
+The output can be a **class** (illicit vs. legitimate wallet) or a **continuous score**
+(a bank's fragility rating from 0 to 1).
+
+**Worked example.** Run a 2-layer GNN over a transaction graph and a particular wallet
+ends with embedding $h_v^{(2)}$. A final layer maps that embedding to a single number
+and a sigmoid squashes it into a probability — say $0.87$. With a decision threshold of
+$0.5$, the wallet is flagged illicit (since $0.87$ exceeds $0.5$). Crucially, that $0.87$ reflects
+not just the wallet's own behaviour but the company it keeps: message passing folded in
+the fact that several of its 2-hop neighbours were known mixers. A plain tabular model
+looking only at the wallet's own row would have missed that guilt-by-association signal.
+
+<Callout variant="info" title="Context is the edge">
+The entire value-add of a node-level GNN over a flat tabular classifier is the context
+baked into $h_v^{(K)}$. Two wallets with identical individual features can earn very
+different scores because they sit in different neighbourhoods. That is the point: in
+finance, *who you transact with* is often a stronger signal than *what you individually
+look like*.
+</Callout>
+
+### When to use it
+
+Choose node-level tasks whenever the unit of decision is a single entity: rate each
+bank's fragility, label each wallet, score each customer's default risk, classify each
+account as a bot. If your question starts with "for each X, predict..." and X is a node,
+this is your task type.
+
+## Edge-level tasks — predict a link
+
+<MCQ
+  client:visible
+  pretest
+  question="You want to predict, for a pair of firms with no recorded link, whether a supply relationship probably exists but is missing from your data. Which task type?"
+  options={[
+    { text: "Edge-level (link prediction): you score whether an edge should connect two nodes", correct: true },
+    { text: "Node-level: you label each firm independently" },
+    { text: "Graph-level: you score the whole supply network at once" },
+    { text: "It is impossible without already knowing the edge" },
+  ]}
+  explanation="The prediction is about a relationship between two nodes — does an edge exist, or what is its weight. That is edge-level, also called link prediction. Inferring missing or future edges is its bread and butter."
+/>
+
+**Analogy.** A dating app does not just describe each person — it predicts whether *two*
+people would match. The score lives on the *pair*, computed from both profiles. Edge-level
+tasks are matchmaking for nodes: given two entities, how likely is a link between them?
+
+**Definition.** An **edge-level task** (or **link prediction**) predicts whether an edge
+exists between two nodes, or what its weight is. You first compute both endpoint
+embeddings $h_u^{(K)}$ and $h_v^{(K)}$ with message passing, then combine them into a
+single edge score. Two standard combiners:
+
+- **Dot product:** $\ \hat{y}_{uv} = h_u^{(K)} \cdot h_v^{(K)}$ — large when the two
+  embeddings point the same way, i.e. the nodes are "compatible."
+- **MLP on the concatenation:** $\ \hat{y}_{uv} = \text{MLP}\big([\, h_u^{(K)} \,\|\,
+  h_v^{(K)} \,]\big)$ — feed both embeddings, glued together, to a small network that
+  learns a more flexible scoring rule. (Here concatenating *two specific endpoints* is
+  fine — there are exactly two, in a defined role, so the variable-degree and ordering
+  problems from earlier do not apply.)
+
+**Worked example.** Two firms have embeddings $h_u^{(K)} = [0.5,\ 0.2,\ 0.8]$ and
+$h_v^{(K)} = [0.4,\ 0.1,\ 0.6]$. Score the candidate edge with a dot product:
+
+$$ h_u^{(K)} \cdot h_v^{(K)} = (0.5)(0.4) + (0.2)(0.1) + (0.8)(0.6) = 0.20 + 0.02 + 0.48 = 0.70. $$
+
+Pass $0.70$ through a sigmoid and you get a probability around $0.67$ — a moderately
+likely missing supply link, worth flagging an analyst to investigate. The same machinery
+predicts a **fraudulent transfer** (does an edge between these two accounts look like
+laundering?) or **counterparty exposure** (how large should the edge weight between these
+two banks be?).
+
+<Callout variant="warning" title="Negative sampling: do not train on positives only">
+Real graphs record the edges that *exist* and stay silent on the vast majority that do
+not. If you train a link predictor only on existing edges, it learns to say "yes" to
+everything. You must feed it **negative samples** — node pairs with no edge — so it
+learns to tell links from non-links. Skipping this is the classic link-prediction
+footgun: a model that scores every pair as connected and looks great until it predicts a
+supply chain between two unrelated firms.
+</Callout>
+
+### When to use it
+
+Reach for edge-level tasks when the question is about a *relationship between two nodes*:
+recommend or infer a missing counterparty link, flag a transfer as fraudulent, predict a
+future trade between two desks, estimate the weight (exposure size) of an interbank loan,
+or fill gaps in a partially observed supply network. If the answer attaches to a *pair*,
+it is edge-level.
+
+<FillBlank
+  client:visible
+  question="Describe how an edge-level task scores a candidate link."
+  text="It first computes both endpoint embeddings with message passing, then combines them — for example with a {{dot product|single neighbour mean|graph readout}} or an MLP on their concatenation — into one edge score."
+  explanation="Link prediction works on the pair of endpoint embeddings, scored by a dot product or an MLP on their concatenation. A graph readout is for the whole-graph task, not a single edge."
+/>
+
+## Graph-level tasks — score a whole network
+
+<MCQ
+  client:visible
+  pretest
+  question="You want one number that says whether an entire transaction subgraph matches a money-laundering pattern. Which task type, and what extra step does it require?"
+  options={[
+    { text: "Graph-level: pool ALL node embeddings into one graph vector with a readout, then score that", correct: true },
+    { text: "Node-level: just score the busiest node and call it the graph's score" },
+    { text: "Edge-level: score one representative edge for the whole graph" },
+    { text: "No pooling needed; you can read the answer off any single node" },
+  ]}
+  explanation="A whole-graph verdict needs a readout: a permutation-invariant pool over every node embedding, producing one fixed-size graph vector you then classify. Reading one node or one edge throws away the rest of the structure."
+/>
+
+**Analogy.** A doctor does not diagnose you from a single cell — they take the whole
+body's readings and render one verdict: healthy or not. A graph-level task is that
+whole-body verdict for a network: collapse everything you have learned about every node
+into one summary, then decide about the network as a whole.
+
+**Definition.** A **graph-level task** produces a single prediction for an *entire graph*.
+After message passing gives every node its embedding, a **readout** (also called graph
+pooling) combines *all* node embeddings into one fixed-size graph vector, which a final
+classifier scores:
+
+$$ h_G = \text{READOUT}\big(\{\, h_v^{(K)} : v \in G \,\}\big), \qquad \hat{y}_G = \text{CLASSIFY}\big(h_G\big). $$
+
+The READOUT must be **permutation-invariant** for the same reason AGGREGATE was — the
+nodes have no canonical order — so it is again a sum, mean, or max over every node. (Sum
+preserves a sense of size and total activity; mean normalises it away. Choose based on
+whether the graph's *scale* should matter to the verdict.)
+
+**Worked example.** A small suspected-laundering subgraph has three accounts whose final
+embeddings reduce to the scalars $0.9,\ 0.7,\ 0.8$ (in practice these are vectors). A
+mean readout gives the graph vector:
+
+$$ h_G = \frac{0.9 + 0.7 + 0.8}{3} = \frac{2.4}{3} = 0.8. $$
+
+Push $0.8$ through the graph classifier and it crosses the laundering-pattern threshold —
+the *whole subgraph* is flagged, not any single account. That is the right granularity:
+laundering is a *pattern across accounts* (fan-in, fan-out, rapid round-tripping), so
+the verdict has to live on the graph, not on its individual nodes.
+
+<Callout variant="info" title="Readout is to graphs what AGGREGATE is to nodes">
+Notice the symmetry: AGGREGATE pools a node's *neighbours* into one vector; READOUT pools
+the *whole graph's* nodes into one vector. Both must be permutation-invariant, both are
+typically sum/mean/max, and both turn a variable-sized set into a fixed-size summary. If
+you understand one, you understand the other — they operate at different scales.
+</Callout>
+
+### When to use it
+
+Choose graph-level tasks when the *object you are scoring is the network itself*: classify
+a whole transaction subgraph as laundering or clean, score a portfolio's systemic
+fragility, label the current market state as a stressed or calm regime, or compare two
+molecule-like network structures. If the answer is one verdict for the entire graph, you
+need a readout and a graph-level head.
+
+## The three tasks side by side
+
+Every GNN application reduces to one of these three jobs. The difference is purely *what
+you attach the final prediction to* — one node, one pair of nodes, or the whole graph —
+and therefore what (if any) pooling you do at the end.
+
+| Task type | What you predict | Finance example | Typical readout / head |
+|---|---|---|---|
+| **Node-level** | A label or score for each individual node | Rate a bank's fragility; flag a wallet as illicit | No graph pooling — classify $h_v^{(K)}$ directly |
+| **Edge-level** | Whether an edge exists, or its weight, for a node pair | Predict a missing supply link; flag a fraudulent transfer; size counterparty exposure | Dot product or MLP on the two endpoint embeddings |
+| **Graph-level** | One verdict for the entire graph | Score portfolio systemic fragility; classify a laundering subgraph; label a market regime | Permutation-invariant readout (sum/mean/max) over all nodes, then classify |
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Message passing", definition: "Each node aggregates from its neighbours, then updates its own embedding by combining that with its previous one" },
+    { term: "Permutation invariance", definition: "Property that the aggregate is unchanged when neighbours are reordered — why sum, mean, and max are used" },
+    { term: "Receptive field", definition: "The K-hop neighbourhood a node can see after K layers; reach grows one hop per layer" },
+    { term: "Node-level task", definition: "Attach a label or score to each individual node, classifying its final embedding directly" },
+    { term: "Edge-level task", definition: "Score a node pair for whether a link exists or its weight, via dot product or MLP on the two embeddings" },
+    { term: "Graph-level task", definition: "Pool all node embeddings with a readout into one vector, then score the entire graph" },
+  ]}
+/>
+
+## Recap
+
+You built the engine. Message passing is just **aggregate from your neighbours, then
+update yourself** — repeat it layer by layer and a node's embedding grows to encode its
+$K$-hop slice of the network. The aggregation *must* be permutation-invariant (sum, mean,
+max), because neighbours are an unordered, variable-sized set and concatenation breaks on
+both counts. Stacking $K$ layers reaches $K$ hops, which is exactly how a GNN can feel a
+shock travelling several lending-hops through an interbank network — though too many
+layers over-smooth everyone into mush. And whatever you point the engine at, the job is
+one of three: **node-level** (score an entity), **edge-level** (score a relationship), or
+**graph-level** (score the whole network, via a readout that pools every node).
+
+<MindMap
+  client:visible
+  title="Message passing and the three tasks"
+  caption="Build the map: the engine, its non-negotiable property, how reach grows, then the three jobs."
+  root={{
+    label: 'GNN engine and tasks',
+    children: [
+      { label: 'Message passing', children: [
+        { label: 'AGGREGATE neighbours into one vector' },
+        { label: 'UPDATE: combine aggregate with own prior embedding' },
+        { label: 'Repeat layer by layer' },
+      ]},
+      { label: 'Permutation invariance', children: [
+        { label: 'Neighbours are an unordered set' },
+        { label: 'Use sum / mean / max' },
+        { label: 'Concatenation breaks on order + degree' },
+      ]},
+      { label: 'Receptive field', children: [
+        { label: 'K layers = K hops' },
+        { label: 'Reach multiplies by degree each hop' },
+        { label: 'Captures multi-hop contagion' },
+        { label: 'Too many layers = over-smoothing' },
+      ]},
+      { label: 'Three tasks', children: [
+        { label: 'Node-level: score an entity' },
+        { label: 'Edge-level: predict a link' },
+        { label: 'Graph-level: readout + score whole graph' },
+      ]},
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Mixed check: does the engine run?"
+  questions={[
+    {
+      question: "A node has embedding 0.2 and three neighbours with values 0.6, 0.4, and 0.8. Using mean-aggregate and an update that averages the node's own value with the aggregate, what is its new embedding?",
+      options: [
+        { text: "0.4 — aggregate is (0.6+0.4+0.8)/3 = 0.6, then (0.2+0.6)/2 = 0.4", correct: true },
+        { text: "0.6 — the new value is just the neighbour mean" },
+        { text: "0.2 — the node ignores its neighbours" },
+        { text: "1.0 — you add the node value to the aggregate" },
+      ],
+      explanation: "Aggregate first: (0.6+0.4+0.8)/3 = 1.8/3 = 0.6. Then update by averaging self with aggregate: (0.2+0.6)/2 = 0.4. Keeping the self term is what stops the answer being just 0.6.",
+    },
+    {
+      question: "Why can't AGGREGATE simply concatenate the neighbour features into one vector?",
+      options: [
+        { text: "Variable degree gives different-length inputs, and with no canonical order the model would invent meaning from listing position", correct: true },
+        { text: "Concatenation is too slow to compute on modern hardware" },
+        { text: "Concatenation always produces a number larger than one" },
+        { text: "It would work fine; GNNs concatenate neighbours by default" },
+      ],
+      explanation: "Two failures: nodes have different numbers of neighbours (no fixed input size) and neighbours have no order (so position would carry spurious meaning). Symmetric pooling fixes both.",
+    },
+    {
+      question: "An interbank network has average degree 3. Roughly how many institutions can a node feel with a 2-layer GNN versus a 1-layer GNN?",
+      options: [
+        { text: "About 12 at 2 layers versus about 3 at 1 layer — each hop multiplies reach by the degree", correct: true },
+        { text: "The same number; layers do not change reach" },
+        { text: "The entire network at both 1 and 2 layers" },
+        { text: "About 2 at 2 layers versus 1 at 1 layer" },
+      ],
+      explanation: "1 layer reaches ~3 direct neighbours; 2 layers adds their ~3 neighbours each, roughly 3 + 9 = ~12. K layers reach K hops, with reach scaling by the degree per hop.",
+    },
+    {
+      question: "You need one prediction for whether an entire transaction subgraph is a laundering pattern. What is the required final step?",
+      options: [
+        { text: "A permutation-invariant readout that pools all node embeddings into one graph vector, which you then classify", correct: true },
+        { text: "Score the single highest-activity node and use that as the graph's answer" },
+        { text: "Take the dot product of two arbitrary node embeddings" },
+        { text: "Read the prediction directly off the first node, no pooling" },
+      ],
+      explanation: "Graph-level tasks need a readout (sum/mean/max over every node) to collapse the variable-sized graph into one fixed vector before classifying. Laundering is a whole-graph pattern, not a single node.",
+    },
+    {
+      question: "Two accounts have embeddings [0.5, 0.2, 0.8] and [0.4, 0.1, 0.6]. Using a dot-product edge score, what is the raw score before any sigmoid?",
+      options: [
+        { text: "0.70 — (0.5)(0.4) + (0.2)(0.1) + (0.8)(0.6) = 0.20 + 0.02 + 0.48", correct: true },
+        { text: "1.40 — you add all six numbers together" },
+        { text: "0.48 — only the largest matching term counts" },
+        { text: "0.10 — you subtract one vector from the other and sum" },
+      ],
+      explanation: "A dot product multiplies matching components and sums them: 0.20 + 0.02 + 0.48 = 0.70. This pairwise score is the heart of edge-level link prediction, fed through a sigmoid for a probability.",
+    },
+  ]}
+/>

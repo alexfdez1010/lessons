@@ -1,0 +1,640 @@
+---
+title: "El kit de herramientas de robustez"
+description: "Cómo contraatacar: entrenamiento adversarial, optimización distribucionalmente robusta y el objetivo min-max, regularización y ensembling para la estabilidad, y predicción conforme para una incertidumbre honesta que se mantiene incluso bajo cambio de distribución."
+topic: "es/adversarial-ml-and-robustness-in-trading"
+order: 5
+minutes: 22
+updated: 2026-06-23
+---
+
+import { Callout, MCQ, Quiz, Reveal, ThinkReveal, FillBlank, MatchConcepts, Categorize, MindMap, EnsembleTimeFan, CalibrationCurve, AdversarialPerturbationExplorer } from '@/components/react';
+
+Hasta ahora este curso ha sido un recorrido por las formas en que vuestro precioso modelo
+puede ser atracado. El mercado es adversarial por construcción. Empujones minúsculos y
+plausibles a vuestras características voltean la operación. Alguien puede envenenar vuestros
+datos de entrenamiento o robaros el modelo directamente. Y el suelo mismo se mueve: la
+distribución sobre la que ajustasteis no es la distribución en la que operáis. Cuatro
+lecciones de malas noticias.
+
+Esta es la lección en la que contraatacáis.
+
+La buena noticia por delante: **la robustez no es magia, es un impuesto que elegís pagar.**
+Cada herramienta de aquí compra seguridad en el peor caso gastando algo: un poco de
+precisión limpia, un poco de retorno esperado, un poco de complejidad del modelo, un
+intervalo más ancho. No hay robustez gratis, solo robustez *comprada deliberadamente*. La
+habilidad está en saber qué impuesto pagar, cuánto, y contra qué amenaza. Al final tendréis
+cinco instrumentos: entrenar contra un adversario, optimizar contra una *distribución* del
+peor caso, encoger la sensibilidad del modelo, promediar para eliminar la fragilidad, y
+envolverlo todo en una incertidumbre honesta y cubrible.
+
+Un único hilo recorre los cinco: **suponed que las condiciones de test las elige alguien
+que quiere que perdáis, y luego optimizad para *eso*.** Esa es la mentalidad min-max, y es
+la columna vertebral del kit de herramientas.
+
+## Entrenamiento adversarial
+
+<MCQ
+  client:visible
+  pretest
+  question="Descubrís que pequeñas perturbaciones de las características voltean la operación de vuestro modelo. ¿Qué cambia realmente el entrenamiento adversarial sobre cómo ajustáis el modelo?"
+  options={[
+    { text: "Entrena el modelo con entradas perturbadas adversarialmente: minimiza la pérdida del peor caso dentro de un presupuesto de perturbación, no solo la pérdida media", correct: true },
+    { text: "Elimina las características ruidosas para que ninguna perturbación pueda alcanzarlas" },
+    { text: "Añade más capas para que el modelo pueda memorizar los ataques" },
+    { text: "Solo cambia cómo evaluáis el modelo, nunca cómo lo entrenáis" },
+  ]}
+  explanation="El entrenamiento adversarial reescribe el objetivo: en cada paso primero encontráis el peor empujón dentro del presupuesto, y luego actualizáis los pesos para hacerlo bien en ese peor caso. Cambia el entrenamiento, no solo la evaluación."
+/>
+
+**Analogía.** Un boxeador que solo pega al saco pesado parece devastador, hasta el primer
+rival que le devuelve los golpes. El entrenamiento adversarial es el sparring: entrenáis
+contra un compañero que intenta activamente explotar vuestras debilidades, así que los
+huecos se cierran *antes* de la noche del combate. El modelo que solo vio datos limpios es
+el boxeador que nunca hizo sparring.
+
+**Definición.** El entrenamiento adversarial replantea el aprendizaje como un **problema
+de punto de silla (min-max)** (Madry et al., 2018). En lugar de minimizar la pérdida media
+sobre entradas limpias, minimizáis la pérdida contra la *peor* perturbación que un
+adversario podría aplicar dentro de un presupuesto:
+
+$$ \min_{\theta} \; \mathbb{E}_{(x,y)} \left[ \max_{\lVert \delta \rVert \le \epsilon} \; \mathcal{L}\!\left(f_\theta(x + \delta),\, y\right) \right]. $$
+
+Leedlo de dentro hacia afuera. La **maximización interna** es el atacante de la lección de
+ejemplos adversariales: dados los pesos actuales, encuentra la perturbación $\delta$ dentro
+del presupuesto $\lVert \delta \rVert \le \epsilon$ que más os perjudica (en la práctica,
+unos pocos pasos de ascenso de gradiente proyectado, PGD). La **minimización externa** es
+el defensor: actualiza $\theta$ para que incluso el peor $\delta$ produzca una pérdida
+pequeña. Alternáis: atacar, luego defender, luego atacar al modelo más fuerte, y así
+sucesivamente.
+
+Ese $\epsilon$ es el mismo **presupuesto de perturbación** de la lección de ejemplos
+adversariales: el radio de la bola de empujones contra los que estáis dispuestos a
+defenderos. El entrenamiento simplemente lo mueve del banco de evaluación *al interior de
+la función de pérdida*.
+
+<AdversarialPerturbationExplorer client:visible title="Ejemplos adversariales: un empujón minúsculo que voltea la operación" fgsmLabel="FGSM (signo del gradiente)" noiseLabel="Ruido aleatorio" epsilonLabel="Presupuesto de perturbación (ε)" featureLabels={["Momentum","Volatilidad","Spread","Volumen","RSI"]} originalLabel="Original" perturbedLabel="Perturbado" scoreLabel="Puntuación del modelo" magnitudeLabel="Tamaño de la perturbación (L∞)" decisionLabel="Decisión:" longLabel="LARGO" shortLabel="CORTO" flippedLabel="volteada por el ataque" boundaryAxisLabel="Puntuación frente a la frontera de decisión" caption="El mismo empujón minúsculo de la lección de ejemplos adversariales, pero ahora imaginadlo dentro de la pérdida. El entrenamiento adversarial no solo mide cuánto puede empujar ε al modelo al otro lado de la frontera; entrena la frontera para que deje de moverse cuando ε empuja. Subid ε e imaginad al optimizador contraatacando en cada paso." />
+
+**Ejemplo resuelto — el compromiso robustez-precisión.** Supongamos que vuestro modelo
+sobre datos limpios (sin atacar) es excelente y sobre datos atacados es desesperante:
+
+| Modelo | Precisión limpia | Precisión robusta (bajo ataque PGD) |
+|---|---|---|
+| Entrenamiento estándar | 70% | 5% |
+| Entrenamiento adversarial | 65% | 45% |
+
+*Perdisteis* 5 puntos de precisión limpia (70% → 65%) y *ganasteis* 40 puntos de precisión
+robusta (5% → 45%). Ese es el **compromiso robustez-precisión**, y es la regla, no la
+excepción: obligar al modelo a hacerlo bien bajo ataque cuesta un poco en los días
+tranquilos, porque la frontera de decisión tiene que situarse más lejos de los datos para
+dejar sitio al presupuesto. En términos de trading, sacrificasteis una pizca de ventaja de
+buen tiempo para dejar de volar por los aires cuando un rival mueve vuestras
+características. Si es un buen trato depende por completo de con qué frecuencia alguien *sí*
+está moviendo vuestras características, que es exactamente la pregunta que la lección "los
+mercados son adversariales" respondió con "más de lo que pensáis".
+
+<Callout variant="tip" title="El marco del impuesto">
+El entrenamiento adversarial es el ejemplo más claro de robustez-como-impuesto: 5 puntos de
+precisión limpia compraron 40 puntos de precisión en el peor caso. No preguntáis "¿es cero
+el impuesto?" (nunca lo es). Preguntáis "¿vale para mí más la protección del peor caso que
+la ventaja de buen tiempo que estoy cediendo?" En una estrategia de Sharpe bajo que de vez
+en cuando recibe un revés adversarial, la respuesta suele ser sí.
+</Callout>
+
+<Callout variant="warning" title="'Robusto frente a FGSM' no es 'robusto'">
+Un modelo puede sacar un 90% frente al ataque barato de un solo paso FGSM y un 5% frente a
+un ataque PGD multipaso propiamente dicho. Entrenar contra un atacante *débil* enseña al
+modelo a engañar a ese atacante en concreto, a menudo mediante **enmascaramiento de
+gradiente**: hacer los gradientes poco informativos para que el ataque no encuentre una
+dirección, mientras el modelo sigue igual de frágil ante un ataque más fuerte o sin
+gradiente. Esta falsa sensación de seguridad es el tema entero de la próxima lección. Por
+ahora: si entrenáis adversarialmente, atacad con el método más fuerte que podáis, y nunca
+confiéis en una robustez medida solo contra el débil.
+</Callout>
+
+### Cuándo usarlo
+
+Recurrid al entrenamiento adversarial cuando (1) tenéis una amenaza concreta y acotada:
+entradas de características que un adversario puede de verdad empujar (quote stuffing,
+características del libro de órdenes falsificadas, precios de referencia manipulables), y
+(2) podéis especificar un presupuesto realista $\epsilon$ a partir de la amenaza, no de la
+conveniencia. Si vuestras características no son manipulables y vuestro problema real es el
+cambio de distribución *natural* en vez de un atacante punto a punto, la siguiente
+herramienta (DRO) encaja mejor: defiende contra una *distribución* desplazada, no contra un
+empujón por muestra.
+
+<FillBlank
+  client:visible
+  question="Enunciad con palabras el objetivo del entrenamiento adversarial."
+  text="El entrenamiento adversarial resuelve un problema min-max: minimizar sobre los pesos la pérdida del {{peor caso|caso medio|mejor caso}} sobre todas las perturbaciones dentro del presupuesto."
+  explanation="El paso interno maximiza la pérdida (el peor empujón del atacante); el paso externo minimiza ese peor caso sobre los pesos. El caso medio o el mejor caso serían el entrenamiento ordinario y un deseo ilusorio, respectivamente."
+/>
+
+## Optimización distribucionalmente robusta (DRO)
+
+<MCQ
+  client:visible
+  pretest
+  question="El entrenamiento adversarial defiende contra empujones por muestra. ¿Contra qué defiende en cambio la optimización distribucionalmente robusta?"
+  options={[
+    { text: "Contra un desplazamiento del peor caso de toda la distribución de datos dentro de un conjunto de distribuciones plausibles cercanas a vuestra distribución de entrenamiento", correct: true },
+    { text: "Contra una única fila de entrenamiento mal etiquetada" },
+    { text: "Contra la inferencia lenta del modelo en el momento de operar" },
+    { text: "Contra nada nuevo: es solo entrenamiento adversarial con otro nombre" },
+  ]}
+  explanation="DRO sube al adversario un nivel: en lugar de elegir un empujón para cada entrada, puede elegir toda la distribución de test de un conjunto de ambigüedad alrededor de la empírica. Esa es la versión formal de 'el régimen podría cambiar'."
+/>
+
+**Analogía.** El entrenamiento adversarial supone que el boxeador que tenéis delante podría
+amagar. DRO supone que ni siquiera sabéis qué boxeador aparece, solo que es alguien dentro
+de una categoría de peso del que entrenasteis. Os preparáis para el *peor rival del cuadro*,
+no para el medio. El cuadro es el conjunto de ambigüedad; su tamaño es cuánta incertidumbre
+sobre el emparejamiento estáis dispuestos a asegurar.
+
+**Definición.** El aprendizaje estándar (minimización del riesgo empírico) minimiza la
+pérdida esperada bajo la **distribución empírica** $\hat{P}$ — el histograma de vuestros
+datos de entrenamiento: $\min_\theta \mathbb{E}_{\hat{P}}[\mathcal{L}]$. Esto supone en
+silencio que la distribución de test es igual a la de entrenamiento. DRO abandona ese
+supuesto y minimiza la pérdida esperada del **peor caso** sobre un **conjunto de
+ambigüedad** $\mathcal{U}$ de distribuciones dentro de cierta divergencia (una bola de
+Wasserstein, o una $\phi$-divergencia como la KL) de $\hat{P}$:
+
+$$ \min_{\theta} \; \max_{Q \,\in\, \mathcal{U}(\hat{P})} \; \mathbb{E}_{Q}\!\left[\mathcal{L}\!\left(f_\theta, \, y\right)\right]. $$
+
+Esta es la versión principista a nivel de distribución de la premisa "los mercados son
+adversariales": **suponed que la distribución de test la elige un adversario**, pero
+restringida a quedarse cerca de lo que de verdad habéis visto. El radio de $\mathcal{U}$
+codifica *cuánto desplazamiento teméis*. Radio cero recupera el ERM ordinario (confiáis por
+completo en la distribución empírica); un radio grande os prepara para un cambio de régimen
+salvaje a costa de conservadurismo.
+
+Si os habéis cruzado con la **optimización robusta de carteras** en el curso de
+optimización de carteras, ya conocéis esta forma: en vez de optimizar una cartera para una
+media y covarianza estimadas, la optimizáis para la *peor* media/covarianza dentro de un
+conjunto de incertidumbre alrededor de vuestras estimaciones. DRO es exactamente esa idea
+aplicada a la pérdida de un modelo en lugar de al retorno de una cartera.
+
+**Ejemplo resuelto — un DRO diminuto de 2 escenarios.** Debéis elegir una de dos
+estrategias. Hay dos regímenes futuros, "Calma" y "Crisis". Los retornos de vuestras
+estrategias:
+
+| Estrategia | Retorno en Calma | Retorno en Crisis |
+|---|---|---|
+| A (carry trade) | +10% | −20% |
+| B (defensiva) | +3% | +1% |
+
+Vuestros datos de entrenamiento — la historia reciente — han sido 90% Calma, 10% Crisis,
+así que $\hat{P} = (0.9, 0.1)$. **Elección por valor esperado (ERM):**
+
+- Estrategia A: $0.9 \times 10\% + 0.1 \times (-20\%) = 9\% - 2\% = 7\%.$
+- Estrategia B: $0.9 \times 3\% + 0.1 \times 1\% = 2.7\% + 0.1\% = 2.8\%.$
+
+ERM elige **A** (7% &gt; 2.8%): confía en que el futuro siga 90% en calma.
+
+Ahora construid un conjunto de ambigüedad: la verdadera probabilidad de Crisis podría estar
+en cualquier punto de $[0.10,\, 0.50]$ (teméis que los regímenes cambien con más fuerza de
+lo que muestra la muestra reciente). DRO evalúa cada estrategia en su **peor** distribución
+de ese conjunto:
+
+- El peor caso de la Estrategia A es el peso máximo de Crisis, $0.5$: $0.5 \times 10\% + 0.5 \times (-20\%) = 5\% - 10\% = -5\%.$
+- El peor caso de la Estrategia B es también $0.5$ de Crisis: $0.5 \times 3\% + 0.5 \times 1\% = 1.5\% + 0.5\% = 2\%.$
+
+DRO maximiza el peor caso, así que elige **B** ($2\% > -5\%$). La elección robusta *difiere*
+de la elección por valor esperado: ERM persigue el 7% que supone que la calma persiste; DRO
+acepta un humilde 2% que sobrevive a una crisis que no puede descartar. Cuál tiene razón
+depende por completo del conjunto de ambigüedad, y dimensionar ese conjunto con honestidad
+es todo el juego.
+
+<Callout variant="tip" title="Dimensionar el conjunto de ambigüedad">
+El único dial de DRO es el radio del conjunto de ambigüedad, y se corresponde directamente
+con el miedo. Demasiado pequeño y solo habéis reconstruido el ERM con pasos extra — sin
+protección. Demasiado grande y estáis optimizando para un apocalipsis tan extremo que la
+única acción "robusta" es no hacer nada, y sangráis retorno esperado por una protección que
+nunca necesitaréis. Calibrad el radio al desplazamiento que *de verdad* habéis observado
+entre regímenes (haced backtest de la peor deriva de distribución histórica), no a vuestra
+ansiedad.
+</Callout>
+
+### Cuándo usarlo
+
+Usad DRO cuando vuestra amenaza es una *distribución* que se mueve, no una única entrada que
+recibe un empujón — es decir, cambio de régimen natural, cambio de covariables entre
+backtest y producción, o "esta estrategia funcionaba en un mundo de tipos bajos y los tipos
+acaban de triplicarse". También es el marco correcto cuando desconfiáis de vuestras propias
+*estimaciones* (medias, covarianzas, tasas base) y queréis decisiones que sobrevivan a
+equivocaros en ellas — eso es la optimización robusta de carteras. Dimensionad el conjunto
+de ambigüedad al desplazamiento que genuinamente teméis y podéis defender con datos; radios
+arbitrarios dan conservadurismo arbitrario.
+
+<ThinkReveal
+  client:visible
+  prompt="En el ejemplo resuelto, el conjunto de ambigüedad era la probabilidad de Crisis en [0.10, 0.50]. ¿Qué le pasa a la elección de DRO si encogéis el conjunto a exactamente {0.10} (un único punto)?"
+  hint="Un conjunto de ambigüedad de un solo punto significa que confiáis por completo en una distribución. ¿A qué se reduce el min-max?"
+  text="Con el conjunto colapsado al único punto 0.10, el 'max sobre Q' interno no tiene nada que elegir: solo hay una distribución. DRO se reduce entonces a la optimización ordinaria por valor esperado bajo P-gorro = (0.9, 0.1), así que elige la Estrategia A (7% > 2.8%), exactamente como ERM. Radio cero ⇒ DRO = ERM. La robustez solo aparece una vez que el conjunto de ambigüedad es lo bastante amplio para contener distribuciones peores que vuestra muestra de entrenamiento."
+/>
+
+## Regularización para la estabilidad
+
+<MCQ
+  client:visible
+  pretest
+  question="Una penalización L2 (ridge) suele enseñarse como herramienta anti-sobreajuste. ¿Cuál es su OTRO papel, relevante para la robustez?"
+  options={[
+    { text: "Acota la sensibilidad del modelo a las perturbaciones de la entrada — pesos más pequeños significan un desplazamiento de salida del peor caso más pequeño para el mismo empujón de entrada", correct: true },
+    { text: "Aumenta la capacidad del modelo para que pueda ajustar los ataques" },
+    { text: "Solo afecta a la velocidad de entrenamiento, nunca a la robustez" },
+    { text: "Garantiza que el modelo no tenga sesgo" },
+  ]}
+  explanation="Robustez y regularización son dos caras de una misma moneda. Encoger los pesos encoge la constante de Lipschitz del modelo — cuánto puede moverse la salida por unidad de movimiento de la entrada — que es exactamente la cantidad que explota un empujón adversarial."
+/>
+
+**Analogía.** Un gatillo sensible es peligroso: el toque más leve dispara el arma. Un modelo
+con pesos enormes tiene el gatillo sensible — un empujón de característica ligero como una
+pluma balancea la salida salvajemente. La regularización lima el gatillo: ahora hace falta
+un tirón real y deliberado para mover la salida, así que los roces accidentales (o
+adversariales) no hacen nada. Cambiáis un poco de capacidad de respuesta nerviosa por mucha
+estabilidad.
+
+**Definición.** Para un puntuador lineal $\text{score}(x) = w \cdot x$, el desplazamiento de
+salida del peor caso debido a una perturbación $\delta$ dentro de un presupuesto $L_\infty$
+$\epsilon$ es **exactamente** la cantidad de la lección de ejemplos adversariales:
+
+$$ \max_{\lVert \delta \rVert_\infty \le \epsilon} \; \lvert w \cdot (x + \delta) - w \cdot x \rvert \;=\; \max_{\lVert \delta \rVert_\infty \le \epsilon} \lvert w \cdot \delta \rvert \;=\; \epsilon \, \lVert w \rVert_1. $$
+
+La mejor jugada del adversario es empujar cada característica en $\pm\epsilon$ alineada con
+el signo de su peso, y el daño escala con $\lVert w \rVert_1$ — la suma de los pesos
+absolutos. Así que **encoger los pesos encoge literalmente el desplazamiento adversarial del
+peor caso.** Una penalización L2 (ridge) $\lambda \lVert w \rVert_2^2$ atrae los pesos hacia
+cero, acotando la **constante de Lipschitz** del modelo — el cambio máximo de salida por
+unidad de cambio de entrada. Pesos pequeños ⇒ $w \cdot \delta$ pequeño ⇒ desplazamiento
+adversarial pequeño. La regularización *es* una palanca de robustez; simplemente suele
+llegar luciendo una insignia anti-sobreajuste.
+
+**Ejemplo resuelto — reducid a la mitad la norma, reducid a la mitad el daño.** Supongamos
+que vuestro puntuador tiene pesos $w = (0.9, -0.7, -0.5, 0.4, 0.6)$, así que
+$\lVert w \rVert_1 = 0.9 + 0.7 + 0.5 + 0.4 + 0.6 = 3.1$. Con un presupuesto $L_\infty$
+$\epsilon = 0.1$, el desplazamiento de puntuación del peor caso es
+$\epsilon \lVert w \rVert_1 = 0.1 \times 3.1 = 0.31$. Ahora subid la penalización ridge
+hasta que los pesos ajustados encojan a $w' = (0.45, -0.35, -0.25, 0.2, 0.3)$, exactamente
+la mitad de la magnitud, así que $\lVert w' \rVert_1 = 1.55$. El nuevo desplazamiento del
+peor caso es $0.1 \times 1.55 = 0.155$ — **precisamente la mitad**. Reducir a la mitad la
+norma de los pesos redujo a la mitad el daño máximo que un adversario puede hacer con el
+mismo presupuesto. (Y si vuestra frontera de decisión está a 0.6 de distancia, un
+desplazamiento de 0.155 puede ya no bastar para voltear la operación donde 0.31 sí lo
+hacía.)
+
+| Modelo | $\lVert w \rVert_1$ | Desplazamiento del peor caso con $\epsilon = 0.1$ |
+|---|---|---|
+| Ligeramente regularizado | 3.1 | 0.31 |
+| Fuertemente regularizado | 1.55 | 0.155 |
+
+**Más regularizadores, más robustez.** La misma lógica generaliza: el **decaimiento de
+pesos** (L2 disfrazado) acota la sensibilidad; la **reducción de características** elimina
+por completo la superficie de ataque (una característica que no usáis no puede empujarse
+contra vosotros); el **dropout** impide que el modelo dependa de una única característica
+frágil; la **parada temprana** detiene antes de que el modelo se retuerza para ajustar el
+ruido. Y aquí hay una conexión extra con la lección de envenenamiento de datos/extracción
+de modelos: todos estos *también* reducen el sobreajuste que explotan los **ataques de
+inferencia de pertenencia**. Un modelo que ha memorizado sus filas de entrenamiento filtra
+qué filas vio; un modelo regularizado que generaliza filtra mucho menos. Una palanca, tres
+beneficios — generalización, robustez adversarial *y* privacidad.
+
+<Callout variant="warning" title="La regularización no es solo anti-sobreajuste">
+El punto ciego más común aquí es tratar $\lambda$ como un dial que afináis puramente para la
+precisión de validación. También es un dial de *seguridad y robustez*. Un modelo
+perfectamente afinado para generalizar puede seguir teniendo el gatillo sensible si sus
+pesos resultan ser grandes. Cuando elegís $\lambda$, preguntad no solo "¿esto sobreajusta?"
+sino "¿cómo de grande es $\epsilon \lVert w \rVert_1$, y cómo de grande es la distancia
+hasta mi frontera de decisión?"
+</Callout>
+
+### Cuándo usarla
+
+Siempre — la regularización es la robustez más barata del kit de herramientas y debería ser
+el valor por defecto, no la excepción. Es lo primero a lo que recurrir cuando no podéis
+caracterizar una amenaza concreta: encoge la sensibilidad a *todos* los pequeños movimientos
+de entrada a la vez, no a un ataque con nombre. Apoyaos más en ella (pesos más pequeños,
+menos características) cuando vuestro tamaño de muestra efectivo es minúsculo y vuestra
+frontera de decisión está cerca de vuestros datos — que es precisamente cuando un modelo de
+gatillo sensible es a la vez más probable y más peligroso.
+
+<Categorize
+  client:visible
+  question="Clasificad cada técnica por el mecanismo de robustez PRINCIPAL que proporciona."
+  buckets={["Acota la sensibilidad a empujones de la entrada", "Elimina/limita la superficie de ataque", "Reduce la dependencia de cualquier característica frágil única"]}
+  items={[
+    { text: "Penalización L2 / ridge (encoge la norma de los pesos)", bucket: "Acota la sensibilidad a empujones de la entrada" },
+    { text: "Decaimiento de pesos", bucket: "Acota la sensibilidad a empujones de la entrada" },
+    { text: "Reducción de características (descartar entradas no usadas)", bucket: "Elimina/limita la superficie de ataque" },
+    { text: "Parada temprana antes de ajustar el ruido", bucket: "Elimina/limita la superficie de ataque" },
+    { text: "Dropout", bucket: "Reduce la dependencia de cualquier característica frágil única" },
+  ]}
+  explanation="Ridge y el decaimiento de pesos acotan directamente la constante de Lipschitz (sensibilidad). La reducción de características y la parada temprana encogen la superficie que el modelo expone al ruido/ataques. El dropout fuerza la redundancia para que ninguna característica sea un único punto de fallo."
+/>
+
+## Ensembling para la estabilidad
+
+<MCQ
+  client:visible
+  pretest
+  question="¿Por qué promediar un conjunto diverso de modelos tiende a ser más robusto que cualquier modelo individual?"
+  options={[
+    { text: "Los errores independientes se cancelan en parte (reducción de varianza), y un ataque diseñado para un modelo suele no transferirse a los demás", correct: true },
+    { text: "Los conjuntos siempre tienen menos sesgo que cualquier miembro" },
+    { text: "Promediar garantiza que el conjunto supera al mejor modelo individual sobre datos limpios" },
+    { text: "Más modelos significa más parámetros, lo cual siempre es mejor" },
+  ]}
+  explanation="La diversidad es todo el quid: los errores no correlacionados encogen al promediarse (σ²/k), y una perturbación afinada para explotar el punto ciego particular de un modelo normalmente no se alinea con el punto ciego de un modelo construido de otra forma, así que no se transfiere."
+/>
+
+**Analogía.** Un único experto puede equivocarse con confianza y de forma catastrófica en su
+único punto ciego. Un panel diverso de expertos — distinta formación, distintos métodos —
+rara vez comparte el *mismo* punto ciego, así que una pregunta que engaña a uno la cazan los
+demás. La palabra clave es *diverso*: un panel de cinco expertos que estudiaron todos en la
+misma escuela con el mismo profesor es solo un experto con sillas de más.
+
+**Definición.** Un conjunto combina predicciones de varios modelos — promediando (regresión)
+o votando (clasificación) — para que ningún modelo frágil único domine la salida. La
+robustez viene de la **reducción de varianza**. Si promediáis $k$ modelos cuyos errores son
+independientes, cada uno con varianza de error $\sigma^2$, la varianza del promedio es
+
+$$ \text{Var}\!\left(\frac{1}{k}\sum_{i=1}^{k} \hat{f}_i\right) = \frac{\sigma^2}{k}. $$
+
+**Ejemplo resuelto — k = 4.** Digamos que cada uno de vuestros cuatro modelos predice el
+retorno de la semana que viene con varianza de error $\sigma^2 = 0.04$ (una desviación
+típica de 0.2), y sus errores son independientes. La varianza de error del conjunto es
+$\sigma^2 / k = 0.04 / 4 = 0.01$ — **una cuarta parte de la original**, una desviación
+típica de $0.1$. Reducisteis a la mitad la dispersión del error promediando cuatro
+visiones independientes, gratis. El segundo beneficio de robustez es la **no transferencia**:
+un empujón adversarial calculado contra los gradientes del modelo 1 explota la frontera
+específica del modelo 1; apuntado a los modelos 2–4 (construidos sobre distintas
+características, semillas o arquitecturas), normalmente aterriza en espacio vacío y queda en
+minoría. El ataque que voltea un modelo rara vez voltea cuatro distintos a la vez.
+
+<EnsembleTimeFan client:visible caption="Muchos modelos, muchas trayectorias. Las previsiones individuales se abren en abanico y discrepan, pero su promedio es mucho más estable que cualquier línea individual, y ninguna trayectoria frágil única puede arrastrar el consenso por un precipicio. Esa estabilidad es la reducción de varianza σ²/k hecha visible, y es por lo que un ataque afinado a una trayectoria rara vez mueve la mediana." />
+
+Esto enlaza directamente con el **ensembling por régimen** de la lección de cambio de
+distribución: en vez de apostarlo todo a un modelo que supone un régimen, mezcláis un modelo
+de régimen de calma, un modelo de régimen de crisis y un modelo de transición, de modo que
+cuando el régimen gira, el voto del miembro relevante sube y el del miembro obsoleto baja. El
+conjunto se degrada con elegancia en lugar de caer por un precipicio.
+
+**Ejemplo resuelto — el impuesto de la correlación.** El resultado $\sigma^2/k$ supuso
+errores *independientes*. Con correlación por pares $\rho$ entre los errores de los modelos,
+la varianza del conjunto es en realidad $\sigma^2\left(\frac{1}{k} + \frac{k-1}{k}\rho\right)$.
+Sustituid $k = 4$, $\rho = 1$ (modelos idénticos): $0.04 \times (0.25 + 0.75 \times 1) = 0.04 \times 1 = 0.04$
+— **ninguna reducción en absoluto.** Cuatro copias del mismo modelo son un modelo. La
+diversidad no es un lujo agradable; es la fuente entera del beneficio.
+
+<Callout variant="warning" title="Los modelos correlacionados no diversifican">
+El modo de fallo seductor es apilar cinco modelos que usan todos las mismas características,
+el mismo periodo de retrospección y el mismo periodo de entrenamiento, y luego felicitaros
+por un "conjunto". Si comparten un punto ciego, el conjunto lo comparte — y un ejemplo
+adversarial o un cambio de régimen que vence a uno vence a los cinco simultáneamente.
+Diseñad la diversidad a propósito: distintas características, arquitecturas, semillas,
+ventanas de entrenamiento y sesgos inductivos. Medid la correlación de errores; si está
+cerca de 1, tenéis un modelo con un disfraz.
+</Callout>
+
+### Cuándo usarlo
+
+Haced ensembling cuando podáis construir miembros *genuinamente diversos* de forma barata y
+queráis una degradación elegante tanto bajo ataques como bajo cambios de régimen — es el
+hogar natural del ensembling por régimen y de cubrir el riesgo de arquitectura. Es menos
+útil cuando vuestros modelos se ven forzados a ser casi idénticos (mismos datos, mismas
+características, misma receta), ya que entonces pagáis $k\times$ el cómputo a cambio de
+ninguna reducción de varianza. Medid siempre la correlación de errores entre modelos antes
+de confiar en la promesa $\sigma^2/k$.
+
+<FillBlank
+  client:visible
+  question="Fijad el límite del ensembling."
+  text="Promediar k modelos con errores independientes recorta la varianza a sigma-cuadrado entre k, pero si los modelos están perfectamente correlacionados la reducción de varianza es {{nula|máxima|el doble}}."
+  explanation="Con ρ = 1 la varianza del conjunto se queda en σ² — los modelos idénticos no dan diversificación. El beneficio vive por completo en la independencia de los errores."
+/>
+
+## Predicción conforme para una incertidumbre honesta
+
+<MCQ
+  client:visible
+  pretest
+  question="Un modelo emite una única previsión puntual: 'retorno de la semana que viene = +1,2%'. ¿Qué añade la predicción conforme encima de CUALQUIER modelo así?"
+  options={[
+    { text: "Un conjunto de predicción o un intervalo con una cobertura marginal garantizada de (1 − α), construido a partir del cuantil de las puntuaciones de no conformidad sobre un conjunto de calibración", correct: true },
+    { text: "Una forma de hacer la previsión puntual más precisa" },
+    { text: "Una ruta de inferencia más rápida para el mismo modelo" },
+    { text: "Una garantía de que la previsión puntual no tiene sesgo" },
+  ]}
+  explanation="La predicción conforme es un envoltorio agnóstico al modelo. No mejora la previsión puntual; la convierte en un intervalo/conjunto con una garantía de cobertura en muestra finita, calculada a partir de cómo de 'sorprendentes' fueron los residuos del conjunto de calibración."
+/>
+
+**Analogía.** Una app del tiempo que dice "lloverá a las 14:00" es una mentirosa con
+confianza — *se* equivocará en el minuto exacto. Una app fiable dice "70% de probabilidad
+de lluvia esta tarde", y a lo largo de muchas tardes así de verdad llueve alrededor del 70%
+de las veces. La predicción conforme es la segunda app: se niega a fingir que conoce el
+número exacto y en su lugar os entrega un intervalo *honesto sobre con qué frecuencia
+acertará*.
+
+**Definición.** La predicción conforme es un envoltorio **libre de distribución** que
+convierte cualquier modelo en uno que emite **conjuntos de predicción** (clasificación) o
+**intervalos** (regresión) con una **cobertura marginal garantizada** de $1 - \alpha$. La
+receta (conforme split): apartad un **conjunto de calibración** que el modelo no entrenó;
+calculad una **puntuación de no conformidad** para cada punto de calibración (para
+regresión, el residuo absoluto $\lvert y - \hat{y} \rvert$); tomad el cuantil empírico
+$(1 - \alpha)$ $q$ de esas puntuaciones; entonces, para una entrada nueva, el intervalo de
+predicción es $\hat{y} \pm q$. La promesa:
+
+$$ \Pr\!\left(y_{\text{new}} \in \big[\hat{y} - q,\; \hat{y} + q\big]\right) \ge 1 - \alpha. $$
+
+La honestidad es el titular: **bajo intercambiabilidad**, esta cobertura se mantiene *sin*
+suposiciones sobre la distribución de los datos ni sobre el modelo — el modelo puede ser un
+random forest, una red neuronal o una bola mágica del ocho, y el intervalo sigue cubriendo
+la verdad al menos $1 - \alpha$ de las veces. No obtenéis precisión gratis, pero obtenéis
+*humildad calibrada* gratis.
+
+**Ejemplo resuelto — alfa = 0,1.** Apuntáis a una cobertura del 90%, así que $\alpha = 0.1$.
+Sobre un conjunto de calibración de 1.000 predicciones apartadas calculáis los residuos
+absolutos y encontráis que el residuo del percentil 90 es **2,0%**. Entonces vuestro
+intervalo conforme para cualquier previsión nueva es $\hat{y} \pm 2.0\%$: una previsión
+puntual de $+1.2\%$ se convierte en el intervalo $[-0.8\%,\, +3.2\%]$, y a lo largo de
+muchas operaciones ese intervalo debería contener el retorno realizado alrededor del 90% de
+las veces. **Operad el intervalo, no el punto:** si todo el intervalo está por encima de
+cero tenéis un largo de alta confianza; si cruza el cero, la respuesta honesta es "no lo
+sé", y dimensionáis pequeño o os apartáis.
+
+| Cantidad | Valor |
+|---|---|
+| Cobertura objetivo $1 - \alpha$ | 90% ($\alpha = 0.1$) |
+| Residuo de calibración del percentil 90 | 2,0% |
+| Semiancho del intervalo $q$ | 2,0% |
+| Intervalo para una previsión de $+1.2\%$ | $[-0.8\%,\, +3.2\%]$ |
+
+<CalibrationCurve client:visible caption="Una incertidumbre honesta significa que la curva se pega a la diagonal: cuando afirmáis una cobertura del 90%, de verdad obtenéis el 90%. Arrastrad el deslizador de sesgo para ver qué pasa cuando un modelo está mal calibrado — la curva se hunde fuera de la diagonal, vuestra confianza declarada es mentira y vuestros intervalos son sistemáticamente demasiado estrechos o demasiado anchos. La predicción conforme es la maquinaria que devuelve la curva a la línea." />
+
+**La trampa para el trading — la intercambiabilidad se rompe.** La garantía de la conforme
+descansa sobre la **intercambiabilidad**: a grandes rasgos, los puntos de calibración y el
+punto nuevo son extracciones intercambiables (i.i.d. es el caso especial familiar). Los
+mercados violan esto de la forma que la lección de cambio de distribución martilleó: los
+retornos son una serie temporal no estacionaria, así que los residuos de calibración de ayer
+*no* son intercambiables con los de mañana tras un giro de régimen. Cuando el régimen
+cambia, la cobertura realizada se desvía por debajo del objetivo — vuestro "intervalo del
+90%" empieza a cubrir solo el 80% de los resultados, y estáis silenciosamente
+infracubiertos justo cuando más necesitáis estar cubiertos.
+
+El arreglo es la **conforme adaptativa (en línea) — ACI** (Gibbs & Candès): en lugar de un
+cuantil fijo, lo *ajustáis* a medida que la cobertura realizada se desvía. Seguid la
+cobertura reciente; si cae por debajo de $1 - \alpha$, ensanchad el intervalo (subid el
+$\alpha_t$ efectivo); si va por encima, estrechad. Continuando el ejemplo resuelto: apuntabais
+al 90% pero la ventana reciente muestra que solo el **80%** de los resultados aterrizó
+dentro, así que ACI sube el semiancho — digamos de 2,0% hacia 2,6% — hasta que la cobertura
+realizada vuelve a trepar al 90%. Pagáis el cambio de régimen en intervalos más anchos (más
+honestidad, posiciones más pequeñas), no en un fallo de cobertura silencioso.
+
+<Callout variant="tip" title="La incertidumbre honesta es incertidumbre cubrible">
+Una previsión puntual en la que no podéis confiar es una posición que no podéis dimensionar.
+Un intervalo con una garantía de cobertura real (adaptativa) es algo sobre lo que *podéis*
+actuar: dimensionad posiciones por el ancho del intervalo, cubríos hasta los bordes de la
+banda, apartaos cuando el intervalo cruza el cero. El regalo de la predicción conforme a un
+trader no es un número mejor — es la diferencia entre la falsa precisión y un número detrás
+del cual podéis poner riesgo.
+</Callout>
+
+### Cuándo usarla
+
+Usad la predicción conforme siempre que una decisión necesite una incertidumbre honesta y
+*cuantificada* en vez de una falsa previsión puntual — el dimensionamiento de posiciones, la
+cobertura y los límites de riesgo quieren todos un intervalo, no una conjetura. Es agnóstica
+al modelo, así que envolved vuestro *mejor* modelo existente en lugar de reconstruir. En
+trading, recurrid **siempre** a la variante adaptativa/en línea (ACI), porque la suposición
+de intercambiabilidad de la versión simple es exactamente lo que rompen los mercados no
+estacionarios; la conforme de cuantil fijo infracubrirá en silencio tras un giro de régimen.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Entrenamiento adversarial", definition: "Min-max: minimizar la pérdida del peor caso sobre las perturbaciones dentro de un presupuesto ε" },
+    { term: "Optimización distribucionalmente robusta", definition: "Minimizar la pérdida esperada del peor caso sobre un conjunto de ambigüedad de distribuciones cercanas a la empírica" },
+    { term: "Regularización L2 / ridge", definition: "Acota la constante de Lipschitz — una norma de pesos menor significa un desplazamiento adversarial del peor caso menor" },
+    { term: "Ensembling", definition: "Promediar modelos diversos para que los errores se cancelen (σ²/k) y los ataques no se transfieran" },
+    { term: "Predicción conforme", definition: "Envoltorio libre de distribución que da conjuntos de predicción con cobertura garantizada de (1 − α)" },
+    { term: "Conforme adaptativa (ACI)", definition: "Ajusta el cuantil en línea a medida que la cobertura realizada se desvía bajo cambio de distribución" },
+  ]}
+/>
+
+## Repaso
+
+Cinco instrumentos, una mentalidad: suponed que las condiciones de test las elige alguien que
+quiere que perdáis, y luego optimizad para *eso*. El **entrenamiento adversarial** resuelve
+el min-max contra un atacante por muestra y paga la robustez del peor caso con un poco de
+precisión limpia. **DRO** eleva el adversario al nivel de distribución y paga la seguridad
+ante la peor distribución con un poco de retorno esperado — dimensionado por un conjunto de
+ambigüedad que debéis calibrar al miedo real. La **regularización** es la palanca barata y
+siempre activa que acota la sensibilidad (y frena el sobreajuste que explotan los ataques de
+privacidad). El **ensembling** promedia para eliminar la fragilidad a $\sigma^2/k$ — pero
+solo si los modelos son genuinamente diversos. Y la **predicción conforme** envuelve todo el
+conjunto en una incertidumbre honesta y cubrible, con la variante adaptativa como la única
+elección honesta una vez que los mercados rompen la intercambiabilidad.
+
+Cada herramienta fue un impuesto. La jugada de experto no es evitar el impuesto — es pagar el
+correcto, en la cantidad correcta, contra la amenaza correcta.
+
+Queda un hilo suelto, y es el más peligroso: ¿cómo *sabéis* que vuestra defensa de verdad
+funciona, en vez de meramente *parecer* que funciona? Ese es el problema de la falsa robustez
+— enmascaramiento de gradiente, ataques que no se transfieren como esperabais, cobertura que
+se desvía en silencio — y es el tema de la próxima lección.
+
+<MindMap
+  client:visible
+  title="El kit de herramientas de robustez"
+  caption="Construid el mapa: cinco herramientas, contra qué defiende cada una, y qué cuesta cada una."
+  root={{
+    label: 'Kit de herramientas de robustez',
+    children: [
+      { label: 'Entrenamiento adversarial', children: [
+        { label: 'Min-max sobre ‖δ‖ ≤ ε (Madry)' },
+        { label: 'Defiende: empujones por muestra' },
+        { label: 'Coste: compromiso robustez–precisión' },
+        { label: 'Trampa: enmascaramiento de gradiente / solo FGSM' },
+      ]},
+      { label: 'DRO', children: [
+        { label: 'Min-max sobre conjunto de ambigüedad de distribuciones' },
+        { label: 'Defiende: cambio de régimen / distribución' },
+        { label: 'Coste: conservadurismo (dimensionad al miedo real)' },
+        { label: 'Primo: optimización robusta de carteras' },
+      ]},
+      { label: 'Regularización', children: [
+        { label: 'Acota Lipschitz: desplazamiento = ε·‖w‖₁' },
+        { label: 'Defiende: todos los empujones pequeños + sobreajuste' },
+        { label: 'Extra: frena la inferencia de pertenencia' },
+      ]},
+      { label: 'Ensembling', children: [
+        { label: 'Varianza σ²/k para errores independientes' },
+        { label: 'Defiende: fragilidad + no transferencia de ataques' },
+        { label: 'Trampa: modelos correlacionados = un modelo' },
+        { label: 'Uso: ensembling por régimen' },
+      ]},
+      { label: 'Predicción conforme', children: [
+        { label: 'Cobertura (1 − α) libre de distribución' },
+        { label: 'Necesita intercambiabilidad — los mercados la rompen' },
+        { label: 'Arreglo: conforme adaptativa / en línea (ACI)' },
+        { label: 'Uso: dimensionar posiciones por el intervalo' },
+      ]},
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Comprobación mixta: ¿se ha quedado el kit de herramientas?"
+  questions={[
+    {
+      question: "Un modelo pasa de 70% limpio / 5% robusto a 65% limpio / 45% robusto tras el entrenamiento adversarial. ¿Qué ilustra esto?",
+      options: [
+        { text: "El compromiso robustez–precisión: la robustez del peor caso se compra con una pequeña pérdida de precisión limpia", correct: true },
+        { text: "Un bug — la robustez nunca debería bajar la precisión limpia" },
+        { text: "Que el entrenamiento adversarial es estrictamente gratis y siempre mejora todo" },
+        { text: "Que el modelo ya era óptimo y no debería haber cambiado" },
+      ],
+      explanation: "Forzar un buen comportamiento bajo ataque empuja la frontera lejos de los datos, costando un poco de precisión limpia (−5) para ganar mucha precisión robusta (+40). Ese compromiso es la regla.",
+    },
+    {
+      question: "El entrenamiento ha sido 90% Calma / 10% Crisis. La Estrategia A retorna +10%/−20%, la Estrategia B retorna +3%/+1%. Bajo un conjunto de ambigüedad de DRO que permite una probabilidad de Crisis de hasta 0,5, ¿qué estrategia se elige y por qué?",
+      options: [
+        { text: "B — su peor caso (+2%) supera al peor caso de A (−5%); DRO maximiza el retorno esperado del peor caso", correct: true },
+        { text: "A — tiene el retorno esperado más alto bajo la distribución de entrenamiento" },
+        { text: "A — DRO ignora el conjunto de ambigüedad y usa la distribución empírica" },
+        { text: "Ninguna — DRO exige que las distribuciones sean idénticas" },
+      ],
+      explanation: "Con un peso de Crisis de 0,5, A da 0,5·10 + 0,5·(−20) = −5% y B da 0,5·3 + 0,5·1 = 2%. DRO elige el mejor peor caso: B. ERM (usando 0,9/0,1) elegiría en cambio A con 7%.",
+    },
+    {
+      question: "Un puntuador lineal tiene ‖w‖₁ = 3,1 y se enfrenta a un presupuesto L∞ ε = 0,1. Regularizáis hasta que los pesos se reducen a la mitad a ‖w‖₁ = 1,55. ¿Cuál es el nuevo desplazamiento de puntuación del peor caso?",
+      options: [
+        { text: "0,155 — el desplazamiento del peor caso ε·‖w‖₁ se reduce a la mitad con la norma de los pesos (0,1 × 1,55)", correct: true },
+        { text: "0,31 — la regularización no afecta a la robustez adversarial" },
+        { text: "0,62 — reducir a la mitad los pesos duplica el desplazamiento" },
+        { text: "0,0155 — el desplazamiento cae en un factor de diez" },
+      ],
+      explanation: "Desplazamiento del peor caso = ε‖w‖₁. Originalmente 0,1 × 3,1 = 0,31; tras reducir a la mitad la norma, 0,1 × 1,55 = 0,155. La regularización es una palanca de robustez, no solo anti-sobreajuste.",
+    },
+    {
+      question: "Promediáis cuatro modelos con varianza de error σ² = 0,04 cada uno. ¿Por qué podría la varianza real del conjunto seguir siendo 0,04 en vez de 0,01?",
+      options: [
+        { text: "Porque σ²/k supone errores independientes; si los modelos están perfectamente correlacionados (ρ = 1) la varianza se queda en σ²", correct: true },
+        { text: "Porque promediar siempre aumenta la varianza" },
+        { text: "Porque cuatro modelos son demasiado pocos para reducir la varianza alguna vez" },
+        { text: "Porque la reducción de varianza solo funciona para clasificación, no para regresión" },
+      ],
+      explanation: "La varianza del conjunto es σ²(1/k + (k−1)/k·ρ). Con ρ = 1 y k = 4 eso es 0,04·(0,25 + 0,75) = 0,04 — ninguna reducción. La diversidad es la fuente entera del beneficio.",
+    },
+    {
+      question: "Vuestro 'intervalo del 90%' de conforme split empieza a cubrir solo el 80% de los retornos realizados tras un cambio de régimen. ¿Cuál es el diagnóstico y el arreglo correctos?",
+      options: [
+        { text: "La intercambiabilidad se rompió bajo cambio de distribución; cambiad a conforme adaptativa/en línea (ACI) que ensancha el cuantil a medida que la cobertura se desvía", correct: true },
+        { text: "La previsión puntual del modelo se volvió más precisa, así que no hay nada que arreglar" },
+        { text: "La predicción conforme está rota y debería descartarse por completo" },
+        { text: "Estrechad el intervalo, ya que el 80% significa que es demasiado ancho" },
+      ],
+      explanation: "La conforme de cuantil fijo supone intercambiabilidad, que los mercados no estacionarios rompen — así que la cobertura se desvía en silencio por debajo del objetivo. ACI ajusta el cuantil en línea (aquí, ensanchando de ~2,0% hacia ~2,6%) para restaurar la cobertura del 90%.",
+    },
+  ]}
+/>

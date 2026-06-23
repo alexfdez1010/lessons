@@ -1,0 +1,386 @@
+---
+title: "Confounding & the Control Trap"
+description: "Why 'control for everything' is amateur advice: collider bias, bad controls and post-treatment variables, the back-door criterion done right, and a clean re-reading of the factor-zoo overfitting problem as a confounding-and-multiple-comparisons problem."
+topic: "en/causal-inference-for-alpha-and-execution"
+order: 3
+minutes: 20
+updated: 2026-06-23
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, ConfounderDagExplorer } from '@/components/react';
+
+The last lesson left you with a reflex that feels like wisdom: *confounders fake edges, so control for the confounders.* True — but it is also the single most dangerous half-sentence in applied statistics, because the obvious upgrade — *so control for everything* — is wrong in a way that is invisible until your live P&L explains it to you. Adding a control can **remove** bias, **add** bias, or leak away the very effect you came to measure. Which of the three you get depends entirely on *where the variable sits in the causal graph* — and a regression coefficient cannot see the graph. You can.
+
+This lesson is the surgeon's manual for controlling. The back-door criterion tells you precisely which set to adjust for. Collider bias shows how conditioning on the wrong variable *manufactures* a correlation that was never there. Bad controls show how conditioning on a mediator *erases* an effect that genuinely was there. And then we re-read the infamous factor zoo — 300+ "anomalies" in the journals — not as an overfitting story but as exactly this lesson's two failures wearing a trench coat: confounding plus mass multiple testing.
+
+By the end, "throw everything in the regression" should sound to you like "to be safe, operate on every organ."
+
+## The back-door criterion: control the right set, and only the right set
+
+<MCQ
+  client:visible
+  pretest
+  question="You want the causal effect of a momentum signal X on next-month return Y, and sector membership drives both (some sectors trend more AND earn more). What does the back-door criterion tell you to do?"
+  options={[
+    { text: "Control for a set of variables that blocks every back-door path into X without opening any new path — here, adjust for sector", correct: true },
+    { text: "Control for every variable you have measured, since more controls is always safer" },
+    { text: "Control for next-month return itself, since that is the outcome" },
+    { text: "Control for nothing — momentum is obviously causal" },
+  ]}
+  explanation="The back-door criterion: find a set Z that blocks all back-door (non-causal) paths from X to Y and contains no descendant of X. Sector is a common cause here, so it sits on a back-door path — block it. That is the right set, not 'everything'."
+/>
+
+**Analogy.** Think of the causal effect X→Y as the only legitimate road between two towns, and every confounder as a back alley that smugglers (spurious association) sneak through. The back-door criterion is a checklist for which alleys to barricade: barricade *every* smuggling route, but do not accidentally barricade the legitimate road, and do not knock down a wall that lets smugglers into an alley that was previously sealed. Barricade too few and the smuggled goods inflate your measured trade. Barricade the wrong wall and you *open* a new route.
+
+**Definition.** A **back-door path** from treatment $X$ to outcome $Y$ is any path that starts with an arrow *pointing into* $X$ (i.e., $X \leftarrow \dots Y$). These carry non-causal association. A set of variables $Z$ satisfies the **back-door criterion** relative to $(X, Y)$ if:
+
+1. no node in $Z$ is a descendant of $X$ (nothing you control is downstream of the treatment), and
+2. $Z$ **blocks** every back-door path from $X$ to $Y$.
+
+When such a $Z$ exists, the interventional quantity is identified by plain adjustment:
+
+$$
+\mathbb{E}\!\left[Y \mid do(X{=}x)\right] = \sum_{z} \mathbb{E}\!\left[Y \mid X{=}x,\, Z{=}z\right]\, P(Z{=}z).
+$$
+
+A path is *blocked* by $Z$ if it contains either a non-collider that is *in* $Z$, or a collider that is *not* in $Z$ (and none of whose descendants are in $Z$). Hold that last clause — it is the entire next section.
+
+**Worked example.** Your momentum signal $X$ predicts next-month return $Y$. Sector $S$ is a common cause: tech both scores higher on 12-month momentum *and* earned a higher unconditional return over your sample. The graph is $X \leftarrow S \rightarrow Y$ with also a genuine $X \rightarrow Y$. The back-door path $X \leftarrow S \rightarrow Y$ is open, so the raw cross-sectional slope mixes the real momentum effect with the sector premium. Adjust for $S$ — run momentum *within* each sector, or sector-neutralise the signal — and the back-door closes.
+
+Concretely, suppose the raw pooled slope of $Y$ on $X$ is $+0.50\%$ per unit of signal. Decompose it: the genuine within-sector momentum effect is $+0.30\%$, and the remaining $+0.20\%$ is the between-sector mix (tech happened to be both high-momentum and high-return that decade). Sector-neutralise and you recover $+0.30\%$ — smaller, but it is the number that survives intervention. The $+0.20\%$ was a sector bet wearing a momentum costume.
+
+| Specification | Measured slope (per unit signal) | What it contains |
+|---|---|---|
+| Raw pooled | +0.50% | Real momentum effect + sector confounding |
+| Sector-neutralised (correct back-door set) | +0.30% | Real momentum effect only |
+| Difference | +0.20% | The closed back-door path (sector premium) |
+
+<Callout variant="warning" title="A 'sufficient set' is not 'the biggest set'">
+The back-door criterion asks for a set that *blocks all back doors and opens none*. Adding more variables past that point cannot help and can actively hurt — every extra control is a chance to condition on a collider or a mediator. "Control for everything measurable" is not a conservative default; it is an unargued causal model that happens to be wrong whenever any of your extras is downstream of X or a common effect. Choose the set from the graph, then stop.
+</Callout>
+
+### When to use it
+
+Use the back-door criterion every time you reach for a control variable, *before* you type it into the regression. Draw the assumed DAG, list the back-door paths, and pick the smallest set that blocks them all while containing nothing downstream of the signal. If you cannot name the back-door path a control is meant to close, you do not yet have a reason to include it — and you might have a reason to exclude it.
+
+<FillBlank
+  client:visible
+  question="State the criterion precisely."
+  text="A valid adjustment set must block every {{back-door path|forward path|causal path}} from treatment to outcome while containing no descendant of the treatment."
+  explanation="Back-door paths (those entering the treatment via an incoming arrow) carry spurious association. A sufficient set seals all of them and includes nothing downstream of the treatment, so it never opens a collider or amputates a mediator."
+/>
+
+## Collider bias: conditioning on a common effect manufactures a correlation
+
+<MCQ
+  client:visible
+  pretest
+  question="Two genuinely independent causes both feed into a third variable Z (the structure X causes Z, Y causes Z). What happens to the X–Y association if you condition on Z?"
+  options={[
+    { text: "A spurious association between X and Y appears, even though they were independent — conditioning on a collider OPENS a path", correct: true },
+    { text: "Nothing — conditioning on a downstream variable never changes upstream relationships" },
+    { text: "X and Y become more strongly, and correctly, positively associated" },
+    { text: "The collider absorbs all the variance, so X and Y both become constants" },
+  ]}
+  explanation="Z is a collider: two arrowheads collide into it. A collider is blocked by default, so X and Y stay independent. CONDITIONING on it (or on its descendant, or on a selected sample defined by it) opens the path and induces a spurious — usually negative — correlation. This is the exact inverse of the confounder rule."
+/>
+
+**Analogy.** Among all the restaurants still open after five years, the ones with mediocre food tend to have killer locations, and the ones in lousy locations tend to have phenomenal food. Did good food *cause* bad locations? Of course not — the two are independent when a restaurant opens. But *survival* is a collider: you stay open if food **or** location is good enough. Once you look only at survivors (you conditioned on the collider), learning a survivor has bad food tells you its location must be carrying it. The negative correlation is real in the data and entirely manufactured by the act of looking only at survivors.
+
+**Definition.** A **collider** on a path is a node where two arrowheads meet: $X \rightarrow Z \leftarrow Y$. Unlike a confounder, a collider *blocks* its path by default — no association flows through an unconditioned collider. **Conditioning on a collider** (controlling for it, filtering your sample on it, or conditioning on any descendant of it) *opens* the path and induces a non-causal association between $X$ and $Y$. In finance you condition on colliders constantly without noticing: restricting to **index members**, to **surviving funds**, to **trades that got filled**, to **names that passed a liquidity screen** — each is selection on a common effect.
+
+<ConfounderDagExplorer client:visible caption="Toggle the third node Z between confounder (common cause, X left-arrow Z right-arrow Y) and collider (common effect, X right-arrow Z left-arrow Y), then tick 'Control for Z'. Watch the rule invert: controlling a confounder CLOSES the spurious path; controlling a collider OPENS one that was sealed. 'Control for everything' is exactly the move that contaminates every collider in your data." />
+
+**Worked example — the surviving restaurants, with arithmetic.** Imagine 100 new restaurants. Food quality and location quality are independent coin flips: each is Good with probability 1/2, so the four combinations are 25 restaurants each.
+
+| | Good location | Bad location | Row total |
+|---|---|---|---|
+| **Good food** | 25 | 25 | 50 |
+| **Bad food** | 25 | 25 | 50 |
+
+Before conditioning, knowing food tells you nothing about location: $P(\text{good location} \mid \text{good food}) = 25/50 = 0.5$, identical to $P(\text{good location} \mid \text{bad food}) = 25/50 = 0.5$. Correlation zero, as built.
+
+Now apply the survival collider: a restaurant stays open if **food is good OR location is good**. The only group that dies is *bad food AND bad location* — those 25 close. Among the 75 survivors:
+
+| | Good location | Bad location | Row total |
+|---|---|---|---|
+| **Good food** | 25 | 25 | 50 |
+| **Bad food** | 25 | 0 | 25 |
+
+Recompute among survivors: $P(\text{good location} \mid \text{good food}) = 25/50 = 0.50$, but $P(\text{good location} \mid \text{bad food}) = 25/25 = 1.00$. A survivor with bad food is now *certain* to have a good location, versus a coin flip for good-food survivors. Two independent variables are now strongly **negatively** associated — purely because we conditioned on their shared effect. No data was faked; we just looked at the wrong subpopulation.
+
+The trading translation is exact. Filter your backtest universe to *current index members* (membership is a collider: a stock is in the index if it got big enough by price OR by issuance) and you induce spurious relationships between price history and fundamentals. Study only *filled* limit orders (a fill is a collider: you get filled when your price was generous OR the market moved your way) and your measured execution edge is biased by selection on the fill.
+
+<Callout variant="warning" title="Survivorship and 'we only studied filled orders' are collider bias, not just missing data">
+It is tempting to file survivorship under "incomplete dataset, will widen later." It is worse than that: conditioning on a collider does not merely shrink your sample, it *injects a correlation with the wrong sign*. Adding more survivors does not dilute the bias — every survivor is already selected. The fix is not more data of the same kind; it is to stop conditioning on the collider (use a point-in-time, survivorship-free universe; model all submitted orders, not just fills).
+</Callout>
+
+### When to use it
+
+Before adding any control or any sample filter, ask one question: *is this variable a common effect of things I care about?* If yes — survival, membership, fill, "passed the screen," "made it to production" — then conditioning on it (including silently, by how you built the dataset) opens a spurious path. Leave colliders **out** of the adjustment set, and build your universe point-in-time so you are not conditioning on survival by accident.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">If conditioning on a collider is so dangerous, why does almost every backtest do it?</summary>
+
+**Answer.** Because the most natural way to build a dataset *is* to condition on a collider, silently. You download "the S&P 500 constituents" (membership = collider), "funds with a 10-year track record" (survival = collider), "our executed trades" (fill = collider). None of these announce themselves as conditioning — they feel like just *getting the data*. The defence is to recognise that **the act of choosing the rows is a statistical operation**: prefer point-in-time/survivorship-free universes, analyse *all* submitted orders with the unfilled ones included, and whenever a sample is defined by an outcome-adjacent gate, draw it as a collider and assume a spurious path is open until you prove otherwise.
+
+</details>
+</Reveal>
+
+## Bad controls: mediators and post-treatment variables leak the effect away
+
+<MCQ
+  client:visible
+  pretest
+  question="Your signal X works partly BY raising a stock's realised volatility, which then earns a premium (X causes volatility causes Y). You add realised volatility as a control 'to be safe.' What did you just do to your estimate of X's effect?"
+  options={[
+    { text: "Blocked part of the real causal path — controlling a mediator removes the portion of X's effect that flows through it, biasing the estimate toward zero", correct: true },
+    { text: "Removed confounding and made the estimate more accurate" },
+    { text: "Nothing, because volatility is unrelated to returns" },
+    { text: "Doubled the measured effect of X" },
+  ]}
+  explanation="Realised volatility is a MEDIATOR here: it sits ON the causal path X causes vol causes Y, and it is post-treatment (downstream of X). Controlling for it blocks the indirect effect, so your estimate captures only the direct path and understates the total causal effect. The back-door criterion forbade this: no descendant of X in the adjustment set."
+/>
+
+**Analogy.** You want to know whether a fertiliser makes plants taller. The fertiliser works by making the plant grow more leaves, which capture more light, which drives height. If you "control for number of leaves" to be rigorous, you have just asked: *holding leaf count fixed, does the fertiliser add height?* — and the answer is roughly no, because leaves were *how* it worked. You did not measure the fertiliser's effect; you amputated it. A mediator is the mechanism, and controlling for the mechanism hides the effect you came to find.
+
+**Definition.** A **mediator** is a variable on the causal path from treatment to outcome: $X \rightarrow M \rightarrow Y$. A **post-treatment variable** is any variable causally downstream of $X$. The back-door criterion's first clause — *no descendant of $X$* — exists precisely to forbid these. Controlling for a mediator removes the **indirect effect** (the part of $X$'s influence that travels through $M$), so a regression that "controls for $M$" estimates only the **direct effect** $X \rightarrow Y$, not the **total effect** $\text{direct} + \text{indirect}$ — and the total effect is what your P&L collects. Worse, controlling certain post-treatment variables (especially ones that are also common effects of $Y$ and something else) can *open* collider paths, adding bias on top of the lost mechanism. Andrew Gelman's term for the menagerie is apt: a **"bad controls" zoo**.
+
+**Worked example — controlling away your own edge.** Your signal $X$ generates a total next-month return effect of $+0.40\%$. Its mechanism: high-signal names take on more realised volatility $M$, and that volatility earns a premium. Decompose the total effect:
+
+- **Direct path** $X \rightarrow Y$ (effect not via volatility): $+0.15\%$.
+- **Indirect path** $X \rightarrow M \rightarrow Y$ (effect via volatility): $+0.25\%$.
+- **Total effect:** $0.15\% + 0.25\% = +0.40\%$.
+
+Now you "control for realised volatility." The regression holds $M$ fixed, so the indirect $+0.25\%$ is shut off and your coefficient on $X$ reads $+0.15\%$. You conclude the signal is weak and cut its allocation — but the live strategy never holds volatility fixed; it earns the full $+0.40\%$. You did not de-bias the estimate; you measured the wrong estimand. The "safe" control cost you $0.25\%$ of perfectly real, tradeable alpha.
+
+| Adjustment choice | Estimand actually measured | Value | Verdict |
+|---|---|---|---|
+| No control on M | Total effect (direct + indirect) | +0.40% | Correct for an allocation decision |
+| Control for M (mediator) | Direct effect only | +0.15% | Understates the tradeable edge |
+| (Hypothetical) genuine confounder C | De-confounded total effect | depends | Correct *only* if C is a back door, not a mediator |
+
+<Callout variant="warning" title="'Controlling to be safe' is not free — it has a direction">
+There is no neutral control. A confounder left *out* biases you (the smuggler's alley is open). A mediator left *in* biases you (you amputated the mechanism). Because the two failures point in *opposite* directions, you cannot hedge by including a variable "just in case" — whichever role it truly plays, the wrong choice injects bias. The only safe move is to know the variable's role in the graph and act on that, not on a blanket habit.
+</Callout>
+
+### When to use it
+
+For every candidate control, classify it on the DAG *before* including it: is it a common cause (a confounder — include it), a variable on the path (a mediator — exclude it if you want the total effect), or a common effect (a collider — exclude it always)? If a variable is realised *after* the signal is set, treat it as post-treatment and presumptively bad until you have argued it is a genuine pre-treatment confounder. When you genuinely want to decompose direct vs. indirect effects, do it deliberately with mediation analysis — never by accident via an extra regressor.
+
+<Categorize
+  client:visible
+  question="Sort each candidate control by its role relative to a signal X and return Y."
+  buckets={["Good control (confounder)", "Bad control (mediator/post-treatment)", "Collider (never control)"]}
+  items={[
+    { text: "Sector membership, a common cause of both the signal level and the return", bucket: "Good control (confounder)" },
+    { text: "Realised volatility that the signal itself drives, which then earns a premium", bucket: "Bad control (mediator/post-treatment)" },
+    { text: "Whether the stock is currently in the index, a gate driven by size and survival", bucket: "Collider (never control)" },
+    { text: "Pre-existing liquidity regime that drives both the signal and returns", bucket: "Good control (confounder)" },
+    { text: "Whether your order got filled, a common effect of your price and the market move", bucket: "Collider (never control)" },
+    { text: "Post-signal turnover that the signal causes on the way to its return", bucket: "Bad control (mediator/post-treatment)" },
+  ]}
+  explanation="Confounders are common causes you must block. Mediators and post-treatment variables sit on the path and leak the effect when controlled. Colliders are common effects that stay sealed until you condition on them, at which point they inject spurious association."
+/>
+
+## M-bias and the "more controls is always safer" fallacy
+
+<MCQ
+  client:visible
+  pretest
+  question="Which statement about adding control variables is correct?"
+  options={[
+    { text: "Adding a control can ADD bias, not just remove it — its effect depends entirely on the variable's role in the causal graph", correct: true },
+    { text: "Adding controls can only ever reduce bias, so more is always safer" },
+    { text: "Controls only matter for prediction, never for causal estimates" },
+    { text: "A variable that is statistically significant in the regression is always a valid control" },
+  ]}
+  explanation="The reflex 'throw everything in' is false. Confounders reduce bias when added; mediators and colliders ADD bias. M-bias is the sharpest case: controlling a pre-treatment variable that is itself a collider on a path between two unobserved causes opens a back door that was sealed — a control you added 'to be safe' created the confounding."
+/>
+
+**Analogy.** Adding controls is like adding medications: each one is an intervention with a direction, and they interact. A doctor who prescribed *every* drug in the pharmacy "to be safe" would kill the patient — not because no drug helps, but because the wrong ones, and the wrong combinations, do harm. The competent move is a *diagnosis* (read the graph) followed by a *targeted prescription* (the sufficient adjustment set), not a firehose.
+
+**Definition.** **M-bias** is the trap that breaks the "controls can only help" intuition even for *pre-treatment* variables. Consider two unobserved variables $U_1$ and $U_2$, with $U_1 \rightarrow X$, $U_2 \rightarrow Y$, and a measured variable $Z$ that is a **common effect** $U_1 \rightarrow Z \leftarrow U_2$. The shape spells an "M". The path $X \leftarrow U_1 \rightarrow Z \leftarrow U_2 \rightarrow Y$ is *blocked at the collider* $Z$, so $X$ and $Y$ are unconfounded — **until you control for $Z$**, which opens the collider and creates association between $U_1$ and $U_2$, hence a back door between $X$ and $Y$. You added a control and *manufactured* confounding. Note $Z$ here is pre-treatment, so "only control pre-treatment variables" does not save you; you must read the structure.
+
+**Worked example — the four roles, one decision each.** Suppose the true total effect of signal $X$ on return $Y$ is $+0.30\%$. Here is what your measured coefficient does under each kind of added control:
+
+| Variable's role | Structure | Control it? | Effect on the estimate |
+|---|---|---|---|
+| **Confounder (good control)** | common cause, X left-arrow Z right-arrow Y | Yes | Removes spurious slope; estimate moves from a biased +0.50% toward the true +0.30% |
+| **Neutral / precision control** | cause of Y only, Z right-arrow Y, unrelated to X | Optional | Estimate stays ~+0.30%; standard error shrinks — harmless, sometimes helpful |
+| **Mediator (bad control)** | on the path, X right-arrow Z right-arrow Y | No | Blocks the indirect effect; estimate falls below +0.30% (toward the direct-only part) |
+| **Collider (worst control)** | common effect, X right-arrow Z left-arrow Y, or M-bias | No | Opens a sealed path; estimate gains spurious bias away from +0.30% |
+
+Read down the "Control it?" column: the answer is *Yes, Optional, No, No*. There is no row that reads "always yes." That single column is the refutation of "more controls is always safer."
+
+<Callout variant="warning" title="Statistical significance of a control says nothing about its validity">
+A tempting bad habit is to keep a control "because it was significant in the regression." Significance measures whether the variable is *associated* with the outcome given the others — it cannot distinguish a confounder from a mediator from a collider, all of which can be wildly significant. A highly significant collider is the most dangerous regressor in your model. Validity is a property of the *causal role*, decided on the graph, never of the t-statistic.
+</Callout>
+
+### When to use it
+
+Treat every regression specification as a causal claim that must be justified on a DAG, not as a kitchen sink to be maximised. When someone proposes adding a control, demand the path it closes and check it opens none — especially watch for pre-treatment colliders (the M-bias trap) that masquerade as innocent. The correct number of controls is "exactly the sufficient adjustment set," and that number is usually small.
+
+<FillBlank
+  client:visible
+  question="Complete the fallacy-buster."
+  text="Adding a control variable can {{add bias|only remove bias|only affect precision}}, because controlling a mediator amputates the effect and controlling a collider opens a spurious path."
+  explanation="Only confounders are de-biased by inclusion. Mediators and colliders are biased BY inclusion, in opposite directions. So a control can add bias — the variable's role on the graph, not the act of controlling, determines the sign."
+/>
+
+## Re-reading the factor zoo: confounding plus multiple comparisons
+
+<MCQ
+  client:visible
+  pretest
+  question="The literature reports 300-plus 'priced factors.' Read through this lesson's lens, what are the two failures most of them embody?"
+  options={[
+    { text: "Confounding (most are redundant exposures to a few real factors) plus multiple comparisons (mass testing finds significance by chance, and publication selects on it)", correct: true },
+    { text: "Pure overfitting of a single backtest, fixable with a longer sample" },
+    { text: "Transaction costs that were forgotten and can simply be added back" },
+    { text: "Coding bugs that a careful reimplementation would remove" },
+  ]}
+  explanation="The factor zoo is this lesson twice over. (a) Confounding: hundreds of 'factors' are correlated repackagings of a handful of real exposures, so controlling for the known factors (good back-door blocking) collapses most of them. (b) Multiple comparisons + selection: thousands of tests guarantee false positives, and journals publish the ones that cleared a t-stat — selecting on significance is conditioning on a collider."
+/>
+
+**Analogy.** The factor zoo is a hall of mirrors built by a thousand researchers. Most "new animals" are reflections of the same few real creatures (market, size, value, profitability, momentum) seen from a new angle — that is the *confounding* mirror. And the few genuinely novel-looking beasts are mostly statistical taxidermy: if ten thousand people each photograph random noise, some photos will look exactly like a unicorn, and the journal prints the unicorns. That second mirror is *multiple comparisons*, and the *frame* the journal puts around the winners — selecting on the t-statistic — is a collider.
+
+**Definition.** The zoo's two diseases map one-to-one onto this lesson:
+
+1. **Confounding (redundancy).** A "new" factor is rarely a new cause of returns; it is usually correlated with — confounded by — a small set of known factors and exposures. The correct treatment is exactly the back-door move: **control for the known factors** (regress the new factor's returns on the established set, test whether the alpha survives). Most do not. This is *good* controlling: you are blocking genuine back-door paths through shared exposures.
+
+2. **Multiple comparisons + selection on significance.** With thousands of candidate signals tested, the expected number of false "discoveries" at a 5% threshold is enormous. **HARKing** (Hypothesising After the Results are Known) and choosing the specification that maximised the t-statistic are forms of **conditioning on a collider**: significance is a *common effect* of (true effect) and (lucky noise), and selecting your sample of published results on "it was significant" opens a spurious path that makes noise look like signal. Harvey, Liu and Zhu's famous response — raise the t-statistic hurdle to roughly 3.0, not 2.0 — is a multiple-comparisons correction, the cousin of the Sharpe deflation from your earlier courses.
+
+The clean dividing line: **controlling for known factors is good back-door blocking; data-mining a new factor and selecting it on its t-stat is collider/selection bias.** Same word — "control" or "select" — opposite causal consequence, depending on which side of the graph you are on.
+
+**Worked example — how 316 shrinks.** Suppose a survey collects 316 published factors. Walk them through the two filters with round numbers:
+
+- Start: **316** candidate factors.
+- **Confounding filter** — regress each one's returns on a parsimonious set of known factors; keep only those with surviving alpha. Say roughly 80% are redundant repackagings. Survivors: $316 \times (1 - 0.80) \approx \mathbf{63}$.
+- **Multiple-comparisons filter** — re-evaluate the 63 at a t-stat hurdle of 3.0 instead of 2.0 (correcting for the thousands of silent tests behind the 316), and demand out-of-sample persistence. Say two-thirds fail. Survivors: $63 \times (1 - 0.67) \approx \mathbf{21}$.
+
+From 316 to about 21 — and the *order* matters: confounding (redundancy) and multiple comparisons (selection on significance) are different failures, so you need both filters, just as last course you learned that overfitting and confounding are orthogonal and each needs its own defence. The 295 that fell away were not all "overfit" in the naive sense; the bulk were confounded duplicates, and the rest were selection artefacts.
+
+| Filter applied | Failure it targets | Factors remaining | Lesson concept |
+|---|---|---|---|
+| None (as published) | — | 316 | The raw zoo |
+| Control for known factors | Confounding / redundancy | ~63 | Back-door blocking (good control) |
+| t-stat hurdle 3.0 + out-of-sample | Multiple comparisons / selection | ~21 | Collider (selecting on significance) |
+
+<Callout variant="warning" title="Selecting on the t-stat is conditioning on a collider, not a harmless filter">
+It feels obviously sensible to "only keep the factors that were significant." But significance is a *common effect* of a real edge and a lucky draw — a collider. Conditioning your published universe on "passed the t-test" therefore opens a path that lets pure noise masquerade as signal, which is precisely why naive replication of the zoo fails out-of-sample. The fix is not to abandon significance but to *account for the selection*: raise the hurdle for the number of silent tests (multiple-comparisons correction), and demand persistence the selection process could not have manufactured.
+</Callout>
+
+### When to use it
+
+When evaluating any "new factor" — your own or a paper's — split the diagnosis in two. First run the back-door test: does its alpha survive controlling for the factors you already trade? If not, it is a confounded duplicate, full stop. If it does, ask the multiple-comparisons question: across how many silent specifications and signals was this one selected, and does the edge clear a hurdle that accounts for that selection out-of-sample? Only a factor that passes *both* — not confounded, not a selection artefact — earns capital.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Back-door criterion", definition: "Adjust for a set that blocks every path entering the treatment, while containing no descendant of the treatment" },
+    { term: "Collider", definition: "A common effect of two variables; sealed by default, but conditioning on it opens a spurious path" },
+    { term: "Mediator (bad control)", definition: "A variable on the causal path X to Y; controlling it amputates the indirect effect you wanted" },
+    { term: "M-bias", definition: "Controlling a pre-treatment collider between two hidden causes manufactures confounding that was not there" },
+    { term: "Factor-zoo confounding", definition: "Most 'new' factors are redundant exposures to a few real ones; controlling for the known set collapses them" },
+    { term: "Selection on significance", definition: "Publishing only what cleared a t-stat conditions on a collider, letting noise masquerade as signal" },
+  ]}
+/>
+
+## Recap
+
+You arrived believing the cure for confounding was *control*, and you leave knowing that control is a scalpel, not a firehose. The back-door criterion names the *right* set: block every path entering the treatment, open none, include nothing downstream. Collider bias is the inverse of the confounder rule — a common effect stays sealed until you condition on it (control it, filter on it, study only survivors / index members / filled orders), and then it *injects* a correlation, usually with the wrong sign. Bad controls are the other amputation: a mediator on the causal path leaks away the very effect you trade, and M-bias proves even a pre-treatment control can manufacture confounding. "More controls is always safer" dies on the spot: the answer down the column is Yes, Optional, No, No. And the factor zoo is this whole lesson in the wild — mostly confounded duplicates plus selection on the t-statistic — so you shrink it with two different filters, because confounding and multiple comparisons are two different diseases, just as overfitting and confounding were before them.
+
+<MindMap
+  client:visible
+  title="Confounding and the control trap"
+  caption="Build the map: the back-door criterion, collider bias, bad controls, the more-is-safer fallacy, and the factor zoo re-read."
+  root={{
+    label: 'Control is a scalpel',
+    children: [
+      { label: 'Back-door criterion', children: [
+        { label: 'Block every back-door path' },
+        { label: 'No descendant of the treatment' },
+        { label: 'Smallest sufficient set, then stop' },
+      ]},
+      { label: 'Collider bias', children: [
+        { label: 'Common effect, sealed by default' },
+        { label: 'Conditioning OPENS a spurious path' },
+        { label: 'Survival / index / fills / screens' },
+      ]},
+      { label: 'Bad controls', children: [
+        { label: 'Mediator amputates the indirect effect' },
+        { label: 'Post-treatment = presumptively bad' },
+        { label: 'M-bias: pre-treatment collider still bites' },
+      ]},
+      { label: 'More-is-safer fallacy', children: [
+        { label: 'Confounder: include' },
+        { label: 'Mediator / collider: exclude' },
+        { label: 'Significance is not validity' },
+      ]},
+      { label: 'Factor zoo re-read', children: [
+        { label: 'Confounding = redundant exposures' },
+        { label: 'Control for known factors (good)' },
+        { label: 'Selecting on t-stat = collider' },
+      ]},
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Mixed check: where does the variable sit on the graph?"
+  questions={[
+    {
+      question: "A raw momentum slope reads +0.50% per unit signal; the genuine within-sector effect is +0.30% and the rest is a sector premium. Sector is a common cause of both the signal and the return. What is the correct adjustment and the resulting estimate?",
+      options: [
+        { text: "Sector is a confounder on a back-door path, so adjust for it; the de-confounded estimate is +0.30%", correct: true },
+        { text: "Sector is a mediator, so leave it out; the correct estimate stays +0.50%" },
+        { text: "Sector is a collider, so controlling it would open a spurious path; report +0.50%" },
+        { text: "Sector is irrelevant; the +0.20% difference is real momentum alpha" },
+      ],
+      explanation: "Sector is a common cause (X left-arrow S right-arrow Y), a textbook back-door path. Blocking it via sector-neutralisation closes the path and recovers the +0.30% causal effect; the +0.20% was a sector bet.",
+    },
+    {
+      question: "Among 100 restaurants with independent good/bad food and good/bad location, all survive unless BOTH are bad. Among the 75 survivors, what is the chance a bad-food restaurant has a good location, versus a coin flip beforehand?",
+      options: [
+        { text: "100% — conditioning on survival (a collider) makes bad food and good location strongly, spuriously associated", correct: true },
+        { text: "50% — conditioning on a downstream variable never changes the relationship" },
+        { text: "25% — survival makes the two positively associated instead" },
+        { text: "0% — survivors never have bad food" },
+      ],
+      explanation: "Only the bad-food/bad-location group (25) dies. Among the 25 surviving bad-food restaurants, all have good location, so the probability is 25/25 = 100%, versus 50% before. Two independent variables become negatively associated by conditioning on their shared effect.",
+    },
+    {
+      question: "Which one of these controls should you NEVER add to a causal regression of a signal on returns?",
+      options: [
+        { text: "Whether your order got filled — a common effect of your quoted price and the market move (a collider)", correct: true },
+        { text: "A pre-existing liquidity regime that drives both the signal and returns" },
+        { text: "Sector membership when sector is a common cause" },
+        { text: "A pre-treatment variable that affects only the outcome (a precision control)" },
+      ],
+      explanation: "A fill is a collider: you get filled when your price was generous OR the market moved your way. Conditioning on it opens a spurious path. The other three are a confounder, a confounder, and a harmless precision control, respectively.",
+    },
+    {
+      question: "Compare two analysts estimating a signal whose total effect is +0.40% (direct +0.15%, indirect +0.25% via realised volatility). One controls for realised volatility 'to be safe'; the other does not. What is the contrast?",
+      options: [
+        { text: "The controller measures only the +0.15% direct effect and under-allocates; the other captures the full +0.40% the strategy actually earns", correct: true },
+        { text: "Both measure +0.40%; controlling a mediator is harmless" },
+        { text: "The controller measures +0.40% and the other measures +0.15%" },
+        { text: "Controlling volatility doubles the estimate to +0.80%" },
+      ],
+      explanation: "Realised volatility is a mediator (X causes vol causes Y). Controlling it blocks the +0.25% indirect path, leaving only the +0.15% direct effect — but the live book holds nothing fixed and earns the full +0.40%. The 'safe' control destroyed real alpha.",
+    },
+    {
+      question: "A survey lists 316 published factors. After controlling for known factors most vanish as redundant, and after a stricter t-stat hurdle with out-of-sample testing most of the rest fail. Why do you need BOTH filters rather than one?",
+      options: [
+        { text: "Confounding (redundant exposures) and multiple comparisons (selection on significance) are different failures, each needing its own correction", correct: true },
+        { text: "Both filters target the same overfitting problem, so either alone suffices" },
+        { text: "The first filter handles transaction costs and the second handles coding bugs" },
+        { text: "Only the t-stat hurdle matters; controlling for known factors is unnecessary" },
+      ],
+      explanation: "Redundancy is a confounding problem fixed by back-door blocking (control for known factors); selection-on-significance is a collider/multiple-comparisons problem fixed by a corrected hurdle plus persistence. They are orthogonal, so you apply both — just as overfitting and confounding each needed separate defences.",
+    },
+  ]}
+/>

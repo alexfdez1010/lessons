@@ -1,0 +1,636 @@
+---
+title: "QUBO y optimización de carteras"
+description: "Reformula la selección de cartera como un QUBO, resuélvelo con QAOA o recocido cuántico y descubre dónde las restricciones discretas de cardinalidad y de lotes — no las matemáticas — hacen que el rodeo cuántico merezca el intento."
+topic: "es/quantum-computing-for-finance"
+order: 3
+minutes: 18
+updated: 2026-06-23
+---
+
+import { Callout, MCQ, Quiz, Reveal, ThinkReveal, FillBlank, MatchConcepts, Categorize, MindMap, QuboPortfolioAnnealer } from '@/components/react';
+
+Markowitz nos entregó una máquina preciosa. Aliméntala con rentabilidades esperadas y una
+matriz de covarianzas, dale a la manivela y sale la cartera con el menor riesgo para una
+rentabilidad objetivo. Para la versión *continua* de ese problema — "mantén cualquier
+fracción de cada activo" — la máquina está genuinamente resuelta: es un programa cuadrático
+convexo, y podemos descifrarlo en tiempo polinómico antes de comer.
+
+Entonces entra un gestor de carteras y dice: "Encantador. Pero quiero mantener **exactamente
+8 nombres**, nunca una posición menor del 2% y solo en **lotes redondos de 100 acciones**".
+Y la preciosa máquina convexa se atasca. Esas peticiones de aspecto inocente convierten un
+problema de tiempo polinómico en uno **combinatorio** — del tipo que, en el peor caso, es
+NP-difícil.
+
+Esta lección trata de ese cambio de fase, y de la apuesta que la computación cuántica hace
+sobre él. Reformularemos el problema discreto de cartera como un **QUBO** (Quadratic
+Unconstrained Binary Optimization, optimización binaria cuadrática sin restricciones),
+veremos cómo un **recocedor cuántico** (D-Wave) y **QAOA** (modelo de puertas) atacan un
+QUBO y — crucialmente — mantendremos la cabeza fría sobre si algo de esto bate hoy por hoy
+a un buen resolutor clásico. Adelanto desde el principio: las matemáticas son reales y
+elegantes; la *ventaja* es, a día de hoy, mayormente aspiracional.
+
+## Por qué las carteras continuas son fáciles y las discretas difíciles
+
+<MCQ
+  client:visible
+  pretest
+  question="La optimización media–varianza continua (mantener cualquier fracción de cada activo) es un programa cuadrático convexo. Añadir 'mantén exactamente k nombres' ¿qué le hace a su dificultad?"
+  options={[
+    { text: "Convierte un problema convexo de tiempo polinómico en uno combinatorio (NP-difícil en el peor caso)", correct: true },
+    { text: "Nada — sigue siendo un programa cuadrático convexo con una igualdad extra" },
+    { text: "Lo hace estrictamente más fácil, ya que menos activos significan menos que optimizar" },
+    { text: "Solo cambia las unidades de la respuesta, no el tiempo de cómputo" },
+  ]}
+  explanation="La convexidad es lo que hace tratable la media–varianza. Una restricción de cardinalidad es no convexa (parte el conjunto factible en un número combinatorio de trozos inconexos), así que los resolutores convexos basados en gradiente dejan de aplicar y caes en la búsqueda combinatoria."
+/>
+
+**Analogía.** El problema continuo es hacer rodar una canica hasta el fondo de un cuenco
+liso: empieces donde empieces, la gravedad te desliza hasta el único punto más bajo. El
+problema discreto es encontrar el valle más bajo de una vasta cordillera *pero pudiendo solo
+pisar un conjunto finito de cumbres*. No hay pendiente que seguir — debes, en principio,
+comprobar combinaciones.
+
+**Definición — media–varianza continua.** Con pesos $w \in \mathbb{R}^n$, rentabilidades
+esperadas $\mu$, covarianza $\Sigma$ y aversión al riesgo $q$, Markowitz minimiza
+
+$$ \min_{w}\; q\, w^{\top}\Sigma\,w \;-\; \mu^{\top} w \quad\text{s.a.}\quad \sum_i w_i = 1. $$
+
+Como $\Sigma$ es semidefinida positiva, el objetivo es **convexo** y la restricción es
+lineal. Los programas cuadráticos convexos se resuelven en tiempo polinómico (métodos de
+punto interior). Este es el mundo "fácil".
+
+**Donde se rompe.** Los mandatos reales añaden restricciones que *no* son convexas:
+
+- **Cardinalidad:** mantener **exactamente** (o como mucho) $k$ de los $n$ nombres.
+- **Tamaños mínimos de lote / posición:** una posición es $0$ o **al menos** cierto suelo
+  (p. ej. al menos un 2% o al menos 100 acciones) — una variable "semicontinua".
+- **Umbrales de entrada / lotes redondos:** los pesos deben caer en una rejilla discreta.
+
+Cada una de estas introduce una decisión sí/no por activo. Con $n$ activos hay hasta $2^n$
+combinaciones de encendido/apagado, y la región factible ya no es una única mancha convexa —
+es una dispersión de islas inconexas. La ramificación y poda puede podar, pero el peor caso
+es exponencial. **Este núcleo combinatorio es exactamente lo que QAOA y el recocido cuántico
+afirman atacar.**
+
+**Ejemplo resuelto — la explosión.** Elige los 5 mejores nombres de entre 30 por fuerza
+bruta: $\binom{30}{5} = 142{,}506$ carteras — trivial. Ahora los 15 mejores de entre 100:
+$\binom{100}{15} \approx 2.5 \times 10^{17}$. A mil millones de evaluaciones por segundo eso
+son aproximadamente **8 años** de cómputo para un único reajuste. La versión continua del
+*mismo* problema de 100 activos se resuelve en milisegundos. El enemigo es la discretitud,
+no el tamaño.
+
+<Callout variant="warning" title="El precipicio de la convexidad">
+Es tentador "simplemente redondear" la solución continua para satisfacer un límite de
+cardinalidad — resuelve el problema liso y luego quédate con los 8 pesos mayores. Esto es
+rápido pero **demostrablemente subóptimo**: la mejor cartera de 8 nombres frecuentemente
+*no* son los 8 mayores pesos de la solución de 30 nombres, porque descartar nombres
+recoloca la mezcla óptima entre los que quedan. Redondear te da *una* respuesta, no *la*
+respuesta.
+</Callout>
+
+### Cuándo usarlo
+
+Quédate en el mundo continuo convexo siempre que legítimamente puedas — si la única
+restricción "discreta" es blanda (una preferencia, no una regla dura), codifícala como
+penalización en un resolutor convexo y sigue adelante. Recurre a la maquinaria combinatoria
+(y solo *entonces* considera lo cuántico) cuando la discretitud sea una restricción de
+negocio dura y vinculante: un recuento fijo de nombres, un tamaño de lote regulatorio, un
+ticket mínimo que no se puede fraccionar.
+
+<FillBlank
+  client:visible
+  question="Enuncia el cambio de fase en una línea."
+  text="La optimización media–varianza es un {{programa cuadrático|programa lineal|programa entero}} convexo en el caso continuo, pero una restricción de cardinalidad o de lote mínimo la vuelve combinatoria y NP-difícil."
+  explanation="La media–varianza continua es un programa cuadrático convexo (QP). Las restricciones discretas son lo que rompe la convexidad y la empuja a terreno combinatorio / de programación entera."
+/>
+
+## QUBO: minimizar x-transpuesta Q x sobre x binario
+
+<MCQ
+  client:visible
+  pretest
+  question="Un QUBO minimiza x^T Q x sobre x en {0,1}^n. Como x_i es binario, x_i al cuadrado es igual a x_i. ¿Qué te permite eso plegar en la diagonal de Q?"
+  options={[
+    { text: "Cualquier término lineal c_i x_i — porque x_i = x_i^2, un coeficiente lineal puede absorberse en la entrada diagonal Q_ii", correct: true },
+    { text: "Nada — los términos lineales siempre necesitan un vector aparte fuera de Q" },
+    { text: "Los términos cruzados cuadráticos, que colapsan sobre la diagonal" },
+    { text: "El desplazamiento constante, que se convierte en la traza de Q" },
+  ]}
+  explanation="Para variables binarias x_i^2 = x_i, así que un término lineal c_i x_i es igual a c_i x_i^2, que es simplemente c_i añadido a la entrada diagonal Q_ii. Por eso un QUBO no necesita un vector lineal aparte — todo vive en Q."
+/>
+
+**Analogía.** Un QUBO es un conjunto de interruptores de luz (uno por activo, cada uno
+encendido o apagado) cableados entre sí de modo que *cada par* de interruptores tiene una
+recompensa o penalización por estar encendidos a la vez, y cada interruptor tiene su propia
+recompensa en solitario por estar encendido. Buscas la configuración de interruptores con la
+menor "energía" total. Ese es el modelo entero — pares más individuales, nada más.
+
+**Definición.** Un **QUBO** es
+
+$$ \min_{x \in \{0,1\}^n}\; x^{\top} Q\, x \;=\; \min_{x}\; \sum_{i} Q_{ii}\, x_i \;+\; \sum_{i < j} Q_{ij}\, x_i x_j, $$
+
+donde $Q$ es una matriz $n \times n$ y usamos $x_i^2 = x_i$ para fundir los términos lineales
+en la diagonal. "Sin restricciones" significa que no hay restricciones de igualdad/desigualdad
+aparte — **toda** preferencia y regla debe hornearse dentro de $Q$, normalmente como una
+**penalización** cuadrática.
+
+**Mapeando media–varianza + cardinalidad sobre un QUBO.** Sea $x_i = 1$ si mantenemos el
+activo $i$ (ponderamos por igual los nombres elegidos por simplicidad). Queremos tres cosas:
+
+1. **Premiar la rentabilidad esperada** — un término lineal $-\mu_i x_i$ (negativo porque
+   minimizamos). Pliégalo en la diagonal: baja $Q_{ii}$.
+2. **Penalizar el riesgo** — un término cuadrático $q\,\sigma_{ij} x_i x_j$ procedente de la
+   covarianza. En la diagonal suma varianza; fuera de la diagonal suma covarianza.
+3. **Imponer la cardinalidad** "elige exactamente $k$" con una penalización
+   $\lambda\big(\sum_i x_i - k\big)^2$ para un peso grande $\lambda$. Esta es cero cuando hay
+   exactamente $k$ interruptores encendidos y estrictamente positiva en caso contrario.
+
+Expandir la penalización es el truco clave:
+
+$$ \lambda\Big(\textstyle\sum_i x_i - k\Big)^2 = \lambda\Big(\sum_i x_i^2 + 2\!\!\sum_{i<j}\! x_i x_j - 2k\!\sum_i x_i + k^2\Big), $$
+
+y usando $x_i^2 = x_i$ esto aporta $\lambda(1 - 2k)$ a **cada diagonal** $Q_{ii}$ y $2\lambda$
+a **cada par fuera de la diagonal** $Q_{ij}$ (el $\lambda k^2$ es un desplazamiento constante
+que no cambia qué $x$ es el mejor).
+
+**Ejemplo resuelto — un QUBO de 3 activos.** Tres activos, elige exactamente $k = 2$. Toma
+aversión al riesgo $q = 1$, penalización $\lambda = 5$ y estos números (de juguete):
+
+| Activo | Rentabilidad esperada $\mu_i$ | Varianza $\sigma_{ii}$ |
+|---|---|---|
+| A | 0.10 | 0.04 |
+| B | 0.08 | 0.02 |
+| C | 0.06 | 0.01 |
+
+Covarianzas por pares: $\sigma_{AB}=0.01,\ \sigma_{AC}=0.00,\ \sigma_{BC}=0.005$.
+
+Construye $Q$ término a término. **Diagonal** $Q_{ii} = -\mu_i + q\,\sigma_{ii} + \lambda(1 - 2k)$.
+Con $k=2$, $\lambda(1-2k) = 5(1-4) = -15$:
+
+- $Q_{AA} = -0.10 + 0.04 - 15 = -15.06$
+- $Q_{BB} = -0.08 + 0.02 - 15 = -15.06$
+- $Q_{CC} = -0.06 + 0.01 - 15 = -15.05$
+
+**Fuera de la diagonal** $Q_{ij} = 2q\,\sigma_{ij} + 2\lambda$. Con $2\lambda = 10$:
+
+- $Q_{AB} = 2(0.01) + 10 = 10.02$
+- $Q_{AC} = 2(0.00) + 10 = 10.00$
+- $Q_{BC} = 2(0.005) + 10 = 10.01$
+
+Ahora evalúa la energía $E(x) = x^{\top} Q x$ para dos selecciones candidatas (la constante
+$\lambda k^2 = 20$ es la misma para todo $x$, así que la descartamos y comparamos energías
+relativas). Energía = suma de las entradas diagonales de los activos elegidos + el término
+fuera de la diagonal de cada *par* elegido.
+
+**Candidata 1 — elige A y B** ($x = (1,1,0)$), que *cumple* la restricción (2 nombres):
+
+$$ E_{AB} = Q_{AA} + Q_{BB} + Q_{AB} = -15.06 - 15.06 + 10.02 = -20.10. $$
+
+**Candidata 2 — elige solo A** ($x = (1,0,0)$), que *viola* la restricción (1 nombre):
+
+$$ E_{A} = Q_{AA} = -15.06. $$
+
+La cartera válida de dos nombres tiene la energía **más baja** (mejor), $-20.10 \le -15.06$ —
+la penalización hizo su trabajo: quedarse corto deja sin reclamar un buen trozo de las
+recompensas diagonales de $-15$. Para completar, los tres pares válidos:
+
+| Selección | Energía $x^\top Q x$ (desplazamiento descartado) | Restricción |
+|---|---|---|
+| A, B | $-15.06 - 15.06 + 10.02 = -20.10$ | cumplida (k = 2) |
+| A, C | $-15.06 - 15.05 + 10.00 = -20.11$ | cumplida (k = 2) |
+| B, C | $-15.06 - 15.05 + 10.01 = -20.10$ | cumplida (k = 2) |
+| solo A | $-15.06$ | violada |
+
+El óptimo aquí es **A + C** con $-20.11$ — agarra las dos mejores diagonales de
+rentabilidad/riesgo pagando la penalización por pares más baja (su covarianza es cero). Fíjate
+en lo cerca que están las energías válidas: los QUBO reales tienen un paisaje *escarpado*
+donde el mejor y el segundo mejor difieren en un pelo, que es exactamente lo que hace difícil
+la búsqueda.
+
+<Callout variant="warning" title="Ajustar lambda lo es todo">
+El peso de penalización $\lambda$ debe ser lo bastante grande como para que violar la
+restricción siempre cueste más que cualquier rentabilidad que pudieras ganar haciendo trampas
+— pero no tan grande como para ahogar la señal de rentabilidad/riesgo en el ruido de coma
+flotante y aplanar el paisaje. Demasiado pequeño y el "óptimo" rompe silenciosamente tu regla
+de cardinalidad; demasiado grande y el resolutor no distingue entre buenas carteras válidas.
+Fijar $\lambda$ es una verdadera tarea de ingeniería, no una nota al pie.
+</Callout>
+
+### Cuándo usarlo
+
+Recurre a una formulación QUBO cuando tu problema trate *nativamente* de decisiones de
+encendido/apagado con interacciones por pares — activo dentro o fuera, arista dentro o fuera,
+bit puesto o no — y cuando tus restricciones puedan escribirse como penalizaciones cuadráticas.
+Si tus variables son genuinamente continuas (pesos fraccionarios), forzarlas a QUBO mediante
+expansión binaria (un bit por cada 0.1% de peso) infla el número de variables y suele ser un
+paso atrás.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Entrada diagonal Q_ii", definition: "Coste/recompensa en solitario de mantener el activo i: rentabilidad esperada, varianza propia y la parte lineal de la penalización de cardinalidad" },
+    { term: "Fuera de la diagonal Q_ij", definition: "Coste por pares de mantener i y j juntos: covarianza más el término cruzado de la penalización de cardinalidad" },
+    { term: "Peso de penalización lambda", definition: "Cómo de duro se castiga una violación de la restricción; debe superar cualquier ganancia por hacer trampas sin aplanar el paisaje" },
+    { term: "Desplazamiento constante", definition: "El término lambda k al cuadrado que desplaza toda energía por igual y por tanto nunca cambia qué selección es óptima" },
+    { term: "x_i al cuadrado = x_i", definition: "La identidad binaria que permite que los términos lineales de recompensa se plieguen en la diagonal de Q" },
+  ]}
+/>
+
+## La equivalencia de Ising
+
+<MCQ
+  client:visible
+  pretest
+  question="Los recocedores cuánticos minimizan nativamente una energía de Ising con espines s_i en {-1, +1}, no x_i binario en {0, 1}. ¿Qué convierte uno en otro?"
+  options={[
+    { text: "El cambio de variable lineal x_i = (1 + s_i) / 2 (equivalentemente s_i = 2 x_i - 1)", correct: true },
+    { text: "Tomar el logaritmo de cada variable binaria" },
+    { text: "Elevar al cuadrado cada espín, ya que s_i^2 = 1" },
+    { text: "No hay mapa exacto; QUBO e Ising son problemas fundamentalmente distintos" },
+  ]}
+  explanation="QUBO (0/1) e Ising (−1/+1) son el mismo problema en coordenadas distintas. La sustitución x_i = (1 + s_i)/2 reescribe cualquier QUBO como un hamiltoniano de Ising y viceversa, así que un hardware que minimiza uno minimiza el otro."
+/>
+
+Un QUBO sobre $x_i \in \{0,1\}$ y un **modelo de Ising** sobre espines $s_i \in \{-1,+1\}$ son
+la *misma* optimización con ropajes distintos. Sustituye $x_i = (1 + s_i)/2$ y cualquier QUBO
+se convierte en un hamiltoniano de Ising
+
+$$ H(s) = \sum_{i<j} J_{ij}\, s_i s_j \;+\; \sum_i h_i\, s_i \;+\; \text{const}, $$
+
+donde $J_{ij}$ son las intensidades de acoplamiento y $h_i$ son los campos locales, ambos
+funciones lineales del $Q$ original. Esta única línea importa porque **los recocedores
+cuánticos minimizan energías de Ising nativamente** — el hardware *es* un vidrio de espín
+programable. Así que "resuelve mi QUBO de cartera" se convierte en "fija estos acopladores y
+campos, y deja que la física se relaje hasta el estado fundamental". Guárdate la equivalencia
+en el bolsillo; el resto de la lección usa QUBO e Ising indistintamente.
+
+<FillBlank
+  client:visible
+  question="Nombra el puente entre las dos formulaciones."
+  text="La sustitución x_i = (1 + s_i) / 2 convierte un QUBO (binario 0/1) en un modelo de {{Ising|lineal|estocástico}} (espines menos-uno/más-uno), que es lo que minimiza el hardware de recocido."
+  explanation="x_i = (1+s_i)/2 mapea 0→−1 y 1→+1, convirtiendo el QUBO en el hamiltoniano de vidrio de espín de Ising que el recocedor realiza físicamente."
+/>
+
+## Recocido cuántico: el descenso adiabático
+
+<MCQ
+  client:visible
+  pretest
+  question="¿Cuál es la promesa central del teorema adiabático en la que se apoya el recocido cuántico?"
+  options={[
+    { text: "Si empiezas en el estado fundamental de un hamiltoniano fácil y lo transformas con suficiente lentitud en el hamiltoniano del problema, te mantienes en el estado fundamental — terminando en el óptimo", correct: true },
+    { text: "Cualquier sistema cuántico, evolucionado a cualquier velocidad, aterriza en su estado de menor energía" },
+    { text: "Medir el sistema repetidamente lo fuerza al óptimo (el truco de Zenón cuántico)" },
+    { text: "El entrelazamiento garantiza una aceleración exponencial para todo QUBO" },
+  ]}
+  explanation="El teorema adiabático dice que un sistema se mantiene en su estado fundamental instantáneo si el hamiltoniano cambia despacio en relación con el hueco de energía. Empieza fácil, termina en el hamiltoniano de tu problema y lees el óptimo — siempre que 'con suficiente lentitud' sea alcanzable, cosa que el hueco puede volver brutal."
+/>
+
+**Analogía.** El recocido (annealing) toma su nombre de la metalurgia por una razón. Calienta
+un metal hasta que sus átomos vibran libremente, luego enfríalo *despacio*: los átomos se
+asientan en un cristal ordenado de baja energía. Enfríalo *rápido* (témplalo) y se congelan en
+un vidrio desordenado de alta energía. El recocido cuántico hace el mismo truco sobre el
+paisaje de energía de un problema — "enfría" un sistema cuántico con la lentitud suficiente
+para que se deslice hasta el valle más bajo (el óptimo) en vez de quedarse atascado en una
+abolladura local.
+
+**Definición — recocido adiabático / cuántico.** La máquina prepara el estado fundamental de
+un **hamiltoniano impulsor** $H_0$ sencillo (uno cuyo estado de menor energía es fácil y
+conocido — una superposición uniforme de todas las configuraciones). Luego interpola
+lentamente hasta el **hamiltoniano del problema** $H_P$ que codifica tu modelo de Ising:
+
+$$ H(t) = \Big(1 - \tfrac{t}{T}\Big) H_0 \;+\; \tfrac{t}{T}\, H_P, \qquad 0 \le t \le T. $$
+
+Por el **teorema adiabático**, si el tiempo total $T$ es largo comparado con $1/g_{\min}^2$ —
+donde $g_{\min}$ es el menor hueco de energía entre el estado fundamental y el primer estado
+excitado a lo largo del camino — el sistema se mantiene en el estado fundamental, y en $t = T$
+una medición devuelve el óptimo de $H_P$. Ese hueco es la trampa: para problemas difíciles
+puede encogerse *exponencialmente*, exigiendo un recocido exponencialmente largo.
+
+<QuboPortfolioAnnealer
+  client:visible
+  title="La elección de cartera como QUBO, resuelta por recocido"
+  assetNames={['Activo A','Activo B','Activo C','Activo D','Activo E','Activo F']}
+  cardinalityLabel="Elige exactamente K activos"
+  runLabel="Ejecutar recocido"
+  resetLabel="Reiniciar"
+  energyLabel="Energía actual"
+  bestEnergyLabel="Mejor energía hallada"
+  temperatureLabel="Temperatura"
+  constraintMetLabel="Restricción cumplida"
+  constraintUnmetLabel="Restricción no cumplida"
+  includedLabel="dentro"
+  excludedLabel="fuera"
+  caption="Un descenso QUBO en vivo. Cada activo es una variable binaria (un cúbit): alterna nombres dentro o fuera, fija la cardinalidad K y luego pulsa Ejecutar recocido. Observa cómo la energía zigzaguea hacia abajo — los saltos cuesta arriba calientes del principio son la 'temperatura' permitiendo que la búsqueda escape de mínimos locales, exactamente como el enfriamiento lento. Los indicadores siguen la energía actual, la mejor energía hallada, la temperatura decreciente y si se cumple la restricción de K nombres."
+/>
+
+Juega con la isla de arriba antes de seguir leyendo. Fíjate en tres cosas que te compra la
+física: la búsqueda **acepta movimientos cuesta arriba ocasionales** mientras está caliente
+(para no quedar atrapada en el primer hoyo), esos saltos cuesta arriba **se encogen según
+cae la temperatura** (de modo que al final se compromete), y el **indicador de restricción**
+puede parpadear en rojo a mitad de búsqueda — un QUBO no prohíbe los estados inválidos,
+simplemente los hace caros, así que el recocedor deambula por ellos camino abajo.
+
+**Ejemplo resuelto — por qué "con suficiente lentitud" puede ser ruinoso.** Supón que el hueco
+mínimo en un problema concreto es $g_{\min} = 0.01$ (unidades de energía). La condición
+adiabática exige aproximadamente $T \gtrsim 1/g_{\min}^2 = 1/(0.01)^2 = 10{,}000$ unidades de
+tiempo. Reduce a la mitad el hueco a $0.005$ y el tiempo requerido se **cuadruplica** a
+$40{,}000$. Para instancias genuinamente difíciles el hueco se cierra exponencialmente con el
+tamaño del problema, así que el tiempo de recocido "garantizado" se dispara exponencialmente —
+que es precisamente por qué los recocidos reales de D-Wave son *cortos y repetidos* y se
+tratan como una **heurística**, no como una garantía.
+
+<Callout variant="warning" title="El hardware es disperso, tu problema es denso">
+Una máquina D-Wave tiene miles de cúbits, pero cada cúbit se acopla solo a un puñado de
+vecinos (su grafo de conectividad, p. ej. Pegasus). Un QUBO de cartera es típicamente **denso**
+— cada par de activos tiene una covarianza, así que cada variable se acopla a todas las demás.
+Para ejecutar un problema denso debes **embeber** cada variable lógica a lo largo de una
+*cadena* de cúbits físicos para fingir las conexiones que faltan. Las cadenas devoran cúbits
+deprisa (un problema totalmente conectado de $n$ variables puede necesitar $O(n^2)$ cúbits
+físicos) y pueden **romperse** a mitad de recocido, corrompiendo la respuesta. El número de
+cúbits del titular no es el tamaño de problema que realmente puedes resolver.
+</Callout>
+
+### Cuándo usarlo
+
+El recocido cuántico merece un *piloto* cuando tu problema tiene forma de Ising nativamente,
+es **disperso** (para que la sobrecarga de embebido siga siendo manejable) y te conformas con
+una buena respuesta heurística en vez de un óptimo certificado. Trátalo como tratarías el
+recocido simulado o la búsqueda tabú: ejecútalo muchas veces, quédate con la mejor muestra y
+**siempre** compáralo con un resolutor clásico fuerte sobre la *misma* instancia antes de
+reclamar beneficio alguno.
+
+<ThinkReveal
+  client:visible
+  prompt="Un QUBO de cartera sobre 200 activos es totalmente denso (cada par tiene covarianza). Tu recocedor tiene 5.000 cúbits, cada uno conectando a ~15 vecinos. ¿Por qué podrías aun así no poder ejecutarlo?"
+  text="Porque la conectividad densa, no el número bruto de cúbits, es la restricción vinculante. Embeber un problema totalmente conectado de 200 variables puede necesitar del orden de 200^2 / algo cúbits físicos dispuestos en cadenas largas — fácilmente decenas de miles — muy por encima de 5.000. Y cuanto más largas las cadenas, más probable es que una se rompa durante el recocido y arruine la muestra. El titular de 5.000 cúbits describe una máquina dispersa; tu problema denso no cabe."
+/>
+
+## QAOA: el primo variacional del modelo de puertas
+
+<MCQ
+  client:visible
+  pretest
+  question="QAOA es un algoritmo variacional con p capas alternantes. A medida que la profundidad p crece hacia infinito, ¿cuál es la garantía teórica?"
+  options={[
+    { text: "Puede aproximarse al óptimo exacto (recupera el camino adiabático en el límite) — pero la p baja y práctica no ha mostrado ventaja clara sobre buenas heurísticas clásicas", correct: true },
+    { text: "Incluso con p = 1 bate demostrablemente a todo algoritmo clásico" },
+    { text: "Converge a una solución factible aleatoria sin importar los ángulos" },
+    { text: "Una p mayor siempre entrena más fácil porque el paisaje se vuelve más suave" },
+  ]}
+  explanation="Cuando p → ∞ QAOA puede trotterizar la evolución adiabática y aproximarse al óptimo. Pero a las profundidades bajas que el hardware de puertas actual permite, no hay ventaja demostrada sobre heurísticas clásicas fuertes, y la optimización de ángulos topa con mesetas yermas."
+/>
+
+**Analogía.** Si el recocido es una canica enfriándose hasta un valle, QAOA es una carrera de
+relevos entre dos entrenadores. Un entrenador (el hamiltoniano del **problema**) empuja al
+equipo hacia configuraciones de bajo coste; el otro (el **mezclador**) sacude las cosas para
+que el equipo explore. Se alternan durante $p$ rondas, y un optimizador clásico fuera de la
+carrera ajusta cuánto tiempo tiene cada entrenador el testigo (los ángulos) para hacer la
+alineación final lo más barata posible.
+
+**Definición — QAOA.** El Algoritmo de Optimización Aproximada Cuántica (Quantum Approximate
+Optimization Algorithm) prepara un estado alternando $p$ capas de un **unitario del problema**
+$e^{-i\gamma_\ell H_P}$ (que codifica tu coste de Ising) y un **unitario mezclador**
+$e^{-i\beta_\ell H_M}$ (típicamente volteos de espín de campo transversal):
+
+$$ |\boldsymbol{\gamma},\boldsymbol{\beta}\rangle = \prod_{\ell=1}^{p} e^{-i\beta_\ell H_M}\, e^{-i\gamma_\ell H_P}\, |+\rangle^{\otimes n}. $$
+
+Un optimizador **clásico** ajusta los $2p$ ángulos $(\boldsymbol{\gamma},\boldsymbol{\beta})$
+para minimizar la energía esperada medida $\langle H_P \rangle$. Es un bucle cuántico-clásico:
+el chip cuántico evalúa el coste de una configuración de parámetros, el optimizador clásico
+propone la siguiente configuración. Cuando $p \to \infty$ las capas pueden imitar el barrido
+adiabático lento, así que QAOA puede en principio alcanzar el óptimo.
+
+**Ejemplo resuelto — el coste de la profundidad.** A profundidad $p$ debes optimizar $2p$
+ángulos. Para un modesto $p = 5$ eso son 10 parámetros — y cada evaluación significa ejecutar
+el circuito y muestrearlo miles de veces para estimar $\langle H_P \rangle$ con precisión
+aceptable. Digamos 5.000 disparos por evaluación y 200 pasos del optimizador: eso son
+$10 \times 200 \times 5{,}000 = 10{,}000{,}000$ ejecuciones de circuito para *un* problema, en
+hardware donde cada puerta multicúbit inyecta ruido. Una $p$ más profunda significa circuitos
+más profundos, más acumulación de ruido y un paisaje de ángulos de mayor dimensión que buscar.
+
+<Callout variant="warning" title="Mesetas yermas y gradientes ruidosos">
+La optimización clásica de QAOA no es un mero trámite. Para muchas clases de problemas e
+inicializaciones aleatorias, el paisaje de coste presenta **mesetas yermas** (barren plateaus)
+— regiones donde el gradiente es exponencialmente pequeño en el número de cúbits, así que el
+optimizador deambula por un terreno casi plano sin señal que apunte cuesta abajo. Añade ruido
+de hardware encima (los dispositivos de puertas actuales son ruidosos, sin corrección de
+errores a escala) y la energía medida es una estimación borrosa y sesgada. "Simplemente sube
+$p$" hace el circuito más profundo y ruidoso, a menudo perjudicando más que ayudando. Por eso
+el QAOA poco profundo, hasta ahora, **no** ha demostrado una victoria clara sobre buenas
+heurísticas clásicas.
+</Callout>
+
+### Cuándo usarlo
+
+Hoy, QAOA es principalmente una herramienta de **investigación y aprendizaje**, no un
+optimizador de carteras de producción. Úsalo para entender los algoritmos cuánticos
+variacionales, para comparar instancias pequeñas y para seguir el campo — pero no apuestes un
+reajuste a él esperando que bata a la ramificación y poda o al recocido simulado. Si estás
+ejecutando QAOA en serio, mantén $p$ baja, arranca en caliente los ángulos desde valores
+buenos conocidos o el calendario adiabático y (de nuevo) compara siempre clásicamente sobre
+la instancia idéntica.
+
+<Categorize
+  client:visible
+  question="Clasifica cada afirmación bajo el método que describe con mayor precisión."
+  buckets={["Recocido cuántico (D-Wave)", "QAOA (modelo de puertas)"]}
+  items={[
+    { text: "Transforma lentamente un hamiltoniano fácil en el hamiltoniano del problema", bucket: "Recocido cuántico (D-Wave)" },
+    { text: "Necesita embebido en cadenas para problemas densos todos-con-todos", bucket: "Recocido cuántico (D-Wave)" },
+    { text: "Alterna capas de problema y mezclador durante una profundidad p", bucket: "QAOA (modelo de puertas)" },
+    { text: "Un optimizador clásico ajusta 2p ángulos en un bucle cuántico-clásico", bucket: "QAOA (modelo de puertas)" },
+    { text: "Se apoya directamente en el teorema adiabático y el hueco espectral mínimo", bucket: "Recocido cuántico (D-Wave)" },
+    { text: "Puede atascarse en mesetas yermas durante la optimización de ángulos", bucket: "QAOA (modelo de puertas)" },
+  ]}
+  explanation="El recocido evoluciona físicamente un hamiltoniano y necesita embebido para problemas densos; QAOA es un bucle variacional del modelo de puertas con profundidad p, ángulos ajustables y problemas de mesetas yermas. Ambos se reducen a minimizar la misma energía de Ising/QUBO."
+/>
+
+## El veredicto sobrio
+
+<MCQ
+  client:visible
+  pretest
+  allowMultiple
+  question="¿Qué afirmaciones reflejan honestamente el estado de la optimización cuántica de carteras hoy? (Marca todas las que apliquen.)"
+  options={[
+    { text: "Los resolutores clásicos (MIP de ramificación y poda, recocido simulado, tabú) son fuertes y la opción por defecto", correct: true },
+    { text: "No se ha demostrado una ventaja cuántica clara y reproducible en problemas reales de cartera", correct: true },
+    { text: "Los métodos cuánticos son más interesantes donde la estructura discreta es genuinamente difícil", correct: true },
+    { text: "Los recocedores cuánticos ya baten a los mejores resolutores clásicos en carteras densas a escala de producción" },
+  ]}
+  explanation="El cuadro honesto: los resolutores clásicos maduros dominan; el recocido cuántico y QAOA son intrigantes para estructura discreta difícil pero no han mostrado una ventaja clara y reproducible a escala de producción. Las afirmaciones de bombo sobre victorias cuánticas rutinarias en carteras densas no se sostienen con la evidencia actual."
+/>
+
+Hora de la verdad poco glamurosa. La optimización combinatoria clásica es *muy buena*. Los
+resolutores comerciales de programación entera mixta (MIP) que usan ramificación y poda y
+planos de corte descifran rutinariamente carteras con restricción de cardinalidad de cientos
+de activos hasta la optimalidad certificada, y las metaheurísticas como el **recocido
+simulado** y la **búsqueda tabú** entregan excelentes soluciones casi óptimas rápido cuando no
+se requiere exactitud. El recocido cuántico y QAOA son científicamente fascinantes y *pueden*
+algún día ayudar en instancias con estructura discreta especialmente desagradable — pero a día
+de hoy **no se ha demostrado ninguna ventaja clara y reproducible** sobre estos métodos
+clásicos en problemas realistas de cartera.
+
+| Método | Qué resuelve | Garantía vs heurística | Madurez | Relevancia en finanzas hoy |
+|---|---|---|---|---|
+| **MIP de ramificación y poda** | Programas enteros/de cardinalidad exactos | Óptimo certificado (con hueco de optimalidad) | Maduro, comercial (Gurobi, CPLEX) | Alta — la opción por defecto para carteras discretas difíciles hasta cientos de nombres |
+| **Recocido simulado** | Cualquier QUBO/Ising, instancias grandes | Heurística (buenas muestras casi óptimas) | Maduro, trivial de ejecutar en un portátil | Alta — base sólida y lo que lo cuántico debe batir |
+| **Recocido cuántico (D-Wave)** | Ising/QUBO disperso tras embebido | Heurística, sin garantía de hueco | Hardware real, conectividad dispersa, sobrecarga de embebido | Baja–emergente — solo pilotos; las carteras densas encajan mal |
+| **QAOA (modelo de puertas)** | QUBO/Ising pequeño a profundidad baja p | Heurística; óptimo solo cuando p → ∞ | Temprana, hardware ruidoso, mesetas yermas | Baja — investigación y comparativas, no producción |
+
+La postura disciplinada es la misma que toda esta asignatura predica sobre el aprendizaje
+automático: **compara honestamente, desconfía del bombo y deja que la base clásica tenga la
+primera y la última palabra.** Si un proveedor demuestra una victoria cuántica de cartera,
+pregunta si pasó la *misma* instancia por un resolutor clásico afinado — la respuesta suele ser
+que no lo hizo, o que el resolutor clásico también ganó.
+
+<Callout variant="tip" title="Dónde vive realmente la apuesta cuántica">
+El caso interesante no es "lo cuántico es más rápido en Markowitz". Es *estrecho*: problemas
+cuya estructura discreta es tan escarpada que incluso buenas heurísticas clásicas batallan,
+que son naturalmente **dispersos** (para que se embeban limpiamente) y donde una muestra
+heurística ligeramente mejor tiene valor económico real. Eso es un nicho pequeño y específico
+— no "toda la optimización de carteras". Saber exactamente cómo de pequeño es ese nicho, hoy,
+es la ventaja del experto.
+</Callout>
+
+### Cuándo usarlo
+
+Por defecto, ve a lo clásico: un resolutor MIP cuando necesites un óptimo certificado y la
+instancia sea tratable, recocido simulado o tabú cuando necesites respuestas rápidas y
+suficientemente buenas en QUBO grandes. Considera el recocido cuántico solo para instancias
+discretas dispersas y genuinamente difíciles *y* solo como un piloto comparado. Trata QAOA
+como un instrumento de investigación. En todos los casos, la regla es idéntica: ejecuta la
+base clásica sobre la misma instancia y cree a los números por encima de la narrativa.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Si los resolutores clásicos ya ganan, ¿por qué estudiar QUBO siquiera?</summary>
+
+**Respuesta.** Tres razones. Primera, la **formulación QUBO en sí es portátil**: escribir tu
+cartera con restricción de cardinalidad como un QUBO te permite lanzarla a *cualquiera* de
+estos backends — incluidos los muy buenos resolutores clásicos de recocido simulado y tabú —
+así que la habilidad de modelado rinde de inmediato, sea cuántico o no. Segunda, el hardware
+y los algoritmos están mejorando; el profesional que ya habla QUBO/Ising con fluidez está
+posicionado para evaluar (y desmontar) las afirmaciones de ventaja el día que lleguen. Tercera,
+la *disciplina* de codificar restricciones de negocio enrevesadas como penalizaciones
+cuadráticas afina cómo piensas sobre el problema, sin importar qué minimice la energía.
+Aprendes QUBO para estar listo y para mantenerte honesto — no porque el hardware cuántico esté
+ganando hoy.
+
+</details>
+</Reveal>
+
+## Resumen
+
+Viste una preciosa máquina convexa atascarse en el momento en que un gestor de carteras pidió
+un recuento fijo de nombres, un lote mínimo o una rejilla de acciones redondas — el
+**precipicio de la convexidad** que convierte la media–varianza de tiempo polinómico en una
+búsqueda combinatoria y NP-difícil. Reformulaste esa búsqueda como un **QUBO** (minimizar
+$x^\top Q x$ sobre $x$ binario), plegando la rentabilidad en la diagonal, el riesgo en el
+término cuadrático y la regla de cardinalidad en una penalización $\lambda(\sum x_i - k)^2$.
+Viste la equivalencia de **Ising** de una línea que permite al hardware de recocido minimizarlo
+nativamente, el **descenso adiabático** del recocido cuántico (y sus salvedades de hueco y
+embebido) y el bucle variacional de **QAOA** (y sus mesetas yermas). Y terminaste donde un
+experto debería: los resolutores clásicos son fuertes, la ventaja cuántica en carteras reales
+**no** está aún demostrada, y la jugada honesta es siempre comparar.
+
+<MindMap
+  client:visible
+  title="QUBO y optimización de carteras"
+  caption="Construye el mapa: la fuente de la dificultad, la reformulación QUBO, los dos ataques cuánticos y el veredicto sobrio."
+  root={{
+    label: 'Optimización de carteras con QUBO',
+    children: [
+      { label: 'Por qué se vuelve difícil', children: [
+        { label: 'Media–varianza continua = QP convexo (fácil)' },
+        { label: 'Cardinalidad / lote mínimo = no convexo' },
+        { label: 'Combinatorio, NP-difícil en el peor caso' },
+      ]},
+      { label: 'Reformulación QUBO', children: [
+        { label: 'min x^T Q x sobre x binario' },
+        { label: 'Rentabilidad → diagonal (x^2 = x)' },
+        { label: 'Riesgo → término cuadrático de covarianza' },
+        { label: 'Cardinalidad → penalización lambda(sum x − k)^2' },
+      ]},
+      { label: 'Equivalencia de Ising', children: [
+        { label: 'x_i = (1 + s_i)/2' },
+        { label: 'Lo que los recocedores minimizan nativamente' },
+      ]},
+      { label: 'Recocido cuántico (D-Wave)', children: [
+        { label: 'Adiabático: H fácil → H del problema' },
+        { label: 'Analogía del enfriamiento lento' },
+        { label: 'Limitado por hueco, disperso, cadenas de embebido' },
+        { label: 'Heurística, no garantía' },
+      ]},
+      { label: 'QAOA (modelo de puertas)', children: [
+        { label: 'Capas de problema + mezclador, profundidad p' },
+        { label: 'El optimizador clásico ajusta 2p ángulos' },
+        { label: 'p → ∞ se aproxima al óptimo' },
+        { label: 'Mesetas yermas, ruido, sin victoria clara aún' },
+      ]},
+      { label: 'Veredicto sobrio', children: [
+        { label: 'MIP / RS / tabú clásicos son fuertes' },
+        { label: 'Sin ventaja cuántica reproducible hoy' },
+        { label: 'Nicho: estructura dispersa y genuinamente difícil' },
+      ]},
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Repaso mixto: ¿sabes reformular y mantenerte honesto?"
+  questions={[
+    {
+      question: "¿Por qué añadir una regla de 'mantén exactamente k nombres' vuelve difícil la media–varianza?",
+      options: [
+        { text: "Es no convexa, parte el conjunto factible en un número combinatorio de trozos inconexos, así que los resolutores de QP convexo dejan de aplicar", correct: true },
+        { text: "Vuelve la matriz de covarianzas no semidefinida positiva" },
+        { text: "Añade tantas restricciones lineales que el QP se queda sin memoria" },
+        { text: "No cambia nada de la dificultad — el problema sigue en tiempo polinómico" },
+      ],
+      explanation: "La cardinalidad es una restricción no convexa. El cuenco convexo liso se convierte en una dispersión de islas inconexas, forzando la búsqueda combinatoria (NP-difícil en el peor caso).",
+    },
+    {
+      question: "En un QUBO, ¿por qué no hay un vector de términos lineales aparte — todo vive en Q?",
+      options: [
+        { text: "Porque para x binario, x_i^2 = x_i, así que cualquier coeficiente lineal se pliega sobre la entrada diagonal Q_ii", correct: true },
+        { text: "Porque los términos lineales siempre son cero en problemas de cartera" },
+        { text: "Porque Q debe ser simétrica, lo que prohíbe los términos lineales" },
+        { text: "Porque el desplazamiento constante absorbe todos los términos lineales" },
+      ],
+      explanation: "x_i^2 = x_i para variables binarias, así que un término lineal c_i x_i = c_i x_i^2 se funde en Q_ii. Esa es la conveniencia que define la forma QUBO.",
+    },
+    {
+      question: "Elige exactamente k = 2 de 3 activos con penalización lambda = 5. ¿Qué aporta la penalización de cardinalidad a cada entrada diagonal y a cada par fuera de la diagonal (usando x^2 = x)?",
+      options: [
+        { text: "lambda(1 − 2k) = −15 a cada diagonal y 2 lambda = 10 a cada par fuera de la diagonal", correct: true },
+        { text: "+15 a cada diagonal y −10 a cada par fuera de la diagonal" },
+        { text: "0 a la diagonal y lambda k^2 = 20 a cada par fuera de la diagonal" },
+        { text: "lambda = 5 a cada entrada, diagonal y fuera de la diagonal por igual" },
+      ],
+      explanation: "Expandir lambda(sum x − k)^2 con x^2 = x da lambda(1 − 2k) = 5(1−4) = −15 en cada diagonal y 2 lambda = 10 en cada par fuera de la diagonal; lambda k^2 = 20 es un desplazamiento constante.",
+    },
+    {
+      question: "Un QUBO de cartera de 200 activos es totalmente denso. Tu recocedor tiene 5.000 cúbits cada uno acoplándose a ~15 vecinos. ¿Cuál es la limitación vinculante?",
+      options: [
+        { text: "La sobrecarga de embebido: un problema denso todos-con-todos necesita cadenas largas de cúbits (aproximadamente O(n^2) cúbits físicos), excediendo el hardware disperso, y las cadenas pueden romperse", correct: true },
+        { text: "El tiempo de recocido, que escala linealmente con el número de activos" },
+        { text: "Nada — 5.000 cúbits manejan cómodamente 200 variables densas" },
+        { text: "La búsqueda de ángulos del optimizador clásico se vuelve intratable" },
+      ],
+      explanation: "La conectividad, no el número bruto de cúbits, es lo que vincula. Los problemas densos requieren embebido en cadenas (alrededor de O(n^2) cúbits físicos), que rebasa el hardware disperso y arriesga roturas de cadena. (La búsqueda de ángulos es un problema de QAOA, no del recocido.)",
+    },
+    {
+      question: "Un proveedor afirma que su recocedor cuántico bate a los resolutores clásicos en una cartera densa de 300 nombres con cardinalidad. ¿Cuál es la primera pregunta del experto?",
+      options: [
+        { text: "¿Pasaste la instancia idéntica por un resolutor clásico afinado (MIP / recocido simulado / tabú) — y perdió?", correct: true },
+        { text: "¿Cuántos cúbits tiene la máquina en total?" },
+        { text: "¿Cuál es la velocidad de reloj de la máquina en gigahercios?" },
+        { text: "¿Usaste un circuito QAOA suficientemente profundo?" },
+      ],
+      explanation: "Las afirmaciones de ventaja solo son significativas frente a una base clásica fuerte sobre la misma instancia. Los resolutores MIP/RS/tabú maduros son el listón a superar, y las carteras densas se embeben mal en recocedores dispersos — así que la pregunta de la comparativa va primero.",
+    },
+  ]}
+/>

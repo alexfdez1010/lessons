@@ -1,0 +1,664 @@
+---
+title: "La auditoría honesta: fugas y sobresuavizado"
+description: "El manual de campo sobrio para modelos de grafos en finanzas: por qué los grafos filtran información más que cualquier estructura de datos (un nodo ve a sus vecinos, así que una partición descuidada deja que el conjunto de test espíe a través de las aristas), partición consciente de la topología, sobresuavizado al apilar demasiadas capas, topología no estacionaria y el brutal coste de fontanería de datos que hunde la mayoría de proyectos de GNN."
+topic: "es/graph-neural-networks-for-financial-networks"
+order: 6
+minutes: 22
+updated: 2026-06-23
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap } from '@/components/react';
+
+Habéis dedicado cinco lecciones a aprender lo que las redes neuronales de grafos *pueden* hacer: pasar mensajes
+por las aristas, aprender incrustaciones (embeddings) que respetan quién-conecta-con-quién, modelar el contagio a través
+de un sistema financiero. Esta lección es la ducha fría. Es el hermano-GNN de la
+disciplina "por qué el aprendizaje profundo sufre en finanzas" — la que os enseñó a desinflar
+vuestro Sharpe por el número de pruebas, a purgar y poner en cuarentena vuestra validación cruzada, y a
+fiaros de un número fuera de muestra más o menos tanto como podáis lanzarlo de un puntapié.
+
+Aquí va el remate por delante: **un grafo es la estructura de datos más propensa a fugas que
+modelaréis jamás, porque el objetivo entero del paso de mensajes es dejar que un nodo consuma la
+información de sus vecinos.** Atornillad a eso una partición train/test descuidada, y vuestros nodos de "test"
+han estado leyendo en silencio el solucionario del conjunto de entrenamiento a través de cada arista. Obtendréis
+un AUC precioso, lo presentaréis con orgullo, y veréis cómo se evapora en cuanto toca un
+nodo que el grafo nunca vio antes.
+
+Todo lo que respetabais en el curso de aprendizaje profundo muerde *más fuerte* aquí: las fugas, porque
+las aristas son conductos; la no estacionariedad, porque el propio grafo se recablea justo en la
+crisis que os importa; y la paranoia del Sharpe-desinflado, porque un proyecto de grafos esconde su
+sobreajuste en la fontanería donde nadie audita. Auditémoslo.
+
+## Por qué los grafos filtran más que las tablas
+
+<MCQ
+  client:visible
+  pretest
+  pretestLabel="Antes de leer — arriésgate a adivinar"
+  checkLabel="Comprobar"
+  retryLabel="Intentar de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No del todo."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  question="Una GNN de 2 capas predice si un nodo de 'test' es fraudulento. Ese nodo de test tiene un vecino que está en el conjunto de entrenamiento, con una etiqueta de fraude conocida. ¿Por qué es esto un problema de fuga y no un uso legítimo de la estructura?"
+  options={[
+    { text: "El paso de mensajes pliega las características del vecino de entrenamiento (y, en muchos pipelines, su etiqueta) dentro de la incrustación del nodo de test — así que la predicción de test es literalmente función de datos de entrenamiento sobre los que el modelo ya se ajustó", correct: true },
+    { text: "No es un problema; se supone que los vecinos deben informarse entre sí, ese es el objetivo entero de un grafo" },
+    { text: "Solo filtra si los dos nodos comparten un vector de características idéntico" },
+    { text: "La fuga es imposible en clasificación, solo en regresión" },
+  ]}
+  explanation="La incrustación de un nodo es función de su vecindario de K saltos. Si un vecino es un nodo de entrenamiento, la representación del nodo de test depende de datos sobre los que se ajustó el modelo. Usar la estructura está bien; dejar que la predicción del conjunto de test dependa de filas de entrenamiento ya vistas a través de una arista es una fuga."
+/>
+
+**Analogía.** Imaginad estar haciendo un examen en una sala donde la persona de al lado — que
+ya ha sido calificada — no deja de susurraros sus respuestas. Bordaréis el examen. No habréis
+aprendido nada. Una GNN con una partición que filtra es exactamente esa sala de examen: cada arista es un
+vecino susurrando, y la respuesta "independiente" del nodo de test está medio copiada de un
+compañero del que el examinador ya conoce la nota.
+
+**Definición.** En una red neuronal de grafos, la incrustación del nodo $v$ tras $K$ capas de
+paso de mensajes es función de las características de *todo nodo dentro de $K$ saltos* de $v$.
+Esquemáticamente, la capa $k$ actualiza cada nodo a partir de sí mismo y de sus vecinos:
+
+$$ h_v^{(k)} = \phi\!\left(h_v^{(k-1)},\ \operatorname{AGG}\{\,h_u^{(k-1)} : u \in \mathcal{N}(v)\,\}\right). $$
+
+Desplegar $K$ de estas capas significa que $h_v^{(K)}$ depende del **campo receptivo de $K$ saltos**
+de $v$. Así que el radio de fuga de una GNN no es "el nodo en sí" — es *todo nodo
+alcanzable en $K$ pasos*. Apilad más capas, y el frente de contaminación empuja un salto
+más lejos con cada una.
+
+Contrastad eso con una tabla. En datos tabulares, la fila $i$ es (eso esperáis) independiente de la fila $j$;
+una partición limpia pone la fila $i$ en train y la fila $j$ en test y nunca se tocan. No hay
+mecanismo por el que la predicción del modelo para la fila de test $j$ lea la fila de entrenamiento $i$. Un grafo
+*fabrica* ese mecanismo a propósito. Por eso los grafos filtran más que cualquier conjunto de datos
+tabular: la fuga no es un accidente del preprocesado, es el diseño.
+
+**Ejemplo resuelto — una GNN de 2 capas y un vecino de entrenamiento.** Sea el nodo de test $t$ con un
+único vecino $a$, y sea $a$ a su vez vecino de un nodo $b$. Tanto $a$ como $b$ están en el
+conjunto de entrenamiento; el modelo ya se ajustó sobre sus características y (para $a$) su etiqueta. Trazad
+las dos capas de paso de mensajes para $t$:
+
+| Capa | Qué alimenta la incrustación del nodo de test t |
+|---|---|
+| Capa 1 | las propias características de t, más las características del vecino a (a es un nodo de entrenamiento) |
+| Capa 2 | la incrustación de capa 1 de t, más la incrustación de capa 1 de a — y la incrustación de capa 1 de a ya absorbió a b |
+| Resultado | h_t depende de las características de t, a y b — dos de las cuales el modelo entrenó |
+
+Así que $h_t^{(2)} = f(\,x_t,\ x_a,\ x_b\,)$ donde $x_a$ y $x_b$ son características de entrenamiento. La
+predicción "reservada" para $t$ es, matemáticamente, función de datos que el modelo ya ha
+visto y ajustado. El AUC que medís sobre $t$ está contaminado. Con $K=2$ el alcance fue de 2 saltos;
+subid a $K=4$ y un único nodo de entrenamiento a cuatro aristas de distancia aún se cuela.
+
+<Callout variant="warning" title="El radio de fuga es tu número de capas">
+Cada capa extra de paso de mensajes extiende el frente de fuga un salto. Una GNN de 3 capas sobre
+un grafo financiero denso (donde la mayoría de nodos están dentro de 3 saltos de todo) puede dejar que el
+conjunto de entrenamiento *entero* informe a *cada* nodo de test. El arreglo nunca es "añadir más capas para
+capturar más estructura" sin preguntar primero qué arrastran esas capas a través de la partición.
+</Callout>
+
+### Cuándo usarlo
+
+Tratad el campo receptivo de $K$ saltos como la unidad de fuga *antes* de elegir una partición — es
+el radio de explosión que vuestra frontera train/test tiene que contener. Siempre que reportéis una métrica
+de una GNN, la primera pregunta no es "¿es alto el AUC?" sino "¿podría la incrustación de algún nodo de test
+haber consumido las características o la etiqueta de un nodo de entrenamiento a través de una arista?" Si la respuesta es sí, el número está
+inflado mientras no se demuestre lo contrario.
+
+<FillBlank
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Intentar de nuevo"
+  explanationLabel="Explicación"
+  correctResultLabel="✓ Correcto"
+  partialResultWord="correctas"
+  question="Enuncia el radio de fuga de una GNN."
+  text="Tras K capas de paso de mensajes, la incrustación de un nodo depende de su entero {{vecindario de K saltos|vecino más cercano único|componente desconectado}}, así que el radio de fuga es igual al número de capas."
+  explanation="Desplegar K capas de paso de mensajes hace que la representación de cada nodo sea función de todo nodo dentro de K saltos — ese es exactamente el radio a través del cual filtra una partición descuidada."
+/>
+
+## Partición consciente de la topología
+
+<MCQ
+  client:visible
+  pretest
+  pretestLabel="Antes de leer — arriésgate a adivinar"
+  checkLabel="Comprobar"
+  retryLabel="Intentar de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No del todo."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  question="Tu GNN de fraude obtiene un AUC de 0,94 sobre una partición aleatoria de nodos 80/20 y estás encantado. Un colega insiste en re-partir por tiempo (entrenar sobre aristas anteriores a marzo, testar después). ¿Cuál es el resultado más probable y por qué?"
+  options={[
+    { text: "El AUC cae en picado — la partición aleatoria dejó que los nodos de test pasaran mensajes con vecinos de entrenamiento y filtraran el futuro; una partición temporal elimina esa muleta y expone el número honesto, más bajo", correct: true },
+    { text: "El AUC sube, porque las particiones temporales dan al modelo más datos recientes relevantes" },
+    { text: "El AUC no cambia, porque el esquema de partición no puede afectar a una GNN" },
+    { text: "El modelo se negará a entrenar sobre una partición temporal" },
+  ]}
+  explanation="Una partición aleatoria de nodos esparce nodos conectados entre train y test, así que el paso de mensajes transporta información (y el futuro) a través de la frontera. Una partición temporal corta el grafo por tiempo y es el estándar en finanzas; el AUC casi siempre cae porque la muleta que filtraba ha desaparecido."
+/>
+
+**Analogía.** Partir nodos de grafos al azar es como barajar una baraja donde cada carta está
+pegada a sus vecinas por un hilo — no podéis sacar una carta de "test" limpiamente, porque
+arrastra tres cartas de "entrenamiento" con ella. Necesitáis unas tijeras que corten *a lo largo de los hilos*
+(las aristas) y *a lo largo del tiempo*, no un manotazo aleatorio a ciegas.
+
+**Definición.** La **partición consciente de la topología** significa que partís los datos respetando la estructura
+del grafo *y* el tiempo, nunca i.i.d. Los tres esquemas de batalla:
+
+- **(a) Partición temporal — el estándar en finanzas.** Entrenar sobre el grafo tal como existía antes del
+  instante $T$ (aristas, nodos, etiquetas hasta $T$); testar sobre lo que viene después. El futuro no puede
+  susurrar al pasado porque todavía no existe en el momento del entrenamiento.
+- **(b) Partición inductiva.** Reservar *subgrafos o componentes conexas enteras* que el
+  modelo nunca vio durante el entrenamiento, y luego pedirle que generalice a nodos completamente nuevos — el
+  escenario de GraphSAGE. La componente de test no comparte aristas con el entrenamiento, así que no hay
+  conducto.
+- **(c) Enmascarado de aristas para predicción de enlaces.** Cuando la tarea *es* predecir aristas, debéis
+  **ocultar las aristas de test durante el paso de mensajes**. Si la arista $(u,v)$ es lo que estáis
+  prediciendo, no podéis dejar que esa arista lleve mensajes entre $u$ y $v$ — eso es el
+  modelo leyendo su propia respuesta.
+
+Trasladad la idea de **purga/cuarentena** directamente desde *Aprendizaje automático para alfa*: en una
+partición temporal no os limitáis a cortar en $T$, ponéis en **cuarentena** las aristas cuyo efecto cabalga la
+frontera. Si una arista se formó en $T - 1$ pero su etiqueta (digamos, un impago) solo se resuelve en
+$T + 5$, la información de esa arista solapa la ventana de test — ponedla en cuarentena, exactamente como
+purgasteis las etiquetas solapadas en el curso de series temporales.
+
+**Ejemplo resuelto — partición aleatoria vs temporal.** Mismo grafo de fraude, mismo modelo, dos particiones:
+
+| Esquema de partición | ¿Los nodos de test comparten aristas con train? | ¿El futuro filtra hacia atrás? | AUC reportado | ¿Honesto? |
+|---|---|---|---|---|
+| Partición aleatoria de nodos 80/20 | Sí — nodos conectados esparcidos a ambos lados | Sí — vía paso de mensajes | 0,94 | No (inflado) |
+| Temporal (train &lt; marzo, test &ge; marzo) | Solo a través de aristas pasado→futuro, en cuarentena | No | 0,71 | Sí |
+| Inductiva (componente reservada) | No — subgrafo disjunto | No | 0,68 | Sí |
+
+El 0,94 es la nota del compañero que susurra. El 0,71 y el 0,68 son lo que el modelo realmente
+sabe. Un profesional que publica el 0,94 ha publicado una fantasía; quien reporta el 0,71
+ha publicado un modelo. La brecha entre ellos *es* la fuga.
+
+<Callout variant="warning" title="El autoengaño número uno de las GNN">
+Un AUC espectacular en validación cruzada sobre una partición aleatoria de nodos es la forma más común de que un
+proyecto de GNN se mienta a sí mismo. La partición aleatoria es la opción por defecto en los tutoriales y por defecto en
+la mayoría de librerías de ML, así que es a lo que recurrís sin pensar — y en un grafo conexo
+filtra por construcción. Si alguien os enseña un resultado de grafos y no os puede decir si la partición
+fue temporal o inductiva, tratad la métrica como no verificada.
+</Callout>
+
+### Cuándo usar cada una
+
+Usad una **partición temporal** como opción por defecto para cualquier modelo financiero desplegado — operáis en el tiempo,
+así que debéis validar en el tiempo. Usad una **partición inductiva** cuando la pregunta real sea "¿
+generalizará esto a entidades que nunca hemos visto?" (nuevos clientes, nuevas contrapartes, un nuevo
+mercado) — es la prueba honesta de transferencia. Usad el **enmascarado de aristas** siempre que el objetivo
+de predicción sea una arista en sí (¿transaccionarán estas dos empresas, se formará este enlace de préstamo?), porque
+sin él el modelo lee trivialmente la respuesta de la mismísima arista por la que preguntasteis.
+
+<Categorize
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Intentar de nuevo"
+  explanationLabel="Explicación"
+  allCorrectLabel="✓ Todo clasificado"
+  question="Empareja cada situación con el esquema de partición que la mantiene honesta."
+  buckets={["Partición temporal", "Partición inductiva", "Enmascarado de aristas"]}
+  items={[
+    { text: "Desplegar un modelo de riesgo de impago que operará hacia delante en el tiempo", bucket: "Partición temporal" },
+    { text: "Poner en cuarentena aristas cuya etiqueta se resuelve después de la fecha de corte", bucket: "Partición temporal" },
+    { text: "Preguntar si el modelo generaliza a un conjunto de empresas completamente nuevo", bucket: "Partición inductiva" },
+    { text: "Reservar una componente conexa entera no vista en el entrenamiento", bucket: "Partición inductiva" },
+    { text: "Predecir si dos contrapartes formarán una arista de transacción", bucket: "Enmascarado de aristas" },
+    { text: "Ocultar la arista objetivo para que no pueda pasar mensajes entre sus extremos", bucket: "Enmascarado de aristas" },
+  ]}
+  explanation="Las particiones temporales respetan el tiempo y ponen en cuarentena las aristas que cabalgan la frontera; las particiones inductivas reservan subgrafos disjuntos para probar la transferencia a nodos no vistos; el enmascarado de aristas oculta la arista predicha para que no pueda informar su propia predicción."
+/>
+
+## Sobresuavizado
+
+<MCQ
+  client:visible
+  pretest
+  pretestLabel="Antes de leer — arriésgate a adivinar"
+  checkLabel="Comprobar"
+  retryLabel="Intentar de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No del todo."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  question="Tu GNN rinde por debajo de una línea base sin grafo. Tu instinto es apilar más capas de paso de mensajes para capturar una estructura más rica. ¿Por qué es probable que esto lo empeore?"
+  options={[
+    { text: "Sobresuavizado — cada capa extra promedia sobre un vecindario mayor, arrastrando la incrustación de cada nodo hacia el mismo vector hasta volverlos indistinguibles y colapsar el poder discriminativo", correct: true },
+    { text: "Más capas siempre ayudan a las GNN igual que ayudan a las CNN; el verdadero problema es la tasa de aprendizaje" },
+    { text: "Las capas extra sobreajustan las etiquetas de entrenamiento pero nunca afectan a las incrustaciones" },
+    { text: "Las GNN más profundas simplemente entrenan más despacio; la precisión no se ve afectada" },
+  ]}
+  explanation="Apilar capas de paso de mensajes promedia vecindarios repetidamente, así que las incrustaciones de nodos convergen hacia una media común — sobresuavizado. La señal discriminativa se diluye. Más profundo no es mejor para las GNN, al contrario que las CNN."
+/>
+
+**Analogía.** Echad una gota de leche en el café y al principio veis remolinos — regiones distintas,
+estructura, contraste. Seguid removiendo y cada sorbo sabe idéntico. El paso de mensajes
+es remover: un poco mezcla contexto útil del vecindario; demasiado homogeneiza la taza
+entera hasta que cada nodo sabe al mismo beige.
+
+**Definición.** El **sobresuavizado** es el fenómeno por el que, al apilar muchas capas de paso de
+mensajes, la incrustación de cada nodo agrega un vecindario cada vez mayor hasta que todas las incrustaciones
+convergen hacia un vector casi idéntico. Una vez que dos nodos tienen la misma representación, ningún
+clasificador puede distinguirlos — el poder discriminativo del modelo colapsa. Esta es la
+forma crucial en que las GNN difieren de las CNN: en una CNN, la profundidad construye características jerárquicas más ricas y
+más profundo suele ayudar; en una GNN, la profundidad más allá de un número pequeño de capas activamente *destruye*
+información al promediarla.
+
+**Ejemplo resuelto — promediado repetido.** Tomad dos nodos cuyas incrustaciones empiezan muy separadas,
+digamos el nodo $P$ en el valor $10$ y el nodo $Q$ en el valor $0$, sobre un grafo donde cada capa reemplaza el
+valor de un nodo por la media de sí mismo y su vecino (una agregación-media de juguete). Observad
+cómo colapsan hacia la media global de $5$:
+
+| Capa | Incrustación de P | Incrustación de Q | Brecha (P menos Q) |
+|---|---|---|---|
+| 0 (entrada) | 10,00 | 0,00 | 10,00 |
+| 1 | 7,50 | 2,50 | 5,00 |
+| 2 | 6,25 | 3,75 | 2,50 |
+| 3 | 5,625 | 4,375 | 1,25 |
+| 5 | 5,156 | 4,844 | 0,31 |
+
+Haced la aritmética de la capa 1: $P$ se vuelve $(10 + 0)/2 \cdot$ mezclado consigo mismo — en este juguete
+la brecha simplemente se reduce a la mitad en cada capa, $10 \to 5 \to 2.5 \to 1.25 \to 0.31$. Tras cinco capas
+$P$ y $Q$ están a menos de un tercio de unidad el uno del otro; tras diez son indistinguibles.
+La señal discriminativa que hacía a $P$ y $Q$ *nodos diferentes* ha sido promediada hasta convertirse en
+papilla. Eso es el sobresuavizado en un número: la **brecha** $\to 0$.
+
+**Mitigaciones:**
+
+- **Quedarse poco profundo.** La mayoría de GNN en producción usan **2–3 capas**. Eso no es falta de ambición;
+  es el punto dulce antes de que muerda el sobresuavizado.
+- **Conexiones residuales / de salto (jumping knowledge).** Dejad que cada capa conserve una copia de la
+  incrustación previa a la agregación, para que la señal original sobreviva al removido.
+- **Normalización.** Técnicas como PairNorm o la normalización por capa empujan las incrustaciones
+  para separarlas y contrarrestar el colapso.
+
+<Callout variant="warning" title="'¿Rinde poco? Añade capas' es exactamente al revés">
+Este es el hermano-GNN de la trampa del aprendizaje profundo donde un Sharpe bajo tienta a añadir
+capacidad. En una GNN, añadir capas de paso de mensajes normalmente os mueve *hacia* el sobresuavizado:
+mejor memorizando el grafo de entrenamiento, peor distinguiendo nodos fuera de muestra. El
+movimiento disciplinado cuando una GNN rinde poco es casi siempre *menos* capas, conexiones de salto,
+o una mirada dura a si la señal relacional existe siquiera — no más profundidad.
+</Callout>
+
+### Cuándo usar la profundidad
+
+Recurrid a capas extra solo cuando la tarea genuinamente necesite información de muy lejos en el
+grafo — una dependencia de largo alcance que un vecindario de 2 saltos demostrablemente se pierde — *y* emparejéis
+la profundidad con conexiones de salto o normalización para combatir el colapso. Para la abrumadora
+mayoría de tareas de grafos financieros (anillos de fraude, riesgo de contraparte, agrupamiento sectorial), la
+señal vive dentro de 2–3 saltos, y una red poco profunda a la vez evita el sobresuavizado y contiene
+vuestro radio de fuga. La profundidad es un coste que pagáis solo contra una necesidad de largo alcance demostrada.
+
+<FillBlank
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Intentar de nuevo"
+  explanationLabel="Explicación"
+  correctResultLabel="✓ Correcto"
+  partialResultWord="correctas"
+  question="Enuncia la causa y el efecto del sobresuavizado."
+  text="A medida que una GNN apila más capas de paso de mensajes, el promediado repetido de vecindarios arrastra las incrustaciones de nodos hacia {{un vector común|extremos opuestos|ruido aleatorio}}, lo que destruye la capacidad del modelo de distinguir nodos."
+  explanation="Cada capa promedia sobre un vecindario más amplio; iterado, esto hace converger cada incrustación hacia la media global, colapsando el poder discriminativo — el mecanismo que define el sobresuavizado."
+/>
+
+## Topología no estacionaria
+
+<MCQ
+  client:visible
+  pretest
+  pretestLabel="Antes de leer — arriésgate a adivinar"
+  checkLabel="Comprobar"
+  retryLabel="Intentar de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No del todo."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  question="Entrenas una GNN sobre una red de correlación construida a partir de un periodo de dos años en calma, y luego la despliegas en un desplome de mercado. ¿Cuál es el riesgo central?"
+  options={[
+    { text: "El propio grafo se recablea en la crisis — las correlaciones se disparan, las aristas se multiplican, la topología que el modelo aprendió ya no existe justo cuando más la necesitas", correct: true },
+    { text: "Ningún riesgo; las redes de correlación son estructuras fijas que no cambian con el régimen" },
+    { text: "El único riesgo es que cambien las características de los nodos, pero las aristas están a salvo" },
+    { text: "El modelo simplemente se reentrenará a sí mismo automáticamente durante el desplome" },
+  ]}
+  explanation="Los grafos financieros son no estacionarios: en un desplome, las correlaciones se disparan hacia 1, la red de correlación se densifica, y la topología aprendida se rompe. El régimen de estrés — el que os importa — es precisamente donde el grafo difiere más del entrenamiento."
+/>
+
+**Analogía.** Aprendéis el callejero de una ciudad en verano, con sus calles secundarias tranquilas y
+su flujo predecible. Luego llega una riada: cierran calles, el tráfico se redirige, todo el mundo se embute en
+los mismos tres puentes. Vuestro precioso mapa de verano ahora os despista activamente — y la riada es
+el día exacto en que más necesitabais indicaciones. Un grafo financiero se inunda en una crisis.
+
+**Definición.** La **topología no estacionaria** significa que la *estructura* del grafo — qué aristas existen,
+cómo de denso es, qué nodos son centrales — deriva con el tiempo en lugar de quedarse fija. Los préstamos
+vencen y se originan otros nuevos; las cadenas de suministro se reencaminan en torno a una disrupción; y en una
+red de correlación, las propias aristas son estimaciones estadísticas que **se disparan en un desplome**.
+Un modelo entrenado sobre la topología de un régimen puede fallar en otro, y el régimen que más difiere
+suele ser el régimen de estrés para el que construisteis el modelo.
+
+**Ejemplo resuelto — red de correlación densificándose en un desplome.** Construid aristas entre activos
+siempre que su correlación por pares supere un umbral, digamos $\rho > 0.5$. En un régimen en calma, la
+correlación media por pares podría rondar el $0.2$, así que pocos pares superan la barra y el grafo
+es disperso. En un desplome, "todo cae junto" — la correlación media salta hacia el $0.8$,
+y casi todo par supera el umbral:
+
+| Régimen | Correlación media por pares | Pares por encima del umbral 0,5 (de 100 activos) | Recuento de aristas | Densidad del grafo |
+|---|---|---|---|---|
+| Calma | 0,20 | ~5% de los pares | ~250 aristas | Dispersa |
+| Estrés (desplome) | 0,80 | ~90% de los pares | ~4.450 aristas | Casi completa |
+
+El grafo del desplome es casi completo — casi todo nodo conecta con casi todos los demás. Ahora
+recordad el sobresuavizado: en un grafo casi completo, una sola capa de paso de mensajes ya
+promedia sobre *casi toda la red*, así que las incrustaciones colapsan hacia la media global en
+un paso. El giro más cruel: **la topología sobresuaviza exactamente cuando más importa.** El
+modelo entrenado sobre el grafo disperso en calma se topa con un grafo denso de crisis y tanto la estructura que
+aprendió *como* su capacidad de discriminar se disuelven a la vez. Esto enlaza directamente con las GNN
+temporales de la lección 3 — modelar el grafo como una secuencia de instantáneas con marca temporal es la respuesta
+a una topología que no se está quieta, y refleja el tema de la no estacionariedad que acechaba al
+curso de aprendizaje profundo.
+
+<Callout variant="warning" title="Promediar el grafo sobre una ventana larga esconde la crisis">
+El arreglo tentador para un grafo ruidoso y a la deriva es estimar un único grafo "estable" sobre una ventana
+larga. Resistíos. Promediar una red de correlación sobre cinco años mezcla la estructura dispersa de calma
+con la estructura densa de crisis en un grafo intermedio insulso que no encaja con *ninguno* de los dos
+regímenes — y específicamente borra la topología densa del desplome, el único suceso que vuestro modelo de riesgo
+existe para sobrevivir. Un promedio de ventana larga lava precisamente la señal que necesitáis.
+</Callout>
+
+### Cuándo usar un grafo estático vs temporal
+
+Usad un **grafo estático** solo cuando las relaciones sean genuinamente lentas y estructurales —
+jerarquías de propiedad legal, contratos fijos de cadena de suministro, registros corporativos asentados — donde
+la topología apenas deriva en vuestro horizonte. Usad un **grafo temporal / dinámico** (instantáneas o
+una GNN temporal en streaming) siempre que las aristas sean ellas mismas estimaciones sensibles al régimen —
+redes de correlación, flujos de transacciones, exposiciones interbancarias — porque esas se recablean precisamente
+en el estrés que estáis modelando, y una instantánea estática estará más equivocada cuando acertar
+más importa.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">¿Por qué un grafo de correlación de crisis empeora el sobresuavizado, en vez de solo hacerlo diferente?</summary>
+
+**Respuesta.** El sobresuavizado lo impulsa cuánto del grafo promedia cada capa. En un
+grafo disperso en calma, una capa toca el puñado de vecinos de un nodo — mezcla modesta. En un
+desplome la red de correlación se vuelve casi completa, así que un solo paso de mensajes promedia
+sobre casi todos los nodos a la vez. Eso colapsa las incrustaciones hacia la media global en *una* capa
+en lugar de muchas, borrando la discriminación a nivel de nodo en el momento exacto en que las posiciones están
+saltando por los aires. La topología no estacionaria y el modo de fallo por sobresuavizado se componen mutuamente: la
+crisis a la vez invalida la estructura aprendida y acelera la homogeneización de cualquier
+estructura que quede.
+
+</details>
+</Reveal>
+
+## El impuesto de la fontanería de datos
+
+<MCQ
+  client:visible
+  pretest
+  pretestLabel="Antes de leer — arriésgate a adivinar"
+  checkLabel="Comprobar"
+  retryLabel="Intentar de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No del todo."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  question="Dos equipos construyen GNN de fraude. El equipo A se obsesiona con la arquitectura GCN vs GAT vs GraphSAGE; el equipo B dedica su tiempo a la resolución de entidades, las marcas temporales point-in-time de las aristas y los umbrales de correlación. ¿Quién es más probable que publique un modelo que funcione?"
+  options={[
+    { text: "El equipo B — en proyectos reales de GNN la construcción del grafo y la fontanería sin fugas dominan el resultado, mucho más que la elección de arquitectura", correct: true },
+    { text: "El equipo A — la arquitectura es donde vive todo el poder predictivo" },
+    { text: "Ninguno importa; los resultados son aleatorios" },
+    { text: "El equipo A, porque las arquitecturas más nuevas arreglan automáticamente los datos malos" },
+  ]}
+  explanation="La arquitectura (GCN vs GAT vs GraphSAGE) es la punta visible; la resolución de entidades, las definiciones de aristas, las marcas temporales point-in-time y la escala son el 90% bajo el agua que decide si el modelo es honesto y útil. Acertar con el grafo bate al ajuste del tipo de capa."
+/>
+
+**Analogía.** Un modelo GNN es la punta de un iceberg asomando con orgullo sobre el agua. El 90%
+bajo el agua — la parte que hunde barcos — es el pipeline que *construyó el grafo*: quién es un nodo,
+qué cuenta como arista, cuándo existió cada arista, y si podéis ensamblarlo a escala sin
+mirar al futuro. Todo el mundo fotografía la punta. La fría masa oscura de abajo es donde mueren los proyectos.
+
+**Definición / realidad.** El **impuesto de la fontanería de datos** es la (normalmente dominante) cuota de un proyecto
+de GNN gastada no en modelar sino en construir y mantener el propio grafo:
+
+- **Resolución de entidades.** ¿"JP Morgan", "JPMorgan Chase", "J.P. Morgan & Co." y el ticker
+  "JPM" son un nodo o cuatro? Acertad esto mal y la topología de vuestro grafo es ficción.
+- **Umbrales de definición de aristas.** ¿Qué correlación cuenta como arista — $\rho > 0.3$,
+  $0.5$, $0.7$? Cada umbral produce un grafo *distinto* y un modelo distinto. La elección
+  es una decisión de modelado disfrazada de paso de limpieza de datos.
+- **Marca temporal point-in-time.** Cada arista debe llevar *cuándo se hizo conocida*, o cometéis
+  el mismo sesgo de mirar al futuro que los cursos prerrequisito os metieron a martillazos: usar una arista en una
+  predicción antes de que esa arista existiera es una fuga a través del tiempo.
+- **Escala.** Los grafos de transacciones financieras llegan a miles de millones de aristas; construirlos, almacenarlos y
+  pasar mensajes sobre ellos es un problema de ingeniería antes que un problema de modelado.
+
+**Ejemplo resuelto — adónde va realmente el esfuerzo.** Un desglose representativo del esfuerzo de
+ingeniería en una GNN financiera desplegada:
+
+| Fase del proyecto | Cuota del esfuerzo total | Qué vive aquí |
+|---|---|---|
+| Datos y construcción de aristas | ~60% | Resolución de entidades, umbrales de aristas, marcas temporales point-in-time, ingesta |
+| Modelado / arquitectura | ~15% | Elegir y ajustar GCN / GAT / GraphSAGE, número de capas |
+| Validación / auditoría de fugas | ~15% | Particiones conscientes de la topología, cuarentena, desinflado por pruebas |
+| Servir y mantener | ~10% | Escala, refresco, monitorización de la deriva de topología |
+
+En torno al **85%** del trabajo *no* es la arquitectura. El 15% por el que todos pelean
+(GCN vs GAT) se sienta entre un bloque del 60% de fontanería que decide si el grafo es siquiera real y
+un bloque del 15% de validación que decide si el resultado es honesto. Gastad vuestra escasa atención
+en consecuencia.
+
+<Callout variant="tip" title="La arquitectura es lo que menos importa">
+La jerarquía honesta de lo que impulsa el éxito de una GNN financiera: (1) un grafo correcto, point-in-time,
+sin fugas; (2) una partición consciente de la topología y temporal que sobreviva a la auditoría; (3) una red lo bastante
+poco profunda como para esquivar el sobresuavizado; y solo entonces (4) la elección GCN-vs-GAT-vs-GraphSAGE.
+Si estáis debatiendo tipos de capa antes de haber clavado la resolución de entidades y la partición, estáis
+puliendo la punta del iceberg mientras el casco hace agua.
+</Callout>
+
+### Cuándo usar una GNN siquiera
+
+Recurrid a una red neuronal de grafos solo cuando se cumplan **ambas** condiciones: la señal relacional es
+lo bastante fuerte como para superar el empinado coste de fontanería (un modelo tabular plano sobre las características de nodo
+por sí solas genuinamente deja dinero sobre la mesa), **y** la arista sobre la que vive esa señal sobrevive a una
+partición consciente de la topología y point-in-time. Si un árbol con gradient boosting sobre características por nodo iguala
+a vuestra GNN en una partición temporal honesta, el grafo añadió coste, no ventaja — publicad el árbol. La GNN
+se gana el sueldo solo cuando la estructura relacional es a la vez real y libre de fugas.
+
+<MatchConcepts
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Intentar de nuevo"
+  allCorrectLabel="✓ Todo emparejado"
+  termsLabel="Conceptos"
+  definitionsLabel="Definiciones"
+  pairs={[
+    { term: "Campo receptivo de K saltos", definition: "El vecindario del que depende la incrustación de un nodo tras K capas — y por tanto el radio de fuga de la GNN" },
+    { term: "Partición temporal", definition: "Entrenar sobre el grafo antes del instante T, testar después, poniendo en cuarentena las aristas cuyo efecto cabalga el corte" },
+    { term: "Sobresuavizado", definition: "Las capas apiladas promedian vecindarios hasta que todas las incrustaciones de nodos convergen y la discriminación colapsa" },
+    { term: "Topología no estacionaria", definition: "El grafo se recablea entre regímenes — las redes de correlación se densifican en un desplome, rompiendo la estructura aprendida" },
+    { term: "Impuesto de la fontanería de datos", definition: "La cuota dominante de un proyecto de GNN gastada en resolución de entidades, definición de aristas y construcción point-in-time" },
+  ]}
+/>
+
+## Una lista de comprobación previa al despegue
+
+<MCQ
+  client:visible
+  pretest
+  pretestLabel="Antes de leer — arriésgate a adivinar"
+  checkLabel="Comprobar"
+  retryLabel="Intentar de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No del todo."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  question="¿Qué disciplina del curso de alfa es el hermano más cercano de una auditoría de fugas previa al despegue de una GNN?"
+  options={[
+    { text: "La disciplina del Sharpe-desinflado / validación cruzada purgada — negarse a fiarse de un número titular hasta haber restado el sesgo de selección y confirmado que sobrevive a una partición honesta y sin fugas", correct: true },
+    { text: "Maximizar la capacidad del modelo hasta que el error dentro de muestra llega a cero" },
+    { text: "Reportar el mejor resultado de la mayor búsqueda de arquitectura posible" },
+    { text: "Fiarse de un AUC alto en validación cruzada porque la validación cruzada no puede filtrar" },
+  ]}
+  explanation="Una comprobación previa al despegue de una GNN es el hermano-grafo de la paranoia del Sharpe-desinflado: no os creáis un número hasta haber demostrado que la partición fue honesta, las aristas fueron point-in-time, y el resultado bate a una línea base tras tener en cuenta las pruebas."
+/>
+
+**Analogía.** Un piloto no se fía de un avión porque luzca reluciente en la pista; ejecuta una
+lista de comprobación previa al despegue fija cada vez, porque los modos de fallo son conocidos y el coste
+de saltársela es un cráter humeante. Un resultado de una GNN merece el mismo ritual. Abajo está la lista —
+el hermano-GNN de la disciplina del Sharpe-desinflado que ya lleváis de *Aprendizaje automático para
+alfa*. Ejecutadla antes de fiaros de *cualquier* resultado de grafos, incluido el vuestro.
+
+<Callout variant="warning" title="Antes de fiarte de un resultado de una GNN — ejecuta la lista">
+1. ¿Partición consciente de la topología Y temporal? (Nada de partición aleatoria de nodos sobre un grafo conexo — eso filtra
+por construcción.)
+2. ¿Son todas las aristas point-in-time, con las aristas que cabalgan la frontera en cuarentena? (Ninguna arista informa una predicción
+antes de que existiera.)
+3. ¿Es la red lo bastante poco profunda como para evitar el sobresuavizado? (Normalmente de 2 a 3 capas; más solo con
+conexiones de salto y una necesidad real de largo alcance.)
+4. ¿Se ha comprobado la topología entre regímenes? (¿Se sigue pareciendo el grafo del periodo en calma al
+grafo del periodo de estrés en el que vas a desplegar?)
+5. ¿Bate a una línea base sin grafo en la misma partición honesta? (Si un modelo tabular lo iguala, el
+grafo añadió coste, no ventaja.)
+6. ¿Está la métrica titular desinflada por el número de pruebas? (Cada arquitectura, umbral y
+semilla que buscaste es una prueba — desínflalo, exactamente como desinflas un Sharpe.)
+
+Si alguna casilla queda sin marcar, el número está sin verificar. Un resultado de una GNN que no puedes defender en las seis es una
+diapositiva de vuelta de la victoria, no un modelo.
+</Callout>
+
+### Cuándo usarlo
+
+Ejecutad esta lista sobre cada resultado de grafos que produzcáis *y* cada uno que os pidan creer —
+antes del despliegue, antes de un informe, antes de una presentación. Es barato comparado con un modelo que falla
+silenciosamente en producción. En el momento en que la métrica reportada de una GNN no pueda sobrevivir a las seis preguntas,
+tratadla como tratáis un Sharpe sin desinflar de una búsqueda de mil pruebas: interesante,
+no probado, y todavía no operable.
+
+## Repaso
+
+Entrasteis capaces de construir una red neuronal de grafos. Salís capaces de *auditar* una. Las cuatro formas en que una
+GNN os miente os resultan ahora familiares: filtra a través de las aristas más fuerte que cualquier tabla porque el paso
+de mensajes es fuga por diseño; exige una partición consciente de la topología, temporal y en cuarentena o su AUC
+es ficción; colapsa en sobresuavizado si confundís profundidad con poder; y se entrena sobre
+una topología que se recablea en la crisis exacta que se supone que debe sobrevivir. Detrás de todo ello está el
+impuesto de la fontanería — el poco glamuroso 85% del trabajo que realmente decide el resultado, mientras todos
+discuten sobre la arquitectura que es lo que menos decide.
+
+<MindMap
+  client:visible
+  outlineLabel="Esquema en texto"
+  title="La auditoría honesta: fugas y sobresuavizado"
+  caption="Construye el mapa: cuatro modos de fallo, el impuesto de la fontanería bajo ellos, y la lista previa al despegue que los caza todos."
+  root={{
+    label: 'Auditar una GNN financiera',
+    children: [
+      { label: 'Los grafos filtran más que las tablas', children: [
+        { label: 'El paso de mensajes consume vecinos' },
+        { label: 'Radio de fuga = número de capas (K saltos)' },
+        { label: 'El nodo de test incrusta vecinos de entrenamiento' },
+      ]},
+      { label: 'Partición consciente de la topología', children: [
+        { label: 'Partición temporal (estándar en finanzas)' },
+        { label: 'Inductiva (subgrafo reservado)' },
+        { label: 'Enmascarado de aristas para predicción de enlaces' },
+        { label: 'Cuarentena de aristas que cabalgan la frontera' },
+      ]},
+      { label: 'Sobresuavizado', children: [
+        { label: 'Las capas promedian hasta que las incrustaciones convergen' },
+        { label: 'Más profundo NO es mejor (al contrario que las CNN)' },
+        { label: 'Arreglo: 2-3 capas, conexiones de salto, norm' },
+      ]},
+      { label: 'Topología no estacionaria', children: [
+        { label: 'Las correlaciones se disparan en un desplome' },
+        { label: 'El grafo se densifica, sobresuaviza cuando importa' },
+        { label: 'Elección grafo estático vs temporal' },
+      ]},
+      { label: 'Impuesto de fontanería de datos (~85%)', children: [
+        { label: 'Resolución de entidades' },
+        { label: 'Umbrales de aristas' },
+        { label: 'Marcas temporales point-in-time' },
+        { label: 'La arquitectura es lo que menos importa' },
+      ]},
+      { label: 'Lista previa al despegue', children: [
+        { label: 'Partición honesta + cuarentena' },
+        { label: 'Poco profunda + comprobada entre regímenes' },
+        { label: 'Bate la línea base, desinflada por pruebas' },
+      ]},
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Comprobación mixta: ¿sabes auditar un resultado de grafos?"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  correctCountLabel="correctas"
+  completeLabel="Completado"
+  completeTitleLabel="Cuestionario completado"
+  nextLabel="Siguiente"
+  seeResultsLabel="Ver resultados"
+  backLabel="Atrás"
+  scoreLabel="Has acertado"
+  restartLabel="Reiniciar"
+  checkLabel="Comprobar"
+  retryLabel="Intentar de nuevo"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No del todo."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  questions={[
+    {
+      question: "Una GNN de 3 capas sobre un grafo interbancario denso reporta un AUC de 0,96 sobre una partición aleatoria de nodos. Detecta la trampa.",
+      options: [
+        { text: "En un grafo conexo una partición aleatoria deja que los nodos de test pasen mensajes con vecinos de entrenamiento; con 3 capas la fuga alcanza 3 saltos y puede arrastrar el conjunto de entrenamiento entero a cada predicción de test — el AUC está inflado", correct: true },
+        { text: "Un AUC de 0,96 está bien porque las particiones aleatorias son el patrón oro insesgado" },
+        { text: "El único problema es que 3 capas son demasiado pocas para capturar la estructura interbancaria" },
+        { text: "Los grafos densos no pueden filtrar porque todos los nodos parecen iguales" },
+      ],
+      explanation: "El autoengaño número uno de las GNN: un AUC alto sobre una partición aleatoria. El radio de fuga es igual al número de capas, así que en un grafo denso un modelo de 3 capas deja que el conjunto de entrenamiento susurre a cada nodo de test. Re-particiona temporal o inductivamente antes de creerte el número.",
+    },
+    {
+      question: "La GNN de un equipo rinde por debajo de un árbol con gradient boosting, así que suben las capas de 3 a 8. Causa y efecto: ¿qué les pasa a las incrustaciones de nodos y por qué?",
+      options: [
+        { text: "Las capas extra promedian sobre vecindarios cada vez mayores, así que las incrustaciones convergen hacia un vector común (sobresuavizado) y la discriminación de nodos colapsa — el rendimiento empeora, no mejora", correct: true },
+        { text: "Las incrustaciones se vuelven más nítidas y distintas, arreglando el bajo rendimiento" },
+        { text: "Nada cambia; el número de capas no afecta a las incrustaciones" },
+        { text: "El modelo sobreajusta las etiquetas pero las incrustaciones quedan separadas" },
+      ],
+      explanation: "Añadir profundidad a una GNN impulsa el sobresuavizado: el promediado repetido de vecindarios empuja cada incrustación hacia la media global hasta que los nodos son indistinguibles. '¿Rinde poco? Añade capas' es exactamente al revés — la cura suele ser menos capas más conexiones de salto.",
+    },
+    {
+      question: "Construyes una red de correlación con un umbral de arista de 0,5 y entrenas sobre un periodo en calma. ¿Por qué es peligroso desplegarla en un desplome?",
+      options: [
+        { text: "En un desplome las correlaciones se disparan hacia 1, casi todo par supera el umbral, y el grafo se vuelve casi completo — la topología dispersa aprendida ya no existe y el paso de mensajes sobresuaviza en un solo paso", correct: true },
+        { text: "Las redes de correlación son fijas, así que el grafo del desplome es idéntico al grafo en calma" },
+        { text: "El peligro es solo que cambian las características de los nodos; las aristas son estables" },
+        { text: "Un desplome vuelve el grafo más disperso, lo que siempre mejora el modelo" },
+      ],
+      explanation: "Topología no estacionaria: la red de correlación se densifica drásticamente en un desplome, rompiendo la estructura aprendida exactamente cuando importa y acelerando el sobresuavizado sobre el grafo casi completo. Un grafo estático de periodo en calma está más equivocado en el régimen de estrés para el que existe.",
+    },
+    {
+      question: "Estás prediciendo si dos empresas formarán una arista de transacción. ¿Qué precaución es innegociable?",
+      options: [
+        { text: "Enmascarado de aristas — oculta la arista objetivo durante el paso de mensajes para que no pueda pasar información entre sus dos extremos y dejar que el modelo lea su propia respuesta", correct: true },
+        { text: "Usa tantas capas como sea posible para que el modelo vea el grafo entero" },
+        { text: "Promedia el grafo sobre cinco años para obtener una estructura estable" },
+        { text: "Reporta el mejor AUC de todos los umbrales que probaste, sin desinflar" },
+      ],
+      explanation: "En predicción de enlaces la arista objetivo debe enmascararse durante el paso de mensajes. Dejarla dentro deja que los extremos intercambien información a través de la mismísima arista que se está prediciendo — el modelo lee trivialmente la respuesta, la forma más pura de fuga de grafos.",
+    },
+    {
+      question: "¿Qué combinación de partición y auditoría te haría fiarte de la ventaja reportada de una GNN financiera sobre una línea base tabular?",
+      options: [
+        { text: "Una partición temporal con las aristas que cabalgan la frontera en cuarentena, una red poco profunda, la topología comprobada entre regímenes, y una métrica desinflada por cada arquitectura y umbral probados — que bate a la línea base en la misma partición honesta", correct: true },
+        { text: "Una partición aleatoria de nodos 80/20 con una red profunda y el mejor AUC de una gran búsqueda de arquitectura", correct: false },
+        { text: "Un único ajuste dentro de muestra sin test reservado, ya que las GNN no pueden sobreajustar grafos", correct: false },
+        { text: "Un grafo estático promediado en ventana larga sin cuarentena, juzgado sobre el AUC de entrenamiento", correct: false },
+      ],
+      explanation: "Esta es la lista previa al despegue como hermano-GNN de la disciplina del Sharpe-desinflado: partición temporal honesta, cuarentena, poco profunda para evitar el sobresuavizado, topología comprobada entre regímenes, desinflada por pruebas, y una victoria sobre una línea base sin grafo en la misma partición. Solo entonces la ventaja relacional es real y operable.",
+    },
+  ]}
+/>

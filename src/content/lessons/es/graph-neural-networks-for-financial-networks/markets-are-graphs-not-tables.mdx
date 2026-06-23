@@ -1,0 +1,716 @@
+---
+title: "Los mercados son grafos, no tablas"
+description: "La mayoría del ML en finanzas aplana un mundo interconectado en una tabla de características y corta las relaciones. Este es el cambio de representación: nodos y aristas, dirigido frente a no dirigido, ponderado frente a binario, la pila de características de nodo/arista/grafo y los cuatro grafos canónicos de las finanzas — préstamos interbancarios, cadenas de suministro, redes de correlación de activos y grafos de monederos/transacciones on-chain."
+topic: "es/graph-neural-networks-for-financial-networks"
+order: 1
+minutes: 18
+updated: 2026-06-23
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap } from '@/components/react';
+
+Os pasasteis un curso entero enseñando a las redes neuronales a leer *secuencias* — el precio
+de un activo, el balance de un banco, el historial de transacciones de una dirección, recorridos
+a lo largo del tiempo. Las redes se volvieron buenas. Luego llegó 2008, y la quiebra de un solo
+banco de inversión de tamaño medio se llevó por delante al resto del sistema, y ni uno de
+vuestros preciosos modelos de secuencia por activo lo vio venir. ¿Por qué iban a verlo? Nunca
+les dijisteis que los bancos estaban *conectados*.
+
+He aquí la verdad incómoda con la que abre este curso: **los riesgos más caros de las finanzas
+viven en las relaciones entre entidades, y el pipeline de ML estándar borra esas relaciones en
+el primer paso.** Cargáis un CSV. Cada fila es un banco, una empresa, una acción, un monedero.
+Cada columna es una característica. Y en el instante en que lo hacéis, habéis cometido un pequeño
+acto de vandalismo — habéis tomado un mundo ricamente interconectado y lo habéis embadurnado
+plano, cortando cada enlace que lo hacía interesante.
+
+Esta lección es el cambio de representación. Antes de tocar una sola red neuronal de grafos
+(GNN) — un modelo que aprende directamente sobre la estructura de nodos-y-aristas en lugar de
+sobre filas planas — necesitáis *ver* los mercados como grafos. Una vez que lo hacéis, ya no
+podéis dejar de verlo, y el resto del curso se convierte en un recorrido por qué hacer al
+respecto.
+
+## El vandalismo de aplanar a una tabla
+
+<MCQ
+  client:visible
+  pretest
+  pretestLabel="Antes de leer — arriésgate a adivinar"
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  question="Construyes una tabla de características con una fila por banco — activos, apalancamiento, depósitos, ratio de capital. ¿Qué descarta fundamentalmente esta representación?"
+  options={[
+    { text: "Quién está conectado con quién — qué bancos prestan a cuáles, las relaciones que transmiten el contagio", correct: true },
+    { text: "Nada importante; toda la información relevante está en los números propios de cada banco" },
+    { text: "Las marcas de tiempo exactas de cada fila" },
+    { text: "Los nombres de las columnas, que un modelo nunca usa de todos modos" },
+  ]}
+  explanation="Una tabla de características codifica cada entidad de forma aislada. Los enlaces entre entidades — quién presta a quién, quién suministra a quién — desaparecen por completo. Esa estructura cortada es exactamente donde viven el contagio y el riesgo sistémico."
+/>
+
+**Analogía.** Imaginad describir el tráfico de una ciudad entregándole a alguien una hoja de
+cálculo: una fila por intersección, columnas para "coches por hora" y "velocidad media". Útil,
+hasta que un choque en una carretera atasca otras seis. La hoja de cálculo *no puede representar
+eso*, porque nunca registró qué carreteras *conectan con* cuáles. Medisteis las intersecciones y
+borrasteis las calles. Una tabla de características de bancos hace lo mismo — mide los bancos y
+borra los préstamos.
+
+**Definición.** Una **tabla de características** (también llamada datos tabulares o planos)
+representa un conjunto de datos como una matriz donde cada *fila* es una entidad y cada *columna*
+es un atributo de esa entidad, medido de forma aislada. Formalmente, la entidad $i$ es el vector
+$x_i \in \mathbb{R}^d$, y el conjunto de datos es el apilamiento $X \in \mathbb{R}^{n \times d}$.
+La omisión crucial: en ningún sitio de $X$ hay una celda que diga "la entidad $i$ está
+*relacionada con* la entidad $j$". Esa información relacional — la **adyacencia** — es
+estructuralmente irrepresentable en una tabla plana. No se pierde por el ruido; se pierde por la
+*forma del contenedor*.
+
+**Ejemplo resuelto.** Tomad cuatro bancos: A, B, C, D. La tabla de características tiene este
+aspecto.
+
+| Banco | Activos (\$mm) | Apalancamiento | Ratio de capital |
+|---|---|---|---|
+| A | 100 | 12 | 8% |
+| B | 40 | 20 | 5% |
+| C | 60 | 15 | 7% |
+| D | 30 | 25 | 4% |
+
+Ahora supongamos que la situación *real* es: A prestó \$20mm a D, y D está a punto de impagar.
+Un modelo entrenado con esta tabla ve a A como un banco grande, modestamente apalancado y de
+aspecto sano, y predice: bien. No tiene ninguna columna para "a A le deben \$20mm el banco más
+arriesgado del conjunto", porque el préstamo de A a D es una *relación*, y la tabla no tiene
+sitio donde poner relaciones. El hecho más importante para el riesgo de A — su exposición a D —
+es exactamente el hecho que la representación descartó. La aritmética que el modelo *sí* puede
+hacer (8% de capital, apalancamiento 12x → parece seguro) es aritmética sobre las entradas
+equivocadas.
+
+<Callout variant="warning" title="El aplanamiento es silencioso">
+Aplanar a una tabla nunca lanza un error. El pipeline corre, el modelo entrena, las métricas
+parecen bien en las filas que resultan ser independientes. El daño solo aflora cuando una
+relación importa — una contraparte impaga, un proveedor se detiene, un clúster correlacionado se
+mueve junto — y vuestro modelo, al que nunca se le mostraron los enlaces, queda ciego. Un fallo
+de representación silencioso es el tipo más peligroso, porque nada os avisa de que ocurrió.
+</Callout>
+
+### Cuándo usarlo
+
+Una tabla de características es la representación *correcta* cuando las entidades realmente son
+independientes — cuando predecir una fila no depende genuinamente de ninguna otra fila.
+¿Predecir si *este* cliente se da de baja a partir del comportamiento de *este* cliente? Tabular
+está bien. En el momento en que la respuesta para la entidad $i$ depende de *con quién está
+conectada $i$* — riesgo de contraparte, contagio, comovimiento, flujos de fondos — una tabla es
+el contenedor equivocado, y deberíais recurrir a un grafo.
+
+<FillBlank
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  explanationLabel="Explicación"
+  correctResultLabel="✓ Correcto"
+  partialResultWord="correctas"
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+  question="Rellena lo que una tabla de características plana no puede representar."
+  text="Una tabla de características almacena los atributos propios de cada entidad pero estructuralmente no puede almacenar las {{relaciones entre entidades|cabeceras de columna|marcas de tiempo}}, que es exactamente donde viven el contagio y el riesgo sistémico."
+  explanation="Cada fila es una entidad de forma aislada. Las relaciones — la adyacencia entre entidades — no tienen celda donde vivir. Esa es la omisión estructural, no un problema de calidad de los datos."
+/>
+
+## Nodos y aristas: qué es realmente un grafo
+
+<MCQ
+  client:visible
+  pretest
+  pretestLabel="Antes de leer — arriésgate a adivinar"
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  question="Un grafo se escribe G = (V, E). En una red de bancos conectados por préstamos, ¿qué son V y E?"
+  options={[
+    { text: "V es el conjunto de bancos (nodos); E es el conjunto de préstamos que los conectan (aristas)", correct: true },
+    { text: "V es el volumen de negociación; E es el patrimonio de cada banco" },
+    { text: "V y E son ambos listas de números sin significado estructural" },
+    { text: "V son las aristas y E los nodos — las letras son solo etiquetas" },
+  ]}
+  explanation="V (vértices) es el conjunto de entidades — aquí, bancos. E (aristas) es el conjunto de relaciones — aquí, préstamos. El grafo es precisamente el emparejamiento de entidades con los enlaces entre ellas, que es lo que la tabla descartó."
+/>
+
+**Analogía.** Un plano de metro es un grafo que ya leéis con fluidez. Las estaciones son
+**nodos**; las líneas que las conectan son **aristas**. El plano distorsiona deliberadamente la
+geografía — las distancias están mal, los ángulos están mal — porque lo que importa es *qué
+conecta con qué*, no las coordenadas planas. Un grafo conserva las conexiones y abandona la
+pretensión de que las entidades flotan aisladas.
+
+**Definición.** Un **grafo** es el par $G = (V, E)$, donde $V$ es un conjunto de **nodos**
+(vértices) — las entidades — y $E \subseteq V \times V$ es un conjunto de **aristas** — las
+relaciones, siendo cada arista un par de nodos $(i, j)$. Sobre este esqueleto se asientan tres
+capas de características:
+
+- **Características de nodo** $x_i$: atributos de la entidad $i$ (los activos, apalancamiento,
+  ratio de capital de un banco) — exactamente las columnas de la vieja tabla de características,
+  ahora adheridas a los nodos.
+- **Características de arista** $e_{ij}$: atributos de la *relación* entre $i$ y $j$ (el tamaño
+  de un préstamo, la fuerza de una correlación) — la capa que no tiene hogar en una tabla.
+- **Características a nivel de grafo**: atributos de toda la estructura (número total de aristas,
+  conectividad global, cuán agrupada está la red).
+
+Las relaciones se almacenan habitualmente en la **matriz de adyacencia** $A$, una matriz $n
+\times n$ donde $A_{ij} = 1$ si hay una arista de $i$ a $j$ y $A_{ij} = 0$ en caso contrario. Un
+grafo es por tanto la vieja tabla de características $X$ **más** la adyacencia $A$ — y esa $A$ es
+todo el quid.
+
+**Ejemplo resuelto.** Tomad los mismos cuatro bancos, A, B, C, D, indexados 1, 2, 3, 4. Supongamos
+que los enlaces de préstamo (no dirigidos, de momento) son: A–B, A–C y C–D. Construyendo la
+matriz de adyacencia, ponemos un 1 dondequiera que dos bancos estén enlazados y 0 en caso
+contrario, con filas/columnas en orden A, B, C, D:
+
+$$ A = \begin{pmatrix} 0 & 1 & 1 & 0 \\ 1 & 0 & 0 & 0 \\ 1 & 0 & 0 & 1 \\ 0 & 0 & 1 & 0 \end{pmatrix} $$
+
+Leedla fila por fila. Fila A (arriba): $A_{12} = 1$ (A–B), $A_{13} = 1$ (A–C), así que A enlaza
+con B y C. Fila B: solo $A_{21} = 1$, así que B enlaza solo con A. Fila C: $A_{31} = 1$ y $A_{34}
+= 1$, así que C enlaza con A y D. Fila D: solo $A_{43} = 1$, así que D enlaza solo con C. Como los
+enlaces son no dirigidos, la matriz es **simétrica**: $A_{ij} = A_{ji}$, que es por lo que los 1
+se reflejan a través de la diagonal. La diagonal es toda ceros — ningún banco se presta a sí mismo.
+
+<Callout variant="info" title="La tabla nunca se fue; consiguió un socio">
+Un grafo no reemplaza vuestras características — las *aumenta*. Los vectores de características de
+nodo siguen siendo vuestras viejas columnas. Lo nuevo es la matriz de adyacencia que va al lado,
+codificando quién conecta con quién. Todo lo que aprendisteis sobre ingeniería de
+características sigue aplicándose a los nodos; solo habéis dejado de fingir que se sientan en
+habitaciones separadas.
+</Callout>
+
+### Cuándo usarlo
+
+Recurrid al marco explícito $G = (V, E)$ en el momento en que podáis nombrar las entidades *y*
+nombrar la relación que las enlaza. Si podéis terminar la frase "la entidad X está \___ a la
+entidad Y" con una relación real (presta a, suministra a, correlaciona con, envía fondos a),
+tenéis aristas, y tenéis un grafo. Si no podéis, puede que genuinamente tengáis datos tabulares
+— no forcéis una estructura que no está ahí.
+
+<MatchConcepts
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Elige un término y luego su definición."
+  allCorrectLabel="✓ Todo emparejado"
+  partialResultWord="correctas"
+  pickDefinitionHint="→ ahora elige una definición"
+  notLinkedHint="aún sin enlazar"
+  termsLabel="Términos"
+  definitionsLabel="Definiciones"
+  pairs={[
+    { term: "Nodo (vértice)", definition: "Una entidad del grafo — un banco, empresa, activo o monedero" },
+    { term: "Arista", definition: "Una relación que enlaza dos nodos — un préstamo, un contrato de suministro, una correlación, una transferencia" },
+    { term: "Característica de nodo", definition: "Un atributo de una entidad, como el apalancamiento de un banco — las viejas columnas de la tabla" },
+    { term: "Característica de arista", definition: "Un atributo de una relación, como el tamaño de un préstamo — la capa que una tabla no puede almacenar" },
+    { term: "Matriz de adyacencia", definition: "La matriz n por n cuya entrada es 1 cuando dos nodos están enlazados y 0 en caso contrario" },
+  ]}
+/>
+
+## Dirigido frente a no dirigido, ponderado frente a binario
+
+<MCQ
+  client:visible
+  pretest
+  pretestLabel="Antes de leer — arriésgate a adivinar"
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  question="El banco A presta 20 mil millones de dólares al banco D. ¿Cómo debería representarse esa arista?"
+  options={[
+    { text: "Dirigida (A apunta a D) y ponderada (por la exposición de 20 mil millones) — la relación tiene tanto dirección como magnitud", correct: true },
+    { text: "No dirigida y binaria — un préstamo o existe o no, nada más" },
+    { text: "No dirigida pero ponderada — la dirección nunca importa para los préstamos" },
+    { text: "Dirigida pero binaria — el importe del préstamo es irrelevante para el riesgo" },
+  ]}
+  explanation="Un préstamo fluye en un sentido (a A le debe D, no al revés), así que la arista es dirigida. El importe de la exposición es toda la historia del riesgo, así que la arista es ponderada. Colapsarla a no-dirigida-binaria borraría tanto el quién-debe-a-quién como el cuánto."
+/>
+
+**Analogía.** La amistad es no dirigida — si tú eres mi amigo, yo soy el tuyo, simétrico. *Deber
+dinero* es dirigido — que yo te deba \$100 es un estado del mundo muy distinto de que tú me debas
+\$100, y fingir que son lo mismo es como pierdes \$200. "Ponderado frente a binario" es la
+diferencia entre "te debo algo" (binario, inútil) y "te debo \$100" (ponderado, accionable).
+
+**Definición.** Las aristas vienen en dos sabores independientes, dando cuatro combinaciones:
+
+- **No dirigida**: la arista $(i, j)$ es la misma que $(j, i)$; la matriz de adyacencia es
+  simétrica ($A_{ij} = A_{ji}$). Usadla para relaciones mutuas — la correlación entre dos
+  activos es la misma en ambos sentidos.
+- **Dirigida**: $(i, j)$ difiere de $(j, i)$; la matriz generalmente *no* es simétrica. Usadla
+  para relaciones unidireccionales — A presta a D, D no por ello presta a A.
+- **Binaria**: las entradas de arista son 0 o 1 — el enlace o existe o no.
+- **Ponderada**: las entradas de arista son números reales $W_{ij}$ que portan magnitud — el
+  tamaño del préstamo, la fuerza de la correlación. La matriz es entonces una **matriz de pesos**
+  $W$ en lugar de una adyacencia 0/1 simple.
+
+**Ejemplo resuelto.** Tratad ahora los préstamos bancarios como lo que son: dirigidos y
+ponderados. Supongamos que A prestó \$20mm a D, A prestó \$5mm a C y C prestó \$8mm a B.
+Indexamos A, B, C, D como 1, 2, 3, 4 y ponemos el *importe prestado de fila a columna* en cada
+celda:
+
+$$ W = \begin{pmatrix} 0 & 0 & 5 & 20 \\ 0 & 0 & 0 & 0 \\ 0 & 8 & 0 & 0 \\ 0 & 0 & 0 & 0 \end{pmatrix} $$
+
+Leed la fila A: $W_{13} = 5$ y $W_{14} = 20$ — a A le deben C y D. Leed la fila C: $W_{32} = 8$ —
+a C le debe B. Las filas B y D son todas ceros: B y D no prestaron a nadie (son prestatarios
+puros). La matriz **no es simétrica** — $W_{14} = 20$ pero $W_{41} = 0$ — lo que codifica
+correctamente que A está expuesto a D, no al revés. Comparad con una red de correlación sobre las
+mismas cuatro entidades: allí, $W_{ij} = W_{ji}$ siempre, porque si el activo A correlaciona 0,6
+con el activo D, entonces D correlaciona 0,6 con A por definición.
+
+| Propiedad | Préstamo interbancario | Correlación de activos |
+|---|---|---|
+| Dirección | Dirigida (A → D) | No dirigida (A ↔ D) |
+| Peso | Exposición en dólares | Magnitud de correlación |
+| Simetría de la matriz | Asimétrica | Simétrica |
+| Bucles propios | Ninguno (ningún banco se presta a sí mismo) | La diagonal es 1 (autocorrelación) |
+
+<Callout variant="warning" title="La dirección es la dirección del riesgo">
+Simetrizar un grafo financiero dirigido por comodidad — fingir que A→D y D→A son lo mismo — no
+es una simplificación inocua. Le dice a vuestro modelo que las exposiciones de A y de D son
+intercambiables cuando son *opuestas*. En el análisis de contagio, la dirección *es* el
+mecanismo: las pérdidas fluyen del prestatario al prestamista a lo largo de la flecha. Quitad la
+flecha y habréis borrado la física.
+</Callout>
+
+### Cuándo usarlo
+
+Elegid **dirigida** cuando la relación tenga un dador y un receptor (préstamos, flujos de
+suministro, transferencias de fondos, propiedad). Elegid **no dirigida** para relaciones
+genuinamente mutuas (correlación, copertenencia, similitud). Elegid **ponderada** cuando *cuánto*
+cambie la respuesta (casi siempre lo hace en finanzas), y reservad **binaria** para el caso raro
+en que la mera existencia es todo lo que importa — e incluso entonces, preguntaos si hay un peso
+escondido a plena vista.
+
+<Categorize
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  explanationLabel="Explicación"
+  allCorrectLabel="✓ Todo clasificado"
+  partialResultWord="correctas"
+  instructions="Coloca cada elemento en su grupo correcto."
+  question="Clasifica cada relación financiera según cómo debería representarse su arista."
+  buckets={["Dirigida", "No dirigida"]}
+  items={[
+    { text: "El banco A presta al banco D", bucket: "Dirigida" },
+    { text: "Correlación entre dos acciones", bucket: "No dirigida" },
+    { text: "Un proveedor envía piezas a un fabricante", bucket: "Dirigida" },
+    { text: "Dos activos se mueven juntos en el mismo clúster de riesgo", bucket: "No dirigida" },
+    { text: "Un monedero envía cripto a otro monedero", bucket: "Dirigida" },
+    { text: "Dos empresas comparten el mismo miembro del consejo", bucket: "No dirigida" },
+  ]}
+  explanation="Préstamos, envíos y transferencias tienen un dador y un receptor — dirigidos. La correlación, el comovimiento y la pertenencia compartida son mutuos por definición — no dirigidos y simétricos."
+/>
+
+## Grado, vecindario, caminos y saltos
+
+<MCQ
+  client:visible
+  pretest
+  pretestLabel="Antes de leer — arriésgate a adivinar"
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  question="Un banco está conectado con otros 9 bancos — el grado más alto de la red. ¿Lo convierte eso en el más peligroso sistémicamente?"
+  options={[
+    { text: "No necesariamente — el grado cuenta conexiones, pero la importancia sistémica depende del tamaño y el riesgo de esas conexiones, no solo de su número", correct: true },
+    { text: "Sí, siempre — más conexiones significan más riesgo sistémico, y punto" },
+    { text: "No — un grado alto siempre significa que un banco es seguro y está bien diversificado" },
+    { text: "El grado no tiene nada que ver con el riesgo de ninguna manera" },
+  ]}
+  explanation="El grado es un recuento bruto de enlaces. Un banco con 9 conexiones diminutas y sanas puede importar mucho menos que un banco con 2 exposiciones enormes a contrapartes frágiles. La importancia sistémica pesa a quién y cuánto — exactamente lo que medidas posteriores como DebtRank capturan."
+/>
+
+**Analogía.** El grado es vuestro número de contactos en el móvil. Ser popular (grado alto) no
+es lo mismo que ser *importante* — el único banquero que sostiene la mitad de la deuda de la
+ciudad importa más que el influencer con 50 000 seguidores superficiales. Contar conexiones os
+dice cuán *ocupado* está un nodo, no cuánto *depende* de él el sistema.
+
+**Definición.** Tres cantidades estructurales, construidas directamente a partir de la matriz de
+adyacencia:
+
+- **Grado** $d_i$: el número de aristas que tocan el nodo $i$. Para un grafo no dirigido binario,
+  $d_i = \sum_j A_{ij}$ — suma a lo largo de la fila $i$. Los grafos dirigidos lo dividen en
+  **grado de entrada** (aristas que llegan) y **grado de salida** (aristas que salen).
+- **Vecindario** $N(i)$: el conjunto de nodos directamente conectados con $i$ — sus vecinos
+  inmediatos, a una arista de distancia.
+- **Camino** y **saltos**: un camino es una secuencia de aristas que conecta dos nodos; un
+  **salto** es un paso de una arista a lo largo de él. El **vecindario de $k$ saltos** de $i$ es
+  todo nodo alcanzable en $k$ pasos. (Quedaos con esto — las GNN de paso de mensajes de las
+  próximas lecciones funcionan tirando información hacia dentro desde el vecindario de $k$ saltos
+  de un nodo, un salto por capa.)
+
+**Ejemplo resuelto.** De vuelta al grafo no dirigido con aristas A–B, A–C, C–D y su adyacencia
+
+$$ A = \begin{pmatrix} 0 & 1 & 1 & 0 \\ 1 & 0 & 0 & 0 \\ 1 & 0 & 0 & 1 \\ 0 & 0 & 1 & 0 \end{pmatrix} $$
+
+Calculad cada **grado** sumando la fila: $d_A = 0+1+1+0 = 2$, $d_B = 1+0+0+0 = 1$, $d_C = 1+0+0+1
+= 2$, $d_D = 0+0+1+0 = 1$. Así que A y C son los concentradores (grado 2); B y D son hojas (grado
+1). El grado total $2+1+2+1 = 6$ es igual al doble del número de aristas (3 aristas) — una
+comprobación práctica, ya que cada arista contribuye al grado de dos nodos.
+
+Ahora el **alcance de 2 saltos** desde B. El vecindario de 1 salto de B es $N(B) = \{A\}$. Desde
+A, un salto más alcanza $\{B, C\}$. Así que el vecindario de 2 saltos de B (excluyendo a la
+propia B) es $\{A, C\}$ — B puede "sentir" a C aunque nunca le preste a C directamente, porque la
+influencia viaja B→A→C. Esa es toda la intuición detrás de por qué una GNN con dos capas permite
+a un nodo percibir a los vecinos de sus vecinos: la información se propaga un salto por capa.
+
+| Nodo | Grado | Vecinos a 1 salto | Alcanzable en 2 saltos |
+|---|---|---|---|
+| A | 2 | B, C | B, C, D |
+| B | 1 | A | A, C |
+| C | 2 | A, D | A, B, D |
+| D | 1 | C | C, A |
+
+<Callout variant="warning" title="Grado alto no es importancia alta">
+El atajo seductor "ordena los bancos por número de conexiones, esa es tu lista de riesgo
+sistémico" es erróneo, y caro. La importancia de un nodo depende de los *pesos* de sus aristas y
+de la *fragilidad* de sus vecinos — unas pocas exposiciones enormes a contrapartes tambaleantes
+ganan a muchas diminutas a sanas. Más adelante en este curso, DebtRank y medidas relacionadas
+formalizan exactamente esto: la importancia es una propiedad ponderada y recursiva, no un
+recuento de cabezas.
+</Callout>
+
+### Cuándo usarlo
+
+Usad el **grado** como un primer descriptor barato de cuán conectado está un nodo — un buen
+filtro inicial, nunca una clasificación final. Usad el pensamiento de **vecindario** y de **$k$
+saltos** cuando razonéis sobre *alcance*: cuán lejos puede viajar un shock, o cuántas capas de
+paso de mensajes necesita una GNN para dejar llegar la información relevante. Si lo que os
+importa está a dos saltos de distancia, un modelo de una capa es estructuralmente ciego a ello.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Si el banco B nunca presta al banco C, ¿por qué debería importarle a C el modelo de riesgo de B?</summary>
+
+**Respuesta.** Porque B presta a A, y A está fuertemente expuesto a C. Si C impaga, A sufre una
+pérdida, la propia solvencia de A se tambalea, y el préstamo de B *a A* es ahora más arriesgado.
+El shock viaja B ← A ← C a lo largo del camino, aunque no exista ninguna arista directa B–C. Esto
+es precisamente por qué el vecindario de 2 saltos de B importa: el contagio no respeta la
+frontera de las conexiones directas. Un modelo que solo mira la propia fila de B — o incluso solo
+sus vecinos directos — no puede ver la exposición de segundo orden que una vista de 2 saltos
+revela.
+
+</details>
+</Reveal>
+
+## Los cuatro grafos canónicos de las finanzas
+
+<MCQ
+  client:visible
+  pretest
+  pretestLabel="Antes de leer — arriésgate a adivinar"
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  question="¿Qué pregunta SOLO puede responderse con una representación de grafo, nunca con una tabla de características plana?"
+  options={[
+    { text: "Si el proveedor clave de esta empresa cierra, ¿qué fabricantes aguas abajo también se paran?", correct: true },
+    { text: "¿Cuál es el ratio deuda-patrimonio actual de esta empresa?" },
+    { text: "¿Cuántos empleados declara esta empresa?" },
+    { text: "¿Cuál fue la facturación de esta empresa el último trimestre?" },
+  ]}
+  explanation="Ratios, recuentos de personal y facturaciones son atributos por entidad — una tabla los maneja bien. 'Si X se para, ¿quién más se para?' es una pregunta sobre la propagación a lo largo de aristas proveedor→cliente, que solo la estructura del grafo codifica."
+/>
+
+**Analogía.** Cuatro ciudades distintas, cuatro planos de metro distintos — pero todos ellos son
+estaciones-y-líneas, todos ellos son grafos. Una vez que tenéis la lente $G = (V, E)$, las
+finanzas dejan de parecer cuatro problemas inconexos y empiezan a parecer un problema (la
+estructura) vistiendo cuatro disfraces. Aprended a leer el plano y podréis recorrer cualquiera de
+estas redes.
+
+**Definición.** Cuatro tipos de grafo cubren la inmensa mayoría de los problemas de redes
+financieras. Cada uno fija qué cuenta como nodo, qué cuenta como arista, si las aristas son
+dirigidas y si son ponderadas.
+
+| Grafo | Nodos | Aristas | Dirección | Peso | Una pregunta que solo el grafo responde |
+|---|---|---|---|---|---|
+| **Préstamos interbancarios** | Bancos | Préstamos / exposiciones | Dirigida | Importe de exposición | Si el banco D impaga, ¿qué prestamistas absorben la pérdida, y cascadea? |
+| **Cadena de suministro** | Empresas | Proveedor → cliente | Dirigida | Volumen de pedido / dependencia | Si un proveedor clave se detiene, ¿qué empresas aguas abajo se paran? |
+| **Correlación de activos** | Activos | Correlación por encima de un umbral | No dirigida | Magnitud de correlación | ¿Qué activos forman un clúster oculto que se hundirá junto? |
+| **Monedero/tx on-chain** | Monederos / direcciones | Transferencias | Dirigida | Importe transferido | ¿Qué monederos canalizan fondos a través de esta dirección hacia un mezclador? |
+
+**Ejemplo resuelto — construir una red de correlación.** Supongamos que cuatro activos tienen
+estas correlaciones por pares: A–B = 0,82, A–C = 0,15, A–D = 0,71, B–C = 0,10, B–D = 0,68, C–D =
+0,05. Para construir el grafo fijamos un **umbral**, digamos 0,5, y trazamos una arista no
+dirigida ponderada solo cuando la correlación absoluta lo supera. Comprobando cada par: A–B (0,82
+✓), A–C (0,15 ✗), A–D (0,71 ✓), B–C (0,10 ✗), B–D (0,68 ✓), C–D (0,05 ✗). Así que las aristas son
+A–B, A–D, B–D — un triángulo fuertemente correlacionado de A, B, D — mientras que C queda
+*aislado*, sin correlacionar con nadie por encima de 0,5. La lectura del riesgo: A, B, D son un
+clúster oculto que se moverá junto (diversificar entre ellos os compra poco), y C es el
+diversificador genuino. Esa estructura de clúster es invisible en una tabla de volatilidades por
+activo; vive enteramente en las aristas.
+
+<Callout variant="tip" title="La misma lente, cuatro disfraces">
+Fijaos en qué cambió a lo largo de los cuatro grafos y qué no. Lo que cambió: los sustantivos
+(bancos, empresas, activos, monederos), la dirección, el significado del peso. Lo que se mantuvo
+idéntico: nodos más aristas más una matriz de adyacencia, y una clase de preguntas sobre
+propagación y agrupamiento que una tabla plana simplemente no puede formular. Dominad la lente
+una vez y habréis desbloqueado las cuatro — que es exactamente por qué todo este curso está
+construido sobre grafos, no sobre cuatro manuales separados.
+</Callout>
+
+### Cuándo usarlo
+
+Emparejad el grafo con la pregunta. ¿Preguntáis sobre *cascadas y quién-absorbe-pérdidas*? →
+préstamos interbancarios. ¿Preguntáis sobre *disrupción operativa fluyendo aguas abajo*? → cadena
+de suministro. ¿Preguntáis sobre *comovimiento oculto y falsa diversificación*? → correlación de
+activos. ¿Preguntáis sobre *flujos de fondos, blanqueo y comportamiento de direcciones*? → grafo
+de transacciones on-chain. Si vuestra pregunta es sobre los números propios de una sola entidad,
+no necesitáis un grafo en absoluto — volved a la tabla.
+
+<FillBlank
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  explanationLabel="Explicación"
+  correctResultLabel="✓ Correcto"
+  partialResultWord="correctas"
+  instructions="Elige la opción correcta para cada hueco y comprueba."
+  question="Rellena la característica que define a cada grafo financiero canónico."
+  text="Una red de correlación de activos usa aristas {{no dirigidas|dirigidas}} ponderadas por la magnitud de correlación, mientras que una red de préstamos interbancarios usa aristas {{dirigidas|no dirigidas}} ponderadas por la exposición."
+  explanation="La correlación es mutua y simétrica, así que sus aristas son no dirigidas. Un préstamo fluye en un sentido del prestamista al prestatario, así que sus aristas son dirigidas — la asimetría codifica quién está expuesto a quién."
+/>
+
+## Por qué importa ahora: lo relacional gana a lo temporal-a-secas
+
+<MCQ
+  client:visible
+  pretest
+  pretestLabel="Antes de leer — arriésgate a adivinar"
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No exactamente."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  question="El curso prerrequisito enseñó modelos de secuencia que aprenden el historial de un activo a lo largo del tiempo. ¿En qué difiere un modelo de grafo en lo que captura?"
+  options={[
+    { text: "Un modelo de secuencia captura la estructura temporal dentro de una entidad; un modelo de grafo captura la estructura relacional entre entidades — son complementarios, no competidores", correct: true },
+    { text: "Los modelos de grafo son simplemente mejores y dejan obsoletos a los modelos de secuencia" },
+    { text: "Capturan exactamente lo mismo, así que usar ambos es redundante" },
+    { text: "Los modelos de secuencia capturan relaciones; los modelos de grafo capturan el tiempo — lo contrario de la verdad" },
+  ]}
+  explanation="Los modelos de secuencia (RNN, TCN, atención sobre el tiempo) modelan cómo evoluciona una entidad. Un grafo modela el cableado entre entidades en un momento. Tiempo y estructura son ejes distintos — los modelos más fuertes los combinan, que es lo que hacen las GNN temporales más adelante en este curso."
+/>
+
+**Analogía.** Vuestro curso prerrequisito le dio a cada paciente un monitor de frecuencia
+cardíaca — una preciosa serie temporal de las constantes de una persona. Este curso os entrega el
+*mapa de rastreo de contactos* — quién está cerca de quién, quién contagió a quién. Para una
+enfermedad contagiosa, la serie temporal de un paciente os dice que está enfermando; el grafo de
+contactos os dice *quién es el siguiente*. Queréis ambos monitores, y apuntar el monitor de
+frecuencia cardíaca a la pregunta "¿quién lo coge a continuación?" nunca la responderá — esa es
+una pregunta de grafo.
+
+**Definición.** La **estructura temporal** es cómo evolucionan las características de una sola
+entidad a lo largo del tiempo — el dominio de los modelos de secuencia (RNN, convoluciones
+temporales, atención sobre el tiempo) de *Aprendizaje profundo para datos de mercado*. La
+**estructura relacional** es cómo están cableadas las entidades entre sí en un punto del tiempo —
+el dominio de los modelos de grafo. Viven en **ejes ortogonales**: uno corre a lo largo del
+tiempo dentro de un nodo, el otro corre a través de las aristas entre nodos. Ninguno subsume al
+otro. Un modelo de secuencia puro, alimentado con un activo cada vez, es estructuralmente incapaz
+de ver el contagio; un modelo de grafo puro (estático) es ciego a cómo se recablea la red a lo
+largo del tiempo.
+
+**Ejemplo resuelto.** Considerad predecir si el banco D impaga el próximo trimestre, dadas dos
+opciones de modelado:
+
+| Modelo | Lo que ve | Lo que se pierde | Veredicto sobre D |
+|---|---|---|---|
+| Modelo de secuencia (por banco) | El historial propio de D de 12 trimestres de apalancamiento, depósitos, capital | Que D no debe nada a A pero que B y C se apoyan fuertemente en D | "D parece estresado pero estable" |
+| Modelo de grafo (instantánea estática) | La red de préstamos completa de este trimestre, la fragilidad de los vecinos de D | Cómo *cambió* esa red durante el último año | "D es un nodo portante en un clúster frágil" |
+| GNN temporal (ambos ejes) | El historial de cada banco *y* la red en evolución | — | "La centralidad de D está subiendo mientras su capital cae — señalízalo" |
+
+El modelo de secuencia y el grafo estático cada uno captura la mitad de la historia. La GNN
+temporal — el destino hacia el que construye este curso — las fusiona: historiales por nodo *más*
+el cableado en evolución. El sentido de esta lección de apertura es que no podéis llegar ahí
+hasta que dejéis de aplanar la red en el primer paso.
+
+<Callout variant="info" title="Hacia dónde va este curso">
+Esta lección es el cambio de representación; deliberadamente todavía no tiene ninguna GNN. A
+partir de aquí el curso enseña el paso de mensajes (cómo los nodos tiran información de sus
+vecindarios), las arquitecturas GNN centrales, luego medidas de riesgo sistémico como DebtRank, y
+finalmente GNN temporales que ponen el eje del tiempo de vuelta encima de la estructura. Todo se
+apoya en un hábito que ahora deberíais poseer: cuando os encontréis con un problema financiero,
+preguntad primero si las entidades están conectadas — y si lo están, negaos a aplanarlas.
+</Callout>
+
+### Cuándo usarlo
+
+Usad un **modelo de secuencia** cuando la pregunta sea sobre la trayectoria de una entidad a
+través del tiempo y las conexiones sean irrelevantes. Usad un **modelo de grafo** cuando la
+pregunta sea sobre estructura y propagación en un momento. Usad una **GNN temporal** cuando ambas
+importen — que, para el riesgo sistémico, el contagio y el comovimiento, es la mayor parte del
+tiempo. El pecado capital es usar un modelo de secuencia a secas para una pregunta que es
+fundamentalmente relacional, y luego preguntarse por qué nunca vio venir la cascada.
+
+<MatchConcepts
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  instructions="Elige un término y luego su definición."
+  allCorrectLabel="✓ Todo emparejado"
+  partialResultWord="correctas"
+  pickDefinitionHint="→ ahora elige una definición"
+  notLinkedHint="aún sin enlazar"
+  termsLabel="Términos"
+  definitionsLabel="Definiciones"
+  pairs={[
+    { term: "Estructura temporal", definition: "Cómo evolucionan las características de una entidad a lo largo del tiempo — el eje del modelo de secuencia" },
+    { term: "Estructura relacional", definition: "Cómo están cableadas las entidades entre sí en un momento — el eje del grafo" },
+    { term: "Modelo de secuencia a secas", definition: "Ve el historial de un activo, ciego al contagio entre entidades" },
+    { term: "Modelo de grafo estático", definition: "Ve la instantánea de la red, ciego a cómo se recablea con el tiempo" },
+    { term: "GNN temporal", definition: "Fusiona historiales por nodo con la red en evolución — ambos ejes a la vez" },
+  ]}
+/>
+
+## Repaso
+
+Llegasteis capaces de modelar un activo, un banco, un monedero a lo largo del tiempo — y
+aprendisteis por qué eso, a secas, es una venda en los ojos. Los riesgos caros viven en las
+*relaciones*, y el pipeline estándar de tabla de características las borra silenciosamente en el
+primer paso. Un grafo $G = (V, E)$ las conserva: los nodos portan las viejas características, las
+aristas portan las relaciones, y la matriz de adyacencia codifica quién conecta con quién. Las
+aristas pueden ser dirigidas o no dirigidas, ponderadas o binarias — y en finanzas la elección
+nunca es cosmética, porque la dirección es la dirección del riesgo y el peso es la magnitud del
+riesgo. El grado, el vecindario y el alcance de $k$ saltos describen la estructura, con la
+advertencia de que un recuento de conexiones no es importancia sistémica. Cuatro grafos canónicos
+— préstamos interbancarios, cadenas de suministro, correlaciones de activos y transacciones
+on-chain — cubren la mayor parte de las finanzas, todos la misma lente con distintos disfraces. Y
+los grafos no reemplazan a los modelos de secuencia que ya conocéis; son el eje ortogonal con el
+que los mejores modelos los fusionan con el tiempo.
+
+<MindMap
+  client:visible
+  eyebrow="Visión de conjunto"
+  outlineLabel="Esquema en texto"
+  title="Los mercados son grafos, no tablas"
+  caption="Construye el mapa: el cambio de representación, el vocabulario de grafos, los cuatro grafos canónicos de las finanzas y dónde se une al eje del tiempo."
+  root={{
+    label: 'Mercados como grafos',
+    children: [
+      { label: 'Aplanar es vandalismo', children: [
+        { label: 'Tabla = entidades aisladas' },
+        { label: 'Borra la adyacencia' },
+        { label: 'Falla en silencio hasta que un enlace importa' },
+      ]},
+      { label: 'Grafo G = (V, E)', children: [
+        { label: 'Nodos = entidades' },
+        { label: 'Aristas = relaciones' },
+        { label: 'Características de nodo / arista / grafo' },
+        { label: 'Matriz de adyacencia A' },
+      ]},
+      { label: 'Tipos de arista', children: [
+        { label: 'Dirigida frente a no dirigida' },
+        { label: 'Ponderada frente a binaria' },
+        { label: 'Dirección = dirección del riesgo' },
+      ]},
+      { label: 'Medidas de estructura', children: [
+        { label: 'Grado (un recuento, no importancia)' },
+        { label: 'Vecindario' },
+        { label: 'Alcance de k saltos (el contagio viaja)' },
+      ]},
+      { label: 'Cuatro grafos financieros', children: [
+        { label: 'Préstamos interbancarios (dirigido, ponderado)' },
+        { label: 'Cadena de suministro (dirigido)' },
+        { label: 'Correlación de activos (no dirigido, ponderado)' },
+        { label: 'Monederos on-chain (dirigido)' },
+      ]},
+      { label: 'Relacional frente a temporal', children: [
+        { label: 'Secuencia = tiempo dentro de un nodo' },
+        { label: 'Grafo = estructura entre nodos' },
+        { label: 'La GNN temporal fusiona ambos' },
+      ]},
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Comprobación mixta: ¿ves ya el grafo?"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  correctCountLabel="correctas"
+  completeLabel="Completado"
+  completeTitleLabel="Cuestionario completado"
+  perfectMessage="Puntuación perfecta — ¡bien hecho!"
+  goodMessage="Buen trabajo — repasa las que has fallado."
+  keepPracticingMessage="Sigue practicando — tú puedes."
+  gateLabel="Comprueba tu respuesta para continuar."
+  nextLabel="Siguiente"
+  seeResultsLabel="Ver resultados"
+  backLabel="Atrás"
+  scoreLabel="Has acertado"
+  restartLabel="Reiniciar"
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="¡Correcto!"
+  incorrectLabel="No del todo."
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  questions={[
+    {
+      question: "En el grafo no dirigido de cuatro bancos con aristas A–B, A–C y C–D, ¿cuál es el grado del nodo A?",
+      options: [
+        { text: "2 — A conecta con B y C", correct: true },
+        { text: "1 — A conecta solo con B" },
+        { text: "3 — A conecta con B, C y D" },
+        { text: "0 — A no tiene conexiones" },
+      ],
+      explanation: "El grado es el recuento de aristas que tocan un nodo. A toca las aristas A–B y A–C, así que su grado es 2. No hay arista A–D, así que D no es un vecino directo.",
+    },
+    {
+      question: "Un analista de riesgo quiere saber qué fabricantes aguas abajo se paran si un único proveedor crítico cierra. ¿Qué representación puede responder esto de verdad?",
+      options: [
+        { text: "Un grafo de cadena de suministro dirigido, porque la respuesta vive en las aristas proveedor-a-cliente y en la propagación a lo largo de ellas", correct: true },
+        { text: "Una tabla de características con una fila por empresa y columnas para facturación y plantilla" },
+        { text: "La serie temporal de precios de un solo activo pasada por una RNN" },
+        { text: "Cualquiera de las anteriores — la representación no importa para esta pregunta" },
+      ],
+      explanation: "Las preguntas de propagación son preguntas de grafo. Una tabla de atributos por empresa no tiene aristas a lo largo de las cuales trazar la disrupción; solo el grafo dirigido proveedor→cliente codifica la cadena.",
+    },
+    {
+      question: "¿Qué afirmación sobre el grafo de préstamos interbancarios es cierta?",
+      options: [
+        { text: "Sus aristas son dirigidas y ponderadas, así que su matriz de pesos es generalmente asimétrica", correct: true },
+        { text: "Sus aristas son no dirigidas, así que la matriz de pesos es siempre simétrica" },
+        { text: "Sus aristas son binarias, porque el tamaño del préstamo es irrelevante para el contagio" },
+        { text: "No tiene aristas, ya que los bancos son entidades independientes" },
+      ],
+      explanation: "Un préstamo fluye del prestamista al prestatario (dirigido) y porta un importe de exposición (ponderado). Como que A preste a D no implica que D preste a A, la matriz de pesos es generalmente no simétrica.",
+    },
+    {
+      question: "Un banco tiene el grado más alto de la red — conectado con más contrapartes que ningún otro. Un analista junior concluye que debe de ser el más peligroso sistémicamente. ¿Dónde está la trampa?",
+      options: [
+        { text: "El grado cuenta conexiones pero ignora su tamaño y la fragilidad de las contrapartes; la importancia es ponderada y recursiva, no un recuento de cabezas", correct: true },
+        { text: "No hay trampa — el grado más alto siempre significa el riesgo sistémico más alto" },
+        { text: "La trampa es que un grado alto significa que el banco está perfectamente seguro" },
+        { text: "El grado no puede calcularse en absoluto para grafos ponderados" },
+      ],
+      explanation: "Un nodo con muchos enlaces diminutos a bancos sanos puede importar mucho menos que uno con un par de exposiciones enormes a frágiles. La importancia sistémica pesa la magnitud y la fragilidad de los vecinos — exactamente lo que medidas como DebtRank capturan más adelante.",
+    },
+    {
+      question: "Un equipo usa solo modelos de secuencia por activo para predecir el riesgo sistémico y queda cegado por una cascada. ¿Qué revela esto sobre la estructura temporal frente a la relacional?",
+      options: [
+        { text: "Los modelos de secuencia capturan el tiempo dentro de una entidad pero son ciegos a la estructura relacional entre entidades; el contagio es relacional, así que no pueden verlo venir", correct: true },
+        { text: "Los modelos de secuencia ya capturan relaciones, así que el fallo debe de ser un bug" },
+        { text: "La estructura relacional y la temporal son idénticas, así que la elección de modelo fue irrelevante" },
+        { text: "Los modelos de grafo tendrían el mismo punto ciego, ya que ningún modelo puede predecir cascadas" },
+      ],
+      explanation: "Tiempo y estructura son ejes ortogonales. Un modelo de secuencia por activo nunca ve el cableado entre entidades, así que es estructuralmente incapaz de anticipar un contagio que viaja a lo largo de aristas. La solución es añadir el eje relacional — en último término una GNN temporal.",
+    },
+  ]}
+/>

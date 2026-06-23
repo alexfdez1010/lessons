@@ -1,0 +1,408 @@
+---
+title: "Double Machine Learning"
+description: "Conserva tus modelos de gradient boosting y deep learning y consigue aun así una estimación causal insesgada: ortogonalidad de Neyman, cross-fitting, eliminar por partialling-out confusores de alta dimensión con modelos de nuisance de ML, y por qué las estimaciones plug-in ingenuas de 'mete el tratamiento entre las características' están sesgadas."
+topic: "es/causal-inference-for-alpha-and-execution"
+order: 6
+minutes: 22
+updated: 2026-06-23
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, PurgedCvSplit } from '@/components/react';
+
+A estas alturas ya sabes plantear la pregunta causal con precisión, dibujar el DAG, nombrar los confusores y — cuando tienes suerte — aprovechar un experimento natural. Pero la mayoría de las veces no tienes suerte. Tienes *decenas* de confusores (todo el conjunto de exposiciones a factores, el estado de la microestructura, los indicadores de régimen), las relaciones entre ellos y el resultado son no lineales, y te encantaría modelarlas con los árboles de gradient boosting y las redes profundas en los que ya confías. El problema: en cuanto dejas que un modelo flexible de machine learning toque el problema de la manera *ingenua* — meter el tratamiento como una característica más y leer su coeficiente — tu estimación causal queda, de forma silenciosa y sistemática, **sesgada**. No ruidosa. Sesgada, en una dirección cuyo signo no puedes determinar y a un ritmo que no se desvanece.
+
+El **double machine learning (DML)** es el procedimiento que te permite conservar toda esa potencia del ML y recuperar aun así un coeficiente causal que es insesgado, $\sqrt{n}$-consistente y viene con intervalos de confianza honestos. Se apoya en dos ideas — *ortogonalización* (partialling-out) y *cross-fitting* — y en una propiedad preciosa, la *ortogonalidad de Neyman*, que hace que todo funcione. Esta lección instala las tres.
+
+## La trampa del plug-in: el sesgo de regularización se filtra en tu efecto
+
+<MCQ
+  client:visible
+  pretest
+  pretestLabel="Antes de leer — adivina"
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+  explanationLabel="Explicación"
+  question="Tienes 200 confusores candidatos y quieres el efecto causal de una señal T sobre los retornos Y. Ajustas un único gran modelo de gradient boosting de Y sobre T más los 200 confusores y lees la 'importancia'/coeficiente de T. ¿Qué falla?"
+  options={[
+    { text: "El sesgo de regularización y de sobreajuste en el ajuste de nuisance de alta dimensión se filtra en el coeficiente del tratamiento, sesgándolo en una cantidad que no se encoge al ritmo raíz de n", correct: true },
+    { text: "Nada — el modelo controla por los confusores, así que el coeficiente del tratamiento es insesgado" },
+    { text: "La estimación es insesgada pero los errores estándar son ligeramente demasiado pequeños" },
+    { text: "Solo falla si los confusores se relacionan linealmente con el resultado" },
+  ]}
+  explanation="Un modelo flexible debe regularizar para manejar 200 características. Esa regularización sesga la parte del ajuste que absorbe los confusores, y como el tratamiento está enredado en el mismo ajuste, el sesgo contamina el coeficiente de T — a un ritmo más lento que raíz de n, así que no se diluye."
+/>
+
+**Analogía.** Contratas a un único contratista para hacer dos trabajos a la vez: estimar el *efecto de una ventana nueva* sobre tu factura de calefacción, mientras también tiene en cuenta el *aislamiento, el clima y el tamaño de la casa*. Para terminar dentro del presupuesto (regularización), el contratista hace chapuzas en la parte difícil — modelar el aislamiento y el clima — y mete calladamente el error sobrante en el único número que de verdad le pediste, el efecto de la ventana. Las esquinas que recortó en el trabajo de nuisance no se cancelan; se amontonan sobre tu respuesta. Querías una medición limpia y te llevaste una medición más los atajos acumulados del contratista.
+
+**Definición.** Escribe el modelo parcialmente lineal
+
+$$
+Y = \theta_0 T + g_0(X) + U, \qquad \mathbb{E}[U \mid T, X] = 0,
+$$
+
+donde $T$ es el tratamiento, $X$ es el vector (de alta dimensión) de confusores, $g_0$ es una función de nuisance desconocida y $\theta_0$ es el parámetro causal que quieres. El tratamiento está a su vez impulsado por los confusores, $T = m_0(X) + V$ con $\mathbb{E}[V \mid X] = 0$. El **estimador plug-in** ajusta $\hat g$ y $\hat\theta$ conjuntamente con un único modelo regularizado y reporta $\hat\theta$. Su error se descompone en un término bien comportado de $\sqrt{n}$ *más* un término de **sesgo de regularización** que escala como el error de estimación de nuisance en $\hat m$ multiplicado por el error en $\hat g$ — y para cualquier modelo que deba regularizar, ese producto se encoge **más lento** que $1/\sqrt{n}$, así que domina y no se desvanece.
+
+**Ejemplo resuelto.** Supón que el efecto verdadero es $\theta_0 = 0$ (la señal no causa nada) pero un confusor $X$ eleva tanto $T$ como $Y$. Un modelo regularizado encoge su $\hat g(X)$ ajustada hacia cero, así que *infraexplica* $Y$ a partir de $X$ y deja variación residual del resultado que aún correlaciona con $T$ a través del confusor. Numéricamente: digamos que la regularización deja a $\hat g$ capturando solo el 90% del efecto del confusor sobre $Y$, y $T$ comparte varianza con ese 10% no capturado. La correlación sobrante se traduce en un $\hat\theta \approx 0.4$ espurio donde la verdad es $0$. Recoge diez veces más datos y el sesgo apenas se mueve — porque la fuerza de la regularización escala con la dimensión, no solo con el tamaño muestral. Tienes un intervalo de confianza seguro de sí mismo, estrecho y *equivocado*, centrado en $0.4$.
+
+<Callout variant="warning" title="Un IC más estrecho no es uno más correcto">
+El fallo del plug-in es insidioso porque más datos encogen la *varianza* (tu intervalo se estrecha) mientras dejan el *sesgo* prácticamente intacto. Así que la estimación parece más precisa a medida que crece $n$, arrullándote para que confíes en ella, aun cuando permanece aparcada en el valor equivocado. El sesgo y la varianza son enemigos distintos: la validación cruzada y los conjuntos de datos más grandes combaten la varianza y el sobreajuste; **no hacen nada** contra el sesgo estructural de regularización que el DML está construido para matar.
+</Callout>
+
+### Cuándo usarlo
+
+Reconoce la trampa del plug-in cada vez que veas "controlamos por todo metiéndolo todo en el modelo y leyendo el valor SHAP / coeficiente del tratamiento." Esa es la trampa, palabra por palabra. Siempre que el *mismo* modelo flexible absorba los confusores y estime el efecto a la vez, el efecto queda contaminado. El arreglo nunca es "usa un modelo mejor" — es *separar* la estimación de nuisance de la estimación del efecto, que es exactamente lo que hace la siguiente sección.
+
+<FillBlank
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="Nombra el sesgo que sufre el plug-in."
+  text="Ajustar conjuntamente el nuisance y el efecto con un único modelo regularizado inyecta {{sesgo de regularización|ruido muestral|sesgo de supervivencia}} en el coeficiente del tratamiento, y se encoge más lento que raíz de n, así que no se diluye con más datos."
+  explanation="La regularización es inevitable en alta dimensión; el sesgo que crea en el ajuste de nuisance se filtra directamente en theta y decae demasiado lento como para ignorarlo."
+/>
+
+## Partialling-out: residualiza ambos lados, luego regresa los residuales
+
+<MCQ
+  client:visible
+  pretest
+  pretestLabel="Antes de leer — adivina"
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+  explanationLabel="Explicación"
+  question="El primer movimiento del DML es 'eliminar por partialling-out' los confusores. En concreto, ¿qué residualiza?"
+  options={[
+    { text: "Tanto Y como T contra X por separado, luego regresa los residuales de Y sobre los residuales de T para obtener theta", correct: true },
+    { text: "Solo Y contra X, luego regresa esos residuales sobre el tratamiento crudo T" },
+    { text: "Solo T contra X, luego regresa Y crudo sobre esos residuales" },
+    { text: "Ninguno — regresa Y sobre T y X juntos y aísla T después" },
+  ]}
+  explanation="La lógica de Frisch-Waugh-Lovell: friega los confusores fuera de AMBOS, el resultado y el tratamiento, entonces la variación sobrante en T queda libre de confusores, y regresar los residuales de Y sobre los de T recupera la pendiente causal limpia theta."
+/>
+
+**Analogía.** Dos amigos llegan siempre a cenar habiendo comido ya los dos — porque el mismo anfitrión (el confusor $X$) los alimentó de antemano. Para saber si *el apetito de un amigo de verdad impulsa el del otro*, primero restas "cuánto alimentó el anfitrión a cada uno". Lo que queda es el hambre *no explicada* de cada uno. Correlaciona esos restos y has eliminado al anfitrión por completo. Residualizar $Y$ y $T$ sobre $X$ es restar la comida del anfitrión de ambos platos antes de comparar.
+
+**Definición.** Este es el teorema de **Frisch-Waugh-Lovell (FWL)**, arrastrado a la era del ML. El FWL clásico dice: en una regresión lineal, el coeficiente de $T$ es igual a la pendiente que obtendrías al (1) regresar $Y$ sobre las demás variables y tomar los residuales $\tilde Y$, (2) regresar $T$ sobre las demás variables y tomar los residuales $\tilde T$, (3) regresar $\tilde Y$ sobre $\tilde T$. El DML sustituye los dos pasos de "regresar sobre $X$" por **modelos de nuisance de ML arbitrarios**:
+
+$$
+\tilde Y = Y - \hat g(X), \qquad \tilde T = T - \hat m(X), \qquad \hat\theta = \frac{\widehat{\mathrm{Cov}}(\tilde T, \tilde Y)}{\widehat{\mathrm{Var}}(\tilde T)}.
+$$
+
+Aquí $\hat g(X) = \mathbb{E}[Y \mid X]$ es el modelo del resultado y $\hat m(X) = \mathbb{E}[T \mid X]$ es el **modelo de propensión / del tratamiento**. Ambos pueden ser árboles de gradient boosting, random forests, redes neuronales — lo que sea. El estimador $\hat\theta$ no es más que una regresión de una sola variable de residuales limpios sobre residuales limpios.
+
+**Ejemplo resuelto.** Cinco observaciones de una señal $T$ y el retorno del siguiente periodo $Y$, con predicciones de los confusores $\hat m(X)$ y $\hat g(X)$ ya ajustadas por algún modelo de ML. Calcula los residuales y luego $\hat\theta$.
+
+| Obs | $T$ | $\hat m(X)$ | $\tilde T = T-\hat m$ | $Y$ | $\hat g(X)$ | $\tilde Y = Y-\hat g$ |
+|---|---|---|---|---|---|---|
+| 1 | 1.0 | 0.6 | +0.4 | 2.2 | 1.4 | +0.8 |
+| 2 | 0.4 | 0.5 | −0.1 | 1.0 | 1.2 | −0.2 |
+| 3 | 0.9 | 0.7 | +0.2 | 1.9 | 1.5 | +0.4 |
+| 4 | 0.2 | 0.5 | −0.3 | 0.8 | 1.4 | −0.6 |
+| 5 | 0.5 | 0.7 | −0.2 | 1.1 | 1.5 | −0.4 |
+
+Los residuales tienen media cero. Ahora $\hat\theta = \frac{\sum \tilde T\,\tilde Y}{\sum \tilde T^2}$:
+
+$$
+\textstyle\sum \tilde T\,\tilde Y = (0.4)(0.8)+(-0.1)(-0.2)+(0.2)(0.4)+(-0.3)(-0.6)+(-0.2)(-0.4) = 0.32+0.02+0.08+0.18+0.08 = 0.68,
+$$
+
+$$
+\textstyle\sum \tilde T^2 = 0.16+0.01+0.04+0.09+0.04 = 0.34, \qquad \hat\theta = \frac{0.68}{0.34} = 2.0.
+$$
+
+Así que tras fregar los confusores fuera de *ambos* lados, un cambio de una unidad en la parte de la señal libre de confusores mueve la parte del retorno libre de confusores en $2.0$. Esa pendiente es el $\hat\theta$ causal — y fíjate en que salió de una regresión univariante trivial una vez que el ML había hecho el partialling-out.
+
+<Callout variant="warning" title="Residualiza también el tratamiento — no solo el resultado">
+El error más común del DML es residualizar solo $Y$ (construir un gran modelo del resultado) y luego regresar esos residuales sobre el tratamiento *crudo* $T$. Eso deja las huellas de los confusores por todo $T$, así que la puerta trasera sigue abierta y $\hat\theta$ está sesgado. También debes construir $\hat m(X)$ y formar $\tilde T$. Ambas residualizaciones son de carga; dejar caer el modelo del tratamiento colapsa el DML de vuelta a un plug-in disfrazado.
+</Callout>
+
+### Cuándo usarlo
+
+Echa mano del partialling-out siempre que la *estructura de los confusores* sea de alta dimensión o no lineal pero el *efecto de interés* sea un único parámetro de baja dimensión que puedas defender como aproximadamente lineal (un efecto de señal por unidad, un efecto medio del tratamiento). Deja que el ML haga el trabajo de nuisance desordenado y de alta dimensión donde la flexibilidad rinde; mantén $\theta$ en una regresión simple, interpretable y de baja dimensión donde de verdad quieres inferencia. Esa división del trabajo — nuisances flexibles, objetivo simple — es el corazón del DML.
+
+<MatchConcepts
+  client:visible
+  checkLabel="Comprobar"
+  pairs={[
+    { term: "Modelo del resultado g(X)", definition: "El ajuste de ML de E[Y | X] usado para residualizar el resultado en Y-tilde" },
+    { term: "Modelo del tratamiento m(X)", definition: "El ajuste de ML de E[T | X] (la propensión) usado para residualizar el tratamiento en T-tilde" },
+    { term: "Frisch-Waugh-Lovell", definition: "El teorema de que un coeficiente es igual a la pendiente de residual-sobre-residual tras eliminar por partialling-out las demás variables" },
+    { term: "Theta-sombrero", definition: "El parámetro causal, recuperado como la covarianza de los residuales dividida por la varianza del residual del tratamiento" },
+  ]}
+/>
+
+## Ortogonalidad de Neyman: por qué nuisances de ML lentos siguen dando un efecto limpio
+
+<MCQ
+  client:visible
+  pretest
+  pretestLabel="Antes de leer — adivina"
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+  explanationLabel="Explicación"
+  question="El estimador residual-sobre-residual (ortogonalizado) tolera ajustes de nuisance de ML ruidosos y de convergencia lenta y aun así da un theta insesgado de raíz de n. ¿Por qué?"
+  options={[
+    { text: "Su ecuación de estimación es Neyman-ortogonal: insensible de primer orden a pequeños errores en los nuisances, así que los errores de nuisance entran en theta solo a través de su (diminuto) producto, no linealmente", correct: true },
+    { text: "Porque los modelos de ML están garantizados insesgados una vez validados por validación cruzada" },
+    { text: "Porque residualizar hace mágicamente que las estimaciones de nuisance converjan más rápido" },
+    { text: "Porque el teorema central del límite cancela automáticamente cualquier sesgo de nuisance" },
+  ]}
+  explanation="La ortogonalidad significa que la derivada de la condición de momento respecto a los nuisances es cero en la verdad. Así que un pequeño error de nuisance no contribuye nada a primer orden; el efecto sobrante es de segundo orden — el PRODUCTO de los dos errores de nuisance — que es lo bastante pequeño como para desvanecerse a raíz de n incluso cuando cada modelo de ML converge despacio."
+/>
+
+**Analogía.** Imagina equilibrar una canica en un cuenco. En el mismísimo fondo — el punto ortogonal — la superficie es *plana*: empuja la canica un poco en cualquier dirección y su altura apenas cambia, porque allí la pendiente es cero. El estimador plug-in aparca la canica en una *pendiente*: el mismo pequeño empujón (un pequeño error de nuisance) la rueda notablemente cuesta abajo, cambiando tu respuesta. Ortogonalizar la condición de momento te lleva al fondo plano del cuenco, donde los pequeños errores en los modelos de nuisance simplemente no inclinan la estimación.
+
+**Definición.** Sea $\psi(W; \theta, \eta)$ el score (ecuación de estimación) cuya raíz define $\hat\theta$, donde $\eta = (g, m)$ son los nuisances. El score es **Neyman-ortogonal** si su derivada de Gâteaux respecto a $\eta$, evaluada en la verdad, es cero:
+
+$$
+\left.\frac{\partial}{\partial r}\, \mathbb{E}\big[\psi(W; \theta_0, \eta_0 + r(\eta - \eta_0))\big]\right|_{r=0} = 0 .
+$$
+
+Para el modelo parcialmente lineal el score ortogonal es el momento residual-sobre-residual $\psi = (Y - g(X) - \theta(T - m(X)))(T - m(X))$. Como el término de *primer orden* se desvanece, el sesgo del estimador depende solo del **producto** de los errores de nuisance, esquemáticamente $\lVert \hat g - g_0 \rVert \cdot \lVert \hat m - m_0 \rVert$. Si cada modelo de ML converge al ritmo modesto $n^{-1/4}$ — mucho más lento que el $n^{-1/2}$ que necesita un modelo paramétrico — el producto converge a $n^{-1/2}$, lo bastante rápido como para que $\hat\theta$ sea $\sqrt{n}$-consistente y asintóticamente normal. El score del plug-in ingenuo *no* es ortogonal: su derivada es distinta de cero, así que el error de nuisance entra **linealmente** al ritmo lento $n^{-1/4}$ y ahoga la señal de $\sqrt{n}$.
+
+**Ejemplo resuelto.** Supón que cada nuisance de ML tiene un error de estimación de tamaño $0.1$ (es decir, $\hat g$ y $\hat m$ están cada uno desviados en torno a un 10%). En el plug-in **no ortogonal**, ese $0.1$ entra en el sesgo de $\hat\theta$ *linealmente* → sesgo $\approx 0.1$, un desplazamiento grande y persistente. En el score **ortogonal** del DML, los mismos errores entran solo a través de su producto → sesgo $\approx 0.1 \times 0.1 = 0.01$, un orden de magnitud más pequeño, y sigue encogiendo a medida que mejoran los nuisances. Los mismos modelos imperfectos, los mismos datos; la ortogonalidad por sí sola convirtió un sesgo de $0.1$ en uno de $0.01$. Eso es toda la recompensa de mudarse al fondo plano del cuenco.
+
+<Callout variant="warning" title="La ortogonalidad compra insensibilidad, no inmunidad">
+La ortogonalidad de Neyman mata la dependencia de *primer orden* del error de nuisance, no toda. El término del producto de segundo orden todavía necesita que tanto $\hat g$ como $\hat m$ converjan a un ritmo combinado que supere $n^{-1/2}$ (p. ej. cada uno a $n^{-1/4}$). Si un modelo de nuisance es un desastre — digamos que el tratamiento es casi impredecible a partir de $X$ y $\hat m$ nunca converge — el término del producto no se desvanece y las garantías del DML caducan. La ortogonalidad es una póliza de seguro potente con una franquicia, no un cheque en blanco para usar modelos basura.
+</Callout>
+
+### Cuándo usarlo
+
+Apóyate en la ortogonalidad precisamente cuando tus modelos de nuisance sean *buenos pero no estupendos* — ML flexible en el que confías para que converja, pero despacio y con un sesgo que no puedes caracterizar. Eso describe esencialmente todo problema financiero real de alta dimensión. Cuando en cambio tienes un nuisance paramétrico limpio de baja dimensión en el que crees del todo, no necesitas estrictamente la maquinaria del DML — pero usar el score ortogonal no cuesta nada y te protege si esa creencia es errónea, así que ortogonalizar es un valor por defecto sin arrepentimientos.
+
+<Categorize
+  client:visible
+  checkLabel="Comprobar"
+  question="Clasifica cada afirmación bajo el estimador cuyo comportamiento describe."
+  buckets={["Plug-in ingenuo (no ortogonal)", "DML (Neyman-ortogonal)"]}
+  items={[
+    { text: "El error de nuisance entra en el efecto linealmente, al ritmo lento", bucket: "Plug-in ingenuo (no ortogonal)" },
+    { text: "El error de nuisance entra solo a través del producto de los dos errores", bucket: "DML (Neyman-ortogonal)" },
+    { text: "El sesgo persiste incluso a medida que crece la muestra", bucket: "Plug-in ingenuo (no ortogonal)" },
+    { text: "Permite inferencia de raíz de n con nuisances que convergen solo al ritmo de la raíz cuarta", bucket: "DML (Neyman-ortogonal)" },
+    { text: "La derivada del score en los nuisances es cero en la verdad", bucket: "DML (Neyman-ortogonal)" },
+    { text: "Un intervalo de confianza más estrecho que se mantiene centrado en el valor equivocado", bucket: "Plug-in ingenuo (no ortogonal)" },
+  ]}
+  explanation="La ortogonalidad es la línea divisoria: el plug-in es sensible de primer orden (sesgo lineal, lento, persistente); el DML es insensible de primer orden (sesgo de segundo orden, producto, que se desvanece)."
+/>
+
+## Cross-fitting: estima el nuisance y el efecto en datos distintos
+
+<MCQ
+  client:visible
+  pretest
+  pretestLabel="Antes de leer — adivina"
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+  explanationLabel="Explicación"
+  question="Incluso con un score ortogonal, el DML divide los datos: los nuisances se ajustan en un pliegue, los residuales/score se evalúan en el pliegue reservado, luego se intercambian los pliegues y se promedia. ¿Qué te compra este cross-fitting?"
+  options={[
+    { text: "Elimina el sesgo de sobreajuste de la propia observación — un punto no puede ayudar a ajustar el nuisance y luego ser puntuado por él — restaurando la inferencia válida de raíz de n", correct: true },
+    { text: "Acelera el entrenamiento paralelizando entre pliegues" },
+    { text: "Reemplaza por completo la necesidad de un score ortogonal" },
+    { text: "Te permite reutilizar las mismas observaciones para ajustar y puntuar, lo que es más eficiente" },
+  ]}
+  explanation="Si un punto entrena el nuisance y luego es puntuado por él, el nuisance ha 'visto' su propio resultado y el residual es artificialmente pequeño — un sutil sesgo de sobreajuste que rompe las matemáticas de la ortogonalidad (que suponen que los nuisances son independientes de la muestra de puntuación). El cross-fitting impone esa independencia y es el tercer pilar junto a la ortogonalidad y el partialling-out."
+/>
+
+**Analogía.** No dejes que los estudiantes corrijan sus propios exámenes. Si la misma persona que escribió el solucionario también corrige su examen, se corregirá inconscientemente con generosidad — el "error" que mide incluye la ayuda que se dio a sí misma. El cross-fitting divide la clase: el grupo A escribe el solucionario (ajusta el nuisance), el grupo B es corregido por él (puntuado sobre datos reservados), luego intercambian para que todos pasen por escribir y por corregir. Nadie corrige su propio trabajo, así que los residuales medidos son honestos.
+
+**Definición.** El **cross-fitting** (también llamado sample-splitting / DML2) particiona los datos en $K$ pliegues. Para cada pliegue $k$: ajusta $\hat g$ y $\hat m$ sobre **todos los demás pliegues** ($-k$), luego forma los residuales y evalúa el score ortogonal **solo sobre el pliegue $k$** usando esos nuisances fuera del pliegue. Promedia los $\hat\theta_k$ por pliegue (o agrupa los scores) en una sola estimación. Como cada observación es puntuada por un modelo de nuisance que *nunca la vio*, los residuales no arrastran ningún sobreajuste de la propia observación, y los términos de resto que la ortogonalidad controla de verdad tienden a cero. La ortogonalidad maneja el *sesgo de nuisances imperfectos*; el cross-fitting maneja el *sesgo de que un nuisance espíe el mismísimo punto que puntúa*. Necesitas ambos.
+
+**Ejemplo resuelto — un cross-fit de 2 pliegues.** Divide la muestra por la mitad. Los nuisances del pliegue A se entrenan con los datos del pliegue B y se usan para puntuar el pliegue A; los nuisances del pliegue B se entrenan con el pliegue A y puntúan el pliegue B. Promedia las dos pendientes.
+
+| Paso | Entrenar nuisances en | Puntuar (formar residuales + theta) en | Estimación del pliegue |
+|---|---|---|---|
+| Pasada 1 | Pliegue B | Pliegue A | $\hat\theta_A = 1.9$ |
+| Pasada 2 | Pliegue A | Pliegue B | $\hat\theta_B = 2.1$ |
+| **Combinar** | — | — | $\hat\theta = \tfrac12(1.9 + 2.1) = 2.0$ |
+
+Cada mitad es puntuada por un modelo que nunca entrenó con ella, así que ni $\hat\theta_A$ ni $\hat\theta_B$ están inflados por autocorrección. El $\hat\theta = 2.0$ promediado usa la muestra completa para la inferencia mientras mantiene el ajuste y la puntuación estrictamente disjuntos.
+
+Ahora **el truco de las series temporales**. Una simple división aleatoria de pliegues *filtra el futuro hacia el pasado*: un nuisance entrenado en un pliegue que contiene los datos de mañana, y que luego puntúa hoy, ha espiado a través de la autocorrelación. Así que en finanzas haces cross-fitting con las **divisiones purgadas y en cuarentena** de la lección de deep learning — los pliegues respetan el orden temporal, las observaciones cercanas a la frontera train/test cuyas ventanas de etiqueta se solapan se *purgan*, y un breve hueco de *cuarentena* (embargo) tras cada bloque de test evita la fuga a través de la correlación serial. El cross-fitting y la CV purgada son la misma idea con dos sombreros: mantén los datos de puntuación estrictamente fuera de muestra respecto a los datos de ajuste — en características *y* en el tiempo.
+
+<PurgedCvSplit client:visible caption="Validación cruzada purgada y en cuarentena: bloques de entrenamiento (un pliegue) y un bloque de test reservado, con observaciones purgadas y un hueco de cuarentena eliminados en la frontera. El cross-fitting del DML sobre series temporales usa exactamente este esquema — los nuisances se ajustan sobre los bloques de entrenamiento y el score ortogonal se evalúa sobre el bloque de test en cuarentena y purgado, de modo que ninguna información futura se filtra en los residuales a través de la autocorrelación." />
+
+<Callout variant="warning" title="El K-fold aleatorio filtra calladamente el futuro">
+El KFold por defecto de scikit-learn baraja las filas, lo cual está bien para datos i.i.d. y es catastrófico para los retornos. Con ventanas de etiqueta solapadas o autocorrelación, un pliegue barajado deja que un modelo de nuisance entrene sobre datos adyacentes (en el tiempo) a los mismísimos puntos que puntúa, fabricando residuales artificialmente pequeños y un $\hat\theta$ sobreconfiado y sesgado. En cualquier serie temporal, haz cross-fitting con divisiones purgadas y en cuarentena — nunca un barajado aleatorio ingenuo. La fuga no se anuncia; simplemente te entrega una estimación demasiado buena y demasiado estrecha.
+</Callout>
+
+### Cuándo usarlo
+
+Haz siempre cross-fitting — no es un pulido opcional sino un pilar de carga de las garantías del DML, y el coste es solo reajustar los nuisances $K$ veces (usa $K = 5$ o $10$). La *elección que varía* es el esquema de división: los datos transversales i.i.d. toleran un K-fold ordinario; cualquier cosa con un índice temporal, horizontes solapados o correlación serial exige pliegues purgados y en cuarentena. Elige la división que encaje con tu estructura de dependencia, y luego haz cross-fitting sin excepción.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Si el score ortogonal ya es insensible al error de nuisance, ¿por qué seguimos necesitando el cross-fitting?</summary>
+
+**Respuesta.** La ortogonalidad y el cross-fitting combaten términos *distintos* en la expansión del error. La ortogonalidad mata el sesgo de **primer orden** de que los nuisances estén *sistemáticamente equivocados* (regularizados, sesgados). El cross-fitting mata el sesgo de la **propia observación** de que un nuisance se *ajuste al mismísimo punto que luego puntúa* — una correlación entre la estimación de nuisance y el residual de puntuación que el argumento de la ortogonalidad supone explícitamente inexistente (necesita que el nuisance sea independiente de la muestra de evaluación). Sáltate el cross-fitting y reintroduces un término de sobreajuste $O(1)$ que la ortogonalidad no puede tocar, especialmente con modelos flexibles que sobreajustan fuerte. Son complementarios: ortogonalidad + cross-fitting juntos son lo que entrega un $\hat\theta$ $\sqrt{n}$-consistente y asintóticamente normal. Deja caer cualquiera de los dos y la garantía caduca.
+
+</details>
+</Reveal>
+
+## DML para alfa y efectos de tratamiento — y sus límites honestos
+
+<MCQ
+  client:visible
+  pretest
+  pretestLabel="Antes de leer — adivina"
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+  explanationLabel="Explicación"
+  question="Un quant usa DML para estimar el efecto causal de una señal de sentimiento sobre los retornos, controlando con flexibilidad por todo el conjunto de exposiciones a factores con gradient boosting, con solapamiento limpio y cross-fitting purgado. ¿De qué NO puede salvarle aun así el DML?"
+  options={[
+    { text: "Confusión no observada — el DML controla solo por los confusores que mediste y metiste en X; una causa común oculta sigue sesgando theta", correct: true },
+    { text: "Confusores no lineales, que el DML no puede modelar" },
+    { text: "Tener demasiados confusores, que el DML no puede manejar" },
+    { text: "Necesitar un experimento aleatorizado, que el DML reemplaza en todos los casos" },
+  ]}
+  explanation="El DML es una forma de alta dimensión, impulsada por ML, de ajustar por los confusores OBSERVADOS bajo no confusión y solapamiento. Es brillante en eso. Es impotente frente a los confusores que no mediste — exactamente donde vuelven a entrar los instrumentos, los experimentos naturales y el RDD. El DML no es magia; relaja los supuestos de forma funcional, no los supuestos de identificación."
+/>
+
+**Analogía.** El DML es un par espectacular de auriculares con cancelación de ruido para el ruido *medido*: dale las frecuencias de los confusores que puedes oír (las exposiciones a factores, el estado de liquidez, el régimen) y los cancela de forma impecable, por compleja que sea su forma de onda. Pero no cancela nada que no pueda muestrear. Un confusor que nunca mediste es un sonido fuera del rango del micrófono — los auriculares no pueden restar lo que nunca grabaron. El DML mejora *cómo de bien* cancelas el ruido observado; no mejora *qué* eres capaz de oír.
+
+**Definición.** En finanzas el DML responde preguntas de la forma "¿cuál es el efecto causal del tratamiento $T$ sobre el resultado $Y$, ajustando *con flexibilidad* por todo el conjunto observado de confusores $X$?":
+
+- **Evaluación de alfa / señales.** $T$ = la señal (o una versión de ella sobre la que se pueda intervenir), $Y$ = retorno futuro, $X$ = cargas factoriales, sector, tamaño, liquidez, régimen de volatilidad. El DML estima el efecto de la señal *neto de* todo lo que el zoo de factores reclamaría en otro caso — respondiendo "¿hay alfa tras ortogonalizar respecto a todas las exposiciones conocidas?" con flexibilidad de nivel ML en lugar de una frágil regresión factorial lineal.
+- **Ejecución / efectos de tratamiento.** $T$ = una elección de ejecución (tasa de participación, agresividad de la orden), $Y$ = coste realizado, $X$ = estado de la orden y del mercado. El DML recupera el coste causal de operar más fuerte mientras controla con flexibilidad por las condiciones bajo las que *elegiste* operar más fuerte.
+- **Efectos heterogéneos.** El DML simple da el $\theta_0$ *medio*. Sustituye la regresión final residual-sobre-residual por una con **modificadores del efecto** — o usa un **causal forest** (el primo local del DML) — para estimar $\theta_0(Z)$: cómo varía el efecto con el régimen, el tamaño o la volatilidad. Aquí es donde "la señal funciona en valores de alta volatilidad pero no en los de baja" se convierte en una afirmación causal *estimada*, no en un subgrupo extraído por data-mining.
+
+**Ejemplo resuelto.** El retorno long-short crudo de una señal es del $5\%$ anual. Un plug-in ingenuo (señal más factores en un único modelo con boosting) reporta un efecto causal del $4\%$ — sospechosamente cercano al número crudo, porque el sesgo de regularización dejó que la exposición a factores se filtrara en él. Haz un DML como es debido: residualiza los retornos futuros sobre los factores con un modelo de ML ($\hat g$), residualiza la señal sobre los factores con otro ($\hat m$), haz cross-fitting con pliegues purgados, regresa residual-sobre-residual. El efecto ortogonalizado vuelve en $\theta_0 = 1.2\%$ con un intervalo de confianza que excluye el cero. Interpretación: el $3.8\%$ del $5\%$ crudo era *exposición a factores que la señal estaba aproximando* (un confusor que puedes comprar barato con un índice), y solo el $1.2\%$ es alfa causal genuino, neutral a la exposición. El $4\%$ del plug-in te habría hecho apalancar un número que era casi todo beta reempaquetado.
+
+<Callout variant="warning" title="El DML necesita solapamiento, y solo ajusta por lo que mediste">
+Dos supuestos hacen un trabajo callado. **No confusión:** toda causa común de $T$ e $Y$ está en $X$ — viólalo (un confusor oculto) y el DML devuelve un número preciso, seguro de sí mismo y *sesgado*, sin ninguna señal de aviso. **Solapamiento / positividad:** en cada configuración de confusores el tratamiento debe tener variación genuina (la varianza condicional del residual del tratamiento se mantiene estrictamente positiva); si $X$ predice $T$ casi perfectamente, $\hat m(X) \approx T$, el residual del tratamiento colapsa hacia cero, y dividir por su varianza casi nula produce un $\hat\theta$ explosivo e inestable. El DML relaja la forma funcional, no la identificación — cuando temas la confusión no observada, vuelve a los instrumentos, los experimentos naturales o el RDD.
+</Callout>
+
+### Cuándo usarlo
+
+Echa mano del DML cuando puedas de forma creíble *enumerar y medir* tus confusores pero no puedas de forma creíble *especificar su forma funcional* — el estado típico del trabajo quant cargado de factores, donde conoces las exposiciones pero no cómo se mapean de forma no lineal a los retornos. Es la herramienta correcta para "estima este efecto neto de decenas de controles conocidos y desordenados". Es la herramienta *equivocada* cuando la amenaza es un confusor que no puedes observar (entonces necesitas una fuente exógena de variación) o cuando el solapamiento falla porque el tratamiento es casi determinista en $X$. Usa el DML para conseguir flexibilidad de nivel experto en el *ajuste*, y mantén intacta tu honestidad de identificación — solo lo observado, solapamiento obligatorio.
+
+<FillBlank
+  client:visible
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  question="Enuncia la limitación central del DML en una línea."
+  text="El DML ajusta con flexibilidad solo por {{confusores observados|todos los confusores posibles|costes de transacción}}, así que sigue sesgado por cualquier causa común oculta y además requiere solapamiento — variación en el tratamiento en cada configuración de confusores."
+  explanation="El DML relaja los supuestos de forma funcional, no los supuestos de identificación. La confusión no observada y los fallos de solapamiento aún lo rompen; ahí es donde vuelven los instrumentos y los experimentos naturales."
+/>
+
+## Recapitulación
+
+Entraste queriendo controlar por decenas de confusores no lineales con los modelos de ML en los que ya confías, y aprendiste por qué hacerlo de la manera obvia — un gran modelo, leer el tratamiento — está *sesgado*, no ruidoso: el sesgo de regularización del ajuste de nuisance se filtra en $\theta$ y se niega a diluirse. El DML rescata la situación con tres movimientos. El **partialling-out** (Frisch-Waugh-Lovell moderno) residualiza *tanto* el resultado como el tratamiento contra $X$ con ML arbitrario, y luego regresa los residuales — un contratista para el trabajo de nuisance desordenado y una regresión univariante limpia para la respuesta. La **ortogonalidad de Neyman** aparca el estimador en el fondo plano del cuenco, donde los errores de nuisance entran solo a través de su producto, así que nuisances de ML lentos y sesgados aún producen un $\theta$ de $\sqrt{n}$, normalmente distribuido. El **cross-fitting** impide que el nuisance corrija sus propios deberes — y en series temporales *es* CV purgada y en cuarentena, porque la fuga del futuro no es más que autocorrección a través de la autocorrelación. La recompensa es enorme y el límite es nítido: el DML cancela los confusores *observados* con flexibilidad de nivel ML y exige solapamiento, pero es ciego a los confusores que nunca mediste. Insesgado, honesto y nada mágico.
+
+<MindMap
+  client:visible
+  title="Double Machine Learning"
+  caption="Construye el mapa: la trampa del plug-in, los tres pilares (partialling-out, ortogonalidad, cross-fitting) y los límites honestos del DML."
+  root={{
+    label: 'Double Machine Learning',
+    children: [
+      { label: 'La trampa del plug-in', children: [
+        { label: 'Un modelo: leer el tratamiento' },
+        { label: 'El sesgo de regularización se filtra en theta' },
+        { label: 'IC más estrecho, aún valor equivocado' },
+      ]},
+      { label: 'Partialling-out (FWL)', children: [
+        { label: 'Residualizar Y sobre X con g(X)' },
+        { label: 'Residualizar T sobre X con m(X)' },
+        { label: 'Regresar residual sobre residual = theta' },
+      ]},
+      { label: 'Ortogonalidad de Neyman', children: [
+        { label: 'Derivada del score en los nuisances = 0' },
+        { label: 'Los errores entran solo como un producto' },
+        { label: 'ML lento aún da theta de raíz de n' },
+      ]},
+      { label: 'Cross-fitting', children: [
+        { label: 'Ajustar en un pliegue, puntuar en otro' },
+        { label: 'Mata el sobreajuste de la propia observación' },
+        { label: 'Series temporales = CV purgada + en cuarentena' },
+      ]},
+      { label: 'Uso y límites', children: [
+        { label: 'Alfa neutral a la exposición + efectos de ejecución' },
+        { label: 'Heterogeneidad: causal forests' },
+        { label: 'Solo confusores observados; necesita solapamiento' },
+      ]},
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Repaso mixto: ¿sabes ortogonalizar sin sobreajustar?"
+  questionLabel="Pregunta"
+  ofLabel="de"
+  scoreLabel="Tu puntuación"
+  restartLabel="Reiniciar"
+  nextLabel="Siguiente pregunta"
+  backLabel="Atrás"
+  checkLabel="Comprobar"
+  retryLabel="Reintentar"
+  seeResultsLabel="Ver resultados"
+  correctLabel="Correcto"
+  incorrectLabel="Incorrecto"
+  correctAnswerLabel="Respuesta correcta"
+  explanationLabel="Explicación"
+  gateLabel="Comprueba tu respuesta para continuar."
+  questions={[
+    {
+      question: "Un colega reporta un efecto causal insesgado a partir de un único modelo de gradient boosting que contiene el tratamiento y 150 controles, citando un intervalo de confianza muy estrecho como prueba. ¿Cuál es el fallo de ese razonamiento?",
+      options: [
+        { text: "Un intervalo estrecho refleja baja varianza, no bajo sesgo; el sesgo de regularización del plug-in persiste a medida que crece n, así que la estimación puede ser precisa y equivocada a la vez", correct: true },
+        { text: "El intervalo es demasiado ancho para confiar en él" },
+        { text: "El gradient boosting no puede ajustar 150 controles" },
+        { text: "El sesgo desaparecería con una tasa de aprendizaje ligeramente mayor" },
+      ],
+      explanation: "La varianza y el sesgo son enemigos distintos. Más datos e IC más estrechos combaten la varianza; dejan intacto el sesgo estructural de regularización. La precisión no es corrección.",
+    },
+    {
+      question: "Ordena correctamente el pipeline del DML parcialmente lineal.",
+      options: [
+        { text: "Ajusta g(X) y m(X) con ML sobre datos fuera del pliegue, forma los residuales de Y y T en el pliegue reservado, luego regresa los residuales de Y sobre los de T para theta", correct: true },
+        { text: "Ajusta un único modelo conjunto de Y sobre T y X, luego lee el coeficiente de T" },
+        { text: "Residualiza solo Y sobre X, luego regresa esos residuales sobre el tratamiento crudo" },
+        { text: "Regresa T sobre Y primero, luego controla por X después" },
+      ],
+      explanation: "Ambos lados se residualizan contra X usando nuisances de ML con cross-fitting; la pendiente causal es la regresión residual-sobre-residual. Residualizar solo el resultado deja la puerta trasera abierta.",
+    },
+    {
+      question: "Cada modelo de nuisance está desviado en torno a un 10%. ¿Cómo aparece aproximadamente ese error en theta bajo el score ortogonal del DML frente al plug-in ingenuo?",
+      options: [
+        { text: "Unos 0,01 bajo el DML (el producto de los dos errores) frente a unos 0,10 bajo el plug-in (lineal en el error)", correct: true },
+        { text: "Unos 0,10 bajo ambos — la ortogonalidad no cambia nada" },
+        { text: "Cero bajo el DML — la ortogonalidad elimina todo el error de nuisance" },
+        { text: "Mayor bajo el DML porque residualizar compone los errores" },
+      ],
+      explanation: "La ortogonalidad anula el término de primer orden, así que el error de nuisance entra solo a través de su producto (0,1 x 0,1 = 0,01). El plug-in no ortogonal es sensible de primer orden: el error entra linealmente (~0,1).",
+    },
+    {
+      question: "¿Por qué es peligrosa la validación cruzada K-fold barajada al hacer cross-fitting de un modelo DML sobre retornos?",
+      options: [
+        { text: "Barajar deja que un nuisance entrene sobre datos adyacentes en el tiempo a los puntos que puntúa, filtrando el futuro a través de la autocorrelación y produciendo un theta sobreconfiado y sesgado", correct: true },
+        { text: "Barajar es demasiado lento de calcular sobre series temporales" },
+        { text: "Barajar reduce el tamaño muestral efectivo por debajo de lo que el DML necesita" },
+        { text: "Barajar hace que los modelos de nuisance converjan demasiado rápido" },
+      ],
+      explanation: "Sobre datos serialmente correlacionados, los pliegues aleatorios ponen vecinos cercanos en el tiempo a ambos lados de la división, fabricando residuales artificialmente pequeños. Las divisiones purgadas y en cuarentena mantienen los datos de puntuación fuera de muestra en el tiempo.",
+    },
+    {
+      question: "El DML devuelve un alfa causal preciso del 1,2% que excluye el cero, con solapamiento completo y cross-fitting purgado. Un escéptico insiste en que aún podría estar sesgado. ¿Cuál de estas es la única que justificaría al escéptico?",
+      options: [
+        { text: "Una causa común no medida de la señal y los retornos que nunca estuvo en X — el DML ajusta solo por los confusores observados", correct: true },
+        { text: "Que los confusores sean no lineales, algo que el DML maneja por diseño" },
+        { text: "Tener más de cien confusores, algo que el DML maneja por diseño" },
+        { text: "Usar gradient boosting en lugar de una red neuronal para los nuisances" },
+      ],
+      explanation: "El DML relaja la forma funcional, no la identificación. La no linealidad y la alta dimensión son exactamente para lo que está construido; un confusor no observado es la única amenaza que no puede tocar, devolviéndote a los instrumentos o los experimentos naturales.",
+    },
+  ]}
+/>

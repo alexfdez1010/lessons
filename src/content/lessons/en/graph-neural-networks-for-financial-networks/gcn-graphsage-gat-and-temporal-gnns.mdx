@@ -1,0 +1,554 @@
+---
+title: "GCN, GraphSAGE, GAT and Temporal GNNs"
+description: "The architecture lineage of graph neural networks: spectral-flavoured GCN with fixed degree-normalised averaging, inductive GraphSAGE that samples-and-aggregates and generalises to unseen nodes, GAT that learns attention weights over neighbours, and temporal/dynamic GNNs for a financial network whose topology changes every day."
+topic: "en/graph-neural-networks-for-financial-networks"
+order: 3
+minutes: 22
+updated: 2026-06-23
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, AttentionWeightsHeatmap } from '@/components/react';
+
+A graph neural network has exactly one job that matters: take a node, look at its
+neighbours, and squeeze them into a better description of the node. A bank is partly
+defined by who it lends to; a wallet is partly defined by who it transacts with; a
+supplier is partly defined by who it ships to. The whole field is just a long argument
+about *how* to do that squeezing.
+
+That argument produced a lineage. **GCN** averages neighbours with a fixed recipe.
+**GraphSAGE** samples a handful of them and learns the recipe, crucially without needing
+the whole graph up front. **GAT** lets the node decide which neighbours deserve more of
+its attention. **Temporal GNNs** admit the embarrassing truth that in finance the graph
+itself is a moving target — yesterday's lending network is not today's.
+
+This lesson walks that lineage in order. Each architecture is a different answer to the
+same question, and the differences are exactly the things that decide whether your model
+survives contact with a real, growing, non-stationary financial network.
+
+## Why there's a lineage at all
+
+<MCQ
+  client:visible
+  pretest
+  question="Every graph neural network layer has to do two things to update a node: combine information from its neighbours, and fold in the node's own previous state. What is the single design axis that most separates GCN, GraphSAGE, and GAT?"
+  options={[
+    { text: "How the neighbours are aggregated and combined with self — fixed averaging vs. learned/sampled vs. attention-weighted", correct: true },
+    { text: "Which programming language the layer is implemented in" },
+    { text: "Whether the graph is drawn with arrows or plain lines" },
+    { text: "How many GPUs the training run uses" },
+  ]}
+  explanation="The lineage is one design axis with different answers: how do you aggregate neighbours and merge that with the node's own state? GCN fixes the recipe, GraphSAGE samples and learns it, GAT weights neighbours by learned attention."
+/>
+
+**Analogy.** Picture a node as a person deciding what to think after talking to their
+contacts. GCN is the person who gives everyone an *equal, pre-set* say (with a polite
+adjustment for how popular each contact is). GraphSAGE is the person who can't possibly
+talk to *all* their contacts, so they poll a random sample and learn how to weigh the
+gossip. GAT is the person who listens hardest to the contacts who actually matter and
+tunes out the noise. Same room, three temperaments.
+
+**Definition.** A GNN layer updates every node's hidden vector $h_v^{(k)}$ from the
+previous layer's vectors using two operations: an **aggregate** over the neighbourhood
+$\mathcal{N}(v)$, and a **combine** with the node's own previous vector $h_v^{(k-1)}$.
+Stacking $K$ such layers lets information flow $K$ hops: after layer $K$, node $v$'s
+embedding has been touched by everything within $K$ steps in the graph. Generically,
+
+$$ h_v^{(k)} = \text{COMBINE}\Big( h_v^{(k-1)},\ \text{AGG}\big(\{\,h_u^{(k-1)} : u \in \mathcal{N}(v)\,\}\big) \Big). $$
+
+Every architecture in this lesson is a specific choice of AGG and COMBINE — and a specific
+stance on whether the graph is fixed, growing, weighted, or moving. Here is the whole
+lineage on one axis before we dig in:
+
+| Architecture | The one-line idea |
+|---|---|
+| GCN | Average neighbours with a *fixed* degree-normalised recipe |
+| GraphSAGE | *Sample* a few neighbours, learn the aggregator, concatenate with self |
+| GAT | Learn *attention weights* so important neighbours count more |
+| Temporal GNN | Run a GNN per time slice and model how the graph *changes* |
+
+<Callout variant="info" title="Two hops is usually plenty">
+Each layer is one hop of message passing, so $K$ layers reach $K$ hops. Tempting as it
+is to stack ten layers, in financial networks 2–3 hops usually captures the relevant
+contagion (your counterparties, and their counterparties) before *over-smoothing* sets
+in — the failure where every node's embedding blurs into the same mush. More on that
+trap as we go.
+</Callout>
+
+## GCN — fixed degree-normalised averaging
+
+<MCQ
+  client:visible
+  pretest
+  question="A GCN aggregates a node's neighbours using a fixed weight per edge. What does that weight depend on?"
+  options={[
+    { text: "Only the degrees of the two endpoints — it is a fixed symmetric normalisation, not learned", correct: true },
+    { text: "A learned attention score unique to each neighbour" },
+    { text: "The dollar size of the relationship, always" },
+    { text: "A random sample drawn fresh every training step" },
+  ]}
+  explanation="GCN's per-edge weight is the fixed symmetric degree normalisation one over the square root of deg(v) times deg(u). Nothing about it is learned or sampled — the only learned object is the shared weight matrix W."
+/>
+
+**Analogy.** GCN is a town-hall meeting with a strict, pre-printed rule for who speaks
+and how loudly: everyone gets a turn, but the rule quietly turns down the volume of the
+loudmouths who know *everyone* (high-degree nodes) so they don't dominate. Nobody chose
+the rule for tonight's meeting — it was the same rule last week and will be next week.
+
+**Definition.** The **Graph Convolutional Network** layer applies one shared linear
+transform $W$ to every node, then aggregates over the neighbourhood *including the node
+itself* (the self-loop), each term weighted by a fixed symmetric degree normalisation,
+then passes the sum through a nonlinearity $\sigma$:
+
+$$ h_v^{(k)} = \sigma\!\left( \sum_{u \in \mathcal{N}(v) \cup \{v\}} \frac{1}{\sqrt{\deg(v)\,\deg(u)}}\, W\, h_u^{(k-1)} \right). $$
+
+The factor $1/\sqrt{\deg(v)\,\deg(u)}$ is the heart of it. It is *not learned* — it is
+read straight off the graph's structure. It down-weights edges touching high-degree nodes
+so that a hub's flood of connections doesn't drown out a leaf node's single meaningful
+link. (For the self-loop term $u = v$ the degree includes the added self-edge, but we keep
+the arithmetic simple below.)
+
+**Worked example.** Let node $v$ be a small bank with two neighbours, $a$ and $b$, and a
+self-loop. Suppose (after adding self-loops) the degrees are $\deg(v) = 3$, $\deg(a) = 3$,
+$\deg(b) = 12$. Take a one-dimensional feature so the arithmetic is visible, with
+$W = 1$ and $\sigma$ the identity, and previous-layer values $h_v = 10$, $h_a = 4$,
+$h_b = 1$. The three edge weights are:
+
+| Term | Weight $1/\sqrt{\deg(v)\,\deg(u)}$ | Value $h_u$ | Contribution |
+|---|---|---|---|
+| self ($u=v$) | $1/\sqrt{3 \cdot 3} = 1/3 \approx 0.333$ | 10 | 3.333 |
+| neighbour $a$ | $1/\sqrt{3 \cdot 3} = 1/3 \approx 0.333$ | 4 | 1.333 |
+| neighbour $b$ (hub) | $1/\sqrt{3 \cdot 12} = 1/6 \approx 0.167$ | 1 | 0.167 |
+
+Sum: $3.333 + 1.333 + 0.167 = 4.833$. So $h_v^{(k)} \approx 4.83$. Notice that the
+high-degree neighbour $b$ got the *smallest* weight (0.167 vs 0.333) purely because it is
+a hub — the degree normalisation did that automatically, before any learning. The bank's
+own state (3.333) still dominates, but its two neighbours pulled the new value down toward
+theirs.
+
+<Callout variant="warning" title="GCN is transductive — new nodes are a problem">
+The fixed normalisation is computed from the *whole* graph's degree structure, and
+classic GCN training assumes the entire graph is present at train time. Add a brand-new
+bank tomorrow and you have changed the degrees, the normalisation, and arguably the whole
+adjacency matrix. There is no clean way to embed a node the model never saw without
+recomputing over the augmented graph. In finance, where new entities appear constantly,
+this *transductive* assumption is a genuine ceiling.
+</Callout>
+
+### When to use it
+
+Reach for GCN when the graph is **fixed and fully known at training time**, reasonably
+homogeneous, and you want a strong, cheap, well-understood baseline — node classification
+on a static interbank network snapshot, say, where every institution is already in the
+graph. It is the linear-regression-equivalent of GNNs: the thing you should beat before
+you complicate your life. If nodes will keep arriving, GCN's transductive nature is a sign
+to move down the lineage.
+
+<FillBlank
+  client:visible
+  question="Fill in what makes GCN's aggregation fixed."
+  text="GCN weights each neighbour by {{the inverse square root of the endpoint degrees|a learned attention score|a freshly sampled random weight}}, a normalisation read directly off the graph rather than learned."
+  explanation="GCN's per-edge weight is the fixed symmetric degree normalisation one over sqrt(deg(v) times deg(u)). It is structural, not learned — the only learned object is the shared transform W."
+/>
+
+## GraphSAGE — sample, aggregate, generalise
+
+<MCQ
+  client:visible
+  pretest
+  question="GraphSAGE was designed to fix GCN's biggest practical limitation. Which one?"
+  options={[
+    { text: "It is inductive — it learns an aggregation function that generalises to nodes and graphs never seen in training", correct: true },
+    { text: "It removes the need for any neighbour information at all" },
+    { text: "It guarantees zero overfitting on small samples" },
+    { text: "It makes attention weights perfectly interpretable" },
+  ]}
+  explanation="GraphSAGE's headline win is being inductive: instead of learning a fixed embedding tied to a fixed graph, it learns a reusable sample-and-aggregate function that can embed a brand-new node (a new bank, a new wallet) on the fly."
+/>
+
+**Analogy.** A new analyst joins a firm with 50,000 client relationships. They cannot
+read every file, so they learn a *reusable habit*: "sample a dozen relationships, summarise
+them, staple that summary to what I already know about the client." That habit works on
+client #50,001 — whom they've never met — because they learned the *procedure*, not a
+memorised answer for each existing client. That is GraphSAGE: SAmple and aggreGatE.
+
+**Definition.** A **GraphSAGE** layer (1) samples a fixed-size set of neighbours from
+$\mathcal{N}(v)$, (2) aggregates their previous vectors with a learnable aggregator
+(mean, pooling, or even an LSTM), and (3) **concatenates** the result with the node's own
+previous vector before projecting through $W$ and a nonlinearity:
+
+$$ h_v^{(k)} = \sigma\!\Big( W \cdot \text{CONCAT}\big(\, h_v^{(k-1)},\ \text{AGG}(\{\,h_u^{(k-1)} : u \in \mathcal{S}(v)\,\})\,\big) \Big), $$
+
+where $\mathcal{S}(v)$ is the *sampled* subset of neighbours. The two design moves that
+matter: **concatenate** (self and neighbours are kept as distinct halves, not blended into
+one average as in GCN), and **sample** (a fixed fan-out keeps cost bounded even for a hub
+with a million edges). Because the layer learns a *function* rather than a per-node
+embedding, the same trained weights embed nodes that did not exist at training time. This
+is the property called **inductive** learning.
+
+**Worked example (mean aggregator).** Node $v$ has feature $h_v = 6$ and four neighbours
+with values $\{2, 8, 5, 9\}$. We sample two of them — say we draw $\{8, 5\}$. The mean
+aggregate is $(8 + 5)/2 = 6.5$. Concatenate with self: the layer input is the pair
+$(6,\ 6.5)$. With a tiny projection $W = [0.5,\ 0.5]$ (so it averages the two halves) and
+identity $\sigma$:
+
+$$ h_v^{(k)} = 0.5 \cdot 6 + 0.5 \cdot 6.5 = 3.0 + 3.25 = 6.25. $$
+
+Now suppose the *next* training step samples a different pair, $\{2, 9\}$: the aggregate
+is $(2+9)/2 = 5.5$, and $h_v^{(k)} = 0.5 \cdot 6 + 0.5 \cdot 5.5 = 5.75$. Same node, same
+weights, different answer — because the *sample* changed.
+
+<Callout variant="warning" title="Sampling is approximation — mind the variance">
+That two-value swing (6.25 vs 5.75) from re-sampling is the catch. Neighbour sampling
+makes GraphSAGE scalable, but it injects variance: a node's embedding now depends on which
+neighbours happened to be drawn. Too small a fan-out and the estimate of the
+"true" full-neighbourhood aggregate is noisy; too large and you lose the scalability that
+motivated sampling. It is the classic bias–variance knob, wearing a graph hat — and in
+low-signal finance (recall the small-sample discipline from *Deep Learning for Market
+Data*), extra variance is never free.
+</Callout>
+
+### When to use it
+
+GraphSAGE is the **realistic finance default**, because financial graphs *grow*: new
+banks charter, new wallets appear, new suppliers enter the network every day, and you
+need to score them without retraining the world. Use it when the node set is open-ended,
+when hubs are too large to aggregate fully, or when you train on one time period and must
+deploy on later, larger graphs. If your graph is genuinely fixed and small, GCN's exactness
+may beat SAGE's sampling noise — but that is the exception in finance, not the rule.
+
+<Categorize
+  client:visible
+  question="Sort each property under the architecture it best describes."
+  buckets={["GCN", "GraphSAGE"]}
+  items={[
+    { text: "Fixed degree-normalised averaging", bucket: "GCN" },
+    { text: "Needs the whole graph at train time (transductive)", bucket: "GCN" },
+    { text: "Samples a fixed-size neighbour set", bucket: "GraphSAGE" },
+    { text: "Concatenates self with the neighbour aggregate", bucket: "GraphSAGE" },
+    { text: "Embeds nodes unseen during training (inductive)", bucket: "GraphSAGE" },
+    { text: "Self and neighbours blended into one normalised sum", bucket: "GCN" },
+  ]}
+  explanation="GCN: fixed degree-normalised blend of self and neighbours, transductive. GraphSAGE: sample a fixed fan-out, learn the aggregator, concatenate self with neighbours, inductive — embeds brand-new nodes."
+/>
+
+## GAT — learn which neighbours matter
+
+<MCQ
+  client:visible
+  pretest
+  question="A Graph Attention Network improves on uniform or degree-only weighting by doing what?"
+  options={[
+    { text: "Learning a per-neighbour attention coefficient via a softmax over learned scores, so important neighbours get more weight", correct: true },
+    { text: "Ignoring node degrees entirely and weighting every neighbour equally" },
+    { text: "Replacing the neighbours with a single random sample each step" },
+    { text: "Using the dollar value of each edge as the fixed weight, with no learning" },
+  ]}
+  explanation="GAT learns attention coefficients alpha over the neighbours: it scores each (node, neighbour) pair with a small learned function, normalises the scores with a softmax, and uses them as the aggregation weights — so a big creditor can matter more than a tiny one, learned from data."
+/>
+
+**Analogy.** GCN gives everyone a degree-adjusted but otherwise equal vote. GAT hires a
+*staff* that reads the room and decides, per conversation, whose opinion to weight: the
+counterparty exposing you to \$2 billion gets leaned on; the \$10,000 nuisance account gets
+a polite nod. Crucially, the staff *learned* how to allocate that attention from past data —
+it wasn't told "size equals importance," it figured out what importance looks like.
+
+**Definition.** A **Graph Attention Network** layer computes, for each edge $v \leftarrow u$,
+a learned, normalised **attention coefficient** $\alpha_{vu}$, then aggregates neighbours as
+an attention-weighted sum. The coefficients come from a softmax over learned scores
+$e_{vu}$:
+
+$$ \alpha_{vu} = \frac{\exp(e_{vu})}{\sum_{w \in \mathcal{N}(v) \cup \{v\}} \exp(e_{vw})}, \qquad h_v^{(k)} = \sigma\!\left( \sum_{u \in \mathcal{N}(v) \cup \{v\}} \alpha_{vu}\, W\, h_u^{(k-1)} \right). $$
+
+The raw score $e_{vu}$ is produced by a small learnable function of the two transformed
+endpoint vectors $W h_v$ and $W h_u$ (in the original GAT, a single-layer feedforward on
+their concatenation, with a LeakyReLU). The softmax guarantees the weights over a node's
+neighbourhood are non-negative and sum to one. **Multi-head attention** runs several
+independent attention mechanisms in parallel and concatenates (or averages) their outputs,
+which stabilises training the way multiple analysts cross-check each other.
+
+**Worked example (softmax over 3 neighbours).** Node $v$ has three neighbours with raw
+learned scores $e = \{2.0,\ 1.0,\ 0.0\}$ and per-neighbour values $h = \{10,\ 4,\ 1\}$.
+Exponentiate: $e^{2.0} \approx 7.389$, $e^{1.0} \approx 2.718$, $e^{0.0} = 1.000$. Their
+sum is $7.389 + 2.718 + 1.000 = 11.107$. The attention weights are:
+
+| Neighbour | Raw score $e_{vu}$ | $\exp(e_{vu})$ | $\alpha_{vu}$ | Value $h_u$ | Weighted |
+|---|---|---|---|---|---|
+| 1 | 2.0 | 7.389 | $7.389/11.107 \approx 0.665$ | 10 | 6.65 |
+| 2 | 1.0 | 2.718 | $2.718/11.107 \approx 0.245$ | 4 | 0.98 |
+| 3 | 0.0 | 1.000 | $1.000/11.107 \approx 0.090$ | 1 | 0.09 |
+
+The weights sum to $0.665 + 0.245 + 0.090 = 1.000$, as a softmax must. The attention-weighted
+aggregate (taking $W = 1$, $\sigma$ identity) is $6.65 + 0.98 + 0.09 = 7.72$ — dominated by
+neighbour 1, whose higher learned score earned it two-thirds of the attention. Contrast a
+plain mean, $(10 + 4 + 1)/3 = 5.0$: GAT's learned weighting pulled the result sharply
+toward the neighbour the model decided was important.
+
+Attention is the same idea you have met along the temporal axis — assigning weights to
+others and summing accordingly. The heatmap below shows attention distributed over *time*;
+a GAT does the exact same trick over a node's *neighbours*: a learned weight per relationship,
+softmaxed to sum to one, with the high-weight links dominating the aggregate.
+
+<AttentionWeightsHeatmap
+  client:visible
+  title="Attention assigns weights — here over time, a GAT does it over neighbours"
+  recentLabel="Recent"
+  eventLabel="Event-focused"
+  diffuseLabel="Diffuse"
+  temperatureLabel="Sharpness"
+  queryAxisLabel="Query step"
+  keyAxisLabel="Attended step"
+  focusLabel="Focus"
+  caption="A softmax turns learned scores into weights that sum to one. Read each query row as a node, each key column as one of its neighbours: the bright cells are the relationships the model leans on. Sharper attention concentrates on a few; diffuse attention spreads it out, like a degree-only average."
+/>
+
+<Callout variant="warning" title="Attention is not free interpretability">
+It is tempting to read the $\alpha_{vu}$ weights as an explanation — "the model paid 66%
+attention to its biggest creditor, so that's *why*." Resist. High attention is correlation
+with the model's objective, not a causal account, and different attention patterns can yield
+near-identical predictions. GAT also carries *more parameters* than GCN or SAGE and is
+correspondingly **data-hungry** — exactly the wrong appetite in a low-signal, small-effective-sample
+financial regime. The discipline from *Deep Learning for Market Data* applies in full: prove
+the extra capacity earns its keep on a held-out, purged test before believing the attention map.
+</Callout>
+
+### When to use it
+
+Use GAT when neighbours are **genuinely unequal in importance and that importance is
+learnable** — credit-risk graphs where a single dominant counterparty drives contagion,
+heterogeneous transaction networks, fraud rings where a few edges carry the signal. It
+shines when degree-normalisation (GCN) or uniform sampling (SAGE) wrongly treat a critical
+edge like any other. Skip it when your effective sample size is tiny, the graph is nearly
+homogeneous, or a cheaper model already clears the bar — the extra parameters are a tax you
+pay in data you may not have.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Why does GAT use a softmax over the neighbours instead of just using the raw scores as weights?</summary>
+
+**Answer.** The softmax does two jobs at once. First, it forces the weights to be
+**non-negative and sum to one** within each neighbourhood, so the aggregate is a proper
+weighted average that does not blow up for high-degree nodes — a node with 500 neighbours and
+one with 3 are both summarised on the same scale. Second, it makes the scoring **relative**:
+what matters is how a neighbour's score compares to its siblings', not its absolute value, so
+the model can express "this neighbour is the important one *here*" independently of the
+overall magnitude. Raw, unnormalised scores would let one busy node dominate the loss
+landscape and would not give comparable, bounded weights across differently-sized
+neighbourhoods.
+
+</details>
+</Reveal>
+
+## Temporal / dynamic GNNs — when the graph moves
+
+<MCQ
+  client:visible
+  pretest
+  question="GCN, GraphSAGE, and GAT all assume a single graph. Why is that assumption dangerous for a real financial network?"
+  options={[
+    { text: "Financial topology is non-stationary — edges appear and vanish daily, so a single static graph silently mixes different regimes", correct: true },
+    { text: "Financial graphs never change once built, so the assumption is always safe" },
+    { text: "Graphs are too small in finance for any temporal effect to matter" },
+    { text: "Temporal effects only matter for images, never for networks" },
+  ]}
+  explanation="Loans originate and mature, supply links sever, correlations regime-shift — the financial graph's topology changes constantly. Collapsing it into one static (or time-averaged) graph blends regimes that should be kept apart, the same non-stationarity hazard you met in market-data modelling."
+/>
+
+**Analogy.** A static GNN on a financial network is a single long-exposure photo of a busy
+intersection: every car that ever passed is smeared into one ghostly blur, and you cannot
+tell rush hour from 3 a.m. A temporal GNN is a *video* — a sequence of crisp frames — so you
+can see the lending network tighten before a crisis and slacken after, instead of averaging
+the panic and the calm into one meaningless grey.
+
+**Definition.** **Temporal (dynamic) GNNs** model a graph that changes over time. There
+are two broad families:
+
+- **Snapshot-based (discrete-time).** Slice time into windows, build one graph per window,
+  embed each with a GNN, then run a **sequence model across the snapshots** — a GRU, LSTM,
+  or temporal attention. Schematically, a per-slice embedding feeds a recurrence:
+
+$$ z_v^{(t)} = \text{GNN}\big(G^{(t)}\big)_v, \qquad h_v^{(t)} = \text{GRU}\big(h_v^{(t-1)},\ z_v^{(t)}\big). $$
+
+- **Continuous-time (event-based).** Skip the snapshots and ingest **timestamped events**
+  directly — each new edge (a loan at 14:32, a transfer at 14:33) updates the embeddings of
+  the nodes it touches as it arrives. This preserves exact timing and irregular spacing that
+  fixed snapshots throw away.
+
+This is the deliberate marriage of two axes you have been building all along: the
+**relational axis** (a GNN, summarising who is connected to whom) and the **temporal axis**
+(an RNN or attention, summarising how things evolve), the same temporal machinery from
+*Deep Learning for Market Data*, now stacked on top of message passing.
+
+**Illustrative example — a 5-day lending sequence.** Track one bank's interbank borrowing
+neighbours over a week. Each day is a snapshot $G^{(t)}$; we embed it (say with GraphSAGE)
+into a per-day vector $z^{(t)}$, then a GRU carries state forward:
+
+| Day | Active lending edges | Snapshot embedding $z^{(t)}$ (toy) | What the GRU should notice |
+|---|---|---|---|
+| Mon | 12 | 0.20 | calm baseline |
+| Tue | 11 | 0.22 | unchanged |
+| Wed | 7 | 0.41 | edges dropping — funding tightening |
+| Thu | 4 | 0.68 | sharp contraction |
+| Fri | 3 | 0.79 | stress building |
+
+A static GNN on the *time-averaged* graph would report something like "≈ 7.4 average edges,
+embedding ≈ 0.46" — a single number that completely hides the Monday-to-Friday *collapse* from
+12 edges to 3. The temporal model sees the trajectory (0.20 → 0.22 → 0.41 → 0.68 → 0.79) and
+can flag the accelerating withdrawal of funding *as a trend*, which is precisely the signal a
+risk desk cares about.
+
+<Callout variant="warning" title="Time-averaging silently mixes regimes (and leaks)">
+Squashing a dynamic network into one static or time-averaged graph does not just lose the
+trend — it can *fabricate* edges that never coexisted (a counterparty from January and one
+from June, joined in a graph as if simultaneous) and it quietly blends incompatible regimes.
+Worse, if you build that averaged graph using *future* snapshots to embed a *past* node, you
+have leaked the future into the past. Keeping time explicit — snapshots in order, no peeking
+ahead — is the same look-ahead-bias discipline the next lesson on temporal leakage makes its
+whole subject.
+</Callout>
+
+### When to use it
+
+Use a temporal GNN whenever the network's **topology itself evolves and that evolution
+carries signal** — funding-stress propagation, supply-chain disruption spreading link by
+link, fraud rings that assemble and dissolve, correlation graphs that regime-shift. Choose
+**snapshot + sequence model** when events naturally bucket into periods (daily positions,
+weekly exposures) and you want simplicity; choose **continuous-time** when exact timing and
+irregular event spacing matter (high-frequency settlement flows, intraday transfers). If the
+graph genuinely does not change over your horizon, a static GNN is simpler and fine — but in
+finance, "the graph doesn't change" is a hypothesis to test, not assume.
+
+<FillBlank
+  client:visible
+  question="Fill in the two-axis idea behind temporal GNNs."
+  text="A snapshot-based temporal GNN combines the {{relational|alphabetical|geographic}} axis, handled by a GNN per time slice, with the temporal axis, handled by a sequence model such as a GRU across slices."
+  explanation="Temporal GNNs marry the relational axis (a GNN over each snapshot's structure) with the temporal axis (an RNN or attention across snapshots), so the model sees both who is connected and how those connections evolve."
+/>
+
+## The whole lineage on one table
+
+The four architectures laid side by side — the comparison to keep when you choose:
+
+| Architecture | Aggregation rule | Inductive? | Learns neighbour weights? | Best finance use | Main weakness |
+|---|---|---|---|---|---|
+| **GCN** | Fixed degree-normalised average of self + neighbours, weight $1/\sqrt{\deg(v)\,\deg(u)}$ | No (transductive) | No — weights are structural | Static, fully-known network as a strong cheap baseline | Can't embed unseen nodes; needs the whole fixed graph |
+| **GraphSAGE** | Sample a fixed fan-out, learn AGG (mean/pool/LSTM), CONCAT self with neighbour aggregate | Yes | Partly — learns the aggregator, not per-edge weights | Growing graphs: new banks/wallets scored without retraining | Sampling variance; embedding depends on the draw |
+| **GAT** | Attention-weighted sum; $\alpha_{vu}$ from a softmax over learned scores; multi-head | Yes | Yes — explicit learned per-neighbour weights | Unequal neighbours: dominant creditors, fraud-ring edges | Data-hungry (more params); attention is not interpretability |
+| **Temporal GNN** | A GNN per snapshot + a sequence model across snapshots (or timestamped events) | Depends on the base GNN | Depends on the base GNN | Non-stationary topology: contagion, evolving supply links | More moving parts; needs careful no-look-ahead time handling |
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "GCN", definition: "Fixed degree-normalised averaging of self and neighbours; transductive, needs the whole graph" },
+    { term: "GraphSAGE", definition: "Sample a fixed neighbour set, learn the aggregator, concatenate with self; inductive, embeds unseen nodes" },
+    { term: "GAT", definition: "Learned attention coefficients via a softmax over scores, so important neighbours weigh more" },
+    { term: "Snapshot temporal GNN", definition: "One GNN per time slice plus a GRU or attention across slices" },
+    { term: "Continuous-time temporal GNN", definition: "Ingests timestamped events directly, updating node embeddings as edges arrive" },
+  ]}
+/>
+
+## Recap
+
+You walked the lineage from a fixed recipe to a moving target. GCN averages neighbours with
+a degree-normalised rule nobody learned and the whole graph must be present — clean, cheap,
+transductive. GraphSAGE samples a handful of neighbours, learns the aggregator, concatenates
+self with neighbours, and earns the property that matters most in a growing financial network:
+it is *inductive*, embedding banks and wallets it never saw in training. GAT lets each node
+learn, via a softmax over scores, which neighbours deserve its attention — powerful where a
+dominant creditor truly matters, but parameter-hungry and not the free explanation it looks
+like. And temporal GNNs admit the graph itself moves, marrying the relational axis to the
+temporal one so a funding collapse reads as a trajectory, not a smeared average.
+
+<MindMap
+  client:visible
+  title="GCN, GraphSAGE, GAT and Temporal GNNs"
+  caption="Build the map: one design axis (how to aggregate neighbours + combine with self), four answers."
+  root={{
+    label: 'GNN architecture lineage',
+    children: [
+      { label: 'Design axis', children: [
+        { label: 'AGGREGATE neighbours' },
+        { label: 'COMBINE with self' },
+        { label: 'K layers = K hops' },
+      ]},
+      { label: 'GCN', children: [
+        { label: 'Fixed degree-norm average' },
+        { label: 'Weight 1/sqrt(deg v · deg u)' },
+        { label: 'Transductive — needs whole graph' },
+      ]},
+      { label: 'GraphSAGE', children: [
+        { label: 'Sample fixed fan-out' },
+        { label: 'Learn aggregator, CONCAT self' },
+        { label: 'Inductive — embeds unseen nodes' },
+        { label: 'Sampling variance' },
+      ]},
+      { label: 'GAT', children: [
+        { label: 'Learned attention alpha (softmax)' },
+        { label: 'Important neighbours weigh more' },
+        { label: 'Multi-head; data-hungry' },
+      ]},
+      { label: 'Temporal GNN', children: [
+        { label: 'Snapshot + GRU/attention' },
+        { label: 'Continuous-time events' },
+        { label: 'Topology is non-stationary' },
+        { label: 'No look-ahead across time' },
+      ]},
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Mixed check: did the lineage stick?"
+  questions={[
+    {
+      question: "A GCN aggregates a small bank v (deg 3) with neighbours a (deg 3) and b (deg 12), plus a self-loop. Why does neighbour b get less weight than a?",
+      options: [
+        { text: "The fixed normalisation one over sqrt(deg(v)·deg(u)) shrinks edges to high-degree hubs — b's degree 12 makes its weight smaller", correct: true },
+        { text: "Because the model learned an attention score that down-weighted b" },
+        { text: "Because b was randomly dropped from the sample that step" },
+        { text: "Because b's feature value happened to be smaller" },
+      ],
+      explanation: "GCN weights are structural, not learned: 1/sqrt(3·3)=1/3 for a but 1/sqrt(3·12)=1/6 for the hub b. The degree normalisation down-weights hubs automatically, before any learning.",
+    },
+    {
+      question: "Your interbank graph gains roughly 40 new institutions every quarter that must be scored immediately, without retraining. Which architecture is the natural default?",
+      options: [
+        { text: "GraphSAGE — it learns an inductive sample-and-aggregate function that embeds nodes never seen in training", correct: true },
+        { text: "GCN — its degree normalisation handles new nodes for free" },
+        { text: "A static GAT trained once and never updated" },
+        { text: "Any of them — inductiveness is irrelevant to scoring new nodes" },
+      ],
+      explanation: "New nodes arriving constantly is the inductive use case. GCN is transductive (needs the whole fixed graph); GraphSAGE learns a reusable function and embeds brand-new banks on the fly.",
+    },
+    {
+      question: "A GAT node has three neighbours with learned scores 2.0, 1.0, 0.0. After softmax, the weights are about 0.665, 0.245, 0.090. With neighbour values 10, 4, 1, what is the attention-weighted aggregate (W=1, identity activation)?",
+      options: [
+        { text: "About 7.72 — the weighted sum 0.665·10 + 0.245·4 + 0.090·1, dominated by the high-score neighbour", correct: true },
+        { text: "Exactly 5.0 — a plain average of 10, 4, and 1" },
+        { text: "About 15.0 — the sum of the three values" },
+        { text: "About 0.665 — just the largest attention weight" },
+      ],
+      explanation: "6.65 + 0.98 + 0.09 = 7.72. The softmax weights sum to one and concentrate on the highest-scoring neighbour, pulling the aggregate well above the plain mean of 5.0.",
+    },
+    {
+      question: "A risk team trains a single GCN on a graph built by averaging a full year of daily lending edges. What is the subtle hazard?",
+      options: [
+        { text: "Time-averaging mixes regimes and can join edges that never coexisted, hiding trends and risking look-ahead leakage", correct: true },
+        { text: "Nothing — averaging always improves a graph by reducing noise" },
+        { text: "GCN cannot run on weighted graphs at all" },
+        { text: "The model will be too inductive and overgeneralise" },
+      ],
+      explanation: "Collapsing a dynamic network into one averaged graph blends incompatible regimes, smears the trend (e.g. a funding collapse), can fabricate non-coexisting edges, and — if future snapshots inform a past embedding — leaks the future. Keep time explicit.",
+    },
+    {
+      question: "Which statement about GAT's attention weights is correct?",
+      options: [
+        { text: "They are a learned weighting that improves aggregation, but high attention is not a causal explanation and adds parameters that demand more data", correct: true },
+        { text: "They are guaranteed, faithful interpretations of why the model predicted what it did" },
+        { text: "They are fixed from the graph degrees, like GCN's normalisation" },
+        { text: "They remove the need for any out-of-sample validation" },
+      ],
+      explanation: "Attention learns useful per-neighbour weights, but it is correlation with the objective, not causation — different patterns can give the same prediction. GAT also adds parameters, making it data-hungry, so the small-sample, purged-test discipline still applies.",
+    },
+  ]}
+/>

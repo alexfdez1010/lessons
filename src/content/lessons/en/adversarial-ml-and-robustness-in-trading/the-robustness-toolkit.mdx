@@ -1,0 +1,609 @@
+---
+title: "The Robustness Toolkit"
+description: "How to fight back: adversarial training, distributionally-robust optimization and the min-max objective, regularization and ensembling for stability, and conformal prediction for honest uncertainty that still holds under distribution shift."
+topic: "en/adversarial-ml-and-robustness-in-trading"
+order: 5
+minutes: 22
+updated: 2026-06-23
+---
+
+import { Callout, MCQ, Quiz, Reveal, ThinkReveal, FillBlank, MatchConcepts, Categorize, MindMap, EnsembleTimeFan, CalibrationCurve, AdversarialPerturbationExplorer } from '@/components/react';
+
+So far this course has been a tour of the ways your beautiful model can be mugged.
+The market is adversarial by construction. Tiny, plausible nudges to your features
+flip your trade. Someone can poison your training data or steal your model outright.
+And the ground itself moves — the distribution you fit on is not the distribution you
+trade in. Four lessons of bad news.
+
+This is the lesson where you fight back.
+
+The good news up front: **robustness is not magic, it's a tax you choose to pay.**
+Every tool here buys worst-case safety by spending something — a little clean accuracy,
+a little expected return, a little model complexity, a wider interval. There is no free
+robustness, only *deliberately purchased* robustness. The skill is knowing which tax to
+pay, how much, and against which threat. By the end you'll have five instruments: train
+against an adversary, optimize against a worst-case *distribution*, shrink the model's
+sensitivity, average away fragility, and wrap the whole thing in honest, hedgeable
+uncertainty.
+
+A single thread runs through all five: **assume the test conditions are chosen by
+someone who wants you to lose, then optimize for *that*.** That is the min-max mindset,
+and it's the spine of the toolkit.
+
+## Adversarial training
+
+<MCQ
+  client:visible
+  pretest
+  question="You discover small feature perturbations flip your model's trade. What does adversarial training actually change about how you fit the model?"
+  options={[
+    { text: "It trains the model on adversarially perturbed inputs — minimizing the worst-case loss inside a perturbation budget, not just the average loss", correct: true },
+    { text: "It deletes the noisy features so no perturbation can reach them" },
+    { text: "It adds more layers so the model can memorize the attacks" },
+    { text: "It only changes how you evaluate the model, never how you train it" },
+  ]}
+  explanation="Adversarial training rewrites the objective: at each step you first find the worst nudge inside the budget, then update weights to do well on that worst case. It changes training, not just evaluation."
+/>
+
+**Analogy.** A boxer who only ever hits the heavy bag looks devastating — until the
+first opponent who hits back. Adversarial training is sparring: you train against a
+partner who actively tries to exploit your weaknesses, so the openings get closed *before*
+fight night. The model that only saw clean data is the boxer who never sparred.
+
+**Definition.** Adversarial training reframes learning as a **saddle-point (min-max)
+problem** (Madry et al., 2018). Instead of minimizing average loss on clean inputs, you
+minimize the loss against the *worst* perturbation an adversary could apply within a
+budget:
+
+$$ \min_{\theta} \; \mathbb{E}_{(x,y)} \left[ \max_{\lVert \delta \rVert \le \epsilon} \; \mathcal{L}\!\left(f_\theta(x + \delta),\, y\right) \right]. $$
+
+Read it inside-out. The **inner maximization** is the attacker from the
+adversarial-examples lesson: given the current weights, find the perturbation $\delta$
+inside the budget $\lVert \delta \rVert \le \epsilon$ that hurts you most (in practice,
+a few steps of projected gradient ascent — PGD). The **outer minimization** is the
+defender: update $\theta$ so that even the worst $\delta$ produces a small loss. You
+alternate: attack, then defend, then attack the stronger model, and so on.
+
+That $\epsilon$ is the same **perturbation budget** from the adversarial-examples
+lesson — the radius of the ball of nudges you're willing to defend against. Training
+just moves it from the evaluation harness *into the loss function*.
+
+<AdversarialPerturbationExplorer client:visible caption="The same tiny nudge from the adversarial-examples lesson — but now imagine it inside the loss. Adversarial training doesn't just measure how far ε can push the model across the boundary; it trains the boundary to stop moving when ε pushes. Slide ε up and picture the optimizer fighting back at every step." />
+
+**Worked example — the robustness-accuracy tradeoff.** Suppose your model on clean
+(un-attacked) data is great and on attacked data is hopeless:
+
+| Model | Clean accuracy | Robust accuracy (under PGD attack) |
+|---|---|---|
+| Standard training | 70% | 5% |
+| Adversarial training | 65% | 45% |
+
+You *lost* 5 points of clean accuracy (70% → 65%) and *gained* 40 points of robust
+accuracy (5% → 45%). That is the **robustness-accuracy tradeoff**, and it is the rule,
+not the exception: forcing the model to do well under attack costs a little on the
+quiet days, because the decision boundary has to sit further from the data to leave room
+for the budget. In trading terms, you sacrificed a sliver of fair-weather edge to stop
+getting blown up when an opponent moves your features. Whether that's a good trade
+depends entirely on how often someone *is* moving your features — which is exactly the
+question the "markets are adversarial" lesson answered with "more than you think."
+
+<Callout variant="tip" title="The tax framing">
+Adversarial training is the clearest example of robustness-as-a-tax: 5 points of clean
+accuracy bought 40 points of worst-case accuracy. You don't ask "is the tax zero?" (it
+never is). You ask "is the worst-case protection worth more to me than the fair-weather
+edge I'm giving up?" In a low-Sharpe strategy that occasionally gets adversarially
+sandbagged, the answer is usually yes.
+</Callout>
+
+<Callout variant="warning" title="'Robust to FGSM' is not 'robust'">
+A model can score 90% against the cheap single-step FGSM attack and 5% against a proper
+multi-step PGD attack. Training against a *weak* attacker teaches the model to fool that
+attacker specifically — often by **gradient masking**: making gradients uninformative so
+the attack can't find a direction, while the model stays just as fragile to a stronger
+or gradient-free attack. This false sense of safety is the entire subject of the next
+lesson. For now: if you adversarially train, attack with the strongest method you can,
+and never trust robustness measured only against the weak one.
+</Callout>
+
+### When to use it
+
+Reach for adversarial training when (1) you have a concrete, bounded threat — feature
+inputs an adversary can actually nudge (quote stuffing, spoofed order-book features,
+manipulable reference prices), and (2) you can specify a realistic budget $\epsilon$ from
+the threat, not from convenience. If your features are unmanipulable and your real
+problem is *natural* distribution shift rather than a pointwise attacker, the next tool
+(DRO) is the better fit — it defends against a shifted *distribution*, not a per-sample
+nudge.
+
+<FillBlank
+  client:visible
+  question="State the adversarial-training objective in words."
+  text="Adversarial training solves a min-max problem: minimize over the weights the {{worst-case|average-case|best-case}} loss over all perturbations inside the budget."
+  explanation="The inner step maximizes loss (the attacker's worst nudge); the outer step minimizes that worst case over the weights. Average- or best-case would be ordinary training and wishful thinking respectively."
+/>
+
+## Distributionally-robust optimization (DRO)
+
+<MCQ
+  client:visible
+  pretest
+  question="Adversarial training defends against per-sample nudges. What does distributionally-robust optimization defend against instead?"
+  options={[
+    { text: "A worst-case shift of the entire data distribution within a set of plausible distributions near your training distribution", correct: true },
+    { text: "A single mislabeled training row" },
+    { text: "Slow model inference at trade time" },
+    { text: "Nothing new — it is just adversarial training with a different name" },
+  ]}
+  explanation="DRO moves the adversary up a level: instead of choosing a nudge for each input, it gets to choose the whole test distribution from an ambiguity set around your empirical one. That's the formal version of 'the regime might change.'"
+/>
+
+**Analogy.** Adversarial training assumes the boxer in front of you might feint. DRO
+assumes you don't even know which boxer shows up — only that it's someone within a
+weight class of the one you trained against. You prepare for the *worst opponent in the
+bracket*, not the average one. The bracket is the ambiguity set; its size is how much
+uncertainty about the matchup you're willing to insure against.
+
+**Definition.** Standard (empirical risk minimization) learning minimizes expected loss
+under the **empirical distribution** $\hat{P}$ — the histogram of your training data:
+$\min_\theta \mathbb{E}_{\hat{P}}[\mathcal{L}]$. This silently assumes the test
+distribution equals the training one. DRO drops that assumption and minimizes the
+**worst-case** expected loss over an **ambiguity set** $\mathcal{U}$ of distributions
+within some divergence (a Wasserstein ball, or a $\phi$-divergence like KL) of
+$\hat{P}$:
+
+$$ \min_{\theta} \; \max_{Q \,\in\, \mathcal{U}(\hat{P})} \; \mathbb{E}_{Q}\!\left[\mathcal{L}\!\left(f_\theta, \, y\right)\right]. $$
+
+This is the principled, distribution-level version of the "markets are adversarial"
+premise: **assume the test distribution is chosen by an adversary** — but constrained to
+stay near what you've actually seen. The radius of $\mathcal{U}$ encodes *how much shift
+you fear*. Radius zero recovers ordinary ERM (you trust the empirical distribution
+completely); a large radius prepares for wild regime change at the cost of conservatism.
+
+If you've met **robust portfolio optimization** in the portfolio-optimization course,
+you already know this shape: rather than optimize a portfolio for one estimated mean and
+covariance, you optimize for the *worst* mean/covariance inside an uncertainty set around
+your estimates. DRO is exactly that idea applied to a model's loss instead of a
+portfolio's return.
+
+**Worked example — a tiny 2-scenario DRO.** You must pick one of two strategies. There
+are two future regimes, "Calm" and "Crisis." Your strategies' returns:
+
+| Strategy | Return in Calm | Return in Crisis |
+|---|---|---|
+| A (carry trade) | +10% | −20% |
+| B (defensive) | +3% | +1% |
+
+Your training data — recent history — has been 90% Calm, 10% Crisis, so
+$\hat{P} = (0.9, 0.1)$. **Expected-value (ERM) choice:**
+
+- Strategy A: $0.9 \times 10\% + 0.1 \times (-20\%) = 9\% - 2\% = 7\%.$
+- Strategy B: $0.9 \times 3\% + 0.1 \times 1\% = 2.7\% + 0.1\% = 2.8\%.$
+
+ERM picks **A** (7% &gt; 2.8%) — it trusts that the future stays 90% calm.
+
+Now build an ambiguity set: the true Crisis probability could be anywhere in
+$[0.10,\, 0.50]$ (you fear regimes shift harder than the recent sample shows). DRO
+evaluates each strategy at its **worst** distribution in that set:
+
+- Strategy A's worst case is maximum Crisis weight, $0.5$: $0.5 \times 10\% + 0.5 \times (-20\%) = 5\% - 10\% = -5\%.$
+- Strategy B's worst case is also $0.5$ Crisis: $0.5 \times 3\% + 0.5 \times 1\% = 1.5\% + 0.5\% = 2\%.$
+
+DRO maximizes the worst case, so it picks **B** ($2\% > -5\%$). The robust choice
+*differs* from the expected-value choice: ERM chases the 7% that assumes calm persists;
+DRO accepts a humble 2% that survives a crisis it can't rule out. Which is right depends
+entirely on the ambiguity set — and sizing that set honestly is the whole game.
+
+<Callout variant="tip" title="Sizing the ambiguity set">
+DRO's one dial is the radius of the ambiguity set, and it maps directly onto fear. Too
+small and you've just rebuilt ERM with extra steps — no protection. Too large and you're
+optimizing for an apocalypse so extreme that the only "robust" action is to do nothing,
+and you bleed expected return for protection you'll never need. Calibrate the radius to
+the shift you've *actually* observed across regimes (backtest the worst historical
+distribution drift), not to your anxiety.
+</Callout>
+
+### When to use it
+
+Use DRO when your threat is a *distribution* moving, not a single input being nudged —
+i.e., natural regime shift, covariate shift between backtest and live, or "this strategy
+worked in a low-rate world and rates just tripled." It's also the right frame when you
+distrust your *estimates* themselves (means, covariances, base rates) and want decisions
+that survive being wrong about them — that's robust portfolio optimization. Size the
+ambiguity set to the shift you genuinely fear and can defend with data; arbitrary radii
+give arbitrary conservatism.
+
+<ThinkReveal
+  client:visible
+  prompt="In the worked example, the ambiguity set was Crisis probability in [0.10, 0.50]. What happens to DRO's choice if you shrink the set to exactly {0.10} (a single point)?"
+  hint="A single-point ambiguity set means you fully trust one distribution. What does the min-max collapse to?"
+  text="With the set collapsed to the single point 0.10, the inner 'max over Q' has nothing to choose — there's only one distribution. DRO then reduces to ordinary expected-value optimization under P-hat = (0.9, 0.1), so it picks Strategy A (7% > 2.8%), exactly like ERM. Radius zero ⇒ DRO = ERM. The robustness only appears once the ambiguity set is wide enough to contain distributions worse than your training sample."
+/>
+
+## Regularization for stability
+
+<MCQ
+  client:visible
+  pretest
+  question="An L2 (ridge) penalty is usually taught as an anti-overfitting tool. What is its OTHER role, relevant to robustness?"
+  options={[
+    { text: "It bounds the model's sensitivity to input perturbations — smaller weights mean a smaller worst-case output shift for the same input nudge", correct: true },
+    { text: "It increases the model's capacity so it can fit attacks" },
+    { text: "It only affects training speed, never robustness" },
+    { text: "It guarantees the model is unbiased" },
+  ]}
+  explanation="Robustness and regularization are two faces of one coin. Shrinking the weights shrinks the model's Lipschitz constant — how much the output can move per unit of input movement — which is exactly the quantity an adversarial nudge exploits."
+/>
+
+**Analogy.** A hair-trigger is dangerous: the lightest touch fires the gun. A model with
+huge weights is hair-triggered — a feather-light feature nudge swings the output wildly.
+Regularization files down the trigger: now it takes a real, deliberate pull to move the
+output, so accidental (or adversarial) brushes do nothing. You trade away a little
+twitchy responsiveness for a lot of stability.
+
+**Definition.** For a linear scorer $\text{score}(x) = w \cdot x$, the worst-case output
+shift from a perturbation $\delta$ inside an $L_\infty$ budget $\epsilon$ is **exactly**
+the quantity from the adversarial-examples lesson:
+
+$$ \max_{\lVert \delta \rVert_\infty \le \epsilon} \; \lvert w \cdot (x + \delta) - w \cdot x \rvert \;=\; \max_{\lVert \delta \rVert_\infty \le \epsilon} \lvert w \cdot \delta \rvert \;=\; \epsilon \, \lVert w \rVert_1. $$
+
+The adversary's best move is to push each feature by $\pm\epsilon$ aligned with the sign
+of its weight, and the damage scales with $\lVert w \rVert_1$ — the sum of the absolute
+weights. So **shrinking the weights literally shrinks the worst-case adversarial shift.**
+An L2 (ridge) penalty $\lambda \lVert w \rVert_2^2$ pulls the weights toward zero,
+bounding the model's **Lipschitz constant** — the maximum output change per unit input
+change. Small weights ⇒ small $w \cdot \delta$ ⇒ small adversarial shift. Regularization
+*is* a robustness lever; it just usually arrives wearing an anti-overfitting badge.
+
+**Worked example — halve the norm, halve the damage.** Suppose your scorer has weights
+$w = (0.9, -0.7, -0.5, 0.4, 0.6)$, so $\lVert w \rVert_1 = 0.9 + 0.7 + 0.5 + 0.4 + 0.6 = 3.1$.
+With an $L_\infty$ budget $\epsilon = 0.1$, the worst-case score shift is
+$\epsilon \lVert w \rVert_1 = 0.1 \times 3.1 = 0.31$. Now crank up the ridge penalty until
+the fitted weights shrink to $w' = (0.45, -0.35, -0.25, 0.2, 0.3)$, exactly half the
+magnitude, so $\lVert w' \rVert_1 = 1.55$. The new worst-case shift is
+$0.1 \times 1.55 = 0.155$ — **precisely half**. Halving the weight norm halved the
+maximum damage an adversary can do for the same budget. (And if your decision boundary is
+0.6 away, a shift of 0.155 may no longer be enough to flip the trade where 0.31 was.)
+
+| Model | $\lVert w \rVert_1$ | Worst-case shift at $\epsilon = 0.1$ |
+|---|---|---|
+| Lightly regularized | 3.1 | 0.31 |
+| Heavily regularized | 1.55 | 0.155 |
+
+**More regularizers, more robustness.** The same logic generalizes: **weight decay**
+(L2 in disguise) bounds sensitivity; **feature reduction** removes attack surface
+entirely (a feature you don't use can't be nudged against you); **dropout** stops the
+model from relying on any single fragile feature; **early stopping** halts before the
+model contorts itself to fit noise. And here's a bonus connection to the
+data-poisoning/model-extraction lesson: all of these *also* reduce the overfitting that
+**membership-inference attacks** exploit. A model that has memorized its training rows
+leaks which rows it saw; a regularized model that generalizes leaks far less. One lever,
+three payoffs — generalization, adversarial robustness, *and* privacy.
+
+<Callout variant="warning" title="Regularization is not just anti-overfitting">
+The most common blind spot here is treating $\lambda$ as a dial you tune purely for
+validation accuracy. It's also a *security and robustness* dial. A model that's perfectly
+tuned for generalization may still be hair-triggered if its weights happen to be large.
+When you choose $\lambda$, ask not only "does this overfit?" but "how big is
+$\epsilon \lVert w \rVert_1$, and how big is the gap to my decision boundary?"
+</Callout>
+
+### When to use it
+
+Always — regularization is the cheapest robustness in the toolkit and should be the
+default, not the exception. It's the first thing to reach for when you can't characterize
+a specific threat: it shrinks sensitivity to *all* small input movements at once, not a
+named attack. Lean harder on it (smaller weights, fewer features) when your effective
+sample size is tiny and your decision boundary is close to your data — that's precisely
+when a hair-trigger model is both most likely and most dangerous.
+
+<Categorize
+  client:visible
+  question="Sort each technique by the PRIMARY robustness mechanism it provides."
+  buckets={["Bounds sensitivity to input nudges", "Removes/limits attack surface", "Reduces reliance on any single fragile feature"]}
+  items={[
+    { text: "L2 / ridge penalty (shrinks weight norm)", bucket: "Bounds sensitivity to input nudges" },
+    { text: "Weight decay", bucket: "Bounds sensitivity to input nudges" },
+    { text: "Feature reduction (drop unused inputs)", bucket: "Removes/limits attack surface" },
+    { text: "Early stopping before fitting noise", bucket: "Removes/limits attack surface" },
+    { text: "Dropout", bucket: "Reduces reliance on any single fragile feature" },
+  ]}
+  explanation="Ridge and weight decay directly bound the Lipschitz constant (sensitivity). Feature reduction and early stopping shrink the surface the model exposes to noise/attacks. Dropout forces redundancy so no one feature is a single point of failure."
+/>
+
+## Ensembling for stability
+
+<MCQ
+  client:visible
+  pretest
+  question="Why does averaging a diverse ensemble of models tend to be more robust than any single model?"
+  options={[
+    { text: "Independent errors partially cancel (variance reduction), and an attack crafted for one model often fails to transfer to the others", correct: true },
+    { text: "Ensembles always have lower bias than any member" },
+    { text: "Averaging guarantees the ensemble beats the best single model on clean data" },
+    { text: "More models means more parameters, which is always better" },
+  ]}
+  explanation="Diversity is the whole point: uncorrelated errors shrink when averaged (σ²/k), and a perturbation tuned to exploit one model's particular blind spot usually doesn't line up with a differently-built model's blind spot, so it fails to transfer."
+/>
+
+**Analogy.** A single expert can be confidently, catastrophically wrong in their one
+blind spot. A diverse panel of experts — different training, different methods — rarely
+shares the *same* blind spot, so a question that fools one gets caught by the others. The
+key word is *diverse*: a panel of five experts who all trained at the same school under
+the same professor is just one expert with extra chairs.
+
+**Definition.** An ensemble combines predictions from multiple models — by averaging
+(regression) or voting (classification) — so no single fragile model dominates the
+output. The robustness comes from **variance reduction**. If you average $k$ models whose
+errors are independent, each with error variance $\sigma^2$, the variance of the average
+is
+
+$$ \text{Var}\!\left(\frac{1}{k}\sum_{i=1}^{k} \hat{f}_i\right) = \frac{\sigma^2}{k}. $$
+
+**Worked example — k = 4.** Say each of your four models predicts next-week return with
+error variance $\sigma^2 = 0.04$ (a standard deviation of 0.2), and their errors are
+independent. The ensemble's error variance is $\sigma^2 / k = 0.04 / 4 = 0.01$ — **a
+quarter of the original**, a standard deviation of $0.1$. You halved the error spread by
+averaging four independent views, for free. The second robustness payoff is **non-transfer**:
+an adversarial nudge computed against model 1's gradients exploits model 1's specific
+boundary; pointed at models 2–4 (built on different features, seeds, or architectures), it
+usually lands in empty space and gets out-voted. The attack that flips one model rarely
+flips four different ones at once.
+
+<EnsembleTimeFan client:visible caption="Many models, many paths. The individual forecasts fan out and disagree — but their average is far steadier than any single line, and no single fragile path can drag the consensus over a cliff. That steadiness is the σ²/k variance reduction made visible, and it's why an attack tuned to one path rarely moves the median." />
+
+This ties directly to **regime-ensembling** from the distribution-shift lesson: rather
+than bet everything on one model that assumes one regime, you blend a calm-regime model,
+a crisis-regime model, and a transition model, so when the regime turns, the relevant
+member's vote rises and the stale member's falls. The ensemble degrades gracefully
+instead of falling off a cliff.
+
+**Worked example — the correlation tax.** The $\sigma^2/k$ result assumed *independent*
+errors. With pairwise correlation $\rho$ between the models' errors, the ensemble variance
+is actually $\sigma^2\left(\frac{1}{k} + \frac{k-1}{k}\rho\right)$. Plug in $k = 4$,
+$\rho = 1$ (identical models): $0.04 \times (0.25 + 0.75 \times 1) = 0.04 \times 1 = 0.04$
+— **no reduction at all.** Four copies of the same model is one model. Diversity isn't a
+nice-to-have; it's the entire source of the benefit.
+
+<Callout variant="warning" title="Correlated models don't diversify">
+The seductive failure mode is stacking five models that all use the same features, the
+same lookback, and the same train period, then congratulating yourself on an "ensemble."
+If they share a blind spot, the ensemble shares it — and an adversarial example or regime
+shift that beats one beats all five simultaneously. Engineer diversity on purpose:
+different features, architectures, seeds, train windows, and inductive biases. Measure the
+error correlation; if it's near 1, you have one model wearing a costume.
+</Callout>
+
+### When to use it
+
+Ensemble when you can build *genuinely diverse* members cheaply and you want graceful
+degradation under both attacks and regime shifts — it's the natural home for
+regime-ensembling and for hedging architecture risk. It's less useful when your models are
+forced to be near-identical (same data, same features, same recipe), since then you pay
+$k\times$ the compute for none of the variance reduction. Always measure inter-model error
+correlation before trusting the $\sigma^2/k$ promise.
+
+<FillBlank
+  client:visible
+  question="Pin down the limit of ensembling."
+  text="Averaging k models with independent errors cuts variance to sigma-squared over k, but if the models are perfectly correlated the variance reduction is {{zero|maximal|doubled}}."
+  explanation="With ρ = 1 the ensemble variance stays at σ² — identical models give no diversification. The benefit lives entirely in the independence of the errors."
+/>
+
+## Conformal prediction for honest uncertainty
+
+<MCQ
+  client:visible
+  pretest
+  question="A model outputs a single point forecast: 'next-week return = +1.2%.' What does conformal prediction add on top of ANY such model?"
+  options={[
+    { text: "A prediction set or interval with a guaranteed marginal coverage of (1 − α), built from the quantile of nonconformity scores on a calibration set", correct: true },
+    { text: "A way to make the point forecast more accurate" },
+    { text: "A faster inference path for the same model" },
+    { text: "A guarantee that the point forecast is unbiased" },
+  ]}
+  explanation="Conformal prediction is a model-agnostic wrapper. It doesn't improve the point forecast; it converts it into an interval/set with a finite-sample coverage guarantee, computed from how 'surprising' calibration-set residuals were."
+/>
+
+**Analogy.** A weather app that says "it will rain at 2:00 pm" is a confident liar — it
+*will* be wrong about the exact minute. A trustworthy app says "70% chance of rain this
+afternoon," and over many such afternoons it really does rain about 70% of the time.
+Conformal prediction is the second app: it refuses to pretend it knows the exact number
+and instead hands you an interval that's *honest about how often it will be right*.
+
+**Definition.** Conformal prediction is a **distribution-free** wrapper that turns any
+model into one that outputs **prediction sets** (classification) or **intervals**
+(regression) with a **guaranteed marginal coverage** of $1 - \alpha$. The recipe (split
+conformal): hold out a **calibration set** the model didn't train on; compute a
+**nonconformity score** for each calibration point (for regression, the absolute residual
+$\lvert y - \hat{y} \rvert$); take the empirical $(1 - \alpha)$ quantile $q$ of those
+scores; then for a new input, the prediction interval is $\hat{y} \pm q$. The promise:
+
+$$ \Pr\!\left(y_{\text{new}} \in \big[\hat{y} - q,\; \hat{y} + q\big]\right) \ge 1 - \alpha. $$
+
+The honesty is the headline: **under exchangeability**, this coverage holds with *no*
+assumptions about the data distribution or the model — the model can be a random forest, a
+neural net, or a magic eight-ball, and the interval still covers the truth at least
+$1 - \alpha$ of the time. You don't get accuracy for free, but you get *calibrated
+humility* for free.
+
+**Worked example — alpha = 0.1.** You target 90% coverage, so $\alpha = 0.1$. On a
+calibration set of 1,000 held-out predictions you compute the absolute residuals and find
+the 90th-percentile residual is **2.0%**. Then your conformal interval for any new
+forecast is $\hat{y} \pm 2.0\%$: a point forecast of $+1.2\%$ becomes the interval
+$[-0.8\%,\, +3.2\%]$, and over many trades that interval should contain the realized
+return about 90% of the time. **Trade the interval, not the point:** if the whole interval
+is above zero you have a high-confidence long; if it straddles zero, the honest answer is
+"I don't know," and you size small or stand aside.
+
+| Quantity | Value |
+|---|---|
+| Target coverage $1 - \alpha$ | 90% ($\alpha = 0.1$) |
+| 90th-percentile calibration residual | 2.0% |
+| Interval half-width $q$ | 2.0% |
+| Interval for a $+1.2\%$ forecast | $[-0.8\%,\, +3.2\%]$ |
+
+<CalibrationCurve client:visible caption="Honest uncertainty means the curve hugs the diagonal: when you claim 90% coverage, you actually get 90%. Drag the bias slider to see what happens when a model is miscalibrated — the curve sags off the diagonal, your stated confidence is a lie, and your intervals are systematically too narrow or too wide. Conformal prediction is the machinery that pulls the curve back onto the line." />
+
+**The catch for trading — exchangeability breaks.** Conformal's guarantee rests on
+**exchangeability**: roughly, the calibration points and the new point are interchangeable
+draws (i.i.d. is the familiar special case). Markets violate this in the way the
+distribution-shift lesson hammered: returns are a non-stationary time series, so yesterday's
+calibration residuals are *not* exchangeable with tomorrow's after a regime turn. When the
+regime shifts, realized coverage drifts below target — your "90% interval" starts covering
+only 80% of outcomes, and you're quietly under-hedged exactly when you most need to be
+hedged.
+
+The fix is **adaptive (online) conformal — ACI** (Gibbs & Candès): instead of a fixed
+quantile, you *adjust* it as realized coverage drifts. Track recent coverage; if it falls
+below $1 - \alpha$, widen the interval (raise the effective $\alpha_t$); if it runs above,
+tighten. Continuing the worked example: you targeted 90% but the trailing window shows only
+**80%** of outcomes landed inside, so ACI bumps the half-width up — say from 2.0% toward
+2.6% — until realized coverage climbs back to 90%. You pay for the regime shift in wider
+intervals (more honesty, smaller positions), not in a silent coverage failure.
+
+<Callout variant="tip" title="Honest uncertainty is hedgeable uncertainty">
+A point forecast you can't trust is a position you can't size. An interval with a real
+(adaptive) coverage guarantee is something you *can* act on: size positions by the interval
+width, hedge to the band edges, stand aside when the interval straddles zero. Conformal
+prediction's gift to a trader isn't a better number — it's the difference between false
+precision and a number you can put risk behind.
+</Callout>
+
+### When to use it
+
+Use conformal prediction whenever a decision needs honest, *quantified* uncertainty rather
+than a false point forecast — position sizing, hedging, and risk limits all want an
+interval, not a guess. It's model-agnostic, so wrap your *existing* best model rather than
+rebuilding. In trading, **always** reach for the adaptive/online variant (ACI), because the
+plain version's exchangeability assumption is exactly what non-stationary markets break;
+fixed-quantile conformal will silently under-cover after a regime turn.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Adversarial training", definition: "Min-max: minimize the worst-case loss over perturbations inside a budget ε" },
+    { term: "Distributionally-robust optimization", definition: "Minimize the worst-case expected loss over an ambiguity set of distributions near the empirical one" },
+    { term: "L2 / ridge regularization", definition: "Bounds the Lipschitz constant — smaller weight norm means a smaller worst-case adversarial shift" },
+    { term: "Ensembling", definition: "Average diverse models so errors cancel (σ²/k) and attacks fail to transfer" },
+    { term: "Conformal prediction", definition: "Distribution-free wrapper giving prediction sets with guaranteed (1 − α) coverage" },
+    { term: "Adaptive conformal (ACI)", definition: "Adjusts the quantile online as realized coverage drifts under distribution shift" },
+  ]}
+/>
+
+## Recap
+
+Five instruments, one mindset: assume the test conditions are chosen by someone who wants
+you to lose, then optimize for *that*. **Adversarial training** solves the min-max against
+a per-sample attacker and pays for worst-case robustness with a little clean accuracy.
+**DRO** lifts the adversary to the distribution level and pays for worst-case-distribution
+safety with a little expected return — sized by an ambiguity set you must calibrate to real
+fear. **Regularization** is the cheap, always-on lever that bounds sensitivity (and curbs
+the overfitting privacy attacks exploit). **Ensembling** averages away fragility at
+$\sigma^2/k$ — but only if the models are genuinely diverse. And **conformal prediction**
+wraps the whole thing in honest, hedgeable uncertainty, with the adaptive variant the only
+honest choice once markets break exchangeability.
+
+Every tool was a tax. The expert move isn't avoiding the tax — it's paying the right one,
+in the right amount, against the right threat.
+
+One loose thread remains, and it's the most dangerous: how do you *know* your defense
+actually works, rather than merely *looks* like it works? That's the false-robustness
+problem — gradient masking, attacks that don't transfer the way you hoped, coverage that
+silently drifts — and it's the subject of the next lesson.
+
+<MindMap
+  client:visible
+  title="The robustness toolkit"
+  caption="Build the map: five tools, what each defends against, and what each costs."
+  root={{
+    label: 'Robustness toolkit',
+    children: [
+      { label: 'Adversarial training', children: [
+        { label: 'Min-max over ‖δ‖ ≤ ε (Madry)' },
+        { label: 'Defends: per-sample nudges' },
+        { label: 'Cost: robustness–accuracy tradeoff' },
+        { label: 'Pitfall: gradient masking / FGSM-only' },
+      ]},
+      { label: 'DRO', children: [
+        { label: 'Min-max over ambiguity set of distributions' },
+        { label: 'Defends: regime / distribution shift' },
+        { label: 'Cost: conservatism (size the set to real fear)' },
+        { label: 'Cousin: robust portfolio optimization' },
+      ]},
+      { label: 'Regularization', children: [
+        { label: 'Bounds Lipschitz: shift = ε·‖w‖₁' },
+        { label: 'Defends: all small input nudges + overfitting' },
+        { label: 'Bonus: curbs membership inference' },
+      ]},
+      { label: 'Ensembling', children: [
+        { label: 'Variance σ²/k for independent errors' },
+        { label: 'Defends: fragility + non-transfer of attacks' },
+        { label: 'Pitfall: correlated models = one model' },
+        { label: 'Use: regime-ensembling' },
+      ]},
+      { label: 'Conformal prediction', children: [
+        { label: 'Distribution-free (1 − α) coverage' },
+        { label: 'Needs exchangeability — markets break it' },
+        { label: 'Fix: adaptive / online conformal (ACI)' },
+        { label: 'Use: size positions by the interval' },
+      ]},
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Mixed check: did the toolkit stick?"
+  questions={[
+    {
+      question: "A model goes from 70% clean / 5% robust accuracy to 65% clean / 45% robust after adversarial training. What does this illustrate?",
+      options: [
+        { text: "The robustness–accuracy tradeoff: worst-case robustness is bought with a small loss of clean accuracy", correct: true },
+        { text: "A bug — robustness should never lower clean accuracy" },
+        { text: "That adversarial training is strictly free and always improves everything" },
+        { text: "That the model was already optimal and shouldn't have changed" },
+      ],
+      explanation: "Forcing good behavior under attack pushes the boundary away from the data, costing a little clean accuracy (−5) to gain a lot of robust accuracy (+40). That tradeoff is the rule.",
+    },
+    {
+      question: "Training has been 90% Calm / 10% Crisis. Strategy A returns +10%/−20%, Strategy B returns +3%/+1%. Under a DRO ambiguity set allowing Crisis probability up to 0.5, which strategy is chosen and why?",
+      options: [
+        { text: "B — its worst case (+2%) beats A's worst case (−5%); DRO maximizes the worst-case expected return", correct: true },
+        { text: "A — it has the higher expected return under the training distribution" },
+        { text: "A — DRO ignores the ambiguity set and uses the empirical distribution" },
+        { text: "Neither — DRO requires the distributions to be identical" },
+      ],
+      explanation: "At 0.5 Crisis weight, A yields 0.5·10 + 0.5·(−20) = −5% and B yields 0.5·3 + 0.5·1 = 2%. DRO picks the better worst case: B. ERM (using 0.9/0.1) would instead pick A at 7%.",
+    },
+    {
+      question: "A linear scorer has ‖w‖₁ = 3.1 and faces an L∞ budget ε = 0.1. You regularize until the weights halve to ‖w‖₁ = 1.55. What is the new worst-case score shift?",
+      options: [
+        { text: "0.155 — the worst-case shift ε·‖w‖₁ halves with the weight norm (0.1 × 1.55)", correct: true },
+        { text: "0.31 — regularization doesn't affect adversarial robustness" },
+        { text: "0.62 — halving the weights doubles the shift" },
+        { text: "0.0155 — the shift falls by a factor of ten" },
+      ],
+      explanation: "Worst-case shift = ε‖w‖₁. Originally 0.1 × 3.1 = 0.31; after halving the norm, 0.1 × 1.55 = 0.155. Regularization is a robustness lever, not just an anti-overfitting one.",
+    },
+    {
+      question: "You average four models with error variance σ² = 0.04 each. Why might the real ensemble variance still be 0.04 rather than 0.01?",
+      options: [
+        { text: "Because σ²/k assumes independent errors; if the models are perfectly correlated (ρ = 1) the variance stays at σ²", correct: true },
+        { text: "Because averaging always increases variance" },
+        { text: "Because four models is too few to ever reduce variance" },
+        { text: "Because variance reduction only works for classification, not regression" },
+      ],
+      explanation: "Ensemble variance is σ²(1/k + (k−1)/k·ρ). With ρ = 1 and k = 4 that's 0.04·(0.25 + 0.75) = 0.04 — no reduction. Diversity is the entire source of the benefit.",
+    },
+    {
+      question: "Your split-conformal '90% interval' starts covering only 80% of realized returns after a regime change. What's the right diagnosis and fix?",
+      options: [
+        { text: "Exchangeability broke under distribution shift; switch to adaptive/online conformal (ACI) that widens the quantile as coverage drifts", correct: true },
+        { text: "The model's point forecast got more accurate, so nothing needs fixing" },
+        { text: "Conformal prediction is broken and should be discarded entirely" },
+        { text: "Tighten the interval, since 80% means it's too wide" },
+      ],
+      explanation: "Fixed-quantile conformal assumes exchangeability, which non-stationary markets break — so coverage silently drifts below target. ACI adjusts the quantile online (here, widening from ~2.0% toward ~2.6%) to restore the 90% coverage.",
+    },
+  ]}
+/>

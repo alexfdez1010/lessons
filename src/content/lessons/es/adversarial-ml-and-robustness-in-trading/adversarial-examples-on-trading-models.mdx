@@ -1,0 +1,609 @@
+---
+title: "Ejemplos adversariales en modelos de trading"
+description: "FGSM y PGD — perturbaciones minúsculas y fabricadas en la entrada que voltean un modelo — reformuladas para variables de mercado. Por qué unos pocos puntos básicos de ruido fabricado pueden voltear una posición, por qué los modelos casi lineales en alta dimensión son tan frágiles, y la geometría L-p de un ataque sobre un clasificador de trading."
+topic: "es/adversarial-ml-and-robustness-in-trading"
+order: 2
+minutes: 20
+updated: 2026-06-23
+---
+
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, AdversarialPerturbationExplorer } from '@/components/react';
+
+En 2014 un grupo de investigación tomó una foto de un panda, le añadió una capa de ruido
+tan tenue que el ojo humano *no percibe cambio alguno*, y un clasificador de imágenes
+de última generación que había etiquetado el original como "panda" con un 58% de confianza
+ahora etiquetaba la imagen manipulada como **gibón** con un 99% de confianza. El ruido no
+era aleatorio. Estaba *fabricado* — cada píxel empujado en la dirección exacta que llevaba
+al modelo hacia "gibón".
+
+Esa imagen lanzó todo un campo. La lección inquietante: un modelo puede tener un **97% de
+precisión y ser 100% rompible**, porque una alta precisión sobre entradas naturales no
+dice nada sobre el comportamiento ante entradas que un adversario *diseña*. Y aquí viene
+la parte que debería quitarle el sueño a un quant — **los mercados están llenos de
+adversarios capaces de diseñar tus entradas.** A un modelo de trading no le das píxeles.
+Le das variables fabricadas: momentum, volatilidad realizada, spread bid–ask, desequilibrio
+del flujo de órdenes, RSI. Y cada una de esas variables puede ser *movida* por alguien
+dispuesto a operar contra ti.
+
+Esta lección reformula todo el arsenal de ejemplos adversariales — FGSM, PGD, la geometría
+L-p, la explicación de la linealidad — para un modelo de trading cuyos "píxeles" son
+variables del libro de órdenes y cuyo "ruido imperceptible" son unos pocos puntos básicos
+de flujo colocado estratégicamente. Una vez que ves tu señal como una función que un
+oponente puede sondear, la robustez deja de ser una curiosidad de la investigación en
+visión y se convierte en lo mínimo exigible.
+
+## Qué es un ejemplo adversarial
+
+<MCQ
+  client:visible
+  pretest
+  question="Un clasificador tiene un 98% de precisión sobre datos de mercado reales. Un atacante añade una perturbación que ningún revisor humano marcaría como inusual y el modelo voltea su decisión. ¿Qué te dice ese 98% de precisión sobre este ataque?"
+  options={[
+    { text: "Casi nada — la precisión sobre entradas naturales no garantiza el comportamiento ante entradas que un adversario fabrica deliberadamente", correct: true },
+    { text: "El ataque es imposible; un 98% de precisión significa que el modelo es robusto" },
+    { text: "El ataque puede mover la precisión como mucho 2 puntos porcentuales" },
+    { text: "La precisión y la robustez adversarial son la misma propiedad medida dos veces" },
+  ]}
+  explanation="La precisión estándar se mide sobre entradas extraídas de la distribución natural de los datos. Los ejemplos adversariales se construyen deliberadamente fuera de la distribución, en las direcciones a las que el modelo es más sensible. Las dos son propiedades casi independientes — alta precisión y baja robustez es el caso típico."
+/>
+
+**Analogía.** Un cajero de banco puede verificar mil firmas reales sin un solo fallo y
+aun así dejarse engañar por un falsificador que estudió exactamente cómo comprueba las
+firmas el cajero. El 99,9% de precisión del cajero sobre firmas *honestas* es irrelevante
+para el falsificador, que no muestrea de la distribución honesta — busca la única firma que
+se cuela. Un ejemplo adversarial es la firma falsificada, hallada por alguien que conoce
+los puntos débiles del modelo.
+
+**Definición.** Sea un modelo que produce una decisión a partir de un vector de variables
+de entrada $x$ mediante una función de puntuación y una pérdida $L(x, y)$ que mide cuánto se
+equivoca respecto a la etiqueta verdadera $y$. Un **ejemplo adversarial** es una entrada
+perturbada $x' = x + \delta$ donde la perturbación $\delta$ es *pequeña* bajo alguna norma
+elegida y aun así *maximiza* la pérdida (o voltea la salida). Formalmente, el atacante
+resuelve
+
+$$ \max_{\delta} \; L(x + \delta, y) \quad \text{sujeto a} \quad \lVert \delta \rVert_p \le \varepsilon. $$
+
+La restricción $\lVert \delta \rVert_p \le \varepsilon$ es el **presupuesto de perturbación**:
+$\delta$ debe ser minúsculo bajo la norma $L_p$, acotado por $\varepsilon$. "Minúsculo" es lo
+que lo hace adversarial en lugar de ser simplemente una entrada distinta — se supone que el
+cambio es imperceptible (en visión) o *barato* (en mercados).
+
+**Reformulación para mercados.** Sustituye los píxeles por variables fabricadas. Un modelo
+de trading podría puntuar un vector de variables
+
+$$ x = (\text{momentum},\; \text{volatilidad},\; \text{spread},\; \text{desequilibrio del flujo de órdenes},\; \text{RSI}). $$
+
+Una señal de largo se dispara cuando la puntuación supera una frontera. Un ejemplo
+adversarial aquí es un *empujón fabricado* a esas variables — pongamos momentum 0,3
+desviaciones típicas a la baja, desequilibrio con el signo cambiado, spread algo más ancho —
+diseñado para que el modelo que quería ponerse **largo** ahora se ponga **corto**. Lo
+crucial: no perturbas las variables directamente; perturbas el **libro de órdenes** lo
+justo para que las *variables fabricadas calculadas a partir de él* se muevan donde quieres.
+El ataque vive en el mercado; el daño aterriza en el vector de variables.
+
+**Ejemplo resuelto.** Supón que un largo se dispara cuando la puntuación es al menos 0,60.
+El vector de variables honesto de hoy puntúa 0,62 — un largo cómodo. Un atacante calcula
+que desplazar cuatro variables con un presupuesto combinado de 0,05 (bajo la norma
+relevante) baja la puntuación a 0,55. Eso está por debajo de 0,60, así que el modelo ahora
+voltea a corto. La posición se invierte con una perturbación que un responsable de riesgos
+mirando las variables a ojo quizá ni note: cada variable se movió una pizca, ninguna parece
+anómala, y sin embargo el *agregado* apuntaba con precisión a la frontera.
+
+<Callout variant="warning" title="Estar fuera de la distribución es justamente la clave">
+La razón por la que los backtests nunca te avisan de esto es que los backtests reproducen
+historia *natural* — entradas que el mercado produjo de verdad. Las entradas adversariales
+son, por construcción, las que la historia *no* produjo porque nadie te atacaba todavía. Un
+Sharpe fuera de muestra impecable mide el comportamiento sobre la distribución honesta y no
+dice nada sobre la adversarial. La robustez es un eje aparte que debes probar a propósito.
+</Callout>
+
+### Cuándo usarlo
+
+Echa mano de la lente de los ejemplos adversariales siempre que algún otro agente a la vez
+**observe** tu comportamiento y **se beneficie** de voltearlo — una contraparte que se
+opone a tu flujo, un HFT depredador que caza tus stops, un rival que aplica ingeniería
+inversa a tu señal. Si las entradas de tu modelo se calculan a partir de datos públicos de
+mercado que cualquiera puede mover operando, asume que las entradas son *atacables* y
+pregúntate cuán barato resulta voltear tu decisión.
+
+<FillBlank
+  client:visible
+  question="Fija la definición."
+  text="Un ejemplo adversarial es una perturbación que es {{pequeña bajo una norma elegida|grande y obvia|aleatoria y sin estructura}} y aun así está diseñada para {{maximizar la pérdida / voltear la salida|dejar la salida sin cambios|reducir la magnitud de la entrada}}."
+  explanation="Las dos propiedades que la definen son el límite de tamaño (pequeña bajo una norma L-p, el presupuesto épsilon) y el objetivo malicioso (maximizar la pérdida / voltear la decisión). Los cambios aleatorios, grandes o que preservan la salida no son ejemplos adversariales."
+/>
+
+## La explicación de la linealidad — por qué los modelos en alta dimensión son frágiles
+
+<MCQ
+  client:visible
+  pretest
+  question="Un quant argumenta: 'Mi modelo es básicamente una puntuación lineal sobre las variables, así que es simple y por tanto está a salvo de estos exóticos ataques adversariales.' ¿Cómo deberías reaccionar?"
+  options={[
+    { text: "Ese razonamiento está al revés — la linealidad es precisamente lo que hace que los ejemplos adversariales sean baratos, eficaces y transferibles en alta dimensión", correct: true },
+    { text: "Correcto — los modelos lineales no tienen gradiente, así que no se pueden atacar" },
+    { text: "Correcto — solo las redes profundas no lineales son vulnerables" },
+    { text: "Irrelevante — la vulnerabilidad depende solo de la precisión, no de la forma del modelo" },
+  ]}
+  explanation="La hipótesis de linealidad de Goodfellow et al. dice que los ejemplos adversariales surgen PORQUE los modelos se comportan de forma casi lineal en alta dimensión. Una puntuación lineal permite al atacante sumar un pequeño empujón por variable a lo largo de muchas variables hasta lograr un gran cambio en la puntuación. La simplicidad no compra seguridad aquí."
+/>
+
+**Analogía.** Imagina una votación donde 100 jueces tienen cada uno un voto minúsculo.
+Soborna a cada juez con un solo dólar — trivial, casi imperceptible por juez — y habrás
+gastado \$100 de influencia en total. En una votación reñida, \$100 de empujones coordinados
+voltean el resultado aunque *ningún juez individual fue comprado por una suma significativa*.
+La alta dimensionalidad es tener *muchos jueces*: montones de variables, cada una barata de
+empujar, que suman un empellón decisivo. Esa es la maldición del modelo lineal.
+
+**Definición.** Para una puntuación lineal $s(x) = w \cdot x = \sum_i w_i x_i$, perturbar la
+entrada en $\delta$ cambia la puntuación exactamente en
+
+$$ s(x + \delta) - s(x) = w \cdot \delta = \sum_i w_i\, \delta_i. $$
+
+Bajo un presupuesto $L_\infty$ — es decir, cada variable puede moverse como mucho
+$\varepsilon$, o sea, el mayor cambio en una sola variable está acotado (esta es la
+restricción de "norma del máximo") — el desplazamiento *peor caso* de la puntuación se logra
+empujando cada variable el $\varepsilon$ completo en el signo de su peso:
+
+$$ \max_{\lVert \delta \rVert_\infty \le \varepsilon} \; w \cdot \delta = \varepsilon \sum_i \lvert w_i \rvert = \varepsilon\, \lVert w \rVert_1. $$
+
+Mira fijamente ese resultado. El daño peor caso escala con $\lVert w \rVert_1$, la suma de
+los pesos absolutos — que **crece con el número de variables $d$**. Duplica la dimensión y
+(para pesos típicos similares) aproximadamente duplicas el apalancamiento del atacante, *con
+el mismo presupuesto por variable* $\varepsilon$. La alta dimensionalidad, lo que hace
+poderosos a los modelos modernos, es también lo que los hace frágiles.
+
+**Ejemplo resuelto.** Toma un modelo con $d = 100$ variables, un peso absoluto medio de
+$\lvert w_i \rvert = 0.1$, y un presupuesto $L_\infty$ de $\varepsilon = 0.01$ (cada variable
+puede moverse una parte por cien de su rango escalado). El desplazamiento peor caso de la
+puntuación es
+
+$$ \varepsilon \, \lVert w \rVert_1 = 0.01 \times (100 \times 0.1) = 0.01 \times 10 = 0.1. $$
+
+Un desplazamiento de la puntuación de **0,1** a partir de un empujón por variable de tan
+solo **0,01** — una amplificación de 10x, cortesía de la dimensión. Si la frontera de
+decisión se sitúa a menos de 0,1 de la puntuación actual (como suele ocurrir cerca de un
+umbral de señal), eso basta para voltear la operación. Ahora escala a $d = 1000$ variables
+con el mismo presupuesto por variable y el desplazamiento peor caso es
+$0.01 \times (1000 \times 0.1) = 1.0$ — diez veces mayor, gratis.
+
+| Variables $d$ | Presupuesto por variable $\varepsilon$ | $\lvert w_i \rvert$ medio | Desplazamiento peor caso $\varepsilon \lVert w \rVert_1$ |
+|---|---|---|---|
+| 10 | 0,01 | 0,1 | 0,01 |
+| 100 | 0,01 | 0,1 | 0,10 |
+| 1.000 | 0,01 | 0,1 | 1,00 |
+| 10.000 | 0,01 | 0,1 | 10,0 |
+
+<Callout variant="warning" title="'Mi modelo es básicamente lineal, así que está a salvo' es exactamente lo contrario">
+Esta es la intuición más peligrosa de todo el tema. La no linealidad no es lo que hace
+vulnerables a los modelos — la *linealidad local* sí lo es. Un modelo casi lineal en alta
+dimensión le entrega al atacante un presupuesto limpio y aditivo: empuja muchas variables un
+poco, suma los empujones, cruza la frontera. Peor aún, como la dirección del gradiente es
+estable y aproximadamente compartida entre modelos similares, un ataque fabricado sobre un
+modelo casi lineal **se transfiere** a otros. La linealidad es por qué los ejemplos
+adversariales son baratos *y* portables.
+</Callout>
+
+### Cuándo usarlo
+
+Usa el argumento de la linealidad para *triar* tu exposición: cuantas más variables consuma
+tu modelo y más lineal sea su superficie de decisión cerca del umbral, mayor es el
+apalancamiento $\lVert w \rVert_1$ del atacante. También te apunta a una defensa parcial —
+reducir $\lVert w \rVert_1$ (modelos más dispersos, más regularizados, con menos variables)
+acota directamente el daño $L_\infty$ peor caso. Échale mano cada vez que te tiente añadir
+"solo unas variables más" a una señal que se sitúa cerca de una frontera.
+
+<Reveal client:visible>
+<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
+<summary className="cursor-pointer font-medium">Con un presupuesto por variable épsilon fijo, ¿pasar de 100 variables a 400 variables hace a un modelo casi lineal MÁS o MENOS vulnerable, y aproximadamente en qué medida?</summary>
+
+**Pista.** El desplazamiento peor caso de la puntuación es épsilon por la suma de los pesos absolutos, que escala con el número de variables.
+
+**Más vulnerable — aproximadamente 4x.** El desplazamiento peor caso de la puntuación es
+$\varepsilon \lVert w \rVert_1 = \varepsilon \sum_i \lvert w_i \rvert$. Manteniendo fijo el
+peso absoluto típico, cuadruplicar el número de variables de 100 a 400 aproximadamente
+cuadruplica $\lVert w \rVert_1$, así que el apalancamiento peor caso del atacante con el
+*mismo* presupuesto por variable crece unas cuatro veces. Añadir variables expande la
+expresividad y la superficie de ataque de un mismo golpe — la dimensionalidad es amiga del
+adversario.
+
+</details>
+</Reveal>
+
+## FGSM — el método del signo del gradiente rápido
+
+<MCQ
+  client:visible
+  pretest
+  question="El método del signo del gradiente rápido (FGSM) construye un ataque en un único paso. ¿En qué dirección se empuja cada variable?"
+  options={[
+    { text: "A lo largo del signo del gradiente de la pérdida respecto a esa variable, cada una con el presupuesto completo épsilon", correct: true },
+    { text: "En una dirección uniformemente aleatoria, escalada por épsilon" },
+    { text: "Hacia cero, para reducir la magnitud de la variable" },
+    { text: "Proporcional a la magnitud cruda del gradiente, ignorando el presupuesto" },
+  ]}
+  explanation="FGSM fija la perturbación a épsilon por el signo del gradiente de la pérdida respecto a la entrada. Usar el signo (no el gradiente crudo) gasta exactamente todo el presupuesto L-infinito por variable, en la dirección que incrementa la pérdida. Una evaluación del gradiente, un paso."
+/>
+
+**Analogía.** Estás en el fondo de un valle (pérdida baja = decisión correcta) y quieres
+salir lo más rápido posible con un paso de longitud fija en cada dirección de la brújula.
+FGSM mira la pendiente bajo tus pies y, en *cada* dirección, da el paso completo permitido
+*cuesta arriba*. No le importa cuán empinada es cada dirección — solo *qué dirección sube* —
+porque el presupuesto $L_\infty$ premia mover cada coordenada la cantidad completa. Es la
+escapada codiciosa de un solo disparo fuera del valle.
+
+**Definición.** El **método del signo del gradiente rápido (FGSM)** construye la perturbación
+en un único paso de gradiente:
+
+$$ \delta = \varepsilon \cdot \operatorname{sign}\big(\nabla_x L(x, y)\big), \qquad x' = x + \delta. $$
+
+Aquí $\nabla_x L$ es el gradiente de la pérdida respecto a la *entrada* (no a los pesos —
+estamos atacando la entrada, manteniendo el modelo fijo), y $\operatorname{sign}(\cdot)$
+mapea cada componente a $+1$, $0$, o $-1$. Multiplicar por $\varepsilon$ gasta el presupuesto
+completo por variable en cada coordenada. Como usa el signo en lugar de la magnitud cruda, el
+resultado aterriza exactamente en la esquina de la bola $L_\infty$ — el punto lineal peor
+caso que derivamos arriba. Una pasada hacia adelante, una pasada hacia atrás, listo. Ese es
+el "rápido" de FGSM.
+
+**Ejemplo resuelto (juguete de 3 variables).** Un modelo lineal puntúa $s(x) = w \cdot x$ con
+pesos $w = (0.9,\, -0.7,\, 0.6)$ y se pone **largo** cuando $s \ge 0$. Hoy
+$x = (0.5,\, 0.4,\, 0.3)$, así que
+
+$$ s(x) = 0.9(0.5) + (-0.7)(0.4) + 0.6(0.3) = 0.45 - 0.28 + 0.18 = 0.35 \gt 0 \;\Rightarrow\; \text{LARGO}. $$
+
+El atacante quiere *voltear a corto*, es decir, empujar la puntuación **hacia abajo**. Para
+una puntuación lineal, el gradiente de la puntuación respecto a la entrada es simplemente el
+vector de pesos, $\nabla_x s = w = (0.9, -0.7, 0.6)$. Para *disminuir* la puntuación al máximo
+bajo un presupuesto $L_\infty$ de $\varepsilon = 0.1$, empuja cada variable en contra del
+signo de su peso:
+
+$$ \delta = -\varepsilon \cdot \operatorname{sign}(w) = -0.1 \cdot (\,+1,\, -1,\, +1\,) = (-0.1,\, +0.1,\, -0.1). $$
+
+La entrada perturbada es $x' = (0.4,\, 0.5,\, 0.2)$, y la nueva puntuación es
+
+$$ s(x') = 0.9(0.4) + (-0.7)(0.5) + 0.6(0.2) = 0.36 - 0.35 + 0.12 = 0.13. $$
+
+Todavía positiva — por poco. Sube el presupuesto a $\varepsilon = 0.2$:
+$\delta = (-0.2, +0.2, -0.2)$, $x' = (0.3, 0.6, 0.1)$, y
+
+$$ s(x') = 0.9(0.3) + (-0.7)(0.6) + 0.6(0.1) = 0.27 - 0.42 + 0.06 = -0.09 \lt 0 \;\Rightarrow\; \text{CORTO}. $$
+
+Un empujón por variable de 0,2 — dentro del ruido del rango normal de una sola variable —
+arrastra la puntuación de $+0.35$ a $-0.09$ y **voltea la posición**. Fíjate en que la caída
+total es exactamente
+$\varepsilon\,\lVert w \rVert_1 = 0.2 \times (0.9 + 0.7 + 0.6) = 0.2 \times 2.2 = 0.44$,
+coincidiendo con $0.35 - (-0.09) = 0.44$. La fórmula de la linealidad lo predijo al céntimo.
+
+<AdversarialPerturbationExplorer
+  client:visible
+  title="Ejemplos adversariales: un empujón minúsculo que voltea la operación"
+  fgsmLabel="FGSM (signo del gradiente)"
+  noiseLabel="Ruido aleatorio"
+  epsilonLabel="Presupuesto de perturbación (ε)"
+  featureLabels={["Momentum","Volatilidad","Spread","Volumen","RSI"]}
+  originalLabel="Original"
+  perturbedLabel="Perturbado"
+  scoreLabel="Puntuación del modelo"
+  magnitudeLabel="Tamaño de la perturbación (L∞)"
+  decisionLabel="Decisión:"
+  longLabel="LARGO"
+  shortLabel="CORTO"
+  flippedLabel="volteada por el ataque"
+  boundaryAxisLabel="Puntuación frente a la frontera de decisión"
+  caption="Sube épsilon: FGSM empuja cada variable épsilon por el signo de su peso — exactamente por la propia sensibilidad del modelo — y arrastra la puntuación al otro lado de la frontera, volteando LARGO a CORTO mientras las barras apenas se mueven. Cambia a ruido aleatorio del mismo tamaño L-infinito y la decisión suele sobrevivir. El peligro no es el tamaño del cambio; es que el atacante lo apunta por el gradiente."
+/>
+
+<Callout variant="warning" title="'FGSM es un cambio minúsculo, así que es inofensivo'">
+Toda la trampa está en que pequeño no significa seguro. La perturbación es pequeña *por
+variable* y pequeña bajo la norma $L_\infty$, y sin embargo, como está perfectamente
+alineada con la sensibilidad del modelo, produce un cambio *decisivo* en la decisión. Un
+control de riesgos que solo marca entradas "de aspecto inusual" dejará pasar el ataque sin
+más — cada variable sigue dentro de un rango plausible. La magnitud no es la alarma correcta;
+la *alineación con el gradiente* sí lo es.
+</Callout>
+
+### Cuándo usarlo
+
+FGSM es la primera sonda barata — un paso de gradiente — para *cribar* si un modelo es siquiera
+adversarialmente frágil. Si un único paso de FGSM voltea tu decisión con un $\varepsilon$
+minúsculo, tienes un problema serio y no necesitas un ataque más sofisticado para
+demostrarlo. Úsalo como prueba rápida de humo de red team y como el motor por paso dentro del
+ataque iterativo más fuerte de abajo.
+
+<Categorize
+  client:visible
+  question="Clasifica cada afirmación según describa FGSM con precisión o sea una idea errónea sobre él."
+  buckets={["Preciso", "Idea errónea"]}
+  items={[
+    { text: "Usa un paso de gradiente (una pasada hacia adelante + una hacia atrás)", bucket: "Preciso" },
+    { text: "Perturba cada variable con el presupuesto completo en el signo del gradiente", bucket: "Preciso" },
+    { text: "Aterriza en una esquina de la bola L-infinito", bucket: "Preciso" },
+    { text: "Como el cambio es pequeño por variable, no puede voltear la decisión", bucket: "Idea errónea" },
+    { text: "Escala cada variable por la magnitud cruda del gradiente", bucket: "Idea errónea" },
+    { text: "Necesita muchas iteraciones para construir un único ejemplo", bucket: "Idea errónea" },
+  ]}
+  explanation="FGSM es de un solo paso, basado en el signo, con presupuesto completo por variable, y aterriza en una esquina de la bola L-infinito. Usa el signo (no la magnitud cruda), no necesita iteración, y los cambios pequeños por variable sí que pueden voltear la decisión cuando están alineados con el gradiente."
+/>
+
+## PGD — descenso de gradiente proyectado, el ataque de primer orden más fuerte
+
+<MCQ
+  client:visible
+  pretest
+  question="El descenso de gradiente proyectado (PGD) refuerza a FGSM. ¿Cuál es el papel del paso de 'proyección' en cada iteración?"
+  options={[
+    { text: "Tras cada pequeño paso de gradiente, devuelve la perturbación a la bola épsilon, manteniéndola dentro del presupuesto mientras itera", correct: true },
+    { text: "Proyecta la entrada sobre un subespacio de menor dimensión para acelerar el entrenamiento" },
+    { text: "Reinicia aleatoriamente la perturbación para escapar de mínimos locales" },
+    { text: "Elimina la restricción de presupuesto para que el ataque pueda crecer sin límite" },
+  ]}
+  explanation="PGD da muchos pequeños pasos de gradiente con signo y, tras cada uno, proyecta (recorta) la perturbación acumulada de vuelta a la bola épsilon permitida. La iteración le permite seguir la superficie de pérdida alrededor de curvas no lineales; la proyección impone el presupuesto en todo momento."
+/>
+
+**Analogía.** FGSM es un único salto gigante hacia una pérdida más alta y confía en que el
+terreno era recto. Pero la superficie de pérdida se curva — lo que parecía cuesta arriba al
+inicio puede desviarse. **PGD** es el montañero paciente: da un paso *pequeño* cuesta
+arriba, mira de nuevo, da otro paso pequeño, reapunta, repite — y cuando un paso se saldría
+de la región vallada (el presupuesto), retrocede hasta la valla. Muchos pequeños pasos
+reapuntados siguen las curvas del terreno mucho mejor que un único salto a ciegas, así que
+PGD alcanza de forma fiable una *pérdida más alta* (una clasificación errónea más segura) que
+FGSM con el mismo presupuesto.
+
+**Definición.** El **descenso de gradiente proyectado (PGD)** es la generalización iterada y
+proyectada de FGSM. Partiendo de $x_0 = x$ (a menudo con una pequeña patada aleatoria), repite
+para $t = 0, 1, 2, \dots$:
+
+$$ x_{t+1} = \operatorname{Proj}_{\mathcal{B}(x,\,\varepsilon)}\!\Big( x_t + \alpha \cdot \operatorname{sign}\big(\nabla_x L(x_t, y)\big) \Big). $$
+
+Aquí $\alpha$ es un pequeño **tamaño de paso** (menor que $\varepsilon$), cada paso es un
+movimiento de gradiente con signo al estilo FGSM, y $\operatorname{Proj}_{\mathcal{B}(x,\varepsilon)}$
+**proyecta** el resultado de vuelta a la bola $L_\infty$ $\mathcal{B}(x, \varepsilon)$ de
+radio $\varepsilon$ alrededor de la entrada original — para la bola de norma del máximo esta
+proyección es simplemente *recortar* cada coordenada para que se quede dentro de $\varepsilon$
+de su valor original. Como recalcula el gradiente en cada nuevo punto, PGD se adapta a la
+curvatura que un único paso de FGSM ignora. Se considera de forma generalizada el **ataque de
+primer orden más fuerte** — el adversario de referencia que se espera que las defensas
+sobrevivan.
+
+**Ejemplo resuelto (intuición de la ganancia).** Toma el modelo de 3 variables de arriba cerca
+de la frontera. Un único paso de FGSM con $\varepsilon = 0.15$ podría dejar la puntuación en,
+digamos, $+0.02$ — fallando *por poco* al voltear. PGD con el *mismo* presupuesto total
+$\varepsilon = 0.15$ pero tamaño de paso $\alpha = 0.05$ a lo largo de 5 iteraciones reapunta
+tras cada pequeño movimiento: si el gradiente local cambia (porque una variable alcanzó su
+recorte y otra ahora importa más), PGD redirige el presupuesto restante hacia las variables
+que aún mueven la puntuación, y aterriza en, digamos, $-0.04$ — un volteo exitoso que el salto
+de un disparo se perdió. Mismo presupuesto, gasto más inteligente, ataque más fuerte. (Para un
+modelo *puramente* lineal FGSM ya es óptimo; la ventaja de PGD aparece en cuanto la superficie
+de decisión se curva, lo que hace cualquier modelo no lineal o cualquier modelo con
+recorte/interacciones de variables.)
+
+| Propiedad | FGSM | PGD |
+|---|---|---|
+| Pasos | 1 | muchos (p. ej. 10–100) |
+| Regla por paso | presupuesto completo en el signo del gradiente | paso pequeño $\alpha$ en el signo del gradiente |
+| Imposición del presupuesto | un disparo, aterriza en una esquina de la bola | proyecta / recorta de vuelta a la bola en cada paso |
+| ¿Sigue la curvatura? | no (un salto a ciegas) | sí (reapunta en cada paso) |
+| Fuerza | línea base débil | ataque de primer orden más fuerte |
+| Coste de cómputo | el más barato (1 gradiente) | mayor (un gradiente por paso) |
+| Mejor uso | prueba rápida de humo de fragilidad | evaluación rigurosa de robustez |
+
+<Callout variant="tip" title="Evalúa contra PGD, criba con FGSM">
+Un modelo puede parecer robusto frente a FGSM y aun así desmoronarse bajo PGD — sobrevivir a un
+único salto a ciegas dice poco sobre sobrevivir a un escalador paciente que reapunta. Así que
+la afirmación honesta de robustez siempre se enuncia contra un ataque *fuerte*: "robusto frente
+a PGD con presupuesto $\varepsilon$ y $N$ pasos". Usa FGSM para hallar agujeros obvios de forma
+barata; usa PGD (múltiples reinicios, muchos pasos) para *certificar* que no solo venciste al
+débil.
+</Callout>
+
+### Cuándo usarlo
+
+Usa PGD siempre que de verdad quieras *medir* la robustez en lugar de solo hacerle una prueba
+de humo — es el adversario de referencia para estresar la superficie de decisión de un modelo
+de trading y (en las próximas lecciones) el bucle interno del entrenamiento adversarial. Si una
+defensa solo reporta números de FGSM, trata la afirmación de robustez como no demostrada: el
+éxito frente a ataques débiles es la forma clásica de sobrevalorar la robustez.
+
+<FillBlank
+  client:visible
+  question="Captura la iteración de PGD en palabras."
+  text="PGD da repetidamente un {{pequeño paso de gradiente con signo|único salto a presupuesto completo|salto aleatorio}}, luego {{proyecta la perturbación de vuelta a la bola épsilon|elimina la restricción de presupuesto|promedia sobre todas las variables}} tras cada paso, lo que le permite {{seguir la curvatura de la superficie de pérdida|ignorar el gradiente por completo|reducir la dimensión de las variables}}."
+  explanation="PGD = iterar pequeños pasos de gradiente con signo, proyectar (recortar) de vuelta a la bola épsilon cada vez, recalculando el gradiente para que siga la curvatura. Ese reapuntar es exactamente por qué supera al FGSM de un solo disparo."
+/>
+
+## Ejemplos adversariales en mercados — la amenaza realista
+
+<MCQ
+  client:visible
+  pretest
+  question="En el escenario de visión el atacante edita píxeles directamente. En un mercado en vivo, ¿cómo mueve realmente un adversario las variables de entrada de TU modelo?"
+  options={[
+    { text: "Operando — falseando el libro de órdenes para mover el desequilibrio, pintando la cinta para mover el momentum — gastando capital para desplazar las variables que tu modelo calcula a partir de datos públicos", correct: true },
+    { text: "Entrando en tus servidores y editando el vector de variables en memoria" },
+    { text: "No pueden — las variables de mercado no son perturbables por terceros externos" },
+    { text: "Solo cambiando los pesos de tu modelo, nunca sus entradas" },
+  ]}
+  explanation="Un adversario rara vez necesita tus servidores. Tus variables (desequilibrio, momentum, spread, RSI) se calculan a partir de datos públicos de mercado, así que cualquiera dispuesto a operar puede moverlas. El presupuesto de perturbación L-p se traduce en un presupuesto de dólares/impacto: épsilon es cuánto capital gasta el atacante doblegando tus entradas."
+/>
+
+**Analogía.** El atacante de visión tiene Photoshop y edita la imagen. El atacante de
+mercado tiene una *cuenta de trading* y edita el **mercado** — y tus variables se calculan a
+partir de ese mercado, así que editar el mercado edita tus variables de forma indirecta.
+Cotizar y cancelar un muro de órdenes (spoofing) inclina el desequilibrio del flujo de
+órdenes que lee tu modelo; una ráfaga de operaciones tipo wash (pintar la cinta) dobla el
+momentum de horizonte corto que lee. Nunca tocan tu código. Mueven el mundo que tu código
+mide.
+
+**Definición — el presupuesto se vuelve dólares.** En visión, $\varepsilon$ es un tope de
+intensidad de píxel y la restricción $\lVert \delta \rVert_p \le \varepsilon$ mantiene la
+imagen con aspecto sin cambios. En mercados la perturbación $\delta$ es un *cambio en tus
+variables inducido al operar*, y el presupuesto ya no es "imperceptible" — es **cuánto
+capital e impacto de mercado está dispuesto a gastar el atacante** para doblegar esas
+variables. La optimización se convierte en:
+
+$$ \max_{\delta} \; (\text{daño a ti por voltear la señal}) \quad \text{s.a.} \quad \text{coste}(\delta) \le \text{presupuesto en dólares}. $$
+
+La bola $L_p$ se sustituye por una *bola de coste* moldeada por el impacto de mercado y las
+realidades de ejecución — mover el spread es barato, mover un desequilibrio profundo y
+líquido es caro — pero la geometría es la misma: un empujón pequeño y bien apuntado por tu
+gradiente voltea tu decisión.
+
+**Ejemplo resuelto.** Una mesa depredadora sabe (o adivina) que operas una señal de momentum
+que se pone larga cuando el momentum del retorno a 1 minuto supera un umbral. Tu stop se sitúa
+justo por debajo. Estiman que presionar \$2 millones de flujo vendedor agresivo durante 90
+segundos empujará el momentum de horizonte corto hacia abajo lo suficiente para (a) voltear tu
+modelo de largo a plano y (b) saltar tu stop. Si saltar tu stop les permite recomprarte
+\$3 millones de inventario a mejor precio — una *ganancia* de \$2,5M contra un *coste* de \$2M —
+el ataque tiene **valor esperado positivo para ellos**. Tu $\varepsilon$ — el movimiento
+fabricado en tu variable de momentum — fue *comprado* por \$2M, y cruzó tu frontera. Eso es un
+ejemplo adversarial con una cuenta de P&L adjunta.
+
+**Transferibilidad — la amenaza de caja negra.** Los atacantes normalmente no tienen tu modelo
+exacto. No lo necesitan. Como los modelos casi lineales comparten direcciones de gradiente (la
+explicación de la linealidad otra vez), un ejemplo adversarial fabricado sobre un modelo
+**sustituto** — una señal de momentum/desequilibrio plausible que el atacante construye él
+mismo — a menudo **se transfiere** y voltea *tu* modelo también. Así que un competidor puede
+hacerte red team sin ver jamás tus pesos: ataca su propia conjetura razonable de tu señal, y el
+mismo flujo tiende a voltear lo real.
+
+<Callout variant="warning" title="Tu stop-loss es un objetivo adversarial">
+La reformulación más incómoda: un stop-loss es una *frontera de decisión conocida y
+explotable*. Cualquiera que pueda inferir aproximadamente dónde se agrupan tus stops tiene un
+objetivo, y el coste de empujar el precio hasta ese grupo es su $\varepsilon$. La "caza de
+stops" no es folclore — es un ataque adversarial sobre un modelo (tu regla de riesgo) cuya
+frontera el atacante sometió a ingeniería inversa. La defensa es hacer la frontera *incierta y
+no rentable de alcanzar*, no fingir que nadie está mirando.
+</Callout>
+
+### Cuándo usarlo
+
+Piensa en dólares-como-$\varepsilon$ siempre que evalúes la exposición de una señal en vivo:
+estima cuánto capital le costaría a un adversario mover cada variable de entrada al otro lado de
+tu frontera, y pregúntate si la *recompensa* de voltear tu señal (disparar tu stop, oponerse a
+tu flujo, adelantarse a tus ejecuciones) supera ese coste. Si voltearte es barato en relación
+con lo que les reporta, eres un objetivo — no porque tu backtest sea malo, sino porque tu
+frontera es *predecible y rentable de empujar*. Robustece las señales cuyas fronteras se sitúan
+de forma barata al alcance de un adversario.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "Ejemplo adversarial", definition: "Un cambio de entrada pequeño-bajo-alguna-norma, fabricado deliberadamente, que voltea la salida del modelo" },
+    { term: "Explicación de la linealidad", definition: "Los modelos casi lineales en alta dimensión amplifican un pequeño presupuesto por variable hasta un gran desplazamiento de la puntuación, escalando con la suma de los pesos absolutos" },
+    { term: "FGSM", definition: "Un paso de gradiente con signo al presupuesto completo por variable, aterrizando en una esquina de la bola L-infinito" },
+    { term: "PGD", definition: "Pasos pequeños iterados de gradiente con signo, cada uno proyectado de vuelta a la bola épsilon — el ataque de primer orden más fuerte" },
+    { term: "Transferibilidad", definition: "Un ataque fabricado sobre un modelo sustituto a menudo voltea el objetivo real, habilitando ataques de caja negra" },
+    { term: "Dólares-como-épsilon", definition: "En mercados el presupuesto de perturbación es el capital y el impacto que un adversario gasta para doblegar tus variables" },
+  ]}
+/>
+
+## Repaso
+
+Entraste pensando que un modelo con un 98% de precisión era un modelo seguro y saliste sabiendo
+que la precisión y la robustez son ejes casi independientes. El arco: un **ejemplo adversarial**
+es un cambio de entrada pequeño-bajo-una-norma que maximiza la pérdida; la **explicación de la
+linealidad** dice que los modelos casi lineales en alta dimensión son frágiles *porque* un
+minúsculo presupuesto por variable suma un gran desplazamiento de la puntuación
+($\varepsilon \lVert w \rVert_1$, que crece con la dimensión); **FGSM** construye tal ejemplo en
+un paso de gradiente con signo; **PGD** itera y proyecta para hallar uno más fuerte y es el
+adversario de referencia; y en **mercados** todo el aparato reaparece con $\varepsilon$ medido
+en *dólares* — un oponente que opera para doblegar tus variables, cuyos ataques **se
+transfieren** desde un sustituto, y cuya frontera favorita es tu stop-loss.
+
+<MindMap
+  client:visible
+  title="Ejemplos adversariales en modelos de trading"
+  caption="Construye el mapa: qué es un ataque, por qué los modelos casi lineales son frágiles, los dos ataques centrales, y cómo todo aterriza en un mercado en vivo."
+  root={{
+    label: 'Ejemplos adversariales',
+    children: [
+      { label: 'Qué es', children: [
+        { label: 'Pequeño bajo una norma L-p (presupuesto épsilon)' },
+        { label: 'Maximiza la pérdida / voltea la salida' },
+        { label: 'Fuera de distribución: los backtests callan' },
+        { label: 'Mercados: perturba el libro de órdenes, mueve las variables' },
+      ]},
+      { label: 'Explicación de la linealidad', children: [
+        { label: 'Desplazamiento de la puntuación = w · delta' },
+        { label: 'Peor caso = épsilon × suma de |w_i|' },
+        { label: 'Crece con el número de variables d' },
+        { label: 'Por qué los ataques se transfieren' },
+      ]},
+      { label: 'FGSM', children: [
+        { label: 'Un paso de gradiente con signo' },
+        { label: 'Presupuesto completo por variable' },
+        { label: 'Aterriza en una esquina de la bola L-infinito' },
+        { label: 'Prueba rápida de humo de fragilidad' },
+      ]},
+      { label: 'PGD', children: [
+        { label: 'Itera pequeños pasos + proyecta a la bola' },
+        { label: 'Reapunta con la curvatura' },
+        { label: 'Ataque de primer orden más fuerte' },
+        { label: 'La referencia contra la que evaluar' },
+      ]},
+      { label: 'En mercados', children: [
+        { label: 'Épsilon se vuelve un presupuesto de dólares / impacto' },
+        { label: 'Falsear el desequilibrio, pintar la cinta' },
+        { label: 'Transferibilidad → ataques de caja negra' },
+        { label: 'Caza de stops = ataque sobre tu frontera' },
+      ]},
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Repaso mixto: ¿sobrevive tu modelo a una pelea?"
+  questions={[
+    {
+      question: "Una puntuación de trading lineal usa 100 variables con peso absoluto medio 0,1. Un atacante tiene un presupuesto L-infinito de 0,01 por variable. ¿Cuál es el desplazamiento peor caso de la puntuación, y por qué importa?",
+      options: [
+        { text: "0,1 — calculado como 0,01 por (100 por 0,1); si la frontera está a menos de 0,1 de la puntuación actual, la decisión se voltea", correct: true },
+        { text: "0,01 — el presupuesto acota el cambio total sin importar la dimensión" },
+        { text: "0,001 — la alta dimensión reduce el apalancamiento del atacante" },
+        { text: "Exactamente cero — los modelos lineales no se pueden atacar" },
+      ],
+      explanation: "El desplazamiento peor caso bajo L-infinito es épsilon por la suma de los pesos absolutos: 0,01 × (100 × 0,1) = 0,1. El apalancamiento crece con el número de variables, que es la fragilidad central de los modelos casi lineales en alta dimensión.",
+    },
+    {
+      question: "¿Cuál afirmación sobre la relación entre la precisión estándar y la robustez adversarial es correcta?",
+      options: [
+        { text: "Son casi independientes — un modelo puede ser muy preciso sobre entradas naturales y aun así voltearse trivialmente con una perturbación fabricada", correct: true },
+        { text: "Una alta precisión garantiza una alta robustez" },
+        { text: "La robustez es solo precisión medida sobre un conjunto de prueba más grande" },
+        { text: "Un modelo robusto debe tener siempre menor precisión que uno frágil" },
+      ],
+      explanation: "La precisión se mide sobre la distribución natural; los ejemplos adversariales se sitúan deliberadamente fuera de distribución, apuntando por la sensibilidad del modelo. Alta precisión, baja robustez es el caso típico — las dos son ejes casi separados.",
+    },
+    {
+      question: "Un modelo sobrevive a un ataque FGSM con presupuesto épsilon pero el equipo no ha probado PGD. ¿Cuál es la afirmación honesta de robustez?",
+      options: [
+        { text: "No demostrada — sobrevivir a un único salto a ciegas dice poco; el ataque iterado y que reapunta de PGD a menudo voltea modelos que resisten FGSM", correct: true },
+        { text: "Plenamente robusto — FGSM es el ataque más fuerte posible" },
+        { text: "Robusto, porque PGD es más débil que FGSM" },
+        { text: "La robustez no se puede probar en absoluto sin reentrenar" },
+      ],
+      explanation: "PGD es el ataque de primer orden más fuerte; FGSM es una línea base de un solo disparo. Reportar solo FGSM es la forma clásica de sobrevalorar la robustez. La afirmación debe hacerse contra un ataque fuerte como PGD con muchos pasos y reinicios.",
+    },
+    {
+      question: "¿Cómo crea de forma más plausible un adversario del mundo real un ejemplo adversarial para tu señal de momentum en vivo?",
+      options: [
+        { text: "Operando — p. ej. presionando flujo agresivo para doblar el momentum de horizonte corto al otro lado de tu frontera, gastando capital como su presupuesto épsilon", correct: true },
+        { text: "Hackeando tus servidores y editando el vector de variables directamente" },
+        { text: "Enviándote por correo un fichero de datos corrupto" },
+        { text: "Cambiando el reloj del mercado" },
+      ],
+      explanation: "Tus variables se calculan a partir de datos públicos de mercado, así que un adversario las mueve operando — falseando el desequilibrio, pintando la cinta. El presupuesto L-p se convierte en un presupuesto de dólares/impacto: épsilon es el capital gastado doblegando tus entradas.",
+    },
+    {
+      question: "¿Por qué puede un competidor atacar tu modelo sin ver jamás sus pesos?",
+      options: [
+        { text: "Transferibilidad — un ataque fabricado sobre un modelo sustituto a menudo voltea el real, porque los modelos casi lineales comparten direcciones de gradiente", correct: true },
+        { text: "Porque todos los modelos de trading están legalmente obligados a publicar sus pesos" },
+        { text: "Porque el ruido aleatorio voltea de forma fiable cualquier modelo" },
+        { text: "Porque los modelos de caja negra no tienen frontera de decisión que atacar" },
+      ],
+      explanation: "La explicación de la linealidad implica que los modelos casi lineales comparten direcciones de gradiente, así que un ejemplo adversarial construido sobre un sustituto plausible a menudo se transfiere al objetivo real — habilitando ataques de caja negra sin acceso a tus pesos.",
+    },
+  ]}
+/>

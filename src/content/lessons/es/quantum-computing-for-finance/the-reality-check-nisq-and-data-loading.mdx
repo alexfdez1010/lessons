@@ -1,0 +1,397 @@
+---
+title: "La prueba de la realidad: NISQ y la carga de datos"
+description: "Los muros que separan la promesa cuántica de una ventaja real: el ruido y la decoherencia de la era NISQ, el número de cúbits y el coste de la corrección de errores, y el problema de la carga de datos (preparación del estado) que puede borrar la aceleración."
+topic: "es/quantum-computing-for-finance"
+order: 5
+minutes: 18
+updated: 2026-06-23
+---
+
+import { Callout, MCQ, Quiz, Reveal, ThinkReveal, FillBlank, MatchConcepts, Categorize, MindMap } from '@/components/react';
+
+Hace cuatro lecciones os prometimos una joya de la corona: la Estimación de Amplitud Cuántica convirtiendo el reptar de Montecarlo a $1/\sqrt{N}$ en un esprint a $1/N$, una aceleración cuadrática *demostrable*. Después os prometimos la optimización de carteras como un QUBO, con recocedores y QAOA rondando la frontera eficiente. Las matemáticas eran reales. El entusiasmo estaba justificado.
+
+Esta lección es donde nos ganamos el derecho a ser escépticos.
+
+He aquí la verdad incómoda que separa a un quant que sabe lo que hace de un turista de conferencias: **casi todos los resultados de finanzas cuánticas a corto plazo que vais a leer ignoran calladamente tres muros, y cualquiera de ellos puede convertir una preciosa aceleración teórica en una forma más lenta, más ruidosa y más cara de obtener exactamente el mismo número.** Los muros son (1) el ruido y la decoherencia del hardware actual, (2) la abrumadora sobrecarga de cúbits de la corrección de errores y (3) —el que se entierra en el apéndice y se come calladamente toda la aceleración— el coste de *cargar tus datos clásicos de mercado dentro de la máquina cuántica, para empezar*.
+
+Nada de esto significa que la computación cuántica para finanzas sea un fraude. Significa que debéis leer cada afirmación como un gestor de riesgos lee un backtest: ¿dónde se está escondiendo el coste y la canalización *de extremo a extremo* realmente le gana a la mejor referencia clásica? Al final de esta lección tendréis una lista de comprobación que os permitirá oler una afirmación demasiado buena desde el otro lado de la sala. Eso prepara el giro final del curso: los métodos clásicos *inspirados en lo cuántico* que sí podéis ejecutar hoy.
+
+## NISQ: ruidoso, de escala intermedia e implacable
+
+<MCQ
+  client:visible
+  pretest
+  question="El término NISQ describe el hardware cuántico actual. ¿Qué significa en realidad para un quant que intenta ejecutar un algoritmo?"
+  options={[
+    { text: "Decenas a cientos de cúbits físicos ruidosos sin corrección de errores, de modo que cada puerta introduce error y solo los circuitos poco profundos siguen siendo fiables", correct: true },
+    { text: "Máquinas plenamente corregidas de errores que pueden ejecutar cualquier circuito que escribas, solo que despacio" },
+    { text: "Ordenadores cuánticos libres de ruido pero limitados a tamaños de problema pequeños" },
+    { text: "Un emulador de software que ejecuta circuitos cuánticos en GPU clásicas" },
+  ]}
+  explanation="NISQ = Cuántico Ruidoso de Escala Intermedia (Noisy Intermediate-Scale Quantum): un número modesto de cúbits físicos, cada puerta cargando un error real y sin corrección de errores que lo limpie. Ese presupuesto de ruido es lo que limita la profundidad de circuito en la que puedes confiar."
+/>
+
+**Analogía.** Un ordenador NISQ es una calculadora de bolsillo que voltea al azar uno de los dígitos que muestra cada pocas pulsaciones de teclas. Suma dos números y probablemente vas bien. Ejecuta un cálculo de 300 pasos y, en algún punto intermedio, un dígito se voltea en silencio, y todos los pasos posteriores heredan la mentira. No recibes un mensaje de error. Recibes una respuesta segura y errónea que *parece* un número real.
+
+**Definición.** **NISQ** significa *Cuántico Ruidoso de Escala Intermedia* (*Noisy Intermediate-Scale Quantum*): hardware con aproximadamente de decenas a unos pocos miles de cúbits **físicos**, donde cada operación de puerta tiene una tasa de error no trivial y **no hay corrección de errores** funcionando por debajo para detectar y reparar fallos. Acuñado por John Preskill en 2018, el término es una dosis deliberada de realismo: nombra la era en la que de verdad estamos, no la era tolerante a fallos que nos prometen.
+
+La consecuencia clave es un tope duro sobre la **profundidad del circuito** (el número de operaciones de puerta secuenciales). Si cada puerta tiene éxito de forma independiente con probabilidad $1-p$, la probabilidad de que un circuito entero de $G$ puertas se ejecute sin un solo fallo es
+
+$$ P_{\text{success}} \approx (1-p)^{G}, $$
+
+donde $p$ es la tasa de error por puerta (las puertas de dos cúbits actuales se sitúan en torno a $p \approx 10^{-2}$ a $10^{-3}$). Esto es una exponencial brutal disfrazada: en cuanto $G$ se hace grande, $P_{\text{success}}$ se desploma hacia cero y tu salida es indistinguible del ruido aleatorio.
+
+**Ejemplo resuelto.** Toma un error por puerta optimista $p = 10^{-3}$, de modo que $1-p = 0.999$.
+
+- Un circuito de **1.000 puertas** tiene éxito con probabilidad $0.999^{1000}$. Usando $0.999^{1000} \approx e^{-1000 \times 0.001} = e^{-1} \approx 0.37$: apenas algo mejor que uno de cada tres.
+- Un circuito de **5.000 puertas**: $0.999^{5000} \approx e^{-5} \approx 0.0067$: menos de siete ejecuciones de cada mil salen limpias. El resto es ruido vestido de esmoquin.
+
+| Profundidad del circuito $G$ (puertas) | $P_{\text{success}} \approx e^{-pG}$ con $p=10^{-3}$ | Veredicto |
+|---|---|---|
+| 100 | $e^{-0.1} \approx 0.90$ | utilizable |
+| 1.000 | $e^{-1} \approx 0.37$ | marginal |
+| 5.000 | $e^{-5} \approx 0.0067$ | esencialmente ruido |
+| 10.000 | $e^{-10} \approx 0.000045$ | sin esperanza |
+
+Fíjate en que esta es *la misma decaída exponencial* que ya has visto dos veces en este curso: una como el muro de error de Montecarlo, otra aquí como el muro de la probabilidad de éxito. Las exponenciales no negocian.
+
+<Callout variant="warning" title="Circuitos poco profundos o nada">
+La omisión más común en una demo de la era NISQ es la profundidad del circuito. Muchos algoritmos con asintóticas preciosas —incluida la QAE de manual— requieren circuitos *profundos* para realizar la aceleración. En hardware NISQ esa profundidad es exactamente lo que no te puedes permitir. Un resultado que solo funciona a profundidad de juguete, con la profundidad del problema real calladamente fuera de plano, es un proyecto de feria de ciencias, no una ventaja.
+</Callout>
+
+### Qué significa para tu ventaja
+
+Cuando alguien te enseñe un resultado de finanzas cuánticas, pregunta primero: **¿qué profundidad tiene el circuito a la escala del problema y cuál es el error por puerta?** Multiplícalos. Si $p \times G$ es mucho mayor que aproximadamente 1, la máquina está devolviendo ruido por muy elegante que sea el algoritmo. NISQ premia los circuitos *poco profundos* (métodos variacionales, heurísticas de baja profundidad) y castiga los profundos donde viven realmente las aceleraciones más limpias (como la QAE completa).
+
+<FillBlank
+  client:visible
+  question="Completa la ley de profundidad NISQ."
+  text="Si cada puerta tiene tasa de error p y el circuito tiene G puertas, la probabilidad de que el circuito entero se ejecute correctamente es aproximadamente {{(1 menos p) elevado a G|p por G|G dividido por p}}, que se desploma hacia cero a medida que el circuito se hace profundo."
+  explanation="El éxito por puerta independiente de (1 menos p) se compone multiplicativamente a lo largo de G puertas, dando (1 menos p)^G: una decaída exponencial en la profundidad. Ese es el muro sobre la profundidad del circuito NISQ."
+/>
+
+## Decoherencia: el reloj contra el que corres
+
+<MCQ
+  client:visible
+  pretest
+  question="Aunque cada puerta fuera perfecta, ¿por qué un cúbit real sigue limitando cuánto tiempo puede ejecutarse tu cálculo?"
+  options={[
+    { text: "Los cúbits pierden su estado cuántico al entorno a lo largo de un tiempo de coherencia de microsegundos, así que debes terminar todo el cálculo antes de que el estado decaiga", correct: true },
+    { text: "Los cúbits se sobrecalientan y deben enfriarse entre cada puerta" },
+    { text: "Los estados cuánticos se almacenan en disco y leerlos es lento" },
+    { text: "No hay límite de tiempo; un cúbit mantiene su estado indefinidamente una vez preparado" },
+  ]}
+  explanation="La decoherencia es la fuga de información cuántica hacia el entorno circundante. El tiempo de coherencia (T1, T2) es un plazo duro: termina antes de que el estado se convierta en papilla, o la respuesta es basura."
+/>
+
+**Analogía.** El estado cuántico de un cúbit es una escultura de hielo en una habitación cálida. En el momento en que la tallas, empieza a derretirse. Tienes un número fijo de minutos para fotografiarla (ejecutar tu circuito y leer la respuesta) antes de que colapse en un charco. La decoherencia es la temperatura de la habitación; el tiempo de coherencia es cuánto sobrevive la escultura.
+
+**Definición.** La **decoherencia** es el proceso por el que la frágil superposición de un cúbit se filtra a su entorno y decae en ruido clásico ordinario. Dos constantes de tiempo la resumen: **$T_1$** (relajación de energía: el cúbit decayendo de excitado a estado fundamental) y **$T_2$** (defasaje: la pérdida de coherencia de fase, normalmente la más exigente). Se miden en **microsegundos** en hardware superconductor. El techo práctico del trabajo útil es
+
+$$ G_{\max} \approx \frac{T_{\text{coh}}}{t_{\text{gate}}}, $$
+
+el tiempo de coherencia dividido entre el tiempo que tarda una puerta. Ejecuta más puertas que eso y el estado se te ha decaído por debajo a mitad de cálculo.
+
+**Ejemplo resuelto.** Supón un tiempo de coherencia de $T_{\text{coh}} = 100~\mu\text{s}$ y un tiempo de puerta de $t_{\text{gate}} = 100~\text{ns} = 0.1~\mu\text{s}$. Entonces
+
+$$ G_{\max} \approx \frac{100~\mu\text{s}}{0.1~\mu\text{s}} = 1{,}000 \text{ puertas}. $$
+
+Mil puertas secuenciales antes de que se acabe el reloj, y fíjate en que este es *el mismo orden de magnitud* que el presupuesto de error por puerta de NISQ de la sección anterior. Los dos muros se refuerzan mutuamente: aunque un proceso mágico mantuviera los errores de puerta a cero, la decoherencia por sí sola seguiría limitándote cerca de mil puertas. En realidad ambos límites muerden a la vez, y gana el más ajustado.
+
+<Callout variant="warning" title="El plazo es físico, no un ajuste">
+No puedes configurar tu camino para esquivar la decoherencia. Es una propiedad del hardware y su entorno, reducida solo mediante mejor fabricación, neveras más frías y corrección de errores. Cuando un artículo reporta un algoritmo que necesita, digamos, cincuenta mil puertas secuenciales, contrástalo con el presupuesto de tiempo-de-coherencia-sobre-tiempo-de-puerta del chip. Si el algoritmo necesita más puertas de las que el cúbit sobrevive, la demo físicamente no puede terminar, por muy limpias que se vean las matemáticas en la pizarra.
+</Callout>
+
+### Qué significa para tu ventaja
+
+El tiempo de coherencia y el error por puerta son dos relojes corriendo sobre el mismo circuito; tu profundidad utilizable es el que se agote primero. Ambos se sitúan actualmente en torno a los pocos miles de puertas. Por eso las finanzas cuánticas a corto plazo viven casi por completo en el mundo de los circuitos *poco profundos y variacionales*, y por eso quien te prometa una aceleración con circuitos profundos en el hardware de hoy te está vendiendo la era tolerante a fallos antes de que llegue.
+
+<ThinkReveal
+  client:visible
+  prompt="Un proveedor afirma que su valorador de opciones NISQ ejecuta un circuito de 40.000 puertas en hardware con 100 microsegundos de coherencia y puertas de 100 ns. Antes incluso de comprobar las tasas de error, ¿qué falla ya?"
+  hint="Calcula el número máximo de puertas que permite por sí solo el tiempo de coherencia."
+  text="El presupuesto de decoherencia es de unas 100 us / 100 ns = 1.000 puertas. Un circuito de 40.000 puertas necesita aproximadamente 40 veces más tiempo del que el cúbit permanece coherente, así que el estado se ha decaído mucho antes de que el circuito termine. La afirmación falla por física antes de que siquiera llegues a las objeciones de error de puerta o de carga de datos."
+/>
+
+## Corrección de errores: el impuesto de miles a uno
+
+<MCQ
+  client:visible
+  pretest
+  question="La corrección de errores cuántica es la solución a largo plazo para el ruido. ¿Cuál es su coste, y por qué la era tolerante a fallos sigue estando lejos?"
+  options={[
+    { text: "Cada cúbit lógico fiable se construye a partir de muchos (en torno a mil o más) cúbits físicos ruidosos, así que un algoritmo que necesite 100 cúbits lógicos necesita ~100.000+ físicos, muy por encima de los cientos de hoy", correct: true },
+    { text: "Solo requiere duplicar el número de cúbits, que las máquinas actuales ya tienen" },
+    { text: "Es un parche de software que no añade ninguna sobrecarga de cúbits" },
+    { text: "Elimina la necesidad de cualquier cúbit físico simulándolos clásicamente" },
+  ]}
+  explanation="La corrección de errores con código de superficie codifica un cúbit lógico protegido en torno a 1.000+ cúbits físicos a tasas de error útiles. El multiplicador es brutal: los recuentos útiles de cúbits lógicos exigen recuentos de cúbits físicos varios órdenes de magnitud por encima de lo que existe hoy."
+/>
+
+**Analogía.** Supón que debes enviar por correo un único bit de forma fiable por un canal que corrompe caracteres al azar. No envías una carta: envías la misma carta mil veces y se hace un recuento de votos en el otro extremo. El mensaje llega, pero tu ancho de banda acaba de caer mil veces. La corrección de errores es ese recuento de votos: un cúbit *lógico* digno de confianza comprado con una multitud de cúbits *físicos* desechables y ruidosos.
+
+**Definición.** La **corrección de errores cuántica (QEC)** codifica la información de un **cúbit lógico** de forma redundante a lo largo de muchos **cúbits físicos**, midiendo continuamente comprobaciones detectoras de errores (síndromes) para detectar y revertir fallos más rápido de lo que se acumulan. El esquema líder, el **código de superficie**, requiere del orden de
+
+$$ n_{\text{phys}} \approx 1{,}000 \text{ a } 10{,}000 \text{ cúbits físicos por cúbit lógico} $$
+
+para alcanzar las bajas tasas de error lógico que necesita un algoritmo real (y solo funciona en absoluto una vez que las tasas de error físico bajan de un umbral cercano a $p \approx 10^{-2}$). Este es el **muro de miles de físicos por lógico**.
+
+**Ejemplo resuelto.** Toma un algoritmo que necesita **100 cúbits lógicos**: modesto para los estándares clásicos, un objetivo serio para la ventaja cuántica. A unos conservadores 1.000 cúbits físicos por cúbit lógico:
+
+$$ n_{\text{phys}} \approx 100 \times 1{,}000 = 100{,}000 \text{ cúbits físicos.} $$
+
+A 10.000 por lógico, eso es **un millón** de cúbits físicos. Las máquinas insignia de hoy despliegan de cientos a unos pocos miles de cúbits físicos. La brecha entre "cientos" y "cientos de miles" no es una actualización de firmware del próximo trimestre: es la razón central por la que se juzga ampliamente que la era tolerante a fallos está a **años o décadas** de distancia.
+
+| Cúbits lógicos necesarios | Físicos por lógico | Total de cúbits físicos | vs. hoy (cientos) |
+|---|---|---|---|
+| 1 | 1.000 | 1.000 | ya es un estiramiento |
+| 100 | 1.000 | 100.000 | ~100.000x demasiado pocos |
+| 100 | 10.000 | 1.000.000 | ~1.000.000x demasiado pocos |
+
+<Callout variant="warning" title="Lógico y físico no son la misma palabra">
+La forma más rápida de que te engañen es leer un recuento de cúbits sin preguntar *de qué tipo*. Una nota de prensa que presume de "1.000 cúbits" se refiere a 1.000 cúbits *físicos*, ruidosos: posiblemente menos que la protección equivalente a *un* solo cúbit lógico tolerante a fallos. Los algoritmos cuya ventaja requiere circuitos profundos y tolerantes a fallos (la QAE completa entre ellos) están citando cúbits *lógicos*. Hasta que los recuentos de cúbits físicos suban varios órdenes de magnitud, esos algoritmos se ejecutan solo como juguetes pequeños y limitados por el ruido.
+</Callout>
+
+### Qué significa para tu ventaja
+
+Clasifica cada afirmación de finanzas cuánticas en dos cubos. Las afirmaciones **tolerantes a fallos** (circuitos profundos, corregidos de errores, cúbits lógicos) describen una máquina que aún no existe: interesante, pero no operable durante años. Las afirmaciones **NISQ** (poco profundas, variacionales, cúbits físicos) pueden ejecutarse hoy pero heredan los muros de ruido y decoherencia de arriba. Una afirmación que necesita tolerancia a fallos pero se demuestra en un chip NISQ es, en el mejor de los casos, una prueba de concepto a escala diminuta. Saber en qué cubo estás te dice si el horizonte temporal es "este año" o "la próxima década".
+
+<Categorize
+  client:visible
+  question="Clasifica cada afirmación según a qué era de hardware cuántico pertenece."
+  buckets={["NISQ (hoy)", "Tolerante a fallos (futuro)"]}
+  items={[
+    { text: "Decenas a cientos de cúbits físicos ruidosos, sin corrección de errores", bucket: "NISQ (hoy)" },
+    { text: "Circuitos variacionales poco profundos para esquivar el muro de profundidad", bucket: "NISQ (hoy)" },
+    { text: "Error por puerta en torno a 1e-2 a 1e-3 sin decodificación de síndromes", bucket: "NISQ (hoy)" },
+    { text: "Cúbits lógicos construidos cada uno a partir de ~1.000+ cúbits físicos", bucket: "Tolerante a fallos (futuro)" },
+    { text: "Circuitos profundos ejecutando la Estimación de Amplitud Cuántica completa a escala", bucket: "Tolerante a fallos (futuro)" },
+    { text: "Medición continua de síndromes reparando fallos a mitad de cálculo", bucket: "Tolerante a fallos (futuro)" },
+  ]}
+  explanation="NISQ es el presente ruidoso, sin corrección y de circuitos poco profundos. La tolerancia a fallos es el futuro corregido de errores, de cúbits lógicos y circuitos profundos que la sobrecarga de miles a uno mantiene a años de distancia."
+/>
+
+## El muro de la carga de datos: donde la aceleración va a morir
+
+<MCQ
+  client:visible
+  pretest
+  question="Para ejecutar QAE o aprendizaje automático cuántico sobre datos reales de mercado, primero debes cargar esos datos clásicos en un estado cuántico. ¿Por qué es este el muro que más calladamente destruye la aceleración anunciada?"
+  options={[
+    { text: "Preparar un estado cuántico general que codifique N números clásicos cuesta unas O(N) puertas, lo que puede cancelar la aceleración cuadrática en consultas si debes recargar los datos en cada ejecución", correct: true },
+    { text: "Cargar datos es instantáneo, así que nunca afecta a la aceleración" },
+    { text: "La carga de datos es imposible, así que ningún algoritmo de finanzas cuánticas puede ejecutarse en absoluto" },
+    { text: "Solo ralentiza la referencia clásica, nunca el algoritmo cuántico" },
+  ]}
+  explanation="La codificación en amplitud empaqueta N números en log2(N) cúbits —una compresión preciosa— pero preparar un estado *general* de ese tipo tarda unas O(N) puertas. Si la aceleración solo era cuadrática y pagas O(N) por cargar en cada ejecución, la factura de carga puede comerse toda la ganancia."
+/>
+
+Esta es la grande. Préstale toda tu atención, porque es la objeción que plantean los profesionales y omiten los dosieres de marketing.
+
+**Analogía.** Imagina un mensajero que puede entregar un paquete al otro lado del mundo en un segundo: un tránsito genuinamente mágico. Pero para *cargar* el paquete en el mensajero, debes plegarlo a mano en mil diminutos pliegues de origami, uno por artículo, y ese plegado tarda una hora. Tu "entrega en un segundo" es ahora una entrega de una hora y un segundo. La aceleración del tránsito es real e inútil, porque la *carga* domina el tiempo de reloj. La carga de datos cuántica es ese origami.
+
+**Definición: codificación en amplitud.** Primero la parte seductora. Puedes codificar $N$ números clásicos $x_0, x_1, \dots, x_{N-1}$ en las **amplitudes** de un estado cuántico sobre apenas $\log_2 N$ cúbits:
+
+$$ |\psi\rangle = \frac{1}{\lVert x \rVert} \sum_{i=0}^{N-1} x_i \, |i\rangle. $$
+
+Eso es *compresión exponencial*: mil millones de números ($N = 2^{30}$) caben en las amplitudes de apenas **30 cúbits**. El titular sobre la huella de memoria es asombroso, y es exactamente por lo que la gente se entusiasma.
+
+**El truco.** La compresión no es el coste; la *creación* lo es. Preparar un estado codificado en amplitud **general** —una distribución arbitraria sin estructura especial— requiere del orden de
+
+$$ \text{coste de preparación del estado} \approx O(N) \text{ puertas} $$
+
+(más precisamente $O(N)$ puertas en el caso general; algunas distribuciones estructuradas son más baratas, pero los datos arbitrarios de mercado no están estructurados). Comprimiste $N$ números en $\log_2 N$ cúbits, pero gastaste alrededor de $N$ operaciones de puerta para *escribirlos*. La compresión exponencial del *almacenamiento* no te compra una baratura exponencial de la *carga*.
+
+**Ejemplo resuelto: atándolo de nuevo a la QAE.** Recuerda de la lección de estimación de amplitud que la QAE mejora la complejidad *en consultas* de estimar una esperanza de $O(1/\varepsilon^2)$ a $O(1/\varepsilon)$: una aceleración cuadrática *en el número de consultas a un oráculo*. La letra pequeña crucial: **esa aceleración cuenta consultas a un oráculo que se asume barato.** El oráculo es exactamente lo que carga tu distribución.
+
+Ahora supón que cargar la distribución cuesta $O(N)$ puertas, y que para alcanzar la precisión $\varepsilon$ debes resolver una distribución sobre $N \approx 1/\varepsilon$ contenedores (una precisión más fina necesita un estado más fino). Entonces el coste *por ejecución* ya no está dominado por las limpias $O(1/\varepsilon)$ consultas: cada ejecución también arrastra una factura de carga $O(N) = O(1/\varepsilon)$, y si el estado debe recargarse en cada iteración de la estimación de amplitud, el trabajo de carga puede igualar o superar el ahorro en consultas. Ponle un número:
+
+| Paso | Montecarlo clásico | QAE (solo consultas) | QAE con recarga O(N) |
+|---|---|---|---|
+| Consultas para alcanzar el error $\varepsilon$ | $O(1/\varepsilon^2)$ | $O(1/\varepsilon)$ | $O(1/\varepsilon)$ |
+| Coste de construir/cargar la distribución | (integrado en el muestreo) | se asume $O(1)$: gratis | $O(N)$ por carga |
+| Ventaja neta en tiempo de reloj | referencia | cuadrática | **se encoge o desaparece** |
+
+La columna de recuento de consultas sigue favoreciendo a la QAE. Pero la columna *honesta* —la que pone precio a la carga— es donde la ventaja cuadrática puede evaporarse calladamente. Una aceleración cuadrática es frágil precisamente porque es *solo* cuadrática: un coste de carga del mismo orden que el ahorro la borra. (Por esto también las victorias cuánticas más limpias se reservan para las aceleraciones *exponenciales*, que pueden sobrevivir a un impuesto de carga polinómico. Una aceleración cuadrática no puede sobrevivir a un impuesto polinómico comparable.)
+
+**QRAM: la vía de escape propuesta.** La respuesta estándar a "cargar es caro" es la **RAM cuántica (QRAM)**: un dispositivo hipotético que carga datos clásicos en superposición en tiempo $O(\log N)$, restaurando el sueño. El problema es que la QRAM es **en gran medida teórica**: nadie ha construido una QRAM a gran escala y resistente a errores, y los diseños líderes ellos mismos exigen recursos físicos enormes y su propia corrección de errores. Contar con la QRAM para rescatar tu aceleración es contar con hardware que aún no existe; pertenece firmemente al cubo del futuro tolerante a fallos, no a ninguna afirmación de "este año".
+
+<Callout variant="warning" title="El oráculo no es gratis: haz que le pongan precio">
+La frase que hay que cazar en cualquier artículo de finanzas cuánticas es alguna versión de *supongamos acceso a un oráculo que prepara el estado*. Esa suposición está haciendo un trabajo enorme, a menudo no declarado. Siempre que una aceleración se cite en *consultas* a un oráculo así, pregunta: ¿cuánto cuesta construir el oráculo, y hay que reconstruirlo en cada ejecución? Para datos clásicos arbitrarios de mercado, la respuesta honesta suele ser O(N), y para una aceleración meramente cuadrática eso es con frecuencia suficiente para borrar toda la ventaja de extremo a extremo.
+</Callout>
+
+### Qué significa para tu ventaja
+
+Enuncia la regla con claridad: **la aceleración cuántica vive en consultas a un oráculo que se *asume* barato; si construir ese oráculo —cargar tu distribución— es caro, debes añadir su coste al libro de cuentas antes de creerte la aceleración.** Para un algoritmo cuadrático como la QAE sobre datos no estructurados, un coste de carga $O(N)$ suele ser fatal para la ganancia de extremo a extremo. Las aceleraciones que sobreviven a la carga son las *exponenciales* (e incluso esas quieren QRAM para brillar de verdad). Cuando evalúes una afirmación, la primerísima pregunta ya no es "¿qué rapidez tiene el algoritmo?": es "¿qué costó meter los datos dentro?".
+
+<MCQ
+  client:visible
+  allowMultiple
+  question="¿Qué afirmaciones sobre la codificación en amplitud y la carga de datos son ciertas? (Selecciona todas las que correspondan.)"
+  options={[
+    { text: "La codificación en amplitud almacena N números en log2(N) cúbits: compresión exponencial del almacenamiento", correct: true },
+    { text: "Preparar un estado general codificado en amplitud cuesta unas O(N) puertas", correct: true },
+    { text: "Un coste de carga O(N) puede cancelar una aceleración meramente cuadrática en consultas si los datos se recargan en cada ejecución", correct: true },
+    { text: "La QRAM es un dispositivo maduro y ampliamente desplegado que ya resuelve el problema de la carga", correct: false },
+  ]}
+  explanation="La compresión del almacenamiento es real y exponencial; el coste de creación es el truco, en torno a O(N) para estados generales, y ese coste es lo que puede borrar una aceleración cuadrática. La QRAM es la solución propuesta, pero sigue siendo en gran medida hipotética y no realizada a escala."
+/>
+
+<ThinkReveal
+  client:visible
+  prompt="Una startup afirma una aceleración cuántica cuadrática para el Montecarlo de riesgo de cartera sobre datos reales de mercado. Su benchmark cuenta solo consultas al oráculo. ¿Cuál es el único número que casi con seguridad omitieron, y por qué importa aquí en concreto?"
+  hint="Piensa en qué tiene que hacer el oráculo con datos clásicos de mercado, y en cuán grande es la aceleración."
+  text="Omitieron el coste de preparación del estado (carga de datos): aproximadamente O(N) puertas para codificar datos arbitrarios de mercado en amplitudes, pagado en cada ejecución. Importa *en concreto* porque su aceleración anunciada es solo cuadrática: una factura de carga O(N) del mismo orden que el ahorro en consultas puede cancelar la ganancia por completo, dejando la canalización cuántica no más rápida —o más lenta— que la referencia clásica de extremo a extremo."
+/>
+
+## Juntando los tres muros
+
+<MCQ
+  client:visible
+  pretest
+  question="Te entregan un resultado de finanzas cuánticas que afirma una ventaja en el mundo real. ¿Qué única pregunta te protege mejor de ser engañado?"
+  options={[
+    { text: "¿La canalización DE EXTREMO A EXTREMO —carga más cómputo más lectura más repeticiones— le gana a la mejor referencia clásica, con todos los costes contados?", correct: true },
+    { text: "¿El algoritmo usa más cúbits que cualquier método publicado?" },
+    { text: "¿El diagrama del circuito cuántico es más elegante que el código clásico?" },
+    { text: "¿El resultado apareció en una nota de prensa y no en un preprint?" },
+  ]}
+  explanation="La ventaja es una afirmación de extremo a extremo, en tiempo de reloj, frente a la mejor alternativa clásica: no un recuento de consultas, ni un recuento de cúbits, ni un diagrama elegante. La carga, el cómputo, la lectura y la repetición van todas al libro de cuentas."
+/>
+
+Tres muros, una lección: el **ruido y la decoherencia** limitan qué profundidad de circuito puedes confiar; la **sobrecarga de la corrección de errores** mantiene los circuitos profundos y fiables a años de distancia; y la **carga de datos** puede borrar la mismísima aceleración por la que viniste. No son excusas independientes: se componen. Un algoritmo profundo que necesita tolerancia a fallos para esquivar el muro uno queda bloqueado por el muro dos; un algoritmo poco profundo que sobrevive a los muros uno y dos todavía tiene que meter sus datos pasando el muro tres.
+
+Así que aquí está el marco de decisión: la lista de comprobación que hay que pasar a *cualquier* afirmación de finanzas cuánticas a corto plazo antes de permitirte entusiasmarte:
+
+1. **¿La ventaja es exponencial o meramente cuadrática?** Las aceleraciones exponenciales pueden absorber un impuesto de carga polinómico y aun así ganar; las cuadráticas son frágiles y a menudo no pueden. Un titular "cuadrático" debería plantear de inmediato la cuestión de la carga.
+2. **¿Se incluyó el coste de carga de datos / preparación del estado?** Encuentra la suposición del oráculo. Si el benchmark cuenta solo consultas a un oráculo gratuito, el coste real está fuera de los libros: añade el $O(N)$ (o lo que de verdad sea) antes de creer nada.
+3. **¿Sobrevive al ruido NISQ a la profundidad requerida, o necesita tolerancia a fallos?** Multiplica el error por puerta por la profundidad del circuito y contrástalo con el presupuesto de coherencia. Si necesita corrección de errores, necesita una máquina que aún no existe.
+4. **¿La canalización DE EXTREMO A EXTREMO le gana a la mejor referencia clásica?** Carga más cómputo más lectura más las repeticiones que necesites para la estadística: todo ello, frente a un método clásico *fuerte* (no un hombre de paja deliberadamente débil). La ventaja es una afirmación de tiempo de reloj, no un recuento de consultas.
+
+La comparación maestra: los tres muros de un vistazo:
+
+| Muro | Qué limita | Estado hoy | Cuándo podría levantarse |
+|---|---|---|---|
+| **Ruido / decoherencia** | La **profundidad de circuito** utilizable (puertas antes de que la respuesta se vuelva ruido) | Error por puerta ~1e-2 a 1e-3; coherencia ~microsegundos; profundidad limitada cerca de ~1.000 puertas | Gradualmente, vía mejores puertas, fabricación y mitigación parcial de errores, pero el exponente se queda hasta la QEC completa |
+| **Recuento de cúbits / corrección de errores** | El número de cúbits **fiables (lógicos)** disponibles | De cientos a unos pocos miles de cúbits *físicos*; muy lejos de la sobrecarga de un cúbit lógico útil | De años a décadas; necesita ~1.000+ físicos por lógico, así que 100.000+ físicos para un algoritmo serio |
+| **Carga de datos / preparación del estado** | Si la aceleración **sobrevive** una vez que cuentas la carga | Codificación en amplitud general ~O(N) puertas por carga; QRAM propuesta pero en gran medida hipotética | Cuando la QRAM (o los trucos de datos estructurados) se vuelvan reales y baratos: ello mismo una petición de la era tolerante a fallos |
+
+<Callout variant="tip" title="El reencuadre que prepara lo que viene">
+Leídos juntos, los tres muros no dicen "las finanzas cuánticas no tienen esperanza". Dicen "las aceleraciones *de propósito general, profundas, tolerantes a fallos* aún no son operables". Por eso exactamente la jugada inteligente a corto plazo es mirar de reojo: muchas de las *ideas* nacidas en la computación cuántica —métodos de redes tensoriales, recocido simulado/inspirado en lo cuántico, descomposiciones de bajo rango y de estilo amplitud— pueden ejecutarse en hardware clásico *hoy*, sin cúbits, sin decoherencia y sin muro de carga. La próxima lección es ese giro: métodos clásicos inspirados en lo cuántico que sí puedes desplegar.
+</Callout>
+
+### Cuándo (si alguna vez) apostar por ello
+
+Apuesta por un enfoque de finanzas cuánticas a corto plazo solo cuando la lista de comprobación quede limpia: la ventaja es exponencial (o el caso cuadrático está sobre datos estructurados con un cargador barato), el coste de carga se cuenta explícitamente, el circuito cabe dentro del presupuesto de profundidad NISQ *o* estás planificando honestamente para la década tolerante a fallos, y la canalización *de extremo a extremo* le gana a una referencia clásica fuerte. Si alguna casilla queda sin marcar, trata la afirmación como un hito de investigación, no como una ventaja de trading, y echa mano en su lugar de las herramientas clásicas inspiradas en lo cuántico que rinden ahora.
+
+<MatchConcepts
+  client:visible
+  pairs={[
+    { term: "NISQ", definition: "Decenas a cientos de cúbits físicos ruidosos sin corrección de errores, limitando la profundidad de circuito utilizable" },
+    { term: "Decoherencia (T1, T2)", definition: "Pérdida del estado cuántico al entorno a lo largo de microsegundos, fijando un plazo duro al cálculo" },
+    { term: "Sobrecarga del código de superficie", definition: "En torno a 1.000+ cúbits físicos para construir un cúbit lógico fiable, así que los algoritmos útiles necesitan 100.000+ físicos" },
+    { term: "Codificación en amplitud", definition: "Empaqueta N números en log2(N) cúbits, pero un estado general cuesta unas O(N) puertas de preparar" },
+    { term: "QRAM", definition: "Dispositivo propuesto para carga rápida de datos en O(log N): en gran medida hipotético y no realizado en hardware a escala" },
+    { term: "Ventaja de extremo a extremo", definition: "La prueba honesta: carga más cómputo más lectura más repeticiones debe ganarle a la mejor referencia clásica" },
+  ]}
+/>
+
+## Resumen
+
+Llegaste cargando una joya de la corona y cuatro lecciones de optimismo. Te vas con los tres muros que se interponen entre ese optimismo y una ventaja operable y, más valioso aún, una lista de comprobación que te permite ponerle precio a cualquier afirmación en lugar de aplaudirla. El ruido y la decoherencia limitan la profundidad de circuito cerca de mil puertas; la sobrecarga de miles a uno de la corrección de errores mantiene las máquinas profundas y fiables a años de distancia; y el muro de la carga de datos puede cancelar calladamente una aceleración cuadrática antes de que se ejecute siquiera la primera consulta. Nada de ello mata el campo: solo redirige el esfuerzo inteligente a corto plazo de lado, hacia los métodos clásicos inspirados en lo cuántico que vienen a continuación.
+
+<MindMap
+  client:visible
+  title="La prueba de la realidad: NISQ y la carga de datos"
+  caption="Construye el mapa: los tres muros, y luego la lista de comprobación que pone precio a cualquier afirmación."
+  root={{
+    label: 'Los tres muros',
+    children: [
+      { label: 'Ruido y decoherencia', children: [
+        { label: 'NISQ: ruidoso, sin corrección de errores' },
+        { label: 'Error por puerta 1e-2 a 1e-3' },
+        { label: 'Éxito ~ (1-p)^G se desploma con la profundidad' },
+        { label: 'Coherencia (T1,T2) ~ microsegundos = plazo' },
+        { label: 'Profundidad utilizable ~ T_coh / t_gate ~ 1.000 puertas' },
+      ]},
+      { label: 'Recuento de cúbits y corrección de errores', children: [
+        { label: 'Cúbit lógico = muchos físicos' },
+        { label: 'Código de superficie ~1.000+ físicos por lógico' },
+        { label: '100 lógicos → 100.000+ físicos' },
+        { label: 'Era tolerante a fallos a años o décadas' },
+      ]},
+      { label: 'Carga de datos / preparación del estado', children: [
+        { label: 'Codificación en amplitud: N números en log2(N) cúbits' },
+        { label: 'Preparación de estado general ~ O(N) puertas' },
+        { label: 'Recarga O(N) puede cancelar la aceleración cuadrática de QAE' },
+        { label: 'La aceleración está en CONSULTAS a un oráculo BARATO' },
+        { label: 'QRAM propuesta pero hipotética' },
+      ]},
+      { label: 'Lista de comprobación antes de apostar', children: [
+        { label: '¿Exponencial o solo cuadrática?' },
+        { label: '¿Se contó el coste de carga?' },
+        { label: '¿Sobrevive a la profundidad NISQ, o necesita tolerancia a fallos?' },
+        { label: '¿El extremo a extremo le gana a la mejor clásica?' },
+      ]},
+    ],
+  }}
+/>
+
+<Quiz
+  client:visible
+  title="Comprobación mixta: ¿sabes detectar el coste oculto?"
+  questions={[
+    {
+      question: "Un circuito NISQ tiene 3.000 puertas y un error por puerta de 1e-3. ¿Cuál es aproximadamente la probabilidad de que el circuito entero se ejecute sin un fallo?",
+      options: [
+        { text: "En torno a 0.05, ya que (1 - 0.001)^3000 es aproximadamente e^(-3), y e^(-3) ≈ 0.05", correct: true },
+        { text: "En torno a 0.97: solo falla una puerta alguna vez" },
+        { text: "En torno a 0.50: la profundidad no importa realmente" },
+        { text: "Exactamente 1.0: un error de puerta tan pequeño nunca importa" },
+      ],
+      explanation: "P_success ≈ (1 - p)^G ≈ e^(-pG) = e^(-0.001 × 3000) = e^(-3) ≈ 0.05. Los circuitos profundos decaen exponencialmente en la profundidad: el muro NISQ central.",
+    },
+    {
+      question: "Un algoritmo necesita 200 cúbits lógicos, y el código de superficie requiere unos 1.000 cúbits físicos por cúbit lógico. ¿Aproximadamente cuántos cúbits físicos hacen falta?",
+      options: [
+        { text: "En torno a 200.000 cúbits físicos, muy por encima de los cientos a pocos miles de hoy", correct: true },
+        { text: "En torno a 200 cúbits físicos: lo mismo que el recuento lógico" },
+        { text: "En torno a 1.200 cúbits físicos: solo sumas los dos números" },
+        { text: "En torno a 2.000 cúbits físicos: independiente del recuento lógico" },
+      ],
+      explanation: "200 lógicos × 1.000 físicos-por-lógico = 200.000 cúbits físicos. La sobrecarga de miles a uno es la razón por la que la tolerancia a fallos está a años o décadas.",
+    },
+    {
+      question: "La codificación en amplitud mete mil millones de números (N = 2^30) en apenas 30 cúbits. ¿Por qué NO es esto automáticamente un almuerzo gratis?",
+      options: [
+        { text: "Comprimir el almacenamiento es barato, pero preparar un estado de amplitud general aún cuesta unas O(N) puertas, así que cargar mil millones de números tarda del orden de mil millones de operaciones", correct: true },
+        { text: "Treinta cúbits son demasiado pocos para contener cualquier distribución real" },
+        { text: "La codificación en amplitud pierde los datos permanentemente tras una lectura" },
+        { text: "La compresión solo funciona para valores primos de N" },
+      ],
+      explanation: "log2(N) cúbits es compresión exponencial del *almacenamiento*, pero crear un estado general son unas O(N) puertas. La compresión del almacenamiento no implica que la carga sea barata: esa brecha es el muro de la carga de datos.",
+    },
+    {
+      question: "La QAE mejora Montecarlo de O(1/epsilon^2) a O(1/epsilon) consultas. ¿Por qué importa tanto esa aceleración cuadrática para si la carga de datos es fatal?",
+      options: [
+        { text: "Porque una aceleración cuadrática es frágil: un coste de carga de orden comparable (como O(N) por ejecución) puede cancelarla, mientras que una aceleración exponencial podría absorber un impuesto de carga polinómico", correct: true },
+        { text: "Porque una aceleración cuadrática es tan grande que ningún coste de carga podría importar jamás" },
+        { text: "Porque la carga de datos solo afecta a las aceleraciones exponenciales, nunca a las cuadráticas" },
+        { text: "Porque la QAE no requiere cargar ningún dato en absoluto" },
+      ],
+      explanation: "Las victorias cuadráticas son estrechas. Una factura de carga O(N) por ejecución de orden similar las borra de extremo a extremo. Las aceleraciones exponenciales tienen margen de sobra para un coste de carga polinómico: por eso las victorias cuánticas más limpias son exponenciales.",
+    },
+    {
+      question: "¿Qué pregunta determina mejor si una afirmación de finanzas cuánticas a corto plazo representa una ventaja real y operable?",
+      options: [
+        { text: "¿La canalización de extremo a extremo —cargar, computar, leer y repetir para la estadística— le gana a la mejor referencia clásica una vez contado cada coste?", correct: true },
+        { text: "¿El algoritmo usa más cúbits que cualquier competidor?" },
+        { text: "¿La aceleración se cita puramente en consultas al oráculo, ignorando cómo se construye el oráculo?" },
+        { text: "¿Se anunció el resultado antes de ejecutar ninguna referencia clásica?" },
+      ],
+      explanation: "La ventaja es una afirmación de extremo a extremo, en tiempo de reloj, frente a una referencia clásica fuerte: carga, cómputo, lectura y repeticiones, todo en el libro de cuentas. Los recuentos de consultas y de cúbits en aislamiento no prueban nada.",
+    },
+  ]}
+/>
