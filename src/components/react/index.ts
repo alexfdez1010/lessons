@@ -297,8 +297,8 @@ export type { VolSmileProps } from '@/components/react/VolSmile';
 export { VarDistributionChart, default as VarDistributionChartDefault } from '@/components/react/VarDistributionChart';
 export type { VarDistributionChartProps } from '@/components/react/VarDistributionChart';
 
-export { HistoricalVarLadder, default as HistoricalVarLadderDefault } from '@/components/react/HistoricalVarLadder';
-export type { HistoricalVarLadderProps } from '@/components/react/HistoricalVarLadder';
+export { HistoricalVarLadder, calculateEmpiricalTail, default as HistoricalVarLadderDefault } from '@/components/react/HistoricalVarLadder';
+export type { HistoricalVarLadderProps, EmpiricalTailRow, EmpiricalTailResult } from '@/components/react/HistoricalVarLadder';
 
 export { VarHorizonScaling, default as VarHorizonScalingDefault } from '@/components/react/VarHorizonScaling';
 export type { VarHorizonScalingProps } from '@/components/react/VarHorizonScaling';
