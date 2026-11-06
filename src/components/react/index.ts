@@ -870,3 +870,6 @@ export type { DaysOfCashCycleProps } from '@/components/react/DaysOfCashCycle';
 
 export { simulateRevolvingCredit, RevolvingCreditBalance } from '@/components/react/RevolvingCreditBalance';
 export type { RevolvingCreditInputs, RevolvingCreditRow, RevolvingCreditBalanceProps } from '@/components/react/RevolvingCreditBalance';
+
+export { valueDatedCashFlow, valueCashFlowStream, CashFlowValuationTimeline } from '@/components/react/CashFlowValuationTimeline';
+export type { TimelineCashFlow, CashFlowValuationTimelineProps } from '@/components/react/CashFlowValuationTimeline';
