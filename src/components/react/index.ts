@@ -249,8 +249,8 @@ export type { LiquidityPoolShareProps } from '@/components/react/LiquidityPoolSh
 export { SlippageCurve, default as SlippageCurveDefault } from '@/components/react/SlippageCurve';
 export type { SlippageCurveProps } from '@/components/react/SlippageCurve';
 
-export { ImpermanentLossCurve, default as ImpermanentLossCurveDefault } from '@/components/react/ImpermanentLossCurve';
-export type { ImpermanentLossCurveProps } from '@/components/react/ImpermanentLossCurve';
+export { ImpermanentLossCurve, calculateImpermanentLoss, default as ImpermanentLossCurveDefault } from '@/components/react/ImpermanentLossCurve';
+export type { ImpermanentLossCurveProps, ImpermanentLossInputs, FeeComparisonBase } from '@/components/react/ImpermanentLossCurve';
 
 export { DiversificationDecay, default as DiversificationDecayDefault } from '@/components/react/DiversificationDecay';
 export type { DiversificationDecayProps } from '@/components/react/DiversificationDecay';

@@ -1,449 +1,50 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useId, useState } from 'react';
 import { cx } from '@/components/react/cx';
-
+export type FeeComparisonBase = 'deposit' | 'lp' | 'hodl';
+export interface ImpermanentLossInputs {
+ depositValue: number; initialPrice: number; ratio: number; initialQuoteValue: number; quoteValue: number; feesEarnedPct: number; feeBase: FeeComparisonBase; costs: number; rangeUpper?: number;
+}
+/** Fee-free 50/50 full-range reference; all final values use one reporting currency. */
+export function calculateImpermanentLoss(input: ImpermanentLossInputs) {
+ const {depositValue,initialPrice,ratio,initialQuoteValue,quoteValue,feesEarnedPct,feeBase,costs,rangeUpper}=input;
+ if (![depositValue,initialPrice,ratio,initialQuoteValue,quoteValue].every(value=>Number.isFinite(value)&&value>0&&value<=1e12) || ratio<.001 || ratio>1000 || !Number.isFinite(feesEarnedPct)||feesEarnedPct<0||feesEarnedPct>100 || !Number.isFinite(costs)||costs<0||costs>1e12 || !['deposit','lp','hodl'].includes(feeBase) || (rangeUpper!==undefined&&(!Number.isFinite(rangeUpper)||rangeUpper<=1||rangeUpper>1000))) throw new Error('ImpermanentLossCurve: use finite positive amounts and prices, a ratio from 0.001 to 1,000, fees from 0 to 100 percent, nonnegative costs and a supported fee base. A reciprocal range must have an upper ratio greater than one.');
+ const half=depositValue/2,root=Math.sqrt(ratio),initialA=half/initialPrice,initialB=half;
+ const tokenA=initialA/root,tokenB=initialB*root,price=initialPrice*ratio;
+ const initialValue=depositValue*initialQuoteValue,hodlQuote=half*(1+ratio),lpQuote=depositValue*root;
+ const hodlValue=hodlQuote*quoteValue,lpValue=lpQuote*quoteValue,il=2*root/(1+ratio)-1,gap=hodlValue-lpValue;
+ const feeBaseValue=feeBase==='deposit'?initialValue:feeBase==='lp'?lpValue:hodlValue;
+ const feeValue=feeBaseValue*feesEarnedPct/100,netValue=lpValue+feeValue-costs,netRelative=netValue/hodlValue-1;
+ let concentrated:null|{lower:number;upper:number;tokenA:number;tokenB:number;value:number;relative:number;active:boolean}=null;
+ if(rangeUpper!==undefined){
+  const lower=1/rangeUpper,upper=rangeUpper,clamped=Math.max(lower,Math.min(upper,ratio)),liquidity=half/(1-1/Math.sqrt(upper));
+  const aAtEntryPrice=liquidity*(1/Math.sqrt(clamped)-1/Math.sqrt(upper)),b=liquidity*(Math.sqrt(clamped)-Math.sqrt(lower));
+  const value=(aAtEntryPrice*ratio+b)*quoteValue;
+  concentrated={lower,upper,tokenA:aAtEntryPrice/initialPrice,tokenB:b,value,relative:value/hodlValue-1,active:ratio>=lower&&ratio<upper};
+ }
+ const result={initialA,initialB,tokenA,tokenB,price,initialValue,hodlValue,lpValue,il,gap,feeBaseValue,feeValue,netValue,netRelative,breakEvenFees:Math.max(0,gap+costs),lpAbsolute:lpValue/initialValue-1,hodlAbsolute:hodlValue/initialValue-1,concentrated};
+ if(Object.values(result).some(value=>typeof value==='number'&&!Number.isFinite(value))||initialValue<=0||hodlValue<=0||(concentrated&&Object.values(concentrated).some(value=>typeof value==='number'&&!Number.isFinite(value))))throw new Error('ImpermanentLossCurve: the inputs exceed the finite numerical domain of this illustration.');
+ return result;
+}
 export interface ImpermanentLossCurveProps {
-  /** Heading above the chart. */
-  title?: string;
-  /** Label for the price-change slider (the volatile asset's move). */
-  priceChangeLabel?: string;
-  /** Label for the price-ratio readout. Defaults to `'Price ratio (r)'`. */
-  ratioLabel?: string;
-  /** Label for the impermanent-loss readout. Defaults to `'Impermanent loss'`. */
-  ilLabel?: string;
-  /** Label for the HODL-value readout. Defaults to `'HODL value'`. */
-  hodlLabel?: string;
-  /** Label for the LP-value readout. Defaults to `'LP value'`. */
-  lpLabel?: string;
-  /** Label for the dollar-gap (HODL − LP) readout. */
-  gapLabel?: string;
-  /** Label for the fees-earned slider / readout. */
-  feesLabel?: string;
-  /** Label for the net (IL + fees) readout. */
-  netLabel?: string;
-  /** Verdict shown when fees ≥ |IL|. Defaults to `'Fees cover the impermanent loss'`. */
-  feesCoverLabel?: string;
-  /** Verdict shown when |IL| > fees. Defaults to `'Impermanent loss wins'`. */
-  ilWinsLabel?: string;
-  /** Starting 50/50 deposit value (in `currencyPrefix`). Defaults to `10000`. */
-  depositValue?: number;
-  /** Lowest price ratio on the x-axis / slider. Defaults to `0.1`. */
-  minRatio?: number;
-  /** Highest price ratio on the x-axis / slider. Defaults to `10`. */
-  maxRatio?: number;
-  /** Initial price ratio the marker starts at. Defaults to `2`. */
-  initialRatio?: number;
-  /** Trading fees earned, as a percent of position (e.g. `5` = 5%). Defaults to `0`. */
-  feesEarnedPct?: number;
-  /** Slider step (in percent of price change). Defaults to `1`. */
-  step?: number;
-  /** One-line takeaway shown under the chart. */
-  caption?: string;
-  /** Currency symbol prefixed to money values. Defaults to `'$'`. */
-  currencyPrefix?: string;
-  className?: string;
+ title?:string; priceChangeLabel?:string; ratioLabel?:string; ilLabel?:string; hodlLabel?:string; lpLabel?:string; gapLabel?:string; feesLabel?:string; netLabel?:string; feesCoverLabel?:string; ilWinsLabel?:string;
+ depositValue?:number; initialPrice?:number; minRatio?:number; maxRatio?:number; initialRatio?:number; feesEarnedPct?:number; step?:number; caption?:string; currencyPrefix?:string; currencySuffix?:string; locale?:string; className?:string;
+ initialQuoteValue?:number; quoteValue?:number; showQuoteValue?:boolean; quoteValueLabel?:string; showFees?:boolean; feeBase?:FeeComparisonBase; feeBaseLabel?:string; depositBaseLabel?:string; lpBaseLabel?:string; hodlBaseLabel?:string; feeAmountLabel?:string; costs?:number; costsLabel?:string; netValueLabel?:string; breakEvenLabel?:string; lpAbsoluteLabel?:string; hodlAbsoluteLabel?:string; tokenALabel?:string; tokenBLabel?:string; unitsLabel?:string; axisLabel?:string; chartLabel?:string; yRangeLabel?:string; rangeChartLabel?:string; rangeUpper?:number; rangeLabel?:string; rangeValueLabel?:string; rangeIlLabel?:string; rangeActiveLabel?:string; rangeInactiveLabel?:string; rangeCaption?:string;
 }
-
-const prefersReducedMotion = (): boolean =>
-  typeof window !== 'undefined' &&
-  typeof window.matchMedia === 'function' &&
-  window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
-const money = (prefix: string, value: number, digits = 0): string =>
-  `${value < 0 ? '-' : ''}${prefix}${Math.abs(value).toLocaleString('en-US', {
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
-  })}`;
-
-/** Impermanent loss for a 50/50 constant-product pool at price ratio r. ≤ 0. */
-const ilFraction = (r: number): number => (2 * Math.sqrt(r)) / (1 + r) - 1;
-
-/**
- * Interactive impermanent-loss explainer for a 50/50 constant-product LP.
- *
- * When one pooled asset's price moves relative to the other, arbitrageurs
- * rebalance the pool — buying the loser, selling the winner — so the LP ends up
- * with LESS value than simply HODLing the two tokens. The shortfall is the
- * closed-form impermanent loss `IL(r) = 2·√r/(1+r) − 1`, zero at `r = 1` and
- * negative on either side (≈ −5.72% at r=2 or r=0.5, −20% at r=4).
- *
- * The learner drags a slider for the volatile asset's price change (mapped to a
- * ratio `r`); the chart plots IL% across a log-spaced ratio axis with an
- * animated marker on the current `r`, and a `<dl>` reads out r, IL%, the HODL
- * vs LP dollar values for a configurable 50/50 deposit, and their gap. An
- * optional fees-earned slider shows trading fees offsetting IL with a verdict.
- * `prefers-reduced-motion` snaps the marker; all strings are locale-agnostic
- * props.
- */
-export function ImpermanentLossCurve({
-  title = 'Impermanent loss vs. price change',
-  priceChangeLabel = 'Volatile-asset price change',
-  ratioLabel = 'Price ratio (r)',
-  ilLabel = 'Impermanent loss',
-  hodlLabel = 'HODL value',
-  lpLabel = 'LP value',
-  gapLabel = 'Gap vs. HODL',
-  feesLabel = 'Fees earned',
-  netLabel = 'Net vs. HODL',
-  feesCoverLabel = 'Fees cover the impermanent loss',
-  ilWinsLabel = 'Impermanent loss wins',
-  depositValue = 10000,
-  minRatio = 0.1,
-  maxRatio = 10,
-  initialRatio = 2,
-  feesEarnedPct = 0,
-  step = 1,
-  caption =
-    "Impermanent loss is the cost of being the AMM's counterparty during a price move: flat or mean-reverting prices mean tiny IL, big one-way moves mean large IL, and trading fees are what compensate LPs for bearing it.",
-  currencyPrefix = '$',
-  className,
-}: ImpermanentLossCurveProps) {
-  const id = useId();
-
-  // Work in log-space so the slider/x-axis treat 0.1× and 10× symmetrically.
-  const logMin = Math.log(minRatio);
-  const logMax = Math.log(maxRatio);
-  const clampRatio = (r: number): number => Math.min(maxRatio, Math.max(minRatio, r));
-
-  // Slider value is "percent price change" of the volatile asset (r − 1) × 100.
-  const ratioToPct = (r: number): number => (r - 1) * 100;
-  const pctToRatio = (pct: number): number => 1 + pct / 100;
-  const minPct = ratioToPct(minRatio);
-  const maxPct = ratioToPct(maxRatio);
-
-  const [pct, setPct] = useState(ratioToPct(clampRatio(initialRatio)));
-  const ratio = clampRatio(pctToRatio(pct));
-
-  const [fees, setFees] = useState(Math.max(0, feesEarnedPct));
-
-  // Animated ratio (in log-space) the marker renders against.
-  const [shownLog, setShownLog] = useState(Math.log(ratio));
-  const rafRef = useRef<number | null>(null);
-
-  const W = 540;
-  const H = 220;
-  const padL = 46;
-  const padR = 18;
-  const padT = 16;
-  const padB = 34;
-  const plotW = W - padL - padR;
-  const plotH = H - padT - padB;
-
-  // Lowest IL across the visible range sets the y-axis floor (most negative).
-  const ilFloor = Math.min(ilFraction(minRatio), ilFraction(maxRatio));
-  const yFloor = Math.min(-0.05, ilFloor); // always show some depth
-
-  const logToX = (lr: number): number =>
-    padL + ((lr - logMin) / (logMax - logMin)) * plotW;
-  const ilToY = (il: number): number => padT + (il / yFloor) * plotH; // il ≤ 0, yFloor < 0
-
-  // IL curve polyline.
-  const SAMPLES = 80;
-  const curvePoints: string[] = [];
-  for (let i = 0; i <= SAMPLES; i++) {
-    const lr = logMin + ((logMax - logMin) * i) / SAMPLES;
-    const r = Math.exp(lr);
-    curvePoints.push(`${logToX(lr).toFixed(2)},${ilToY(ilFraction(r)).toFixed(2)}`);
-  }
-  const curveD = curvePoints.join(' ');
-
-  // Animate the marker toward the new ratio whenever it changes.
-  useEffect(() => {
-    const target = Math.log(ratio);
-    if (prefersReducedMotion()) {
-      setShownLog(target);
-      return;
-    }
-    let startTs: number | null = null;
-    const start = shownLog;
-    const delta = target - start;
-    if (Math.abs(delta) < 1e-4) {
-      setShownLog(target);
-      return;
-    }
-    const duration = 420;
-    const stepFn = (ts: number) => {
-      if (startTs === null) startTs = ts;
-      const p = Math.min(1, (ts - startTs) / duration);
-      const eased = 1 - Math.pow(1 - p, 3);
-      setShownLog(start + delta * eased);
-      if (p < 1) rafRef.current = requestAnimationFrame(stepFn);
-    };
-    rafRef.current = requestAnimationFrame(stepFn);
-    return () => {
-      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
-    };
-    // shownLog intentionally omitted so frames don't restart the tween.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ratio]);
-
-  // ---- The dollar math (must be exact) ----------------------------------
-  // Start: 50/50 deposit. Half the value buys the stable asset, half the
-  // volatile asset, both worth depositValue/2 at the start (price = 1 unit).
-  const half = depositValue / 2;
-  // HODL: just keep both bags. The stable half is unchanged; the volatile
-  // half scales with the price ratio r.
-  const hodlValue = half + half * ratio;
-  // LP: constant-product rebalancing leaves you with HODL × (1 + IL).
-  const il = ilFraction(ratio); // ≤ 0
-  const lpValue = hodlValue * (1 + il);
-  const gap = hodlValue - lpValue; // ≥ 0, the dollars IL costs you
-  const ilPct = il * 100;
-
-  // Fees offset IL (earned as % of the LP position).
-  const feesDollars = lpValue * (fees / 100);
-  const netPct = ilPct + fees;
-  const feesCover = fees >= Math.abs(ilPct);
-
-  const markerLR = shownLog;
-  const markerX = logToX(markerLR);
-  const markerY = ilToY(ilFraction(Math.exp(markerLR)));
-
-  const fmtPct = (v: number, digits = 2): string =>
-    `${v > 0 ? '+' : v < 0 ? '−' : ''}${Math.abs(v).toFixed(digits)}%`;
-
-  const fmtRatio = (r: number): string => `${r.toFixed(2)}×`;
-
-  // Gridline ratios for the x-axis.
-  const gridRatios = [minRatio, 0.5, 1, 2, 4, maxRatio].filter(
-    (r) => r >= minRatio && r <= maxRatio,
-  );
-
-  const ariaLabel = `${title}. ${ratioLabel}: ${fmtRatio(ratio)}. ${ilLabel}: ${fmtPct(
-    ilPct,
-  )}. ${hodlLabel}: ${money(currencyPrefix, hodlValue)}. ${lpLabel}: ${money(
-    currencyPrefix,
-    lpValue,
-  )}.`;
-
-  return (
-    <figure
-      className={cx(
-        'my-6 rounded-card border border-ink-100 bg-surface p-5 shadow-soft',
-        className,
-      )}
-    >
-      <figcaption className="flex items-center justify-between gap-3">
-        <span className="font-medium text-ink-900">{title}</span>
-        <span
-          className={cx(
-            'rounded-pill px-3 py-1 text-sm font-medium text-white transition-colors',
-            Math.abs(ilPct) < 0.005 ? 'bg-success' : 'bg-warning',
-          )}
-        >
-          {fmtPct(ilPct)}
-        </span>
-      </figcaption>
-
-      {/* IL curve */}
-      <svg viewBox={`0 0 ${W} ${H}`} className="mt-4 w-full" role="img" aria-label={ariaLabel}>
-        {/* y gridlines (0% at top, floor at bottom) */}
-        {[0, 0.25, 0.5, 0.75, 1].map((t) => {
-          const il = yFloor * t;
-          const y = ilToY(il);
-          return (
-            <g key={`y-${t}`}>
-              <line
-                x1={padL}
-                y1={y}
-                x2={W - padR}
-                y2={y}
-                stroke="var(--color-ink-100)"
-                strokeWidth={1}
-              />
-              <text x={padL - 6} y={y + 3} textAnchor="end" fontSize="9" fill="var(--color-ink-400)">
-                {`${(il * 100).toFixed(0)}%`}
-              </text>
-            </g>
-          );
-        })}
-
-        {/* x gridlines + ratio ticks */}
-        {gridRatios.map((r) => {
-          const x = logToX(Math.log(r));
-          const atOne = Math.abs(r - 1) < 1e-9;
-          return (
-            <g key={`x-${r}`}>
-              <line
-                x1={x}
-                y1={padT}
-                x2={x}
-                y2={padT + plotH}
-                stroke={atOne ? 'var(--color-success)' : 'var(--color-ink-100)'}
-                strokeWidth={atOne ? 2 : 1}
-                strokeDasharray={atOne ? '4 3' : undefined}
-              />
-              <text
-                x={x}
-                y={H - 10}
-                textAnchor="middle"
-                fontSize="10"
-                fontWeight={atOne ? 600 : 400}
-                fill={atOne ? 'var(--color-success)' : 'var(--color-ink-400)'}
-              >
-                {fmtRatio(r)}
-              </text>
-            </g>
-          );
-        })}
-
-        {/* IL curve */}
-        <polyline
-          points={curveD}
-          fill="none"
-          stroke="var(--color-warning)"
-          strokeWidth={2.5}
-          strokeLinejoin="round"
-        />
-
-        {/* drop line from marker to the IL=0 axis */}
-        <line
-          x1={markerX}
-          y1={padT}
-          x2={markerX}
-          y2={markerY}
-          stroke="var(--color-accent-500)"
-          strokeWidth={1.5}
-          strokeDasharray="3 3"
-          opacity={0.7}
-        />
-
-        {/* current marker */}
-        <circle cx={markerX} cy={markerY} r={6} fill="var(--color-accent-500)" />
-        <text
-          x={markerX}
-          y={markerY - 10}
-          textAnchor="middle"
-          fontSize="11"
-          fontWeight={600}
-          className="font-mono"
-          fill="var(--color-ink-900)"
-        >
-          {fmtPct(ilFraction(Math.exp(markerLR)) * 100, 1)}
-        </text>
-      </svg>
-
-      {/* Price-change slider */}
-      <div className="mt-3">
-        <label
-          htmlFor={`${id}-pct`}
-          className="flex items-center justify-between text-sm text-ink-700"
-        >
-          <span>{priceChangeLabel}</span>
-          <span className="font-mono text-ink-900">{fmtPct(pct, 0)}</span>
-        </label>
-        <input
-          id={`${id}-pct`}
-          type="range"
-          min={minPct}
-          max={maxPct}
-          step={step}
-          value={pct}
-          onChange={(e) => setPct(Number(e.target.value))}
-          aria-label={priceChangeLabel}
-          className="mt-2 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
-        />
-      </div>
-
-      {/* Fees slider */}
-      <div className="mt-3">
-        <label
-          htmlFor={`${id}-fees`}
-          className="flex items-center justify-between text-sm text-ink-700"
-        >
-          <span>{feesLabel}</span>
-          <span className="font-mono text-ink-900">{`+${fees.toFixed(1)}%`}</span>
-        </label>
-        <input
-          id={`${id}-fees`}
-          type="range"
-          min={0}
-          max={50}
-          step={0.5}
-          value={fees}
-          onChange={(e) => setFees(Number(e.target.value))}
-          aria-label={feesLabel}
-          className="mt-2 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
-        />
-      </div>
-
-      {/* Readouts */}
-      <dl
-        className="mt-4 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4"
-        aria-live="polite"
-      >
-        <div className="rounded-card border border-ink-100 bg-surface-sunken/40 px-3 py-2">
-          <dt className="text-ink-500">{ratioLabel}</dt>
-          <dd className="font-mono text-lg font-semibold text-ink-900">{fmtRatio(ratio)}</dd>
-        </div>
-        <div className="rounded-card border border-ink-100 bg-surface-sunken/40 px-3 py-2">
-          <dt className="text-ink-500">{ilLabel}</dt>
-          <dd
-            className={cx(
-              'font-mono text-lg font-semibold',
-              Math.abs(ilPct) < 0.005 ? 'text-success' : 'text-warning',
-            )}
-          >
-            {fmtPct(ilPct)}
-          </dd>
-        </div>
-        <div className="rounded-card border border-ink-100 bg-surface-sunken/40 px-3 py-2">
-          <dt className="text-ink-500">{hodlLabel}</dt>
-          <dd className="font-mono text-lg font-semibold text-ink-900">
-            {money(currencyPrefix, hodlValue)}
-          </dd>
-        </div>
-        <div className="rounded-card border border-ink-100 bg-surface-sunken/40 px-3 py-2">
-          <dt className="text-ink-500">{lpLabel}</dt>
-          <dd className="font-mono text-lg font-semibold text-ink-900">
-            {money(currencyPrefix, lpValue)}
-          </dd>
-        </div>
-        <div className="rounded-card border border-ink-100 bg-surface-sunken/40 px-3 py-2">
-          <dt className="text-ink-500">{gapLabel}</dt>
-          <dd className="font-mono text-lg font-semibold text-warning">
-            {money(currencyPrefix, gap)}
-          </dd>
-        </div>
-        <div className="rounded-card border border-ink-100 bg-surface-sunken/40 px-3 py-2">
-          <dt className="text-ink-500">{feesLabel}</dt>
-          <dd className="font-mono text-lg font-semibold text-brand-700">
-            {`+${money(currencyPrefix, feesDollars)}`}
-          </dd>
-        </div>
-        <div className="col-span-2 rounded-card border border-ink-100 bg-surface-sunken/40 px-3 py-2">
-          <dt className="text-ink-500">{netLabel}</dt>
-          <dd
-            className={cx(
-              'font-mono text-lg font-semibold',
-              netPct >= 0 ? 'text-success' : 'text-warning',
-            )}
-          >
-            {fmtPct(netPct)}
-          </dd>
-        </div>
-      </dl>
-
-      {/* Verdict panel */}
-      <div
-        className={cx(
-          'mt-4 rounded-card border px-4 py-3',
-          feesCover ? 'border-success/40 bg-success/10' : 'border-warning/40 bg-warning/10',
-        )}
-        aria-live="polite"
-      >
-        <p
-          className={cx(
-            'text-sm font-semibold',
-            feesCover ? 'text-success' : 'text-warning',
-          )}
-        >
-          {feesCover ? feesCoverLabel : ilWinsLabel}
-        </p>
-      </div>
-
-      <p className="mt-4 text-sm leading-relaxed text-ink-600">{caption}</p>
-    </figure>
-  );
+export function ImpermanentLossCurve({ title='Impermanent loss and the holding benchmark',priceChangeLabel='Change in A’s price measured in B',ratioLabel='Relative-price ratio r',ilLabel='Fee-free LP relative to HODL',hodlLabel='HODL terminal value',lpLabel='Fee-free full-range LP terminal value',gapLabel='HODL minus fee-free LP',feesLabel='Illustrative terminal fee credit, percent of selected base',netLabel='Net toy comparison relative to HODL',feesCoverLabel='The terminal fee credit covers the gap and specified costs in this toy comparison.',ilWinsLabel='The terminal fee credit does not cover the gap and specified costs in this toy comparison.',depositValue=10000,initialPrice=2000,minRatio=.1,maxRatio=10,initialRatio=2,feesEarnedPct=0,step=1,caption='Fee-free 50/50 constant-product reference with continuous arbitrage and no liquidity changes. The optional fee credit is an external terminal supplement, not a simulation of swaps or compounded fees. Actual fees already embedded in a position must not be added again. Values and costs use one reporting currency and one terminal date. Displayed money amounts are rounded to two decimals; the calculation retains precision.',currencyPrefix='$',currencySuffix='',locale='en-US',initialQuoteValue=1,quoteValue=1,showQuoteValue=false,quoteValueLabel='Current reporting-currency value of one quote token B',showFees=true,feeBase='lp',feeBaseLabel='Denominator used for the fee percentage',depositBaseLabel='Initial deposit value',lpBaseLabel='Terminal fee-free LP value',hodlBaseLabel='Terminal HODL value',feeAmountLabel='Terminal fee credit in reporting currency',costs=0,costsLabel='Separate costs at the comparison date',netValueLabel='Fee-free LP plus fee credit minus costs',breakEvenLabel='Terminal fee credit needed to match HODL after costs',lpAbsoluteLabel='Fee-free LP change from the initial reporting-currency value',hodlAbsoluteLabel='HODL change from the initial reporting-currency value',tokenALabel='Fee-free full-range token A amount',tokenBLabel='Fee-free full-range token B amount',unitsLabel='Initial deposit: {deposit} quote-token B units; initial A price: {price} B per A. One B initially equals {quote} in the reporting currency.',axisLabel='A-in-B price ratio r, logarithmic scale',yRangeLabel='Vertical scale: {zero} at the top; {floor} at the bottom.',rangeChartLabel='The dashed curve is the fee-free bounded position relative to the same holding benchmark. Its selected relative value is {loss}.',chartLabel='Fee-free full-range IL curve over relative prices. At r = {ratio}, IL is {loss}. The holding benchmark is the unchanged initial token quantities at the same final prices.',rangeUpper,rangeLabel='Reciprocal price-ratio range: {lower} to {upper}',rangeValueLabel='Fee-free bounded position terminal value',rangeIlLabel='Fee-free bounded position relative to the same HODL',rangeActiveLabel='Inside the mathematical price range.',rangeInactiveLabel='Outside the mathematical price range: all principal is in one token and this liquidity is inactive.',rangeCaption='The bounded comparison starts with the same equal-value assets and uses reciprocal continuous bounds around the entry price. It excludes fees and costs and illustrates concentrated-liquidity inventory, not exact tick rounding or a deployed pool.',className}:ImpermanentLossCurveProps){
+ const initial={depositValue,initialPrice,ratio:initialRatio,initialQuoteValue,quoteValue,feesEarnedPct,feeBase,costs,rangeUpper};calculateImpermanentLoss(initial);
+ if(!Number.isFinite(minRatio)||!Number.isFinite(maxRatio)||minRatio<.001||minRatio>=1||maxRatio<=1||maxRatio>1000||initialRatio<minRatio||initialRatio>maxRatio||!Number.isFinite(step)||step<=0||step>100)throw new Error('ImpermanentLossCurve: set a supported ratio interval straddling one, an initial ratio inside it and a positive percentage-point step no larger than 100.');
+ const id=useId(),[ratio,setRatio]=useState(initialRatio),[quote,setQuote]=useState(quoteValue),[fees,setFees]=useState(feesEarnedPct),[base,setBase]=useState(feeBase),[cost,setCost]=useState(costs);
+ const result=calculateImpermanentLoss({...initial,ratio,quoteValue:quote,feesEarnedPct:fees,feeBase:base,costs:cost});
+ const number=(value:number,digits=2)=>new Intl.NumberFormat(locale,{maximumFractionDigits:digits}).format(value),money=(value:number)=>`${value<0?'−':''}${currencyPrefix}${new Intl.NumberFormat(locale,{minimumFractionDigits:2,maximumFractionDigits:2}).format(Math.abs(value))}${currencySuffix}`,percent=(value:number)=>new Intl.NumberFormat(locale,{style:'percent',minimumFractionDigits:2,maximumFractionDigits:2,signDisplay:'exceptZero'}).format(value);
+ const logMin=Math.log(minRatio),logMax=Math.log(maxRatio),sample=Array.from({length:121},(_,i)=>{const r=Math.min(maxRatio,Math.max(minRatio,Math.exp(logMin+(logMax-logMin)*i/120)));const value=calculateImpermanentLoss({...initial,ratio:r});return {r,full:value.il,bounded:value.concentrated?.relative};});
+ const floor=Math.min(-.05,...sample.flatMap(point=>point.bounded===undefined?[point.full]:[point.full,point.bounded]));const W=600,H=220,pad=12;
+ // Render coordinates at sub-pixel precision so different JS engines serialize identical SVG geometry.
+ // Monetary values, inventory and relative-return calculations retain their full precision.
+ const coordinate=(value:number)=>Number(value.toFixed(3));
+ const x=(r:number)=>coordinate(pad+(Math.log(r)-logMin)/(logMax-logMin)*(W-pad*2)),y=(v:number)=>coordinate(pad+v/floor*(H-pad*2));
+ const curve=(bounded=false)=>sample.map((point,i)=>`${i?'L':'M'}${x(point.r)},${y(bounded?point.bounded!:point.full)}`).join(' ');
+ const controls=[{key:'ratio',label:priceChangeLabel,value:(ratio-1)*100,min:(minRatio-1)*100,max:(maxRatio-1)*100,step,format:(value:number)=>percent(value/100),set:(value:number)=>setRatio(Math.min(maxRatio,Math.max(minRatio,1+value/100)))},...(showQuoteValue?[{key:'quote',label:quoteValueLabel,value:quote,min:.01,max:Math.max(2,quoteValue),step:.01,format:money,set:setQuote}]:[]),...(showFees?[{key:'fees',label:feesLabel,value:fees,min:0,max:100,step:.1,format:(value:number)=>percent(value/100),set:setFees},{key:'costs',label:costsLabel,value:cost,min:0,max:Math.max(2000,costs),step:.01,format:money,set:setCost}]:[])];
+ const readouts=[{label:ratioLabel,value:`${number(ratio,3)}×`},{label:ilLabel,value:percent(result.il)},{label:hodlLabel,value:money(result.hodlValue)},{label:lpLabel,value:money(result.lpValue)},{label:gapLabel,value:money(result.gap)},{label:lpAbsoluteLabel,value:percent(result.lpAbsolute)},{label:hodlAbsoluteLabel,value:percent(result.hodlAbsolute)},{label:tokenALabel,value:number(result.tokenA,6)},{label:tokenBLabel,value:number(result.tokenB,6)},...(showFees?[{label:feeAmountLabel,value:money(result.feeValue)},{label:netValueLabel,value:money(result.netValue)},{label:netLabel,value:percent(result.netRelative)},{label:breakEvenLabel,value:money(result.breakEvenFees)}]:[]),...(result.concentrated?[{label:rangeValueLabel,value:money(result.concentrated.value)},{label:rangeIlLabel,value:percent(result.concentrated.relative)}]:[])];
+ return <figure className={cx('not-prose my-6 min-w-0 rounded-card bg-surface-sunken/50 p-5',className)}><figcaption className="font-display font-semibold text-ink-900">{title}</figcaption><p className="mt-3 text-sm text-ink-700">{unitsLabel.replaceAll('{deposit}',number(depositValue)).replaceAll('{price}',number(initialPrice)).replaceAll('{quote}',money(initialQuoteValue))}</p><div className="mt-4 grid gap-4 sm:grid-cols-2">{controls.map(control=><div key={control.key} className="min-w-0"><label htmlFor={`${id}-${control.key}`} className="block text-sm text-ink-700">{control.label}<output htmlFor={`${id}-${control.key}`} className="mt-1 block font-mono font-semibold">{control.format(control.value)}</output></label><input id={`${id}-${control.key}`} type="range" min={control.min} max={control.max} step={control.step} value={control.value} aria-valuetext={control.format(control.value)} onChange={event=>control.set(Number(event.target.value))} className="mt-1 h-8 w-full accent-brand-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600" /></div>)}</div>{showFees&&<fieldset className="mt-4"><legend className="text-sm text-ink-700">{feeBaseLabel}</legend><div className="mt-2 grid gap-2 sm:grid-cols-3">{[{key:'deposit' as const,label:depositBaseLabel},{key:'lp' as const,label:lpBaseLabel},{key:'hodl' as const,label:hodlBaseLabel}].map(option=><label key={option.key} className="flex min-h-11 cursor-pointer items-center gap-3 rounded-card bg-surface p-3 text-sm text-ink-700"><input type="radio" name={`${id}-base`} checked={base===option.key} onChange={()=>setBase(option.key)} className="h-5 w-5 shrink-0 accent-brand-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600" /><span>{option.label}</span></label>)}</div></fieldset>}<p className="mt-4 text-sm text-ink-700">{ilLabel}</p><svg viewBox={`0 0 ${W} ${H}`} className="mt-2 h-auto w-full" role="img" aria-label={chartLabel.replaceAll('{ratio}',number(ratio,3)).replaceAll('{loss}',percent(result.il))+(result.concentrated?' '+rangeChartLabel.replaceAll('{loss}',percent(result.concentrated.relative)):'')}><path d={`M${pad},${pad}H${W-pad}`} stroke="var(--color-ink-300)" strokeWidth={1.5}/><path d={curve()} fill="none" stroke="var(--color-brand-600)" strokeWidth={3}/>{rangeUpper!==undefined&&<path d={curve(true)} fill="none" stroke="var(--color-accent-600)" strokeWidth={3} strokeDasharray="6 4"/>}<circle cx={x(ratio)} cy={y(result.il)} r={6} fill="var(--color-brand-600)"/>{result.concentrated&&<circle cx={x(ratio)} cy={y(result.concentrated.relative)} r={6} fill="var(--color-accent-600)"/>}</svg><div className="flex justify-between gap-3 font-mono text-xs text-ink-700" aria-hidden="true"><span>{number(minRatio,3)}×</span><span>{number(Math.sqrt(minRatio*maxRatio),3)}×</span><span>{number(maxRatio,3)}×</span></div><p className="mt-1 text-center text-xs text-ink-700">{axisLabel}</p><div className="mt-3 flex flex-wrap gap-3 text-xs text-ink-700"><span>{yRangeLabel.replaceAll('{zero}',percent(0)).replaceAll('{floor}',percent(floor))}</span>{result.concentrated&&<><span className="inline-flex items-center gap-2"><span className="h-2 w-2 rounded-pill bg-brand-600" aria-hidden="true"/>{ilLabel}</span><span className="inline-flex items-center gap-2"><span className="h-2 w-2 rounded-pill bg-accent-600" aria-hidden="true"/>{rangeIlLabel}</span></>}</div><div aria-live="polite" aria-atomic="true"><dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2">{readouts.map(item=><div key={item.label} className="min-w-0 rounded-card bg-surface p-3"><dt className="text-ink-700">{item.label}</dt><dd className="mt-1 break-words font-mono font-semibold text-ink-900">{item.value}</dd></div>)}</dl>{showFees&&<p className="mt-3 text-sm font-medium text-ink-800">{result.netValue+1e-9>=result.hodlValue?feesCoverLabel:ilWinsLabel}</p>}{result.concentrated&&<><p className="mt-3 text-sm text-ink-700">{rangeLabel.replaceAll('{lower}',number(result.concentrated.lower,3)).replaceAll('{upper}',number(result.concentrated.upper,3))}</p><p className="mt-2 text-sm text-ink-700">{result.concentrated.active?rangeActiveLabel:rangeInactiveLabel}</p></>}</div><p className="mt-4 text-sm leading-relaxed text-ink-600">{caption}</p>{rangeUpper!==undefined&&<p className="mt-3 text-sm leading-relaxed text-ink-600">{rangeCaption}</p>}</figure>;
 }
-
 export default ImpermanentLossCurve;
