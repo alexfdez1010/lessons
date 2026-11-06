@@ -14,6 +14,12 @@ export interface VarDistributionChartProps {
   meanLabel?: string;
   /** Label for the loss (left) side of the axis. */
   lossLabel?: string;
+  /** Label for the distribution curve in the legend. */
+  pnlLabel?: string;
+  /** Accessible description with {confidence}, {var} and {es} percent placeholders. */
+  chartLabel?: string;
+  /** Number-formatting locale. */
+  locale?: string;
   /** One-line takeaway shown under the chart. */
   caption?: string;
   className?: string;
@@ -85,7 +91,10 @@ export function VarDistributionChart({
   esLabel = 'Expected Shortfall',
   meanLabel = 'Average outcome',
   lossLabel = 'Loss',
-  caption = 'VaR is the line you rarely cross; Expected Shortfall is how bad it gets, on average, once you do. Raise the confidence level and the line marches deeper into the loss tail.',
+  pnlLabel = 'P&L',
+  chartLabel = 'Normal daily returns with mean 0.05% and standard deviation 2%. At {confidence} confidence, VaR is {var} and expected shortfall is {es}. The lower return tail is shaded.',
+  locale = 'en-US',
+  caption = 'In this normal model, VaR is a loss threshold and expected shortfall is the average loss beyond it. Raising confidence moves the return threshold farther into the lower tail; the mean and spread stay fixed.',
   className,
 }: VarDistributionChartProps) {
   const id = useId();
@@ -162,7 +171,9 @@ export function VarDistributionChart({
   const meanX = xToPx(MU);
   const varX = xToPx(varReturn);
   const baseY = H - padBottom;
-  const confText = `${confidence.toFixed(1)}%`;
+  const percent = (value: number, digits = 2) => `${new Intl.NumberFormat(locale, { minimumFractionDigits: digits, maximumFractionDigits: digits }).format(value)}%`;
+  const confText = percent(confidence, 1);
+  const descriptionValues = { confidence: confText, var: percent(varPct), es: percent(esPct) };
 
   return (
     <figure
@@ -177,7 +188,7 @@ export function VarDistributionChart({
       <div className="mt-4 flex flex-wrap gap-4 text-sm">
         <span className="inline-flex items-center gap-2 text-ink-700">
           <span className="h-1 w-5 rounded-pill bg-brand-500" aria-hidden="true" />
-          {`P&L (${confText})`}
+          {pnlLabel}
         </span>
         <span className="inline-flex items-center gap-2 text-ink-700">
           <span className="h-3 w-3 rounded-sm bg-accent-300" aria-hidden="true" />
@@ -200,7 +211,7 @@ export function VarDistributionChart({
         viewBox={`0 0 ${W} ${H}`}
         className="mt-3 w-full"
         role="img"
-        aria-label={`Distribution of daily portfolio profit and loss. At ${confText} confidence, ${varLabel} is ${varPct.toFixed(2)} percent and ${esLabel} is ${esPct.toFixed(2)} percent. The loss tail to the left of the ${varLabel} line is shaded.`}
+        aria-label={chartLabel.replace(/\{(confidence|var|es)\}/g, (_, key: keyof typeof descriptionValues) => descriptionValues[key])}
       >
         {/* Baseline (P&L axis) */}
         <line
@@ -262,7 +273,7 @@ export function VarDistributionChart({
 
         {/* Axis ticks at the extremes and zero */}
         <text x={xToPx(X_MIN)} y={H - 6} fontSize={11} fill="var(--color-ink-700)" textAnchor="start">
-          {`${X_MIN}% · ${lossLabel}`}
+          {`${X_MIN}% ${lossLabel}`}
         </text>
         <text x={xToPx(0)} y={H - 6} fontSize={11} fill="var(--color-ink-900)" textAnchor="middle">
           0%
@@ -273,14 +284,14 @@ export function VarDistributionChart({
       </svg>
 
       {/* Readout chips */}
-      <div className="mt-4 flex flex-wrap gap-3">
+      <div aria-live="polite" aria-atomic="true" className="mt-4 flex flex-wrap gap-3">
         <span className="inline-flex items-center gap-2 rounded-pill border border-ink-100 bg-surface-50 px-3 py-1 text-sm">
           <span className="text-ink-600">{varLabel}</span>
-          <span className="font-mono font-semibold text-accent-600">{`${varPct.toFixed(2)}%`}</span>
+          <span className="font-mono font-semibold text-accent-600">{percent(varPct)}</span>
         </span>
         <span className="inline-flex items-center gap-2 rounded-pill border border-ink-100 bg-surface-50 px-3 py-1 text-sm">
           <span className="text-ink-600">{esLabel}</span>
-          <span className="font-mono font-semibold text-accent-600">{`${esPct.toFixed(2)}%`}</span>
+          <span className="font-mono font-semibold text-accent-600">{percent(esPct)}</span>
         </span>
       </div>
 
@@ -303,8 +314,8 @@ export function VarDistributionChart({
           step={0.5}
           value={confidence}
           onChange={(e) => setConfidence(Number(e.target.value))}
-          aria-valuetext={`${confText} confidence`}
-          className="mt-2 w-full accent-accent-500"
+          aria-valuetext={`${confidenceLabel}: ${confText}`}
+          className="mt-2 h-8 w-full accent-accent-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
         />
       </div>
 

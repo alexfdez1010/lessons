@@ -12,6 +12,10 @@ export interface VarHorizonScalingProps {
   linearLabel?: string;
   /** Label for the fixed 1-day base VaR badge. */
   baseVarLabel?: string;
+  /** Accessible chart description; supports {title}, {horizon}, {sqrtMultiple}, {linearMultiple}. */
+  chartLabel?: string;
+  /** Label where the linear comparison leaves the displayed y-axis range. */
+  offChartLabel?: string;
   /** One-line takeaway shown under the chart. */
   caption?: string;
   className?: string;
@@ -43,10 +47,12 @@ const Y_CAP = 8;
 export function VarHorizonScaling({
   title = 'Scaling VaR across time: the √t rule',
   horizonLabel = 'Horizon (days)',
-  sqrtLabel = '√t-scaled VaR (correct)',
-  linearLabel = 'Linear scaling (overstated)',
+  sqrtLabel = '√h scaling in this model',
+  linearLabel = 'Linear comparison',
   baseVarLabel = '1-day VaR',
-  caption = 'Risk scales with the square root of time, not time itself. Over 10 days VaR grows ~3.16×, not 10× — multiplying by the horizon wildly overstates the loss.',
+  chartLabel = '{title}. Under the independent normal additive-P&L model with zero mean and fixed exposures, a {horizon}-day horizon gives a square-root multiple of {sqrtMultiple}; the linear comparison is {linearMultiple} times the one-day VaR.',
+  offChartLabel = 'Beyond displayed scale →',
+  caption = 'For independent normal additive P&Ls with zero mean and fixed exposures, VaR scales with the square root of the horizon. At ten days the multiple is about 3.16; linear scaling would give ten. These are model assumptions, not a universal rule for market tails.',
   className,
 }: VarHorizonScalingProps) {
   const id = useId();
@@ -158,11 +164,11 @@ export function VarHorizonScaling({
         viewBox={`0 0 ${W} ${H}`}
         className="mt-3 w-full"
         role="img"
-        aria-label={`${title}. At a ${h}-day horizon the correct √t-scaled VaR is ${fmt(
-          sqrtNow,
-        )} times the 1-day VaR, while naive linear scaling overstates it at ${fmt(
-          linearNow,
-        )} times.`}
+        aria-label={chartLabel
+          .replaceAll('{title}', title)
+          .replaceAll('{horizon}', String(h))
+          .replaceAll('{sqrtMultiple}', fmt(sqrtNow))
+          .replaceAll('{linearMultiple}', fmt(linearNow))}
       >
         {/* Y gridlines + ticks (multiples of the 1-day VaR) */}
         {yTicks.map((m) => (
@@ -218,7 +224,7 @@ export function VarHorizonScaling({
             fill="var(--color-accent-600)"
             textAnchor="start"
           >
-            off the chart →
+            {offChartLabel}
           </text>
         )}
 
