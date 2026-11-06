@@ -930,3 +930,6 @@ export type { BondAccruedInputs, BondAccruedPriceProps } from '@/components/reac
 
 export { calculateFcffBridge, FcffOperatingBridge } from '@/components/react/FcffOperatingBridge';
 export type { FcffBridgeInputs, FcffOperatingBridgeProps } from '@/components/react/FcffOperatingBridge';
+
+export { calculateReturnMeasurement, ReturnMeasurementPaths } from '@/components/react/ReturnMeasurementPaths';
+export type { ReturnMeasurementResult, ReturnMeasurementPathsProps } from '@/components/react/ReturnMeasurementPaths';
