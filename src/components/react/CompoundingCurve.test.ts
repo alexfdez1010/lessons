@@ -26,4 +26,27 @@ describe('CompoundingCurve descriptions', () => {
     expect(html).not.toContain('NaN');
     expect(html).not.toContain('Infinity');
   });
+
+  test('shows the simple-interest comparison and interest earned on interest', () => {
+    const html = renderToStaticMarkup(createElement(CompoundingCurve, { rate: 0.1, years: 2 }));
+    // 1000 × 1.1² = 1210; simple interest pays 1000 × (1 + 0.1 × 2) = 1200.
+    expect(html).toContain('>$1,210</dd>');
+    expect(html).toContain('>$1,200</dd>');
+    expect(html).toContain('>$10</dd>');
+  });
+
+  test('describes the supplied fractional rate rather than rounding it to an integer', () => {
+    const html = renderToStaticMarkup(createElement(CompoundingCurve, { rate: 0.075, years: 20 }));
+    expect(html).toContain('7.5% a year for 20 years');
+    expect(html).toContain('value="7.5"');
+    expect(html).toContain('>$4,248</dd>');
+    expect(html).not.toContain('>CAGR</dt>');
+  });
+
+  test('keeps a high-rate authored loan scenario within the slider bounds', () => {
+    const html = renderToStaticMarkup(createElement(CompoundingCurve, { rate: 0.18 }));
+    expect(html).toContain('max="18"');
+    expect(html).toContain('value="18"');
+    expect(html).toContain('18% a year');
+  });
 });

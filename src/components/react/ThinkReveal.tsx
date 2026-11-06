@@ -1,4 +1,4 @@
-import { useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { cx } from '@/components/react/cx';
 
 /** Props for the {@link ThinkReveal} component. */
@@ -7,7 +7,7 @@ export interface ThinkRevealProps {
   prompt: string;
   /** The answer/explanation shown after the learner clicks reveal. */
   text: string;
-  /** Optional nudge shown beneath the prompt before revealing. */
+  /** Optional nudge the learner can request before revealing. */
   hint?: string;
   /** Label for the reveal button. Defaults to `'Reveal the answer'`. */
   buttonLabel?: string;
@@ -39,6 +39,11 @@ export function ThinkReveal({
   }
   const [revealed, setRevealed] = useState(false);
   const panelId = useId();
+  const answerRef = useRef<HTMLParagraphElement>(null);
+
+  useEffect(() => {
+    if (revealed) answerRef.current?.focus({ preventScroll: true });
+  }, [revealed]);
 
   return (
     <section
@@ -50,16 +55,24 @@ export function ThinkReveal({
       <p className="text-xs font-semibold uppercase tracking-wide text-brand-600">{eyebrow}</p>
       <p className="mt-2 font-medium text-ink-900">{prompt}</p>
       {hint && !revealed && (
-        <p className="mt-2 text-sm text-ink-500">
-          <span className="font-semibold">{hintLabel}:</span> {hint}
-        </p>
+        <details className="mt-3 text-sm text-ink-600">
+          <summary className="w-fit cursor-pointer rounded-sm font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600">
+            {hintLabel}
+          </summary>
+          <p className="mt-2">{hint}</p>
+        </details>
       )}
       <div aria-live="polite">
-        {revealed ? (
-          <p id={panelId} className="mt-3 border-t border-brand-100 pt-3 text-ink-700">
-            {text}
-          </p>
-        ) : (
+        <p
+          id={panelId}
+          ref={answerRef}
+          hidden={!revealed}
+          tabIndex={-1}
+          className="mt-3 rounded-sm text-ink-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-brand-600"
+        >
+          {revealed ? text : null}
+        </p>
+        {!revealed && (
           <button
             type="button"
             aria-expanded={false}

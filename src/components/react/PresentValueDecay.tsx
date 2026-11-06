@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useId, useState } from 'react';
 import { cx } from '@/components/react/cx';
 
 export interface PresentValueDecayProps {
@@ -18,7 +18,17 @@ export interface PresentValueDecayProps {
   presentValueLabel?: string;
   /** Label for the "cents on the dollar" readout. */
   centsLabel?: string;
-  /** One-line takeaway shown under the chart. */
+  /** Label for the horizontal axis. */
+  xAxisLabel?: string;
+  /** Label for the monetary vertical axis. */
+  yAxisLabel?: string;
+  /** Label for face value minus present value. */
+  discountLabel?: string;
+  /** Locale for monetary values, percentages and year ticks. */
+  locale?: string;
+  /** Accessible description with {title}, {future}, {years}, {rate}, {present}, {discount} placeholders. */
+  chartLabel?: string;
+  /** Assumptions or interpretation shown under the chart. */
   caption?: string;
   /** Currency symbol prefixed to money values. Defaults to `'$'`. */
   currencyPrefix?: string;
@@ -31,26 +41,14 @@ export interface PresentValueDecayProps {
   className?: string;
 }
 
-const prefersReducedMotion = (): boolean =>
-  typeof window !== 'undefined' &&
-  typeof window.matchMedia === 'function' &&
-  window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
-const money = (prefix: string, value: number): string =>
-  `${prefix}${new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(
+const money = (prefix: string, value: number, locale: string): string =>
+  `${prefix}${new Intl.NumberFormat(locale, { maximumFractionDigits: 0 }).format(
     Math.round(value),
   )}`;
 
-/**
- * Interactive discounting chart — compounding run in reverse. A fixed future
- * payment (e.g. $1,000 arriving in N years) is worth less today; this draws its
- * present value PV = FV / (1 + r)^t as a curve that *decays* away from the flat
- * face-value line as the payment moves further into the future. The gap between
- * the two lines is the discount — the price of waiting. Drag the discount-rate
- * and years sliders and the curve plus the present-value / cents-on-the-dollar
- * readouts update live; the curve animates in on mount and on every change.
- * Respects `prefers-reduced-motion` (jumps straight to the final curve).
- */
+/** Compare a fixed future payment with its present value. A marker stays on
+ * the selected horizon while the complete 40-year curve supplies context. No
+ * automatic draw-in hides the marker when a slider changes. */
 export function PresentValueDecay({
   title = 'Discounting: what a future dollar is worth today',
   rateLabel = 'Discount rate',
@@ -60,7 +58,12 @@ export function PresentValueDecay({
   faceLabel = 'Face value',
   presentValueLabel = 'Worth today',
   centsLabel = 'Cents on the dollar',
-  caption = 'A promised payment loses value the longer you wait and the higher the discount rate. The curve is compounding played backwards — each year divides by another (1 + r).',
+  xAxisLabel = 'Years until payment',
+  yAxisLabel = 'Value today',
+  discountLabel = 'Difference from face value',
+  locale = 'en-US',
+  chartLabel = '{title}: a {future} payment due in {years} years, discounted at {rate}% a year, is worth {present} today; the difference from face value is {discount}.',
+  caption = 'The future payment stays fixed. The discount rate is an assumed annual opportunity cost; each extra year divides present value by another (1 + r).',
   currencyPrefix = '$',
   futureValue = 1000,
   rate = 0.08,
@@ -70,13 +73,11 @@ export function PresentValueDecay({
   const id = useId();
   const [rateState, setRateState] = useState(rate);
   const [yearsState, setYearsState] = useState(years);
-  const [progress, setProgress] = useState(1); // 0 → 1 (curve draw-in)
-  const rafRef = useRef<number | null>(null);
 
-  const W = 520;
-  const H = 220;
-  const padX = 10;
-  const padY = 14;
+  const W = 440;
+  const H = 200;
+  const padX = 6;
+  const padY = 8;
 
   // Horizon for the x-axis: always show at least 40 years of decay so the shape
   // is legible, but never less than the selected horizon.
@@ -91,49 +92,24 @@ export function PresentValueDecay({
   const presentValue = pvAt(yearsState);
   const cents = Math.round((presentValue / futureValue) * 100);
 
-  // Decay curve sampled finely, revealed up to `progress`.
-  const SAMPLES = 80;
-  const pvPath = () => {
-    const upto = progress * span;
-    let d = `M ${x(0)} ${y(pvAt(0))}`;
-    for (let i = 1; i <= SAMPLES; i++) {
-      const year = (i / SAMPLES) * span;
-      if (year > upto) {
-        d += ` L ${x(upto)} ${y(pvAt(upto))}`;
-        break;
-      }
-      d += ` L ${x(year)} ${y(pvAt(year))}`;
-    }
-    return d;
-  };
-
+  const pvPath = Array.from({ length: 81 }, (_, i) => {
+    const year = (i / 80) * span;
+    return `${i === 0 ? 'M' : 'L'} ${x(year)} ${y(pvAt(year))}`;
+  }).join(' ');
   const facePath = `M ${x(0)} ${y(futureValue)} L ${x(span)} ${y(futureValue)}`;
-
-  // Animate the curve drawing in whenever the rate or horizon changes.
-  useEffect(() => {
-    if (prefersReducedMotion()) {
-      setProgress(1);
-      return;
-    }
-    setProgress(0);
-    const duration = 900;
-    let startTs: number | null = null;
-    const step = (ts: number) => {
-      if (startTs === null) startTs = ts;
-      const p = Math.min(1, (ts - startTs) / duration);
-      setProgress(p);
-      if (p < 1) {
-        rafRef.current = requestAnimationFrame(step);
-      }
-    };
-    rafRef.current = requestAnimationFrame(step);
-    return () => {
-      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
-    };
-  }, [rateState, yearsState]);
-
   const ratePct = Math.round(rateState * 100);
-  const markerVisible = progress * span >= yearsState;
+  const chartValues = {
+    title,
+    future: money(currencyPrefix, futureValue, locale),
+    years: new Intl.NumberFormat(locale).format(yearsState),
+    rate: new Intl.NumberFormat(locale).format(ratePct),
+    present: money(currencyPrefix, presentValue, locale),
+    discount: money(currencyPrefix, futureValue - presentValue, locale),
+  };
+  const chartDescription = chartLabel.replace(
+    /\{(title|future|years|rate|present|discount)\}/g,
+    (_, key: keyof typeof chartValues) => chartValues[key],
+  );
 
   return (
     <figure
@@ -142,60 +118,51 @@ export function PresentValueDecay({
         className,
       )}
     >
-      <figcaption className="flex items-center justify-between gap-3">
+      <figcaption className="flex flex-wrap items-center justify-between gap-3">
         <span className="font-medium text-ink-900">{title}</span>
-        <span className="rounded-pill bg-brand-600 px-3 py-1 text-sm font-medium text-white">
-          {futureLabel}: {money(currencyPrefix, futureValue)}
+        <span className="shrink-0 rounded-pill bg-brand-600 px-3 py-1 text-sm font-medium text-white">
+          {futureLabel}: {chartValues.future}
         </span>
       </figcaption>
 
       {/* Legend */}
       <div className="mt-4 flex flex-wrap gap-4 text-sm">
         <span className="inline-flex items-center gap-2 text-ink-700">
-          <span className="h-1 w-5 rounded-pill bg-brand-500" aria-hidden="true" />
+          <span className="h-1 w-5 rounded-pill bg-brand-600" aria-hidden="true" />
           {pvLabel}
         </span>
         <span className="inline-flex items-center gap-2 text-ink-700">
-          <span className="h-1 w-5 rounded-pill bg-accent-500" aria-hidden="true" />
+          <span className="h-1 w-5 rounded-pill bg-accent-600" aria-hidden="true" />
           {faceLabel}
         </span>
       </div>
 
-      <svg
-        viewBox={`0 0 ${W} ${H}`}
-        className="mt-3 w-full"
-        role="img"
-        aria-label={`${title}: a ${money(currencyPrefix, futureValue)} payment due in ${yearsState} years, discounted at ${ratePct}% a year, is worth ${money(
-          currencyPrefix,
-          presentValue,
-        )} today.`}
-      >
-        {/* Face-value reference line */}
-        <path d={facePath} fill="none" stroke="var(--color-accent-500)" strokeWidth={2} />
-        {/* Present-value decay curve, animated reveal */}
-        <path
-          d={pvPath()}
-          fill="none"
-          stroke="var(--color-brand-500)"
-          strokeWidth={3}
-          strokeLinejoin="round"
-          strokeLinecap="round"
-        />
-        {/* Marker at the selected horizon */}
-        {markerVisible && (
-          <>
-            <line
-              x1={x(yearsState)}
-              y1={y(futureValue)}
-              x2={x(yearsState)}
-              y2={y(presentValue)}
-              stroke="var(--color-ink-300)"
-              strokeDasharray="4 4"
-            />
-            <circle cx={x(yearsState)} cy={y(presentValue)} r={5} fill="var(--color-brand-600)" />
-          </>
-        )}
-      </svg>
+      <div className="mt-4">
+        <div className="mb-1 text-xs text-ink-600">{yAxisLabel}</div>
+        <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2">
+          <div className="flex flex-col justify-between text-right font-mono text-xs tabular-nums text-ink-600" aria-hidden="true">
+            {[futureValue, futureValue / 2, 0].map((value, i) => (
+              <span key={i}>{money(currencyPrefix, value, locale)}</span>
+            ))}
+          </div>
+          <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img" aria-label={chartDescription}>
+            {[0, futureValue / 2].map((value, i) => (
+              <line key={i} x1={padX} y1={y(value)} x2={W - padX} y2={y(value)} stroke="var(--color-ink-200)" strokeDasharray="3 5" />
+            ))}
+            <path d={facePath} fill="none" stroke="var(--color-accent-600)" strokeWidth={2} strokeDasharray="6 4" />
+            <path d={pvPath} fill="none" stroke="var(--color-brand-600)" strokeWidth={3} strokeLinejoin="round" strokeLinecap="round" />
+            <line x1={x(yearsState)} y1={y(futureValue)} x2={x(yearsState)} y2={y(presentValue)} stroke="var(--color-ink-500)" strokeDasharray="4 4" />
+            <circle cx={x(yearsState)} cy={y(presentValue)} r={4} fill="var(--color-brand-600)" />
+          </svg>
+          <span />
+          <div className="mt-1 flex justify-between font-mono text-xs text-ink-600" aria-hidden="true">
+            {[0, span / 2, span].map((value, i) => (
+              <span key={i}>{new Intl.NumberFormat(locale).format(value)}</span>
+            ))}
+          </div>
+        </div>
+        <div className="mt-1 text-center text-xs text-ink-600">{xAxisLabel}</div>
+      </div>
 
       {/* Sliders */}
       <div className="mt-4 grid gap-4 sm:grid-cols-2">
@@ -240,16 +207,20 @@ export function PresentValueDecay({
       </div>
 
       {/* Readouts */}
-      <dl className="mt-4 grid grid-cols-2 gap-3 text-sm" aria-live="polite">
+      <dl className="mt-4 grid gap-3 text-sm min-[380px]:grid-cols-2" aria-live="polite">
         <div className="rounded-card border border-ink-100 bg-surface-sunken/40 px-3 py-2">
           <dt className="text-ink-500">{presentValueLabel}</dt>
-          <dd className="font-mono text-lg font-semibold text-brand-700">
-            {money(currencyPrefix, presentValue)}
+          <dd className="m-0 font-mono text-lg font-semibold text-brand-700">
+            {chartValues.present}
           </dd>
         </div>
         <div className="rounded-card border border-ink-100 bg-surface-sunken/40 px-3 py-2">
           <dt className="text-ink-500">{centsLabel}</dt>
-          <dd className="font-mono text-lg font-semibold text-ink-900">{cents}¢</dd>
+          <dd className="m-0 font-mono text-lg font-semibold text-ink-900">{cents}¢</dd>
+        </div>
+        <div className="rounded-card border border-ink-100 bg-surface-sunken/40 px-3 py-2 min-[380px]:col-span-2">
+          <dt className="text-ink-500">{discountLabel}</dt>
+          <dd className="m-0 font-mono text-lg font-semibold text-ink-900">{chartValues.discount}</dd>
         </div>
       </dl>
 
