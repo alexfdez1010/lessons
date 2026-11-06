@@ -915,3 +915,6 @@ export type { DietzCashFlow, ModifiedDietzInputs, ModifiedDietzTimelineProps } f
 
 export { calculateBondOutcome, BondOutcomeExplorer } from '@/components/react/BondOutcomeExplorer';
 export type { BondOutcomeInputs, BondOutcomeExplorerProps } from '@/components/react/BondOutcomeExplorer';
+
+export { parseDayCountDate, calculateDayCount, DayCountAccrual } from '@/components/react/DayCountAccrual';
+export type { CivilDate, DayCountResult, DayCountAccrualProps } from '@/components/react/DayCountAccrual';
