@@ -951,3 +951,6 @@ export type { BopInputs, BopAccountBridgeProps, ExternalPositionInputs, External
 
 export { calculateCoveredParity, CoveredParityRoutes } from '@/components/react/CoveredParityRoutes';
 export type { CoveredParityInputs, CoveredParityResult, CoveredParityRoutesProps } from '@/components/react/CoveredParityRoutes';
+
+export { reconcileCustodyRecords, CustodyRecords, reconcileCustodyRecovery, CustodyReconciliation } from '@/components/react/CustodyRecords';
+export type { CustodyRecordsProps, CustodyRecoveryInputs, CustodyReconciliationProps } from '@/components/react/CustodyRecords';
