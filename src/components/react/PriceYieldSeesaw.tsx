@@ -20,6 +20,16 @@ export interface PriceYieldSeesawProps {
   caption?: string;
   /** Currency symbol prefixed to money values. Defaults to `'$'`. */
   currencyPrefix?: string;
+  /** Locale used for monetary and percentage readouts. Defaults to 'en-US'. */
+  locale?: string;
+  /** Explanation with {yield}, {coupon}, {price}, {amount} and {status} placeholders. */
+  premiumMessage?: string;
+  /** Explanation for a price below par, with the same placeholders. */
+  discountMessage?: string;
+  /** Explanation for a price at par, with the same placeholders. */
+  parMessage?: string;
+  /** Accessible chart description with those placeholders plus {title}. */
+  chartLabel?: string;
   /** Annual coupon rate as a fraction (e.g. 0.05 = 5%). Defaults to `0.05`. */
   couponRate?: number;
   /** Face (par) value of the bond. Defaults to `1000`. */
@@ -36,22 +46,22 @@ const prefersReducedMotion = (): boolean =>
   typeof window.matchMedia === 'function' &&
   window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-const money = (prefix: string, value: number): string =>
-  `${prefix}${new Intl.NumberFormat('en-US', {
+const money = (prefix: string, value: number, locale: string): string =>
+  `${prefix}${new Intl.NumberFormat(locale, {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(value)}`;
 
-const pct = (value: number, digits = 2): string =>
-  `${new Intl.NumberFormat('en-US', {
+const pct = (value: number, digits: number, locale: string): string =>
+  `${new Intl.NumberFormat(locale, {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
   }).format(value)}%`;
 
 /**
  * Price the bond as the present value of its coupons plus face value, all
- * discounted at the market yield. Returns the dirty/clean price per `faceValue`
- * of face. `y` and `couponRate` are annual fractions; payments occur `frequency`
+ * discounted at the required yield. Returns the price immediately after a
+ * coupon date, so there is no accrued interest. `y` and `couponRate` are annual fractions; payments occur `frequency`
  * times a year over `years` years.
  */
 const bondPrice = (
@@ -88,14 +98,21 @@ export function PriceYieldSeesaw({
   premiumLabel = 'Premium',
   discountLabel = 'Discount',
   currentYieldLabel = 'Current yield',
-  caption = 'A bond pays fixed coupons. When market yields rise, buyers demand the same return from your bond — so its price must fall below par (a discount). When yields fall, your above-market coupons become valuable and the price climbs above par (a premium).',
+  caption = 'Scheduled cash flows stay fixed in this illustration. Raising the required yield reduces their present value; lowering it increases the price. Default, accrued interest, fees and taxes are excluded.',
   currencyPrefix = '$',
+  locale = 'en-US',
+  premiumMessage = 'Required yield {yield} is below the {coupon} coupon rate, so this fixed cash-flow schedule prices above par.',
+  discountMessage = 'Required yield {yield} is above the {coupon} coupon rate, so this fixed cash-flow schedule prices below par.',
+  parMessage = 'Required yield {yield} matches the {coupon} coupon rate, so this fixed cash-flow schedule prices at par.',
+  chartLabel = '{title}: required yield {yield}, coupon rate {coupon}, price {price} of face ({amount}), {status}.',
   couponRate = 0.05,
   faceValue = 1000,
   years = 10,
   frequency = 2,
   className,
 }: PriceYieldSeesawProps) {
+  const formatMoney = (value: number): string => money(currencyPrefix, value, locale);
+  const formatPct = (value: number, digits = 2): string => pct(value, digits, locale);
   const id = useId();
   // Yield expressed in basis-point-friendly integer percent * 10 (0.1% steps).
   const minYieldTenths = 0;
@@ -197,15 +214,23 @@ export function PriceYieldSeesaw({
   const annualCoupon = couponRate * faceValue;
   const currentYield = (annualCoupon / priceCurrency) * 100;
 
-  // "Your 5% bond vs new X% bonds" intuition string, built from labels.
-  const yieldPctStr = pct(yieldFrac * 100, 1);
-  const couponPctStr = pct(couponPct, couponPct % 1 === 0 ? 0 : 2);
-  const intuition =
-    status === premiumLabel
-      ? `New bonds yield ${yieldPctStr} — below your ${couponPctStr} coupon — so your bond is worth more (${premiumLabel.toLowerCase()}).`
-      : status === discountLabel
-        ? `New bonds yield ${yieldPctStr} — above your ${couponPctStr} coupon — so your bond is worth less (${discountLabel.toLowerCase()}).`
-        : `New bonds yield ${yieldPctStr}, matching your ${couponPctStr} coupon — so your bond trades at ${parLabel.toLowerCase()}.`;
+  const yieldPctStr = formatPct(yieldFrac * 100, 1);
+  const couponPctStr = formatPct(couponPct, couponPct % 1 === 0 ? 0 : 2);
+  const messageValues = {
+    title,
+    yield: yieldPctStr,
+    coupon: couponPctStr,
+    price: formatPct(priceNow),
+    amount: formatMoney(priceCurrency),
+    status,
+  };
+  const interpolate = (template: string): string => template.replace(
+    /\{(title|yield|coupon|price|amount|status)\}/g,
+    (_, key: keyof typeof messageValues) => messageValues[key],
+  );
+  const intuition = interpolate(
+    status === premiumLabel ? premiumMessage : status === discountLabel ? discountMessage : parMessage,
+  );
 
   const adjust = (deltaTenths: number) =>
     setYieldTenths((v) =>
@@ -253,12 +278,7 @@ export function PriceYieldSeesaw({
         viewBox={`0 0 ${W} ${H}`}
         className="mt-3 w-full"
         role="img"
-        aria-label={`${title}: at a market yield of ${yieldPctStr}, this ${couponPctStr}-coupon bond is priced at ${pct(
-          priceNow,
-        )} of par (${money(
-          currencyPrefix,
-          priceCurrency,
-        )}), a ${status.toLowerCase()}.`}
+        aria-label={interpolate(chartLabel)}
       >
         {/* Premium region: above par line */}
         <rect
@@ -295,7 +315,7 @@ export function PriceYieldSeesaw({
           fontSize={11}
           fill="var(--color-ink-500)"
         >
-          {parLabel} · 100
+          {parLabel} 100
         </text>
         {/* Region labels */}
         <text
@@ -382,10 +402,10 @@ export function PriceYieldSeesaw({
         <div className="rounded-card border border-ink-100 bg-surface-sunken/40 px-3 py-2">
           <dt className="text-ink-500">{priceLabel}</dt>
           <dd className="font-mono text-lg font-semibold text-brand-700">
-            {pct(priceNow)}
+            {formatPct(priceNow)}
           </dd>
           <dd className="font-mono text-xs text-ink-500">
-            {money(currencyPrefix, priceCurrency)}
+            {formatMoney(priceCurrency)}
           </dd>
         </div>
         <div className="rounded-card border border-ink-100 bg-surface-sunken/40 px-3 py-2">
@@ -397,7 +417,7 @@ export function PriceYieldSeesaw({
         <div className="rounded-card border border-ink-100 bg-surface-sunken/40 px-3 py-2">
           <dt className="text-ink-500">{currentYieldLabel}</dt>
           <dd className="font-mono text-lg font-semibold text-ink-900">
-            {pct(currentYield)}
+            {formatPct(currentYield)}
           </dd>
         </div>
       </dl>
