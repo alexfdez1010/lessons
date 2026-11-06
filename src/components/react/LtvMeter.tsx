@@ -22,6 +22,10 @@ export interface LtvMeterProps {
   caption?: string;
   /** Currency symbol prefixed to money values. Defaults to `'$'`. */
   currencyPrefix?: string;
+  /** Locale used for all monetary readouts. Defaults to 'en-US'. */
+  locale?: string;
+  /** Accessible description template: {title}, {price}, {downPayment}, {downPaymentPercent}, {loan}, {ltvPercent}, {thresholdPercent}. */
+  chartLabel?: string;
   /** Property / asset price. Defaults to `300000`. */
   price?: number;
   /** Initial down payment as a fraction of price (0–0.5). Defaults to `0.10`. */
@@ -36,8 +40,8 @@ const prefersReducedMotion = (): boolean =>
   typeof window.matchMedia === 'function' &&
   window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-const money = (prefix: string, value: number): string =>
-  `${prefix}${new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(
+const money = (prefix: string, value: number, locale: string): string =>
+  `${prefix}${new Intl.NumberFormat(locale, { maximumFractionDigits: 0 }).format(
     Math.round(value),
   )}`;
 
@@ -64,6 +68,8 @@ export function LtvMeter({
   noPmiZoneLabel = 'No PMI — 80% or less',
   caption = 'A bigger down payment shrinks the loan, lowers your LTV, and means less risk. Cross under 80% LTV and lenders typically drop the mortgage-insurance (PMI) requirement.',
   currencyPrefix = '$',
+  locale = 'en-US',
+  chartLabel = '{title}: fixed price and accepted value {price}; down payment {downPayment} ({downPaymentPercent}%) leaves loan {loan} and LTV {ltvPercent}%. Reference marker at {thresholdPercent}% LTV. This illustration does not determine insurance requirements or cancellation.',
   price = 300000,
   downPaymentPct = 0.1,
   pmiThreshold = 0.8,
@@ -90,6 +96,19 @@ export function LtvMeter({
   const dpPct = Math.round(dpPctState * 100);
   const ltvPct = Math.round(ltv * 100);
   const thresholdPct = Math.round(pmiThreshold * 100);
+  const chartValues = {
+    title,
+    price: money(currencyPrefix, price, locale),
+    downPayment: money(currencyPrefix, downPayment, locale),
+    downPaymentPercent: String(dpPct),
+    loan: money(currencyPrefix, loan, locale),
+    ltvPercent: String(ltvPct),
+    thresholdPercent: String(thresholdPct),
+  };
+  const chartDescription = chartLabel.replace(
+    /\{(title|price|downPayment|downPaymentPercent|loan|ltvPercent|thresholdPercent)\}/g,
+    (_, key: keyof typeof chartValues) => chartValues[key],
+  );
 
   // Animate the bar fill + marker toward the new LTV whenever it changes.
   useEffect(() => {
@@ -149,7 +168,7 @@ export function LtvMeter({
       <figcaption className="flex items-center justify-between gap-3">
         <span className="font-medium text-ink-900">{title}</span>
         <span className="rounded-pill bg-brand-600 px-3 py-1 text-sm font-medium text-white">
-          {priceLabel}: {money(currencyPrefix, price)}
+          {priceLabel}: {money(currencyPrefix, price, locale)}
         </span>
       </figcaption>
 
@@ -173,12 +192,7 @@ export function LtvMeter({
         viewBox={`0 0 ${W} ${H}`}
         className="mt-3 w-full"
         role="img"
-        aria-label={`${title}: on a ${money(currencyPrefix, price)} property a ${dpPct}% down payment of ${money(
-          currencyPrefix,
-          downPayment,
-        )} leaves a ${money(currencyPrefix, loan)} loan, an LTV of ${ltvPct}% — ${
-          inPmiZone ? pmiZoneLabel : noPmiZoneLabel
-        }. The PMI threshold sits at ${thresholdPct}% LTV.`}
+        aria-label={chartDescription}
       >
         {/* Track */}
         <rect
@@ -288,13 +302,13 @@ export function LtvMeter({
         <div className="rounded-card border border-ink-100 bg-surface-sunken/40 px-3 py-2">
           <dt className="text-ink-500">{downPaymentLabel}</dt>
           <dd className="font-mono text-lg font-semibold text-brand-700">
-            {money(currencyPrefix, downPayment)}
+            {money(currencyPrefix, downPayment, locale)}
           </dd>
         </div>
         <div className="rounded-card border border-ink-100 bg-surface-sunken/40 px-3 py-2">
           <dt className="text-ink-500">{loanLabel}</dt>
           <dd className="font-mono text-lg font-semibold text-ink-900">
-            {money(currencyPrefix, loan)}
+            {money(currencyPrefix, loan, locale)}
           </dd>
         </div>
         <div className="rounded-card border border-ink-100 bg-surface-sunken/40 px-3 py-2">
