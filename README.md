@@ -38,7 +38,7 @@ What you get out of the box:
 
 | Layer | Choice |
 | --- | --- |
-| 🚀 Framework | **[Astro 6](https://astro.build)** — static output (`output: 'static'`) |
+| 🚀 Framework | **[Astro 7](https://astro.build)** — static output (`output: 'static'`) |
 | 📦 Runtime / package manager | **[Bun](https://bun.sh)** — runtime, installer, script runner |
 | ⚛️ Interactivity | **React 19** islands (`@astrojs/react`), hydrated `client:visible` |
 | 🎨 Styling | **Tailwind CSS v4** (`@tailwindcss/vite`) — tokens in `src/styles/global.css` |

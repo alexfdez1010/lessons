@@ -244,11 +244,12 @@ async function main() {
 
   console.log(`▸ Found ${pageRoutes.length} page route(s) needing OG images.`);
 
-  // Boot astro preview.
+  // Keep this one-off server in the foreground and independent of Astro 7's
+  // agent preview lock, so an existing development preview cannot block it.
   console.log(`▸ Starting astro preview on ${BASE} …`);
   const server: ChildProcess = spawn(
     'bunx',
-    ['astro', 'preview', '--host', HOST, '--port', String(PORT)],
+    ['astro', 'preview', '--ignore-lock', '--host', HOST, '--port', String(PORT)],
     { cwd: ROOT, stdio: 'ignore' },
   );
 

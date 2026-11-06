@@ -1,6 +1,7 @@
 // @ts-check
 import { writeFile } from 'node:fs/promises';
 import { defineConfig } from 'astro/config';
+import { unified } from '@astrojs/markdown-remark';
 import react from '@astrojs/react';
 import mdx from '@astrojs/mdx';
 import sitemap from '@astrojs/sitemap';
@@ -17,6 +18,8 @@ const SITE = process.env.PUBLIC_SITE_URL ?? 'https://finance-lessons.alejandrofe
 export default defineConfig({
   site: SITE,
   output: 'static',
+  // Preserve Astro 6 inline whitespace between template elements.
+  compressHTML: true,
   // Cloudflare serves real HTTP redirects from the generated /_redirects file.
   build: { redirects: false },
   // The /roadmap/<tag> pages were retired — a learning path is now just the
@@ -42,8 +45,11 @@ export default defineConfig({
   // rendered to HTML by rehype-katex. MDX inherits these via extendMarkdownConfig.
   // KaTeX stylesheet is imported globally in src/styles/global.css.
   markdown: {
-    remarkPlugins: [remarkMath],
-    rehypePlugins: [rehypeKatex],
+    // Keep the unified pipeline for remark-math and rehype-katex.
+    processor: unified({
+      remarkPlugins: [remarkMath],
+      rehypePlugins: [rehypeKatex],
+    }),
   },
   integrations: [
     {

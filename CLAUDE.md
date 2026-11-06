@@ -93,7 +93,7 @@ sequentially. Treat parallel agents as the normal mode, not the exception.
 
 ## Stack
 
-- **Astro 6** (static output, served by Cloudflare Workers without an adapter) — fast, SEO-friendly rendering.
+- **Astro 7** (static output, served by Cloudflare Workers without an adapter) — fast, SEO-friendly rendering.
 - **React 19** islands for all interactivity/animation (hydrated with `client:visible`).
 - **Tailwind CSS v4** (via `@tailwindcss/vite`) — design tokens in `src/styles/global.css`.
 - **MDX** content collections for lessons/topics.
