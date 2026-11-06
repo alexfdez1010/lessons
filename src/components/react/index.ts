@@ -879,3 +879,6 @@ export type { PerpetuitySeriesInput, PerpetuitySeriesResult, PerpetuityConvergen
 
 export { calculateDownsideRms, DownsideTargetRms } from '@/components/react/DownsideTargetRms';
 export type { DownsideTargetRmsProps } from '@/components/react/DownsideTargetRms';
+
+export { calculateNpvProfiles, NpvProfiles } from '@/components/react/NpvProfiles';
+export type { NpvProfile, NpvProfilesProps } from '@/components/react/NpvProfiles';
