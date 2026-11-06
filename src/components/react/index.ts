@@ -882,3 +882,6 @@ export type { DownsideTargetRmsProps } from '@/components/react/DownsideTargetRm
 
 export { calculateNpvProfiles, NpvProfiles } from '@/components/react/NpvProfiles';
 export type { NpvProfile, NpvProfilesProps } from '@/components/react/NpvProfiles';
+
+export { calculateRebalance, isRebalanceDue, RebalanceDrift } from '@/components/react/RebalanceDrift';
+export type { RebalancePath, RebalanceRule, RebalanceInput, RebalanceResult, RebalanceDriftProps } from '@/components/react/RebalanceDrift';
