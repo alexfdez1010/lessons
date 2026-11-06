@@ -22,6 +22,12 @@ export interface DoubleEntryLedgerProps {
   caption?: string;
   /** Currency symbol prefixed to money values. Defaults to `'$'`. */
   currencyPrefix?: string;
+  /** Locale used for monetary amounts. Defaults to `'en-US'`. */
+  locale?: string;
+  /** Posting message with {description}, {previous}, {amount} and {balance} placeholders. */
+  moneyInMessage?: string;
+  /** Withdrawal message with the same placeholders as moneyInMessage. */
+  moneyOutMessage?: string;
   /** The ledger rows. Defaults to a small worked example. */
   entries?: LedgerEntry[];
   className?: string;
@@ -43,8 +49,8 @@ const prefersReducedMotion = (): boolean =>
   typeof window.matchMedia === 'function' &&
   window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-const money = (prefix: string, value: number): string =>
-  `${prefix}${new Intl.NumberFormat('en-US', {
+const money = (prefix: string, value: number, locale: string): string =>
+  `${prefix}${new Intl.NumberFormat(locale, {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(value)}`;
@@ -83,9 +89,32 @@ export function DoubleEntryLedger({
   replayLabel = 'Replay',
   caption = 'Every deposit adds, every withdrawal subtracts, and the balance is simply the running total of the lines above it. Nothing magical — just bookkeeping, one row at a time.',
   currencyPrefix = '$',
+  locale = 'en-US',
+  moneyInMessage = '{description}: {previous} plus {amount} in makes {balance}.',
+  moneyOutMessage = '{description}: {previous} minus {amount} out makes {balance}.',
   entries = DEFAULT_ENTRIES,
   className,
 }: DoubleEntryLedgerProps) {
+  if (!Array.isArray(entries) || entries.length === 0) {
+    throw new Error('DoubleEntryLedger requires at least one entry.');
+  }
+  for (const [index, entry] of entries.entries()) {
+    if (
+      !entry ||
+      typeof entry.date !== 'string' || !entry.date.trim() ||
+      typeof entry.description !== 'string' || !entry.description.trim()
+    ) {
+      throw new Error(`DoubleEntryLedger entry ${index + 1} needs a date and description.`);
+    }
+    if ((entry.in == null) === (entry.out == null)) {
+      throw new Error(`DoubleEntryLedger entry ${index + 1} needs exactly one of in or out.`);
+    }
+    const amount = entry.in ?? entry.out;
+    if (typeof amount !== 'number' || !Number.isFinite(amount) || amount < 0) {
+      throw new Error(`DoubleEntryLedger entry ${index + 1} needs a finite non-negative amount.`);
+    }
+  }
+  const formatMoney = (value: number): string => money(currencyPrefix, value, locale);
   const id = useId();
   const reduced = typeof window !== 'undefined' ? prefersReducedMotion() : false;
 
@@ -158,16 +187,18 @@ export function DoubleEntryLedger({
       const row = entries[lastPosted];
       const prev = lastPosted > 0 ? balanceAfter(lastPosted - 1) : 0;
       const now = balanceAfter(lastPosted);
-      if (row?.in != null) {
-        liveMessage = `${row.description}: ${money(currencyPrefix, prev)} plus ${money(
-          currencyPrefix,
-          row.in,
-        )} in makes ${money(currencyPrefix, now)}.`;
-      } else if (row?.out != null) {
-        liveMessage = `${row.description}: ${money(currencyPrefix, prev)} minus ${money(
-          currencyPrefix,
-          row.out,
-        )} out makes ${money(currencyPrefix, now)}.`;
+      if (row) {
+        const template = row.in != null ? moneyInMessage : moneyOutMessage;
+        const values = {
+          description: row.description,
+          previous: formatMoney(prev),
+          amount: formatMoney(row.in ?? row.out ?? 0),
+          balance: formatMoney(now),
+        };
+        liveMessage = template.replace(
+          /\{(description|previous|amount|balance)\}/g,
+          (_, key: keyof typeof values) => values[key],
+        );
       }
     }
   }
@@ -184,12 +215,12 @@ export function DoubleEntryLedger({
       <figcaption className="flex flex-wrap items-center justify-between gap-3">
         <span className="font-medium text-ink-900">{title}</span>
         <span className="rounded-pill bg-brand-600 px-3 py-1 text-sm font-medium text-white">
-          {balanceLabel}: {money(currencyPrefix, done ? finalBalance : balanceAfter(lastPosted))}
+          {balanceLabel}: {formatMoney(done ? finalBalance : balanceAfter(lastPosted))}
         </span>
       </figcaption>
 
       <div className="mt-4 overflow-x-auto">
-        <table className="w-full border-collapse text-sm">
+        <table tabIndex={0} className="w-full border-collapse text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600">
           <caption className="sr-only">
             {title}. {caption}
           </caption>
@@ -235,10 +266,10 @@ export function DoubleEntryLedger({
                   <td className="px-2 py-2 font-mono text-ink-500">{row.date}</td>
                   <td className="px-2 py-2 text-ink-900">{row.description}</td>
                   <td className="px-2 py-2 text-right font-mono text-brand-700">
-                    {row.in != null ? money(currencyPrefix, row.in) : ''}
+                    {row.in != null ? formatMoney(row.in) : ''}
                   </td>
                   <td className="px-2 py-2 text-right font-mono text-accent-600">
-                    {row.out != null ? money(currencyPrefix, row.out) : ''}
+                    {row.out != null ? formatMoney(row.out) : ''}
                   </td>
                   <td
                     className={cx(
@@ -246,7 +277,7 @@ export function DoubleEntryLedger({
                       isPosted ? 'text-ink-900' : 'text-ink-300',
                     )}
                   >
-                    {isPosted ? money(currencyPrefix, bal) : ''}
+                    {isPosted ? formatMoney(bal) : ''}
                   </td>
                 </tr>
               );
@@ -258,7 +289,7 @@ export function DoubleEntryLedger({
                 {balanceLabel}
               </td>
               <td className="px-2 py-2 text-right font-mono text-lg font-semibold text-brand-700">
-                {money(currencyPrefix, done ? finalBalance : balanceAfter(lastPosted))}
+                {formatMoney(done ? finalBalance : balanceAfter(lastPosted))}
               </td>
             </tr>
           </tfoot>
