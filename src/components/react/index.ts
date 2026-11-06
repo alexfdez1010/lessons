@@ -891,3 +891,6 @@ export type { SwapReturnInputs, SwapReturnLedgerProps } from '@/components/react
 
 export { calculateLendingCollateral, SecuritiesLendingCollateral } from '@/components/react/SecuritiesLendingCollateral';
 export type { LendingCollateralInputs, LendingCollateralResult, SecuritiesLendingCollateralProps } from '@/components/react/SecuritiesLendingCollateral';
+
+export { calculateExerciseFlow, ExerciseAssignmentFlow } from '@/components/react/ExerciseAssignmentFlow';
+export type { ExerciseOptionType, ExercisePosition, ExerciseStyle, ExerciseSettlement, ExercisePhase, ExerciseFlowInput, ExerciseFlowResult, ExerciseAssignmentFlowProps } from '@/components/react/ExerciseAssignmentFlow';
