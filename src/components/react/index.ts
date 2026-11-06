@@ -738,7 +738,7 @@ export type { MinorityRuleProps } from '@/components/react/MinorityRule';
 export { BobRubinAsymmetry, default as BobRubinAsymmetryDefault } from '@/components/react/BobRubinAsymmetry';
 export type { BobRubinAsymmetryProps } from '@/components/react/BobRubinAsymmetry';
 
-export { EnsembleTimeFan, default as EnsembleTimeFanDefault } from '@/components/react/EnsembleTimeFan';
+export { EnsembleTimeFan, positiveGrowthMoments, simulatePositiveGrowth, default as EnsembleTimeFanDefault } from '@/components/react/EnsembleTimeFan';
 export type { EnsembleTimeFanProps } from '@/components/react/EnsembleTimeFan';
 
 export { LindyCurve, default as LindyCurveDefault } from '@/components/react/LindyCurve';
@@ -966,3 +966,6 @@ export type { RightsIssueInputs, RightsAction, RightsIssuePlannerProps } from '@
 
 export { keyRateBasis, calculateKeyRateRisk, solveKeyRateHedge, blendedHedgeMatrix, KeyRateCurveHedge } from '@/components/react/KeyRateCurveHedge';
 export type { Three, KeyRateCashFlow, KeyRateInputs, KeyRateCurveHedgeProps } from '@/components/react/KeyRateCurveHedge';
+
+export { regimePath, RegimeAverageConvergence, constantHazardProbabilities, ConstantHazardSurvival, equalErrorEnsembleVariance, EnsembleErrorVariance } from '@/components/react/ErgodicityComparisons';
+export type { RegimeAverageConvergenceProps, ConstantHazardSurvivalProps, EnsembleErrorVarianceProps } from '@/components/react/ErgodicityComparisons';

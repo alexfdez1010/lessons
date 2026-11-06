@@ -158,9 +158,11 @@ export function KellyGrowthCurve({
   const gFloor = -Math.max(maxGrowth * 1.5, 0.02);
   const span = gTop - gFloor;
 
-  const xOf = (f: number) => padX + (f / F_MAX) * (W - padX * 2);
+  // Stabilize only SVG serialization across server/browser math implementations.
+  const renderCoordinate = (value: number) => Number(value.toFixed(3));
+  const xOf = (f: number) => renderCoordinate(padX + (f / F_MAX) * (W - padX * 2));
   const yOf = (g: number) =>
-    padTop + (1 - (Math.max(g, gFloor) - gFloor) / span) * (H - padTop - padBottom);
+    renderCoordinate(padTop + (1 - (Math.max(g, gFloor) - gFloor) / span) * (H - padTop - padBottom));
 
   const yZero = yOf(0);
 
