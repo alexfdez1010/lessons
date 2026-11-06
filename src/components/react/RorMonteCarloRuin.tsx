@@ -22,6 +22,11 @@ export interface RorMonteCarloRuinProps {
   risk?: number;
   /** Seed for the deterministic simulation. Defaults to 909. */
   seed?: number;
+  /** Accessible chart template: {paths}, {risk}, {probability}. */
+  chartLabel?: string;
+  /** Accessible control value template: {risk}. */
+  riskValueLabel?: string;
+  locale?: string;
   className?: string;
 }
 
@@ -109,9 +114,12 @@ export function RorMonteCarloRuin({
   survivedLabel = 'Survived',
   ruinProbLabel = 'Estimated risk of ruin',
   thresholdLabel = 'Ruin threshold',
-  caption = 'Every path is the same winning system (55% win rate, even money) — only the bet size changes. At a small risk-per-trade almost all paths survive; crank the slider up and the same edge gets buried as curve after curve smashes into the ruin floor. A positive edge does not save you from over-betting.',
+  caption = 'An illustrative iid 55%-win, even-money model over 120 trades. Stakes are a fixed fraction of current wealth; paths stop at 50% of initial wealth. The estimate counts 1,500 simulated paths; it is a finite-horizon model estimate, not an eventual-ruin probability or a market forecast.',
   risk = 0.04,
   seed = 909,
+  chartLabel = '{paths} fixed-fraction wealth paths over 120 trades at stake {risk}. Estimated probability of hitting half the initial wealth: {probability}.',
+  riskValueLabel = '{risk} of current wealth per trade',
+  locale = 'en-US',
   className,
 }: RorMonteCarloRuinProps) {
   const id = useId();
@@ -124,6 +132,9 @@ export function RorMonteCarloRuin({
   const activeSeed = seed + seedBump * 777;
 
   const sim = useMemo(() => simulate(activeSeed, riskVal), [activeSeed, riskVal]);
+  const percent = new Intl.NumberFormat(locale, { style: 'percent', maximumFractionDigits: 1 });
+  const values: Record<string, string> = { paths: new Intl.NumberFormat(locale).format(PATHS), risk: percent.format(riskVal), probability: percent.format(sim.ruinProb) };
+  const label = (template: string) => template.replace(/\{(\w+)\}/g, (match, key: string) => values[key] ?? match);
 
   const W = 560;
   const H = 260;
@@ -172,12 +183,12 @@ export function RorMonteCarloRuin({
 
   return (
     <figure
-      className={cx('my-6 rounded-card border border-ink-100 bg-surface p-5 shadow-soft', className)}
+      className={cx('not-prose my-6 min-w-0 rounded-card border border-ink-100 bg-surface p-5 shadow-soft', className)}
     >
-      <figcaption className="flex items-center justify-between gap-3">
+      <figcaption className="flex flex-wrap items-center justify-between gap-3">
         <span className="font-medium text-ink-900">{title}</span>
         <span className="rounded-pill bg-brand-600 px-3 py-1 text-sm font-medium text-white" aria-live="polite">
-          {ruinProbLabel}: {(sim.ruinProb * 100).toFixed(1)}%
+          {ruinProbLabel}: {percent.format(sim.ruinProb)}
         </span>
       </figcaption>
 
@@ -196,7 +207,7 @@ export function RorMonteCarloRuin({
         viewBox={`0 0 ${W} ${H}`}
         className="mt-3 w-full"
         role="img"
-        aria-label={`Monte Carlo of ${PATHS} equity paths at ${riskPct} percent risk per trade. The estimated risk of ruin is about ${(sim.ruinProb * 100).toFixed(1)} percent.`}
+        aria-label={label(chartLabel)}
       >
         {/* Start line */}
         <line x1={padLeft} y1={startY} x2={W - padRight} y2={startY} stroke="var(--color-ink-200)" strokeDasharray="4 4" />
@@ -231,7 +242,7 @@ export function RorMonteCarloRuin({
         <label htmlFor={`${id}-risk`} className="flex items-center justify-between gap-3 text-sm font-medium text-ink-700">
           <span>{riskLabel}</span>
           <span className="font-mono text-brand-600" aria-hidden="true">
-            {riskPct}%
+            {percent.format(riskVal)}
           </span>
         </label>
         <input
@@ -242,8 +253,8 @@ export function RorMonteCarloRuin({
           step={1}
           value={riskPct}
           onChange={(e) => setRiskPct(Number(e.target.value))}
-          aria-valuetext={`${riskPct} percent risk per trade`}
-          className="mt-2 w-full accent-brand-500"
+          aria-valuetext={label(riskValueLabel)}
+          className="mt-2 h-8 w-full accent-brand-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
         />
       </div>
 
@@ -251,7 +262,7 @@ export function RorMonteCarloRuin({
         <button
           type="button"
           onClick={() => setSeedBump((s) => s + 1)}
-          className="rounded-pill border border-ink-100 bg-surface-50 px-4 py-1.5 text-sm font-medium text-ink-800 shadow-soft transition hover:bg-surface-100"
+          className="min-h-11 rounded-pill border border-ink-100 bg-surface-50 px-4 py-1.5 text-sm font-medium text-ink-800 shadow-soft transition hover:bg-surface-100"
         >
           {resimulateLabel}
         </button>
