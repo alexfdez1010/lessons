@@ -586,8 +586,8 @@ export type { ThreeStatementFlowProps, StatementLink } from '@/components/react/
 export { MarginWaterfall, default as MarginWaterfallDefault } from '@/components/react/MarginWaterfall';
 export type { MarginWaterfallProps, WaterfallStep } from '@/components/react/MarginWaterfall';
 
-export { DcfSensitivityExplorer, default as DcfSensitivityExplorerDefault } from '@/components/react/DcfSensitivityExplorer';
-export type { DcfSensitivityExplorerProps } from '@/components/react/DcfSensitivityExplorer';
+export { DcfSensitivityExplorer, calculateDcfOperatingValue, default as DcfSensitivityExplorerDefault } from '@/components/react/DcfSensitivityExplorer';
+export type { DcfSensitivityExplorerProps, DcfOperatingInputs, DcfOperatingResult } from '@/components/react/DcfSensitivityExplorer';
 
 export { MultiplesCompare, default as MultiplesCompareDefault } from '@/components/react/MultiplesCompare';
 export type { MultiplesCompareProps, MultipleMetric, MultiplesCompany } from '@/components/react/MultiplesCompare';
@@ -927,3 +927,6 @@ export type { YieldDecompositionInputs, YieldDecompositionProps } from '@/compon
 
 export { calculateBondAccruedPrice, BondAccruedPrice } from '@/components/react/BondAccruedPrice';
 export type { BondAccruedInputs, BondAccruedPriceProps } from '@/components/react/BondAccruedPrice';
+
+export { calculateFcffBridge, FcffOperatingBridge } from '@/components/react/FcffOperatingBridge';
+export type { FcffBridgeInputs, FcffOperatingBridgeProps } from '@/components/react/FcffOperatingBridge';
