@@ -957,3 +957,6 @@ export type { CustodyRecordsProps, CustodyRecoveryInputs, CustodyReconciliationP
 
 export { calculateCashBudget, CashBudgetTimeline } from '@/components/react/CashBudgetTimeline';
 export type { CashBudgetPayment, CashBudgetInputs, CashBudgetTimelineProps } from '@/components/react/CashBudgetTimeline';
+
+export { calculateEulerRisk, calculateEulerTransfer, EulerRiskContributions } from '@/components/react/EulerRiskContributions';
+export type { EulerRiskInputs, EulerRiskResult, EulerRiskContributionsProps } from '@/components/react/EulerRiskContributions';
