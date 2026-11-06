@@ -18,6 +18,8 @@ export interface DrawdownChartProps {
   drawdownLabel?: string;
   /** One-line takeaway shown under the chart once finished. */
   caption?: string;
+  /** Accessible description with {title} and {drawdown} placeholders. */
+  chartLabel?: string;
   className?: string;
 }
 
@@ -72,6 +74,7 @@ export function DrawdownChart({
   troughLabel = 'Trough',
   drawdownLabel = 'Max drawdown',
   caption = 'Maximum drawdown measures the worst peak-to-trough drop — here about 40% — no matter how the curve recovers afterwards.',
+  chartLabel = '{title}: the highlighted maximum drawdown is the largest observed fall from a previous peak, {drawdown}%. Lines join the supplied observations.',
   className,
 }: DrawdownChartProps) {
   const id = useId();
@@ -86,7 +89,7 @@ export function DrawdownChart({
   const W = 520;
   const H = 220;
   const padX = 12;
-  const padY = 18;
+  const padY = 26;
   const n = series.length;
   const minV = Math.min(...series);
   const maxV = Math.max(...series);
@@ -165,7 +168,7 @@ export function DrawdownChart({
         <button
           type="button"
           onClick={start}
-          className="rounded-pill bg-brand-600 px-4 py-1.5 text-sm font-medium text-white transition hover:bg-brand-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
+          className="min-h-11 rounded-pill bg-brand-600 px-4 py-1.5 text-sm font-medium text-white transition hover:bg-brand-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
         >
           {done ? replayLabel : playLabel}
         </button>
@@ -175,7 +178,7 @@ export function DrawdownChart({
         viewBox={`0 0 ${W} ${H}`}
         className="mt-4 w-full"
         role="img"
-        aria-label={`${title}: an equity curve rises to a peak, then falls ${ddPct}% to a trough before partly recovering. The worst peak-to-trough fall is highlighted as the maximum drawdown.`}
+        aria-label={chartLabel.replaceAll('{title}', title).replaceAll('{drawdown}', String(ddPct))}
       >
         {/* Baseline at the starting index value */}
         <line

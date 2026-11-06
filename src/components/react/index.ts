@@ -876,3 +876,6 @@ export type { TimelineCashFlow, CashFlowValuationTimelineProps } from '@/compone
 
 export { calculatePerpetuitySeries, PerpetuityConvergence } from '@/components/react/PerpetuityConvergence';
 export type { PerpetuitySeriesInput, PerpetuitySeriesResult, PerpetuityConvergenceProps } from '@/components/react/PerpetuityConvergence';
+
+export { calculateDownsideRms, DownsideTargetRms } from '@/components/react/DownsideTargetRms';
+export type { DownsideTargetRmsProps } from '@/components/react/DownsideTargetRms';
