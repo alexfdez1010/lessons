@@ -152,7 +152,7 @@ export type { BondCashflowsProps } from '@/components/react/BondCashflows';
 export { PriceYieldSeesaw, default as PriceYieldSeesawDefault } from '@/components/react/PriceYieldSeesaw';
 export type { PriceYieldSeesawProps } from '@/components/react/PriceYieldSeesaw';
 
-export { YieldCurveShapes, default as YieldCurveShapesDefault } from '@/components/react/YieldCurveShapes';
+export { YieldCurveShapes, calculateIllustrativeYieldCurve, default as YieldCurveShapesDefault } from '@/components/react/YieldCurveShapes';
 export type { YieldCurveShapesProps } from '@/components/react/YieldCurveShapes';
 
 export { DurationBalance, default as DurationBalanceDefault } from '@/components/react/DurationBalance';
@@ -921,3 +921,6 @@ export type { CivilDate, DayCountResult, DayCountAccrualProps } from '@/componen
 
 export { refinanceLoanSchedule, calculateRefinancingExit, RefinancingExitComparison, calculateCollateralSale, CollateralSaleOutcome } from '@/components/react/RefinancingExitComparison';
 export type { RefinanceInputs, RefinanceMonth, RefinanceResult, RefinancingExitComparisonProps, CollateralSaleOutcomeProps } from '@/components/react/RefinancingExitComparison';
+
+export { calculateYieldDecomposition, YieldDecomposition } from '@/components/react/YieldDecomposition';
+export type { YieldDecompositionInputs, YieldDecompositionProps } from '@/components/react/YieldDecomposition';
