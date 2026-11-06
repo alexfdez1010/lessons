@@ -936,3 +936,6 @@ export type { ReturnMeasurementResult, ReturnMeasurementPathsProps } from '@/com
 
 export { calculateBasisHedge, BasisHedgeExplorer, calculateMinimumVarianceHedge, MinimumVarianceHedge } from '@/components/react/BasisHedgeExplorer';
 export type { BasisHedgeInputs, BasisHedgeExplorerProps, MinimumVarianceInputs, MinimumVarianceHedgeProps } from '@/components/react/BasisHedgeExplorer';
+
+export { calculateYieldDuration, YieldDurationWorkbench } from '@/components/react/YieldDurationWorkbench';
+export type { YieldDurationInputs, DurationCashFlow, YieldDurationResult, YieldDurationWorkbenchProps } from '@/components/react/YieldDurationWorkbench';
