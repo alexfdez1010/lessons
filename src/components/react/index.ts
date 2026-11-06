@@ -954,3 +954,6 @@ export type { CoveredParityInputs, CoveredParityResult, CoveredParityRoutesProps
 
 export { reconcileCustodyRecords, CustodyRecords, reconcileCustodyRecovery, CustodyReconciliation } from '@/components/react/CustodyRecords';
 export type { CustodyRecordsProps, CustodyRecoveryInputs, CustodyReconciliationProps } from '@/components/react/CustodyRecords';
+
+export { calculateCashBudget, CashBudgetTimeline } from '@/components/react/CashBudgetTimeline';
+export type { CashBudgetPayment, CashBudgetInputs, CashBudgetTimelineProps } from '@/components/react/CashBudgetTimeline';
