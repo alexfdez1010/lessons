@@ -861,3 +861,6 @@ export type { ConfounderDagExplorerProps } from '@/components/react/ConfounderDa
 
 export { CorrelationVsCausationBacktest, default as CorrelationVsCausationBacktestDefault } from '@/components/react/CorrelationVsCausationBacktest';
 export type { CorrelationVsCausationBacktestProps } from '@/components/react/CorrelationVsCausationBacktest';
+
+export { CashFlowReturnComparison, calculateCashFlowReturns } from '@/components/react/CashFlowReturnComparison';
+export type { CashFlowReturnComparisonProps } from '@/components/react/CashFlowReturnComparison';
