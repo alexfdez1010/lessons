@@ -22,7 +22,7 @@
 #     signalled, so unrelated processes are never touched.
 #   * Both the normal path and the startup-recovery path converge on the SAME
 #     deterministic flow: validate -> (bounded repair loop) -> commit -> push ->
-#     verify. Red code is never published.
+#     deploy -> verify. Red code is never published.
 #   * If a previous run left a dirty tree, we do NOT start a new upcoming course --
 #     we finish the stranded work and land it.
 #   * Push/fetch use bounded retries; the run only succeeds once HEAD is verified
@@ -50,6 +50,7 @@ cd "$REPO"
 CLAUDE_TIMEOUT="${CLAUDE_TIMEOUT:-5400}"        # main/rescue implementation session (90m)
 REPAIR_TIMEOUT="${REPAIR_TIMEOUT:-2400}"        # focused repair session (40m)
 VALIDATION_TIMEOUT="${VALIDATION_TIMEOUT:-1800}" # one `bun run pre-commit` (30m)
+DEPLOY_TIMEOUT="${DEPLOY_TIMEOUT:-900}"        # one Cloudflare upload (15m)
 KILL_GRACE="${KILL_GRACE:-30}"                  # TERM->KILL grace handed to `timeout -k`
 MAX_REPAIR_ATTEMPTS="${MAX_REPAIR_ATTEMPTS:-4}" # bounded repair loop
 
@@ -229,6 +230,37 @@ ensure_pushed_and_verified() {
   log "verified $head is published on origin/main"
 }
 
+# Rebuild the pushed HEAD so a push-retry rebase and newly generated OG cards
+# are reflected in dist/. Upload retries are bounded; failures never report success.
+deploy_and_verify() {
+  assert_clean_tree
+  if [ "${VALIDATED_HEAD:-}" != "$(git rev-parse HEAD)" ]; then
+    run_validation || fail "rebased HEAD failed validation; refusing to deploy"
+    assert_clean_tree
+  fi
+  run_in_group "$VALIDATION_TIMEOUT" "deploy-build" bun run build \
+    || fail "production rebuild failed; refusing to deploy"
+  local attempt=1 max=3
+  while ! run_in_group "$DEPLOY_TIMEOUT" "cloudflare-deploy" bun run deploy:assets; do
+    [ "$attempt" -lt "$max" ] || fail "Cloudflare deployment failed after $max attempts"
+    sleep "$((attempt * 5))"
+    attempt="$((attempt + 1))"
+  done
+  local html
+  attempt=1
+  while [ "$attempt" -le 5 ]; do
+    html="$(curl --fail --silent --show-error --location --max-time 30 \
+      https://finance-lessons.alejandrofernandezcamello.me/)" || html=""
+    if [[ "$html" == *'<link rel="canonical" href="https://finance-lessons.alejandrofernandezcamello.me/"'* ]]; then
+      log "Cloudflare production verified at https://finance-lessons.alejandrofernandezcamello.me/"
+      return 0
+    fi
+    sleep 5
+    attempt="$((attempt + 1))"
+  done
+  fail "Cloudflare production did not return the expected canonical URL"
+}
+
 # Assert the tree is clean; abort loudly otherwise.
 assert_clean_tree() {
   if tree_dirty; then
@@ -263,13 +295,15 @@ validate_and_finalize() {
   git add -A
   if git diff --cached --quiet; then
     log "$context: validation green but nothing staged; nothing to commit"
+    VALIDATED_HEAD="$(git rev-parse HEAD)"
     return 0
   fi
   git commit -q \
     -m "chore(daily-lesson): land autonomous session work ($context)" \
     -m "Implemented by an autonomous session; validated and committed by the wrapper." \
     >>"$LOG" 2>&1
-  log "$context: committed pending work deterministically -> $(git rev-parse HEAD)"
+  VALIDATED_HEAD="$(git rev-parse HEAD)"
+  log "$context: committed pending work deterministically -> $VALIDATED_HEAD"
 }
 
 # ---------------------------------------------------------------------------
@@ -394,6 +428,7 @@ if tree_dirty; then
 
   validate_and_finalize "startup-recovery"
   ensure_pushed_and_verified
+  deploy_and_verify
   assert_clean_tree
   log "daily lesson session (startup recovery) finished and verified OK"
   exit 0
@@ -426,6 +461,7 @@ fi
 # ---------------------------------------------------------------------------
 validate_and_finalize "normal"
 ensure_pushed_and_verified
+deploy_and_verify
 assert_clean_tree
 
 HEAD_AFTER="$(git rev-parse HEAD)"

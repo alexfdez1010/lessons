@@ -2,8 +2,8 @@
 
 Interactive, animated, **bilingual (en/es)** educational webpages. Each *topic* is taught
 across multiple slug-based pages, with reusable interactive exercises (quizzes, steppers,
-reveals) and a strong SEO + Open Graph pipeline. Built to deploy on Vercel at
-**https://lessons.alejandrofernandezcamello.me**.
+reveals) and a strong SEO + Open Graph pipeline. Deployed on Cloudflare Workers at
+**https://finance-lessons.alejandrofernandezcamello.me**.
 
 ## 🎯 Mission — finance, zero to expert
 
@@ -93,7 +93,7 @@ sequentially. Treat parallel agents as the normal mode, not the exception.
 
 ## Stack
 
-- **Astro 6** (static output, `@astrojs/vercel` adapter) — fast, SEO-friendly rendering.
+- **Astro 6** (static output, served by Cloudflare Workers without an adapter) — fast, SEO-friendly rendering.
 - **React 19** islands for all interactivity/animation (hydrated with `client:visible`).
 - **Tailwind CSS v4** (via `@tailwindcss/vite`) — design tokens in `src/styles/global.css`.
 - **MDX** content collections for lessons/topics.
@@ -208,8 +208,11 @@ block and documented in **DESIGN.md**. Use Tailwind utilities; do not hardcode h
 |---|---|
 | `bun install` + `bunx playwright install chromium` | First-time setup |
 | `bun run dev` | Dev server |
-| `bun run build` | Static build → `dist/` (+ `.vercel/output`) |
+| `bun run build` | Static build → `dist/` |
 | `bun run preview` | Preview the build |
+| `bun run preview:cloudflare` | Preview the build with Wrangler and Cloudflare asset routing |
+| `bun run deploy` | Build and deploy to Cloudflare Workers |
+| `bun run deploy:assets` | Deploy the existing `dist/` build with authenticated Wrangler |
 | `bun run check` | `check:latex` + `astro check` + `tsc --noEmit` |
 | `bun run check:latex` | Render every `$…$`/`$$…$$` through KaTeX; fail on parse errors (catches `\$` inside math) |
 | `bun run og:generate` / `og:build` | Generate OG images (all routes; also accepts explicit routes/file paths as args) |
@@ -227,8 +230,13 @@ to ask "want me to commit?" or hand the commands back to the user. No exceptions
 2. Run **`bun run pre-commit`** (then `git add public/og`).
 3. **Commit**.
 4. **Push**.
+5. **Deploy** with `bun run deploy:assets` and verify the production domain.
 
-Treat "the change is done" as the trigger to run steps 2–4 on your own. The only
+Cloudflare deployment uses authenticated Wrangler and `wrangler.jsonc`; there
+are no GitHub Actions deployment workflows. The production domain is
+`finance-lessons.alejandrofernandezcamello.me`.
+
+Treat "the change is done" as the trigger to run steps 2–5 on your own. The only
 time you pause is if `bun run pre-commit` fails (fix it, re-run) or the user
 explicitly said not to commit. Never commit or push before the change is finished
 and `bun run pre-commit` is green.

@@ -1,22 +1,24 @@
 // @ts-check
+import { writeFile } from 'node:fs/promises';
 import { defineConfig } from 'astro/config';
 import react from '@astrojs/react';
 import mdx from '@astrojs/mdx';
 import sitemap from '@astrojs/sitemap';
-import vercel from '@astrojs/vercel';
 import tailwindcss from '@tailwindcss/vite';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import { roadmapTags } from './src/lib/roadmap-meta';
 
 // Canonical production origin. Override per-environment with PUBLIC_SITE_URL
-// (Vercel deploys, previews). Drives sitemap, canonical tags and OG URLs.
-const SITE = process.env.PUBLIC_SITE_URL ?? 'https://lessons.alejandrofernandezcamello.me';
+// (local builds, previews). Drives sitemap, canonical tags and OG URLs.
+const SITE = process.env.PUBLIC_SITE_URL ?? 'https://finance-lessons.alejandrofernandezcamello.me';
 
 // https://astro.build/config
 export default defineConfig({
   site: SITE,
   output: 'static',
+  // Cloudflare serves real HTTP redirects from the generated /_redirects file.
+  build: { redirects: false },
   // The /roadmap/<tag> pages were retired — a learning path is now just the
   // catalog pre-filtered by tag, so each old URL 301s to /catalog?tag=<tag>.
   redirects: Object.fromEntries(
@@ -43,10 +45,21 @@ export default defineConfig({
     remarkPlugins: [remarkMath],
     rehypePlugins: [rehypeKatex],
   },
-  adapter: vercel({
-    webAnalytics: { enabled: true },
-  }),
   integrations: [
+    {
+      name: 'cloudflare-redirects',
+      hooks: {
+        'astro:build:done': async ({ dir }) => {
+          const rules = roadmapTags.flatMap((tag) => [
+            `/roadmap/${tag} /catalog?tag=${tag} 301`,
+            `/roadmap/${tag}/ /catalog?tag=${tag} 301`,
+            `/es/roadmap/${tag} /es/catalog?tag=${tag} 301`,
+            `/es/roadmap/${tag}/ /es/catalog?tag=${tag} 301`,
+          ]);
+          await writeFile(new URL('_redirects', dir), rules.join('\n') + '\n');
+        },
+      },
+    },
     react(),
     mdx(),
     sitemap({
