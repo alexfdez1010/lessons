@@ -963,3 +963,6 @@ export type { EulerRiskInputs, EulerRiskResult, EulerRiskContributionsProps } fr
 
 export { buildRightsIssue, planRightsAction, RightsIssuePlanner } from '@/components/react/RightsIssuePlanner';
 export type { RightsIssueInputs, RightsAction, RightsIssuePlannerProps } from '@/components/react/RightsIssuePlanner';
+
+export { keyRateBasis, calculateKeyRateRisk, solveKeyRateHedge, blendedHedgeMatrix, KeyRateCurveHedge } from '@/components/react/KeyRateCurveHedge';
+export type { Three, KeyRateCashFlow, KeyRateInputs, KeyRateCurveHedgeProps } from '@/components/react/KeyRateCurveHedge';

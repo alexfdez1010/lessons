@@ -1,0 +1,545 @@
+---
+title: "Key Rate Duration and Curve Hedges"
+description: "Derive node sensitivities from a stated spot curve, separate level, slope and curvature risk, and solve a multi-bucket hedge while checking rounding and conditioning."
+topic: "en/fixed-income-analytics"
+order: 8
+minutes: 28
+updated: 2026-11-06
+---
+
+import { Callout, MCQ, Quiz, FillBlank, Categorize, MatchConcepts, MindMap, KeyRateCurveHedge } from '@/components/react';
+
+A book’s total DV01 is zero. Short rates fall, long rates rise, and the book makes or loses money anyway. The hedge cancelled one direction of movement: a parallel shift. A curve has more than one direction.
+
+[Duration and DV01](/fixed-income-analytics/duration-macaulay-modified-dv01) established the yield coordinate and units; [immunization](/fixed-income-analytics/immunization-and-hedging) identified the shape risk left over. This lesson measures it. All prices, cash flows and sensitivity matrices below are invented. We assume fixed payments are received in full, exclude credit and execution effects, and separate exact valuation from first-order hedge estimates.
+
+## The curve coordinates determine what a bucket means
+
+<MCQ
+  client:visible
+  question={"A cash flow arrives at year 4, between zero-rate nodes at years 2 and 5. Under linear interpolation of zero rates, which nodes affect its value?"}
+  options={[
+  {
+    "text": "Both nodes, with weights determined by the interval",
+    "correct": true
+  },
+  {
+    "text": "Only the 5-year node, because it is the next maturity",
+    "correct": false
+  },
+  {
+    "text": "Only the 2-year node, because it comes first",
+    "correct": false
+  }
+]}
+  explanation={"The four-year zero rate is interpolated from both adjacent nodes. Different interpolation or market-quote calibration rules can allocate sensitivity differently."}
+  pretest
+/>
+
+A **key rate duration (KRD)**, also called partial duration, measures sensitivity to a specified local change of the yield curve. Imagine a flexible ruler held at several points: moving one point bends nearby sections. The locations and the bending rule both matter.
+
+We choose **continuously compounded zero rates** $z_j$ at 2, 5 and 10 years, initially 3%, 4% and 5%. A zero rate discounts one payment at its own date. For a fixed cash flow $C_t$,
+
+$$\mathrm{PV}_t=C_te^{-t z(t)}$$
+
+Here $t$ is time in years. We linearly interpolate **zero rates**, not bond prices, discount factors or par yields. Between the 2- and 5-year nodes,
+
+$$z(t)=b_2(t)z_2+b_5(t)z_5,\quad b_2(t)=\frac{5-t}{3},\quad b_5(t)=\frac{t-2}{3}$$
+
+At year 4, $b_2=1/3$ and $b_5=2/3$, so
+
+$$z(4)=\frac13(0.03)+\frac23(0.04)=0.03666667\ldots$$
+
+Between 5 and 10 years, use the corresponding linear weights. Before the first node or after the last, this example keeps the nearest endpoint zero rate flat. Thus the node basis weights always sum to one. These are explicit modelling choices, not a universal market convention.
+
+### Price the same fixed stream throughout
+
+Our claim pays EUR 50 at year 2, EUR 50 at year 4 and EUR 1,050 at year 10:
+
+| Years | Cash received | Interpolated zero rate | Present-value calculation | Present value, EUR |
+|---|---:|---:|---|---:|
+| 2 | 50 | 3% | 50 × exp(−2 × 0.03) | 47.088227 |
+| 4 | 50 | 3.666667% | 50 × exp(−4 × 0.03666667…) | 43.179090 |
+| 10 | 1,050 | 5% | 1,050 × exp(−10 × 0.05) | 636.857193 |
+| Total | | | Sum of discounted payments | **727.124509** |
+
+<KeyRateCurveHedge
+  client:visible
+  shockShape={1}
+  title={"Explore how node shocks change the interpolated curve"}
+/>
+
+### When to use it
+
+Specify the curve, compounding, nodes, interpolation, extrapolation and bump definition before comparing bucket reports. A zero-rate-node delta is different from a delta obtained by bumping a traded par quote and recalibrating the curve. [OpenGamma’s Strata example distinguishes point, parameter and market-quote sensitivities](https://opengamma.com/strata-and-multi-curve-calibration-and-bucketed-pv01/); its [interpolation study shows how the risk distribution changes with the interpolation rule](https://opengamma.com/strata-and-multi-curve-interpolation-and-risk/).
+
+<FillBlank
+  client:visible
+  question={"Keep the coordinate and interpolation rule together."}
+  text={"The four-year zero rate in this example places {{one third|two thirds|all}} of its interpolation weight on year 2 and {{two thirds|one third|none}} on year 5. Bumping a market par quote and recalibrating is {{a different sensitivity coordinate|automatically the same node shock|a change in the cash-flow amount}}."}
+  explanation={"Year 4 lies two of the three years from node 2 toward node 5. The quote and calibration choices determine how a market bump reaches discount rates."}
+/>
+
+## Derive KRD and bucket DV01 in consistent units
+
+Let $P=\sum_t C_te^{-tz(t)}$ and hold the cash flows fixed. Under our linear zero-rate basis, $\partial z(t)/\partial z_j=b_j(t)$. The chain rule gives
+
+$$\frac{\partial P}{\partial z_j}=-\sum_t t\,\mathrm{PV}_t b_j(t)$$
+
+Define derivative KRD and the positive-long **bucket DV01** convention by
+
+$$D_j=-\frac1P\frac{\partial P}{\partial z_j},\qquad q_j=-10^{-4}\frac{\partial P}{\partial z_j}=P D_j10^{-4}$$
+
+$D_j$ is relative price sensitivity per unit **decimal annual continuous zero rate**. $q_j$ is EUR per basis point for this claim. With the stated nonnegative cash flows and interpolation weights, each $q_j$ is nonnegative. For a signed net book, a bucket can be negative.
+
+### Allocate the year-4 payment to two nodes
+
+The year-2 money sensitivity receives the direct year-2 flow and one-third of the year-4 flow:
+
+$$-\frac{\partial P}{\partial z_2}=2(47.08822668)+4(43.17908950)\frac13\approx151.74857269$$
+
+The year-5 node receives two-thirds of the year-4 flow:
+
+$$-\frac{\partial P}{\partial z_5}=4(43.17908950)\frac23\approx115.14423867$$
+
+The year-10 node receives the last flow’s sensitivity:
+
+$$-\frac{\partial P}{\partial z_{10}}=10(636.85719270)\approx6368.57192698$$
+
+Divide by the initial price for KRD, or multiply by 0.0001 for EUR per bp:
+
+| Node | Derivative KRD | Bucket DV01, EUR per bp |
+|---|---:|---:|
+| 2 years | 0.20869682 | 0.01517486 |
+| 5 years | 0.15835560 | 0.01151442 |
+| 10 years | 8.75857140 | 0.63685719 |
+| Sum | **9.12562382** | **0.66354647** |
+
+These are sensitivities to the chosen continuous **spot curve**, not automatically the modified duration of one quoted YTM.
+
+### Why the derivative sum works, and finite bumps only approximate it
+
+Because $\sum_jb_j(t)=1$, the sum of node derivatives equals the derivative of a parallel shift of this same zero curve:
+
+$$\sum_jD_j=\frac{\sum_t t\,\mathrm{PV}_t}{P}=D_{\text{parallel}}$$
+
+A numerical central-bump estimate with decimal $h$ is
+
+$$D_j^{(h)}=\frac{P(z-h e_j)-P(z+h e_j)}{2hP(z)}$$
+
+Here $e_j$ moves just node $j$, with the declared interpolation rule, and one bp means $h=0.0001$. It approximates the derivative as $h$ shrinks. The sum of **finite-bump** KRDs need not equal a finite combined parallel bump exactly: nonlinear terms and mixed-node exposure remain. Nor does a collection of shocks that fails to reconstruct a parallel change have the derivative-sum identity.
+
+### When to use it
+
+Use analytic derivatives or sufficiently small, validated bumps for local risk. Check currency, sign, compounding and rate units before adding buckets. A one-bp exposure of EUR 0.66354647 implies about **EUR −6.635465** for a +10 bp parallel change; exact repricing gives **EUR −6.603289**. That finite difference is curvature, not an arithmetic error. [CFA defines key rate sensitivity as a specific maturity’s benchmark-curve change](https://www.cfainstitute.org/insights/professional-learning/refresher-readings/2026/curve-based-and-empirical-fixed-income-risk-measures).
+
+<MCQ
+  client:visible
+  question={"A claim is worth EUR 800 and its derivative KRD for one node is 2.5. What is the positive-long bucket DV01?"}
+  options={[
+  {
+    "text": "EUR 0.20 per bp",
+    "correct": true
+  },
+  {
+    "text": "EUR 20 per bp",
+    "correct": false
+  },
+  {
+    "text": "EUR 2,000 per bp",
+    "correct": false
+  },
+  {
+    "text": "EUR 0.002 per bp",
+    "correct": false
+  }
+]}
+  explanation={"Multiply price by KRD and by one decimal basis point: 800 × 2.5 × 0.0001 = EUR 0.20 per bp. The sign of first-order P&L is opposite a positive node-rate shock."}
+/>
+
+## Level, slope and curvature are different shock directions
+
+For node changes measured in **basis points**, the first-order currency change is
+
+$$\Delta P_{\text{linear}}\approx-\sum_j q_j\Delta z_j^{\mathrm{bp}}$$
+
+The minus sign belongs to our convention: a positive bucket DV01 loses value when that node’s rate rises. Do not multiply by 0.0001 again; $q_j$ already contains it.
+
+Define three illustrative shapes at nodes 2/5/10. They are chosen scenarios, not statistically estimated principal components:
+
+| Shape | Node shocks in bp | Linear P&L for our fixed stream, EUR | Exact fixed-flow P&L, EUR |
+|---|---|---:|---:|
+| Level | (+10, +10, +10) | −6.635465 | −6.603289 |
+| Slope | (−10, 0, +10) | −6.216823 | −6.184954 |
+| Curvature | (−5, +10, −5) | +3.145016 | +3.153100 |
+
+For curvature, the arithmetic is
+
+$$\Delta P\approx-\left[0.01517486(-5)+0.01151442(10)+0.63685719(-5)\right]\approx3.145016$$
+
+<KeyRateCurveHedge
+  client:visible
+  shockShape={5}
+  title={"Compare curve shapes and exact P&L"}
+/>
+
+### A zero total DV01 can hide shape risk
+
+Consider **separate invented net books**, with signed bucket DV01 in EUR per bp:
+
+| Net book | Bucket DV01 at 2/5/10 years | Total DV01 | P&L for the slope shock | P&L for the curvature shock |
+|---|---|---:|---:|---:|
+| A | (100, 0, −100) | 0 | +2,000 EUR | 0 EUR |
+| B | (100, −200, 100) | 0 | 0 EUR | +3,000 EUR |
+
+For A, slope P&L is $-[100(-10)+0(0)-100(10)]=2000$ EUR. For B, curvature P&L is $-[100(-5)-200(10)+100(-5)]=3000$ EUR. Both have zero first-order P&L for an equal +10 bp shift, yet their exposures to other directions differ. Gains in the displayed scenarios turn into losses when those shocks reverse.
+
+### When to use it
+
+Inspect the vector, not just its sum, when asset and liability cash flows sit at different maturities. Level, slope and curvature are useful summaries, but they need not span every movement of a finer curve. [CFA distinguishes these shaping risks and the role of key rate durations](https://www.cfainstitute.org/insights/professional-learning/refresher-readings/2026/yield-curve-strategies).
+
+<Categorize
+  client:visible
+  question={"Classify the statements about a zero total DV01."}
+  buckets={[
+  "Supported by the stated first-order model",
+  "Requires more than total DV01"
+]}
+  items={[
+  {
+    "text": "An equal small shock to all compatible nodes has zero linear P&L",
+    "bucket": "Supported by the stated first-order model"
+  },
+  {
+    "text": "A twist or centre-versus-endpoints shock must also have zero P&L",
+    "bucket": "Requires more than total DV01"
+  },
+  {
+    "text": "Two zero-total books can have different bucket vectors",
+    "bucket": "Supported by the stated first-order model"
+  },
+  {
+    "text": "A finite move must have zero exact P&L after convexity effects",
+    "bucket": "Requires more than total DV01"
+  }
+]}
+  explanation={"The sum cancels the parallel direction only. Other directions and nonlinear effects need their own measurements."}
+/>
+
+## Solve a hedge in several buckets
+
+A single hedge quantity can satisfy one general linear constraint. Matching three independent bucket exposures usually needs enough independent instrument risk directions, or an explicit approximate objective and constraints.
+
+Take a **different book** with $q=(100,300,200)^\top$ EUR per bp. The following invented sensitivities describe **one long unit** of each hedge. They are supplied risk numbers, not prices or the cash flows used above:
+
+| Rate bucket | Book | Hedge 1 | Hedge 2 | Hedge 3 |
+|---|---:|---:|---:|---:|
+| 2 years | 100 | 20 | 0 | 0 |
+| 5 years | 300 | 5 | 40 | 0 |
+| 10 years | 200 | 0 | 10 | 50 |
+
+Let $H$ have buckets as rows and instruments as columns, and $n$ be signed hedge units. Target zero linear node exposure:
+
+$$q+Hn=0,\qquad Hn=-q$$
+
+Solve one row at a time:
+
+$$20n_1=-100\quad\Longrightarrow\quad n_1=-5$$
+
+$$5(-5)+40n_2=-300\quad\Longrightarrow\quad n_2=-6.875$$
+
+$$10(-6.875)+50n_3=-200\quad\Longrightarrow\quad n_3=-2.625$$
+
+All three positions are shorts. Substitution gives residual bucket DV01 $(0,0,0)$ before costs under the supplied sensitivities. Consequently any combination of **these three node shocks** has zero first-order P&L. This is not an exact finite-move valuation hedge: no hedge cash flows or convexities have been specified.
+
+<KeyRateCurveHedge
+  client:visible
+  mode={"hedge"}
+  title={"Solve the three-bucket sensitivity system"}
+/>
+
+### Whole units leave a measurable residual
+
+The algebra allows divisible units. If execution requires whole units, rounding to $(−5,−7,−3)$ produces
+
+$$q+Hn_{\text{rounded}}=(0,-5,-20)^\top\ \mathrm{EUR/bp}$$
+
+For the +10 bp level shock, the residual P&L is $-[0(10)-5(10)-20(10)]=250$ EUR. Reversing the shock loses about EUR 250. Choose an explicit rounding, cost and residual-risk objective; rounding each position independently is a demonstration, not a claim of optimal execution. Actual cash bonds, swaps and futures also have financing, margin, lot-size and basis conventions. [CME illustrates instrument-specific key rate adjustments rather than matching face values alone](https://www.cmegroup.com/education/articles-and-reports/case-study-key-rate-duration-adjustment).
+
+### When to use it
+
+Use a common risk-coordinate system for the book and all hedges, solve the chosen target, and check each residual bucket. Add funding and cash constraints separately: $Hn=-q$ matches sensitivities, not initial cash costs. Revalue finite scenarios and rebalance as sensitivities change.
+
+<MCQ
+  client:visible
+  question={"After rounding, the residual bucket DV01 is (0, −5, −20) EUR per bp. What is the first-order P&L for a +10 bp parallel shock?"}
+  options={[
+  {
+    "text": "A gain of EUR 250",
+    "correct": true
+  },
+  {
+    "text": "A loss of EUR 250",
+    "correct": false
+  },
+  {
+    "text": "Zero because the unrounded hedge solved exactly",
+    "correct": false
+  },
+  {
+    "text": "A gain of EUR 25,000",
+    "correct": false
+  }
+]}
+  explanation={"P&L is minus the dot product: −(0 − 50 − 200) = EUR 250. The unit-sized residual has its own risk after rounding."}
+/>
+
+## Independent hedges and a small residual are separate checks
+
+Two different instrument names can carry nearly the same risk vector. Then their large opposing positions may cancel the fitted buckets while amplifying small input changes and trading costs.
+
+To expose this, replace the third hedge by an invented blend
+
+$$h_3(a)=(1-a)h_2+a h_3,\qquad 0\le a\le1$$
+
+This control changes a hypothetical sensitivity column; it does not describe a freely adjustable real contract. At $a=0.01$, the third column is $(0,39.6,10.4)^\top$. The same book now requires approximately
+
+$$n=(-5,253,-262.5)^\top$$
+
+The residual is still essentially zero, but the gross position size is much larger. Increasing the book’s long-node DV01 from 200 to 201 changes the third hedge quantity by **−2 units** here, compared with **−0.02 units** for the original independent matrix.
+
+<KeyRateCurveHedge
+  client:visible
+  mode={"hedge"}
+  independence={0.01}
+  title={"Nearly repeated hedge directions can make positions unstable"}
+/>
+
+At $a=0$, columns 2 and 3 are identical and $H$ is singular. For this particular book, the first two rows force the combined quantity of those hedges to −6.875; their long-node hedge is then only −68.75, which cannot cancel the book’s +200. There is no exact three-bucket solution. More generally, rank loss can leave no solution or many solutions; a unique inverse is unavailable.
+
+A condition number diagnoses sensitivity of the chosen linear system. The visual reports
+
+$$\kappa_\infty(H)=\lVert H\rVert_\infty\lVert H^{-1}\rVert_\infty$$
+
+when the matrix is numerically invertible. Here the infinity norm is the maximum absolute row sum. It is 3 for the original matrix and rises sharply as columns become redundant. [NIST explains conditioning and why a small residual alone need not imply an accurate solution](https://dlmf.nist.gov/3.2.iii). The number depends on the scaling of rows and instrument units; compare it under a consistent convention.
+
+### When to use it
+
+Check rank, conditioning, gross positions and perturbation sensitivity before accepting the residual. A constrained least-squares hedge can trade off residual risk against position limits and costs, but its weights, objective and remaining exposure must be reported. A hedge cannot eliminate risks that its instruments do not span. Curve-node matching also leaves credit spreads, basis, financing and finite-move curvature outside the linear target.
+
+<MCQ
+  client:visible
+  question={"The fitted residual is tiny, but two hedge columns are nearly identical and positions are huge. Which two checks are useful?"}
+  options={[
+  {
+    "text": "Perturb the input sensitivities and inspect position stability",
+    "correct": true
+  },
+  {
+    "text": "Review gross positions, costs and instrument-unit scaling",
+    "correct": true
+  },
+  {
+    "text": "Declare the hedge robust because the residual is small",
+    "correct": false
+  },
+  {
+    "text": "Assume changing instrument names adds an independent risk direction",
+    "correct": false
+  }
+]}
+  explanation={"A small residual measures fit to the supplied matrix. Conditioning and perturbation tests measure sensitivity of that fit; implementation costs and limits remain separate."}
+  allowMultiple
+/>
+
+## Reconstruct the hedge
+
+Define the rates and interpolation before the buckets. Calculate node derivatives in consistent units, test several shock directions, and keep finite repricing beside the local estimate. Solve the book-plus-hedge vector, then test rounding, rank, conditioning and costs. A zero sum or a tiny fitted residual answers only part of the question.
+
+<MindMap
+  client:visible
+  title={"From curve coordinates to a maintainable hedge"}
+  caption={"Every sensitivity belongs to a coordinate, a bump and a set of assumptions."}
+  root={{
+  "label": "Curve risk",
+  "children": [
+    {
+      "label": "Coordinates",
+      "children": [
+        {
+          "label": "Continuous zero rates and explicit interpolation"
+        },
+        {
+          "label": "Node deltas differ from recalibrated quote deltas"
+        }
+      ]
+    },
+    {
+      "label": "Measure",
+      "children": [
+        {
+          "label": "KRD is relative derivative sensitivity"
+        },
+        {
+          "label": "Bucket DV01 is currency per basis point"
+        },
+        {
+          "label": "Coherent derivative basis reconstructs a parallel shift"
+        }
+      ]
+    },
+    {
+      "label": "Scenarios",
+      "children": [
+        {
+          "label": "Level, slope and curvature are defined directions"
+        },
+        {
+          "label": "Zero total DV01 can hide shape risk"
+        }
+      ]
+    },
+    {
+      "label": "Hedge",
+      "children": [
+        {
+          "label": "Book plus matrix times signed units"
+        },
+        {
+          "label": "Round and check every residual bucket"
+        }
+      ]
+    },
+    {
+      "label": "Validate",
+      "children": [
+        {
+          "label": "Independent directions, conditioning and perturbations"
+        },
+        {
+          "label": "Finite repricing, basis, funding and costs"
+        }
+      ]
+    }
+  ]
+}}
+/>
+<Quiz
+  client:visible
+  title={"Check the curve risk and the hedge"}
+  questions={[
+  {
+    "question": "A four-year payment lies between zero-rate nodes at years 2 and 5. What sensitivity split follows from linear zero-rate interpolation?",
+    "options": [
+      {
+        "text": "One-third of its rate sensitivity to year 2 and two-thirds to year 5",
+        "correct": true
+      },
+      {
+        "text": "Two-thirds to year 2 and one-third to year 5",
+        "correct": false
+      },
+      {
+        "text": "All to year 5 because the payment is nearer that node",
+        "correct": false
+      }
+    ],
+    "explanation": "The four-year rate is one-third of the two-year rate plus two-thirds of the five-year rate. The same weights enter its rate derivative."
+  },
+  {
+    "question": "Bucket DV01 is already in EUR per bp. How do you estimate P&L for shocks stated in bp?",
+    "options": [
+      {
+        "text": "Take minus the dot product of bucket DV01 and bp shocks",
+        "correct": true
+      },
+      {
+        "text": "Multiply the dot product by another 0.0001",
+        "correct": false
+      },
+      {
+        "text": "Add the rate changes without sensitivity weights",
+        "correct": false
+      }
+    ],
+    "explanation": "The basis-point scale is already inside DV01. Multiplying by it again understates the result by a factor of 10,000."
+  },
+  {
+    "question": "When does the sum of derivative KRDs equal parallel duration?",
+    "options": [
+      {
+        "text": "When their coherent shock basis sums to a parallel shift of the same curve",
+        "correct": true
+      },
+      {
+        "text": "For every possible collection of unrelated local shocks",
+        "correct": false
+      },
+      {
+        "text": "Only when every payment falls exactly on a curve node",
+        "correct": false
+      }
+    ],
+    "explanation": "A partition-of-unity basis reconstructs the common parallel direction, including interpolated cash flows. Finite-bump sums can differ by nonlinear numerical terms."
+  },
+  {
+    "question": "Which risks can remain after exact cancellation of all three modelled bucket derivatives?",
+    "options": [
+      {
+        "text": "Finite-move curvature and changes in the sensitivities",
+        "correct": true
+      },
+      {
+        "text": "Credit, basis, funding and execution effects outside the target",
+        "correct": true
+      },
+      {
+        "text": "A first-order combination of the same three zero-node shocks",
+        "correct": false
+      },
+      {
+        "text": "A permanently zero need for future risk measurement",
+        "correct": false
+      }
+    ],
+    "explanation": "The fitted three-coordinate linear response is cancelled. Nonlinear changes and risks outside those coordinates are not.",
+    "allowMultiple": true
+  },
+  {
+    "question": "Two hedge columns become identical. What happens to the general three-bucket inverse problem?",
+    "options": [
+      {
+        "text": "A unique inverse is unavailable; compatibility determines whether there are no or many solutions",
+        "correct": true
+      },
+      {
+        "text": "Every book automatically receives a unique cheaper hedge",
+        "correct": false
+      },
+      {
+        "text": "The distinct instrument names preserve full rank",
+        "correct": false
+      }
+    ],
+    "explanation": "Matrix rank concerns independent risk directions, not labels. Singular systems can be incompatible or underdetermined."
+  },
+  {
+    "question": "A whole-unit hedge leaves residual DV01 (10, −20, 10) EUR per bp. For shocks (−5, +10, −5) bp, what is linear P&L?",
+    "options": [
+      {
+        "text": "A gain of EUR 300",
+        "correct": true
+      },
+      {
+        "text": "A loss of EUR 300",
+        "correct": false
+      },
+      {
+        "text": "Zero because total DV01 is zero",
+        "correct": false
+      }
+    ],
+    "explanation": "The dot product is −50 − 200 − 50 = −300. P&L is its negative, +300 EUR; the zero sum cancels only an equal node shock."
+  }
+]}
+/>
