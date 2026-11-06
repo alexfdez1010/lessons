@@ -11,7 +11,7 @@ import {
 
 /** Props for {@link ProgressTransfer}. All user-facing strings come from the caller. */
 export interface ProgressTransferProps {
-  /** Card heading. */
+  /** Disclosure heading. */
   title?: string;
   /** Sub-text under the heading explaining what the buttons do. */
   description?: string;
@@ -118,28 +118,27 @@ export function ProgressTransfer({
           : null;
 
   return (
-    <section
-      className={cx(
-        'rounded-card border border-ink-200 bg-surface p-5 shadow-soft sm:p-6',
-        className,
-      )}
-    >
-      <div className="flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <p className="font-display font-semibold text-ink-900">{title}</p>
-          <p className="mt-0.5 max-w-prose text-sm text-ink-500">{description}</p>
-          <p className="mt-1.5 h-5 text-sm font-medium text-brand-700" aria-live="polite">
+    <details className={cx('group rounded-card bg-surface shadow-soft', className)}>
+      <summary className="flex min-h-16 cursor-pointer list-none items-center justify-between gap-4 rounded-card px-4 py-3 transition-colors hover:bg-brand-50 [&::-webkit-details-marker]:hidden sm:px-5">
+        <span className="min-w-0">
+          <span className="block font-display text-sm font-semibold text-ink-900">{title}</span>
+          <span className="mt-0.5 block min-h-5 text-sm text-ink-600" aria-live="polite">
             {count !== null && fill(countLabel, count)}
-          </p>
-        </div>
+          </span>
+        </span>
+        <svg viewBox="0 0 20 20" className="h-5 w-5 shrink-0 text-ink-500 transition-transform group-open:rotate-180 motion-reduce:transition-none" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="m5 7.5 5 5 5-5" />
+        </svg>
+      </summary>
 
-        <div className="flex shrink-0 flex-wrap gap-2">
+      <div className="px-4 pb-4 sm:px-5 sm:pb-5">
+        <p className="max-w-prose text-sm leading-relaxed text-ink-600">{description}</p>
+        <div className="mt-4 flex flex-wrap gap-2">
           <button
             type="button"
             onClick={handleExport}
-            className="inline-flex items-center gap-2 rounded-pill bg-brand-600 px-5 py-2.5 font-display text-sm font-semibold text-white shadow-soft transition-all hover:-translate-y-0.5 hover:bg-brand-700 hover:shadow-lift focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500 motion-reduce:transition-none motion-reduce:hover:translate-y-0"
+            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-pill bg-surface-sunken px-4 py-2.5 text-sm font-semibold text-brand-700 transition-colors hover:bg-brand-100"
           >
-            {/* Download arrow into tray. */}
             <svg viewBox="0 0 20 20" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="M10 3v9m0 0l-3.2-3.2M10 12l3.2-3.2M4 15.5h12" />
             </svg>
@@ -148,9 +147,8 @@ export function ProgressTransfer({
           <button
             type="button"
             onClick={() => fileRef.current?.click()}
-            className="inline-flex items-center gap-2 rounded-pill border border-brand-200 bg-surface px-5 py-2.5 font-display text-sm font-semibold text-brand-700 transition-colors hover:bg-brand-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
+            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-pill bg-surface-sunken px-4 py-2.5 text-sm font-semibold text-brand-700 transition-colors hover:bg-brand-100"
           >
-            {/* Upload arrow out of tray. */}
             <svg viewBox="0 0 20 20" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="M10 12V3m0 0L6.8 6.2M10 3l3.2 3.2M4 15.5h12" />
             </svg>
@@ -166,23 +164,23 @@ export function ProgressTransfer({
             aria-hidden="true"
           />
         </div>
-      </div>
 
-      {statusText && (
-        <p
-          role="status"
-          aria-live="polite"
-          className={cx(
-            'mt-4 rounded-card px-4 py-2.5 text-sm font-medium',
-            status.kind === 'error'
-              ? 'bg-danger/10 text-danger'
-              : 'bg-brand-50 text-brand-700',
-          )}
-        >
-          {statusText}
-        </p>
-      )}
-    </section>
+        {statusText && (
+          <p
+            role="status"
+            aria-live="polite"
+            className={cx(
+              'mt-4 rounded-card px-4 py-3 text-sm font-medium',
+              status.kind === 'error'
+                ? 'bg-danger/10 text-danger'
+                : 'bg-brand-50 text-brand-700',
+            )}
+          >
+            {statusText}
+          </p>
+        )}
+      </div>
+    </details>
   );
 }
 

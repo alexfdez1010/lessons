@@ -26,7 +26,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const DIST = join(ROOT, 'dist');
 const OUT_DIR = join(ROOT, 'public', 'og');
-const PORT = 4321;
+const PORT = Number(process.env.OG_PORT ?? 4321);
 const HOST = '127.0.0.1';
 const BASE = `http://${HOST}:${PORT}`;
 const WIDTH = 1200;

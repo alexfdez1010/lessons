@@ -17,6 +17,9 @@ export type Lang = keyof typeof languages;
 export const ui = {
   en: {
     'brand.title': 'Finance Lessons',
+    'brand.short': 'Finance',
+    'nav.primary': 'Main navigation',
+    'nav.footer': 'Footer navigation',
     'home.seoTitle': 'Finance, from zero to expert',
     'nav.catalog': 'Catalog',
     'nav.github': 'GitHub',
@@ -79,6 +82,9 @@ export const ui = {
   },
   es: {
     'brand.title': 'Lecciones de Finanzas',
+    'brand.short': 'Finanzas',
+    'nav.primary': 'Navegación principal',
+    'nav.footer': 'Navegación del pie de página',
     'home.seoTitle': 'Finanzas, de cero a experto',
     'nav.catalog': 'Catálogo',
     'nav.github': 'GitHub',

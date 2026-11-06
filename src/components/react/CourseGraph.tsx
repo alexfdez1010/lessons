@@ -253,14 +253,6 @@ const DEFAULT_DIFFICULTY_LABELS: Record<Difficulty, string> = {
   expert: 'Expert',
 };
 
-/** Tier dot color for inactive level chips (static literals for Tailwind). */
-const DIFFICULTY_DOT_CLASS: Record<Difficulty, string> = {
-  beginner: 'bg-emerald-500',
-  intermediate: 'bg-amber-500',
-  advanced: 'bg-rose-500',
-  expert: 'bg-violet-500',
-};
-
 /** Active (selected) chip skin per tier — badge tint + matching border. */
 const DIFFICULTY_CHIP_ACTIVE_CLASS: Record<Difficulty, string> = {
   beginner: 'difficulty-beginner border-emerald-300',
@@ -289,10 +281,10 @@ function FilterChip({ active, onClick, activeClass, children }: FilterChipProps)
       aria-pressed={active}
       onClick={onClick}
       className={cx(
-        'inline-flex items-center gap-1.5 rounded-pill border px-3 py-1.5 text-sm font-medium shadow-soft transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-300 motion-reduce:transition-none motion-reduce:hover:translate-y-0',
+        'inline-flex min-h-11 items-center justify-center gap-1.5 rounded-pill border px-3 py-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 motion-reduce:transition-none',
         active
           ? (activeClass ?? 'border-brand-500 bg-brand-600 text-white')
-          : 'border-ink-200 bg-surface text-ink-600 hover:-translate-y-px hover:border-brand-300 hover:text-brand-700',
+          : 'border-ink-200 bg-surface text-ink-700 hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700',
       )}
     >
       {active ? (
@@ -471,9 +463,9 @@ export function CourseGraph({
     <figure className={cx('not-prose', className)}>
       {/* Filter bar — multi-select level + roadmap-tag chips, persisted in the
           URL (?level=a,b&tag=x,y) so any filtered view is shareable as a link. */}
-      <div className="mb-10 flex flex-col gap-3 rounded-card border border-ink-100 bg-surface p-4 shadow-soft sm:p-5">
+      <div className="mb-8 flex flex-col gap-3 rounded-card bg-surface p-4 shadow-soft sm:p-5">
         <div role="group" aria-label={levelLabel} className="flex flex-wrap items-center gap-2">
-          <span className="mr-1 min-w-14 text-xs font-semibold uppercase tracking-wider text-ink-400">
+          <span className="w-full text-sm font-semibold text-ink-700 sm:mr-1 sm:w-auto sm:min-w-14">
             {levelLabel}
           </span>
           <FilterChip active={levels.length === 0} onClick={() => persistFilters([], tags)}>
@@ -486,32 +478,44 @@ export function CourseGraph({
               onClick={() => toggleLevel(d)}
               activeClass={DIFFICULTY_CHIP_ACTIVE_CLASS[d]}
             >
-              <span
-                aria-hidden="true"
-                className={cx('h-2 w-2 shrink-0 rounded-pill', DIFFICULTY_DOT_CLASS[d])}
-              />
               {difficultyLabels[d]}
             </FilterChip>
           ))}
         </div>
 
         {tagOptions.length > 0 ? (
-          <div role="group" aria-label={tagsLabel} className="flex flex-wrap items-center gap-2">
-            <span className="mr-1 min-w-14 text-xs font-semibold uppercase tracking-wider text-ink-400">
-              {tagsLabel}
-            </span>
-            <FilterChip active={tags.length === 0} onClick={() => persistFilters(levels, [])}>
-              {allTagsLabel}
-            </FilterChip>
-            {tagOptions.map((o) => (
-              <FilterChip key={o.tag} active={tags.includes(o.tag)} onClick={() => toggleTag(o.tag)}>
-                {o.icon ? <span aria-hidden="true">{o.icon}</span> : null}
-                {o.label}
+          <details className="group/paths">
+            <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-4 rounded-lg px-1 py-2 text-sm [&::-webkit-details-marker]:hidden">
+              <span className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">
+                <span className="font-semibold text-ink-700">{tagsLabel}</span>
+                <span className="text-ink-600">
+                  {tags.length > 0
+                    ? tagOptions.filter((o) => tags.includes(o.tag)).map((o) => o.label).join(', ')
+                    : allTagsLabel}
+                </span>
+              </span>
+              <svg viewBox="0 0 20 20" className="h-5 w-5 shrink-0 text-ink-500 transition-transform group-open/paths:rotate-180 motion-reduce:transition-none" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="m5 7.5 5 5 5-5" />
+              </svg>
+            </summary>
+            <div role="group" aria-label={tagsLabel} className="mt-2 flex flex-wrap items-center gap-2 pb-1">
+              <FilterChip active={tags.length === 0} onClick={() => persistFilters(levels, [])}>
+                {allTagsLabel}
               </FilterChip>
-            ))}
-          </div>
+              {tagOptions.map((o) => (
+                <FilterChip key={o.tag} active={tags.includes(o.tag)} onClick={() => toggleTag(o.tag)}>
+                  {o.icon ? <span aria-hidden="true">{o.icon}</span> : null}
+                  {o.label}
+                </FilterChip>
+              ))}
+            </div>
+          </details>
         ) : null}
       </div>
+
+      {caption ? (
+        <figcaption className="mb-8 max-w-3xl text-sm leading-relaxed text-ink-600">{caption}</figcaption>
+      ) : null}
 
       {visibleNodes.length === 0 ? (
         <p className="py-12 text-center text-ink-500">{emptyLabel}</p>
@@ -555,11 +559,11 @@ export function CourseGraph({
         <ol className="relative flex list-none flex-col gap-y-12 p-0 sm:gap-y-20">
           {rows.map((row, layer) => (
             <li key={layer} className="m-0 p-0">
-              <ul className="flex list-none flex-wrap items-stretch justify-evenly gap-x-6 gap-y-4 p-0 sm:gap-x-12">
+              <ul className="flex list-none flex-wrap items-stretch justify-evenly gap-x-4 gap-y-4 p-0 sm:gap-x-8 sm:gap-y-6">
                 {row.map((n) => {
-                  const tint = n.accent === 'accent' ? 'bg-accent-50' : 'bg-brand-50';
+                  const tint = n.accent === 'accent' ? 'bg-accent-500/10' : 'bg-brand-50';
                   const tintText =
-                    n.accent === 'accent' ? 'group-hover:text-accent-700' : 'group-hover:text-brand-700';
+                    n.accent === 'accent' ? 'group-hover:text-accent-600' : 'group-hover:text-brand-700';
                   // Difficulty drives the card's colored left edge + tier tint.
                   const edge = n.difficulty
                     ? DIFFICULTY_EDGE_CLASS[n.difficulty]
@@ -578,7 +582,7 @@ export function CourseGraph({
                         href={n.href}
                         title={`${n.title} · ${prog.completed}/${prog.total} ${lessonsLabel}${isDone ? ` · ${finishedLabel}` : ''}`}
                         className={cx(
-                          'group relative flex h-full w-28 max-w-[40vw] flex-col rounded-card border border-ink-200 p-2.5 shadow-soft transition-all hover:-translate-y-1 hover:border-brand-300 hover:shadow-lift motion-reduce:transition-none motion-reduce:hover:translate-y-0 sm:w-44 sm:max-w-[80vw] sm:p-3',
+                          'group relative flex h-full w-40 max-w-[calc(100vw-2rem)] flex-col rounded-card border border-ink-200 p-3.5 shadow-soft transition-[transform,box-shadow,border-color] hover:-translate-y-1 hover:border-brand-300 hover:shadow-lift motion-reduce:transition-none motion-reduce:hover:translate-y-0 sm:w-56 sm:p-4',
                           edge,
                           isDone && 'ring-2 ring-brand-400 ring-offset-1',
                         )}
@@ -594,7 +598,7 @@ export function CourseGraph({
                             <span className="sr-only">{finishedLabel}</span>
                           </span>
                         ) : null}
-                        <div className="mb-1.5 flex items-center justify-between gap-2 sm:mb-2">
+                        <div className="mb-3 flex items-center justify-between gap-2">
                           <span
                             className={cx(
                               'grid h-7 w-7 shrink-0 place-items-center rounded-card text-base sm:h-9 sm:w-9 sm:text-xl',
@@ -611,7 +615,7 @@ export function CourseGraph({
                         </div>
                         <h3
                           className={cx(
-                            'font-display text-sm font-semibold leading-snug text-ink-900',
+                            'font-display text-sm font-semibold leading-snug text-ink-900 sm:text-base',
                             tintText,
                           )}
                         >
@@ -622,10 +626,11 @@ export function CourseGraph({
                             {difficultyLabels[n.difficulty]}
                           </span>
                         ) : null}
+                        <p className="mt-2 hidden text-xs leading-relaxed text-ink-600 sm:line-clamp-3">{n.description}</p>
                         <p
                           className={cx(
-                            'mt-1.5 text-xs font-medium',
-                            isDone ? 'text-brand-700' : 'text-ink-400',
+                            'mt-auto pt-3 text-xs font-medium',
+                            isDone ? 'text-brand-700' : 'text-ink-600',
                           )}
                         >
                           {prog.completed}/{prog.total} {lessonsLabel}
@@ -639,19 +644,6 @@ export function CourseGraph({
           ))}
         </ol>
       </div>
-
-      {/* Difficulty legend — the zero-to-expert path at a glance. */}
-      <ul className="mt-8 flex list-none flex-wrap items-center justify-center gap-3 p-0">
-        {(['beginner', 'intermediate', 'advanced', 'expert'] as Difficulty[]).map((d) => (
-          <li key={d} className="m-0 p-0">
-            <span className={cx('difficulty-badge', DIFFICULTY_CLASS[d])}>{difficultyLabels[d]}</span>
-          </li>
-        ))}
-      </ul>
-
-      {caption ? (
-        <figcaption className="mt-6 text-center text-sm text-ink-500">{caption}</figcaption>
-      ) : null}
     </figure>
   );
 }

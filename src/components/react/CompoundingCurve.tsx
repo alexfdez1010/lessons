@@ -22,6 +22,10 @@ export interface CompoundingCurveProps {
   caption?: string;
   /** Currency symbol prefixed to money values. Defaults to `'$'`. */
   currencyPrefix?: string;
+  /** Locale used to format the monetary readouts. Defaults to `'en-US'`. */
+  locale?: string;
+  /** Accessible chart description with {title}, {start}, {rate}, {years}, {compound}, and {simple} placeholders. */
+  chartLabel?: string;
   /** Starting amount. Defaults to `1000`. */
   principal?: number;
   /** Initial annual rate as a fraction (0–0.15). Defaults to `0.08`. */
@@ -36,8 +40,8 @@ const prefersReducedMotion = (): boolean =>
   typeof window.matchMedia === 'function' &&
   window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-const money = (prefix: string, value: number): string =>
-  `${prefix}${new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(
+const money = (prefix: string, value: number, locale: string): string =>
+  `${prefix}${new Intl.NumberFormat(locale, { maximumFractionDigits: 0 }).format(
     Math.round(value),
   )}`;
 
@@ -61,6 +65,8 @@ export function CompoundingCurve({
   cagrLabel = 'CAGR',
   caption = 'Simple growth adds the same amount each year. Compound growth earns interest on past interest — so it curves upward and leaves the straight line behind.',
   currencyPrefix = '$',
+  locale = 'en-US',
+  chartLabel = '{title}: {start} growing at {rate}% a year for {years} years reaches {compound} with compounding versus {simple} with simple growth.',
   principal = 1000,
   rate = 0.08,
   years = 20,
@@ -132,6 +138,18 @@ export function CompoundingCurve({
   }, [rateState, yearsState]);
 
   const ratePct = Math.round(rateState * 100);
+  const chartValues = {
+    title,
+    start: money(currencyPrefix, principal, locale),
+    rate: String(ratePct),
+    years: String(yearsState),
+    compound: money(currencyPrefix, finalCompound, locale),
+    simple: money(currencyPrefix, finalSimple, locale),
+  };
+  const chartDescription = chartLabel.replace(
+    /\{(title|start|rate|years|compound|simple)\}/g,
+    (_, key: keyof typeof chartValues) => chartValues[key],
+  );
 
   return (
     <figure
@@ -143,7 +161,7 @@ export function CompoundingCurve({
       <figcaption className="flex items-center justify-between gap-3">
         <span className="font-medium text-ink-900">{title}</span>
         <span className="rounded-pill bg-brand-600 px-3 py-1 text-sm font-medium text-white">
-          {startLabel}: {money(currencyPrefix, principal)}
+          {startLabel}: {chartValues.start}
         </span>
       </figcaption>
 
@@ -163,10 +181,7 @@ export function CompoundingCurve({
         viewBox={`0 0 ${W} ${H}`}
         className="mt-3 w-full"
         role="img"
-        aria-label={`${title}: ${money(currencyPrefix, principal)} growing at ${ratePct}% a year for ${yearsState} years reaches ${money(
-          currencyPrefix,
-          finalCompound,
-        )} with compounding versus ${money(currencyPrefix, finalSimple)} with simple growth.`}
+        aria-label={chartDescription}
       >
         {/* Starting baseline */}
         <line
@@ -237,7 +252,7 @@ export function CompoundingCurve({
         <div className="rounded-card border border-ink-100 bg-surface-sunken/40 px-3 py-2">
           <dt className="text-ink-500">{finalValueLabel}</dt>
           <dd className="font-mono text-lg font-semibold text-brand-700">
-            {money(currencyPrefix, finalCompound)}
+            {chartValues.compound}
           </dd>
         </div>
         <div className="rounded-card border border-ink-100 bg-surface-sunken/40 px-3 py-2">
