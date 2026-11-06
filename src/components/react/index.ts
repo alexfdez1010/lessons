@@ -903,3 +903,6 @@ export type { CopulaTailRow, CopulaTailComparisonProps } from '@/components/reac
 
 export { DEFAULT_AUCTION_PRICES, DEFAULT_AUCTION_BUYS, DEFAULT_AUCTION_SELLS, calculateCallAuction, CallAuctionClearing } from '@/components/react/CallAuctionClearing';
 export type { AuctionLimitOrder, CallAuctionInputs, AuctionCandidate, CallAuctionClearingProps } from '@/components/react/CallAuctionClearing';
+
+export { calculateAlphaModels, AlphaModelComparison } from '@/components/react/AlphaModelComparison';
+export type { AlphaModelFit, AlphaModelResult, AlphaModelComparisonProps } from '@/components/react/AlphaModelComparison';
