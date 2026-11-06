@@ -900,3 +900,6 @@ export type { RepaymentStructureInputs, RepaymentStructureRow, RepaymentStructur
 
 export { COPULA_RHOS, COPULA_NUS, COPULA_QUANTILES, calculateCopulaTail, CopulaTailComparison } from '@/components/react/CopulaTailComparison';
 export type { CopulaTailRow, CopulaTailComparisonProps } from '@/components/react/CopulaTailComparison';
+
+export { DEFAULT_AUCTION_PRICES, DEFAULT_AUCTION_BUYS, DEFAULT_AUCTION_SELLS, calculateCallAuction, CallAuctionClearing } from '@/components/react/CallAuctionClearing';
+export type { AuctionLimitOrder, CallAuctionInputs, AuctionCandidate, CallAuctionClearingProps } from '@/components/react/CallAuctionClearing';
