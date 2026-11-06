@@ -909,3 +909,6 @@ export type { AlphaModelFit, AlphaModelResult, AlphaModelComparisonProps } from 
 
 export { calculateReinvestmentGrowth, ReinvestmentGrowthValue } from '@/components/react/ReinvestmentGrowthValue';
 export type { ReinvestmentInputs, ReinvestmentRow, ReinvestmentResult, ReinvestmentGrowthValueProps } from '@/components/react/ReinvestmentGrowthValue';
+
+export { calculateModifiedDietz, ModifiedDietzTimeline } from '@/components/react/ModifiedDietzTimeline';
+export type { DietzCashFlow, ModifiedDietzInputs, ModifiedDietzTimelineProps } from '@/components/react/ModifiedDietzTimeline';
