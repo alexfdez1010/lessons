@@ -873,3 +873,6 @@ export type { RevolvingCreditInputs, RevolvingCreditRow, RevolvingCreditBalanceP
 
 export { valueDatedCashFlow, valueCashFlowStream, CashFlowValuationTimeline } from '@/components/react/CashFlowValuationTimeline';
 export type { TimelineCashFlow, CashFlowValuationTimelineProps } from '@/components/react/CashFlowValuationTimeline';
+
+export { calculatePerpetuitySeries, PerpetuityConvergence } from '@/components/react/PerpetuityConvergence';
+export type { PerpetuitySeriesInput, PerpetuitySeriesResult, PerpetuityConvergenceProps } from '@/components/react/PerpetuityConvergence';
