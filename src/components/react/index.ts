@@ -906,3 +906,6 @@ export type { AuctionLimitOrder, CallAuctionInputs, AuctionCandidate, CallAuctio
 
 export { calculateAlphaModels, AlphaModelComparison } from '@/components/react/AlphaModelComparison';
 export type { AlphaModelFit, AlphaModelResult, AlphaModelComparisonProps } from '@/components/react/AlphaModelComparison';
+
+export { calculateReinvestmentGrowth, ReinvestmentGrowthValue } from '@/components/react/ReinvestmentGrowthValue';
+export type { ReinvestmentInputs, ReinvestmentRow, ReinvestmentResult, ReinvestmentGrowthValueProps } from '@/components/react/ReinvestmentGrowthValue';
