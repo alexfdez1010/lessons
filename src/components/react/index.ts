@@ -933,3 +933,6 @@ export type { FcffBridgeInputs, FcffOperatingBridgeProps } from '@/components/re
 
 export { calculateReturnMeasurement, ReturnMeasurementPaths } from '@/components/react/ReturnMeasurementPaths';
 export type { ReturnMeasurementResult, ReturnMeasurementPathsProps } from '@/components/react/ReturnMeasurementPaths';
+
+export { calculateBasisHedge, BasisHedgeExplorer, calculateMinimumVarianceHedge, MinimumVarianceHedge } from '@/components/react/BasisHedgeExplorer';
+export type { BasisHedgeInputs, BasisHedgeExplorerProps, MinimumVarianceInputs, MinimumVarianceHedgeProps } from '@/components/react/BasisHedgeExplorer';
