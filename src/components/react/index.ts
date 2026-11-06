@@ -894,3 +894,6 @@ export type { LendingCollateralInputs, LendingCollateralResult, SecuritiesLendin
 
 export { calculateExerciseFlow, ExerciseAssignmentFlow } from '@/components/react/ExerciseAssignmentFlow';
 export type { ExerciseOptionType, ExercisePosition, ExerciseStyle, ExerciseSettlement, ExercisePhase, ExerciseFlowInput, ExerciseFlowResult, ExerciseAssignmentFlowProps } from '@/components/react/ExerciseAssignmentFlow';
+
+export { simulateRepaymentStructures, RepaymentStructures } from '@/components/react/RepaymentStructures';
+export type { RepaymentStructureInputs, RepaymentStructureRow, RepaymentStructurePlan, RepaymentStructuresProps } from '@/components/react/RepaymentStructures';
