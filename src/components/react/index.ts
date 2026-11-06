@@ -960,3 +960,6 @@ export type { CashBudgetPayment, CashBudgetInputs, CashBudgetTimelineProps } fro
 
 export { calculateEulerRisk, calculateEulerTransfer, EulerRiskContributions } from '@/components/react/EulerRiskContributions';
 export type { EulerRiskInputs, EulerRiskResult, EulerRiskContributionsProps } from '@/components/react/EulerRiskContributions';
+
+export { buildRightsIssue, planRightsAction, RightsIssuePlanner } from '@/components/react/RightsIssuePlanner';
+export type { RightsIssueInputs, RightsAction, RightsIssuePlannerProps } from '@/components/react/RightsIssuePlanner';
