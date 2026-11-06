@@ -32,7 +32,19 @@ export interface KellyGrowthCurveProps {
   axisLabel?: string;
   /** One-line takeaway shown under the chart. */
   caption?: string;
-  /** Initial win probability as a fraction (0.5–0.8). Defaults to `0.6`. */
+  /** Label for exp(maximum log growth) minus one, an ordinary growth-factor equivalent. */
+  geometricGrowthLabel?: string;
+  /** Label for the exact positive zero-growth root; it may lie beyond the plotted domain. */
+  zeroCrossingLabel?: string;
+  /** Text when no positive zero-growth root exists. */
+  noRootLabel?: string;
+  /** Locale for numeric labels. Defaults to en-US. */
+  locale?: string;
+  /** Accessible description template: {title}, {probability}, {odds}, {kelly}, {logGrowth}, {geometricGrowth}, {zeroCrossing}. */
+  chartLabel?: string;
+  /** Accessible description template when the constrained Kelly stake is zero. */
+  noEdgeChartLabel?: string;
+  /** Initial win probability as a fraction (0.3–0.8). Defaults to `0.6`. */
   probability?: number;
   /** Initial net payoff odds b (0.5–3). Defaults to `1`. */
   odds?: number;
@@ -44,19 +56,45 @@ const prefersReducedMotion = (): boolean =>
   typeof window.matchMedia === 'function' &&
   window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-const pct = (value: number): string =>
-  `${new Intl.NumberFormat('en-US', { maximumFractionDigits: 1 }).format(value * 100)}%`;
+/** Exact binary expected log growth for a nonnegative fraction below one. */
+export function binaryKellyLogGrowth(p: number, b: number, f: number): number {
+  if (!Number.isFinite(p) || p <= 0 || p >= 1 || !Number.isFinite(b) || b <= 0 ||
+      !Number.isFinite(f) || f < 0 || f >= 1) {
+    throw new Error('KellyGrowthCurve requires 0 < p < 1, positive finite odds, and 0 <= f < 1.');
+  }
+  return p * Math.log1p(b * f) + (1 - p) * Math.log1p(-f);
+}
 
-const signedPct = (value: number): string =>
-  `${value >= 0 ? '+' : ''}${pct(value)}`;
+/** Model for the chart's supported probability/odds range. The second zero is
+ * solved on the full valid fraction interval, not clipped to the plotted 99%. */
+export function calculateBinaryKelly(p: number, b: number) {
+  if (!Number.isFinite(p) || p < 0.3 || p > 0.8 || !Number.isFinite(b) || b < 0.5 || b > 3) {
+    throw new Error('KellyGrowthCurve requires probability from 0.3 to 0.8 and odds from 0.5 to 3.');
+  }
+  const edge = p * (b + 1) - 1;
+  const fStar = Math.max(0, edge / b);
+  const maxLogGrowth = binaryKellyLogGrowth(p, b, fStar);
+  let zeroCrossing: number | null = null;
+  if (edge > 0) {
+    let lo = fStar;
+    let hi = 1 - Number.EPSILON;
+    for (let i = 0; i < 80; i++) {
+      const mid = (lo + hi) / 2;
+      if (binaryKellyLogGrowth(p, b, mid) > 0) lo = mid;
+      else hi = mid;
+    }
+    zeroCrossing = (lo + hi) / 2;
+  }
+  return { edge, fStar, maxLogGrowth, geometricGrowth: Math.expm1(maxLogGrowth), zeroCrossing };
+}
 
 /**
  * Interactive Kelly-criterion growth curve. For a binary bet — win `b` times the
  * stake with probability `p`, lose the stake with probability `q = 1 − p` — the
- * long-run compound growth rate per bet as a function of the fraction `f` of
+ * expected log growth per bet as a function of the fraction `f` of
  * bankroll wagered is `G(f) = p·ln(1 + b·f) + q·ln(1 − f)`. The curve is an
  * inverted hump: it rises from zero, peaks at the Kelly fraction `f*`, returns
- * to zero near `2·f*`, then dives to −∞ as `f → 1`. Drag the probability and
+ * to zero at a numerically solved root, then dives to −∞ as `f → 1`. Drag the probability and
  * odds sliders and the curve, zone shading, peak marker and readouts update
  * live; the curve animates in on every change. Respects `prefers-reduced-motion`
  * (jumps straight to the final curve). If there is no edge (`f* ≤ 0`) it shows a
@@ -66,22 +104,29 @@ export function KellyGrowthCurve({
   title = 'The Kelly growth curve',
   probabilityLabel = 'Win probability p',
   oddsLabel = 'Payoff odds b',
-  growthLabel = 'Growth per bet G(f)',
+  growthLabel = 'Expected log growth g(f)',
   edgeLabel = 'Edge',
   kellyLabel = 'Kelly fraction f*',
-  maxGrowthLabel = 'Max growth per bet',
+  maxGrowthLabel = 'Maximum expected log growth per bet',
   optimalMarkerLabel = 'optimal',
   zeroMarkerLabel = 'breaks even',
   underZoneLabel = 'under-betting',
   overZoneLabel = 'over-betting',
-  ruinZoneLabel = 'ruin',
+  ruinZoneLabel = 'Negative expected log growth',
   noEdgeLabel = 'No edge — don’t bet.',
   axisLabel = 'Fraction of bankroll bet (f)',
-  caption = 'Bet too little and you leave growth on the table; bet too much and volatility devours it. The peak — the Kelly fraction — is the single bet size that compounds your bankroll fastest. Past twice Kelly, growth goes negative: you go broke with probability 1.',
+  caption = 'The exact binary log-growth curve peaks at Kelly. Its positive zero is solved numerically, not set to twice Kelly. Log growth is not the return on each realised bet; the geometric-equivalent rate is exp(g) minus one. The far-negative tail is clipped at the chart floor so the peak remains readable. Negative long-run growth does not mean exact zero after finitely many fractional losses.',
+  geometricGrowthLabel = 'Geometric-equivalent return per bet',
+  zeroCrossingLabel = 'Positive zero-growth fraction',
+  noRootLabel = 'No positive root',
+  locale = 'en-US',
+  chartLabel = '{title}: win probability {probability}, net odds {odds}. Kelly fraction {kelly}; maximum expected log growth {logGrowth}; geometric-equivalent return {geometricGrowth}. The positive zero-growth fraction is {zeroCrossing}; the plot ends at 99% of bankroll and clips the far-negative tail.',
+  noEdgeChartLabel = '{title}: win probability {probability}, net odds {odds}. With nonnegative stakes the optimum is zero; positive stakes have negative expected log growth under this model.',
   probability = 0.6,
   odds = 1,
   className,
 }: KellyGrowthCurveProps) {
+  calculateBinaryKelly(probability, odds);
   const id = useId();
   const [p, setP] = useState(probability);
   const [b, setB] = useState(odds);
@@ -94,43 +139,23 @@ export function KellyGrowthCurve({
   const padTop = 18;
   const padBottom = 30;
 
-  const q = 1 - p;
-  const edge = p * b - q;
-  // Kelly fraction f* = p − q/b, clamped to [0, 1).
-  const fStarRaw = p - q / b;
-  const fStar = Math.max(0, fStarRaw);
-  const hasEdge = fStarRaw > 0;
-
-  // Domain of f shown on the x-axis. Clamp short of 1 to avoid the ln(1−f) pole.
+  const model = calculateBinaryKelly(p, b);
+  const { edge, fStar, maxLogGrowth: maxGrowth } = model;
+  const hasEdge = edge > 0;
   const F_MAX = 0.99;
-  const F_CLAMP = 0.995; // hard guard inside ln(1 − f)
-
-  const G = (f: number): number => {
-    const fc = Math.min(f, F_CLAMP);
-    return p * Math.log(1 + b * fc) + q * Math.log(1 - fc);
-  };
-
-  const maxGrowth = hasEdge ? G(fStar) : 0;
-
-  // Over-bet zero-crossing: where G returns to 0 above f* (bisection).
-  const findZeroCrossing = (): number => {
-    if (!hasEdge) return 0;
-    let lo = fStar;
-    let hi = F_MAX;
-    if (G(hi) > 0) return F_MAX; // never crosses within domain
-    for (let i = 0; i < 60; i++) {
-      const mid = (lo + hi) / 2;
-      if (G(mid) > 0) lo = mid;
-      else hi = mid;
-    }
-    return (lo + hi) / 2;
-  };
-  const fZero = findZeroCrossing();
+  const G = (f: number) => binaryKellyLogGrowth(p, b, f);
+  const fZero = model.zeroCrossing ?? 0;
+  const fZeroVisible = Math.min(F_MAX, fZero);
+  const percentFormat = new Intl.NumberFormat(locale, { maximumFractionDigits: 2 });
+  const pct = (value: number) => `${percentFormat.format(value * 100)}%`;
+  const signedPct = (value: number) => `${value >= 0 ? '+' : ''}${pct(value)}`;
+  const logFormat = new Intl.NumberFormat(locale, { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+  const logText = `${maxGrowth >= 0 ? '+' : ''}${logFormat.format(maxGrowth)}`;
 
   // Vertical scale: from the curve's max down to a sensible negative floor so
   // the dive past the zero-crossing is visible without the −∞ tail dominating.
   const gTop = Math.max(maxGrowth, 0.01);
-  const gFloor = Math.min(G(F_MAX), -gTop, -0.02);
+  const gFloor = -Math.max(maxGrowth * 1.5, 0.02);
   const span = gTop - gFloor;
 
   const xOf = (f: number) => padX + (f / F_MAX) * (W - padX * 2);
@@ -147,7 +172,9 @@ export function KellyGrowthCurve({
     for (let i = 0; i <= SAMPLES; i++) {
       const f = (i / SAMPLES) * F_MAX;
       if (f > upto) break;
-      d += `${d === '' ? 'M' : ' L'} ${xOf(f)} ${yOf(G(f))}`;
+      const growth = G(f);
+      d += `${d === '' ? 'M' : ' L'} ${xOf(f)} ${yOf(growth)}`;
+      if (growth < gFloor) break; // Clip the negative tail without drawing a false plateau.
     }
     return d;
   };
@@ -178,18 +205,20 @@ export function KellyGrowthCurve({
   const pPctRounded = Math.round(p * 100);
   const bRounded = Math.round(b * 100) / 100;
 
-  const ariaLabel = hasEdge
-    ? `${title}: with a ${pPctRounded}% win chance at ${bRounded}-to-1 odds, growth peaks at a Kelly fraction of ${pct(
-        fStar,
-      )} of bankroll, giving ${signedPct(maxGrowth)} growth per bet; betting past ${pct(
-        fZero,
-      )} of bankroll turns growth negative.`
-    : `${title}: with a ${pPctRounded}% win chance at ${bRounded}-to-1 odds there is no edge, so every bet size loses money in the long run — don't bet.`;
+  const chartValues = {
+    title, probability: pct(p), odds: new Intl.NumberFormat(locale, { maximumFractionDigits: 2 }).format(b),
+    kelly: pct(fStar), logGrowth: logText, geometricGrowth: signedPct(model.geometricGrowth),
+    zeroCrossing: model.zeroCrossing === null ? noRootLabel : pct(model.zeroCrossing),
+  };
+  const ariaLabel = (hasEdge ? chartLabel : noEdgeChartLabel).replace(
+    /\{(title|probability|odds|kelly|logGrowth|geometricGrowth|zeroCrossing)\}/g,
+    (_, key: keyof typeof chartValues) => chartValues[key],
+  );
 
   return (
     <figure
       className={cx(
-        'my-6 rounded-card border border-ink-100 bg-surface p-5 shadow-soft',
+        'not-prose my-6 rounded-card border border-ink-100 bg-surface p-5 shadow-soft',
         className,
       )}
     >
@@ -252,16 +281,16 @@ export function KellyGrowthCurve({
             <rect
               x={xOf(fStar)}
               y={padTop}
-              width={Math.max(0, xOf(fZero) - xOf(fStar))}
+              width={Math.max(0, xOf(fZeroVisible) - xOf(fStar))}
               height={H - padTop - padBottom}
               fill="var(--color-brand-500)"
               opacity={0.07}
             />
             {/* ruin: beyond the zero-crossing */}
             <rect
-              x={xOf(fZero)}
+              x={xOf(fZeroVisible)}
               y={padTop}
-              width={Math.max(0, xOf(F_MAX) - xOf(fZero))}
+              width={Math.max(0, xOf(F_MAX) - xOf(fZeroVisible))}
               height={H - padTop - padBottom}
               fill="var(--color-accent-500)"
               opacity={0.14}
@@ -297,7 +326,7 @@ export function KellyGrowthCurve({
               fontSize="10"
               fontFamily="var(--font-mono)"
             >
-              {optimalMarkerLabel} · {pct(fStar)}
+              {optimalMarkerLabel} {pct(fStar)}
             </text>
           </>
         )}
@@ -321,7 +350,7 @@ export function KellyGrowthCurve({
               fontSize="10"
               fontFamily="var(--font-mono)"
             >
-              {zeroMarkerLabel} · {pct(fZero)}
+              {zeroMarkerLabel} {pct(fZero)}
             </text>
           </>
         )}
@@ -362,7 +391,7 @@ export function KellyGrowthCurve({
               {underZoneLabel}
             </text>
             <text
-              x={xOf((fStar + fZero) / 2)}
+              x={xOf((fStar + fZeroVisible) / 2)}
               y={padTop + 22}
               textAnchor="middle"
               fill="var(--color-ink-500)"
@@ -388,12 +417,12 @@ export function KellyGrowthCurve({
           <input
             id={`${id}-p`}
             type="range"
-            min={50}
+            min={30}
             max={80}
             step={1}
             value={pPctRounded}
             onChange={(e) => setP(Number(e.target.value) / 100)}
-            className="mt-2 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
+            className="mt-2 h-8 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
           />
         </div>
         <div>
@@ -402,23 +431,24 @@ export function KellyGrowthCurve({
             className="flex items-center justify-between text-sm text-ink-700"
           >
             <span>{oddsLabel}</span>
-            <span className="font-mono text-ink-900">{bRounded.toFixed(2)}×</span>
+            <span className="font-mono text-ink-900">{new Intl.NumberFormat(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(bRounded)}×</span>
           </label>
           <input
             id={`${id}-b`}
             type="range"
             min={50}
             max={300}
-            step={5}
+            step={1}
             value={Math.round(b * 100)}
+            aria-valuetext={`${new Intl.NumberFormat(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(bRounded)}×`}
             onChange={(e) => setB(Number(e.target.value) / 100)}
-            className="mt-2 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
+            className="mt-2 h-8 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
           />
         </div>
       </div>
 
       {/* Readouts */}
-      <dl className="mt-4 grid grid-cols-3 gap-3 text-sm" aria-live="polite">
+      <dl className="mt-4 grid grid-cols-1 gap-3 text-sm sm:grid-cols-3" aria-live="polite">
         <div className="rounded-card border border-ink-100 bg-surface-sunken/40 px-3 py-2">
           <dt className="text-ink-500">{edgeLabel}</dt>
           <dd
@@ -439,8 +469,16 @@ export function KellyGrowthCurve({
         <div className="rounded-card border border-ink-100 bg-surface-sunken/40 px-3 py-2">
           <dt className="text-ink-500">{maxGrowthLabel}</dt>
           <dd className="font-mono text-lg font-semibold text-ink-900">
-            {signedPct(maxGrowth)}
+            {logText}
           </dd>
+        </div>
+        <div className="min-w-0 rounded-card bg-surface-sunken/40 px-3 py-2">
+          <dt className="text-ink-500">{geometricGrowthLabel}</dt>
+          <dd className="font-mono text-lg font-semibold text-ink-900">{signedPct(model.geometricGrowth)}</dd>
+        </div>
+        <div className="min-w-0 rounded-card bg-surface-sunken/40 px-3 py-2">
+          <dt className="text-ink-500">{zeroCrossingLabel}</dt>
+          <dd className="font-mono text-lg font-semibold text-ink-900">{model.zeroCrossing === null ? noRootLabel : pct(model.zeroCrossing)}</dd>
         </div>
       </dl>
 
