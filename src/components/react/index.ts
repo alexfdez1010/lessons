@@ -924,3 +924,6 @@ export type { RefinanceInputs, RefinanceMonth, RefinanceResult, RefinancingExitC
 
 export { calculateYieldDecomposition, YieldDecomposition } from '@/components/react/YieldDecomposition';
 export type { YieldDecompositionInputs, YieldDecompositionProps } from '@/components/react/YieldDecomposition';
+
+export { calculateBondAccruedPrice, BondAccruedPrice } from '@/components/react/BondAccruedPrice';
+export type { BondAccruedInputs, BondAccruedPriceProps } from '@/components/react/BondAccruedPrice';

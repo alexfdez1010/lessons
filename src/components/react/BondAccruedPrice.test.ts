@@ -1,0 +1,13 @@
+import { describe,test,expect } from 'bun:test';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { BondAccruedPrice,calculateBondAccruedPrice } from './BondAccruedPrice';
+const base={face:1000,couponRate:.06,frequency:2,cleanQuote:98.4,periodDays:181,elapsedDays:90,nextCouponEntitled:true};
+describe('Explicit regular coupon accrual and quote units',()=>{
+ test('converts quote and actual/actual fraction without double-counting annual rate',()=>{const x=calculateBondAccruedPrice(base);expect(x.couponCash).toBe(30);expect(x.cleanCash).toBe(984);expect(x.accruedCash).toBeCloseTo(14.917127071823,10);expect(x.dirtyCash).toBeCloseTo(998.917127071823,10);expect(x.dirtyQuote).toBeCloseTo(99.8917127071823,10);expect(x.buyerNextCoupon).toBe(30)});
+ test('different supplied day-count denominator changes accrued, not coupon',()=>{const x=calculateBondAccruedPrice({...base,periodDays:180});expect(x.accruedCash).toBe(15);expect(x.dirtyCash).toBe(999);expect(x.couponCash).toBe(30)});
+ test('ex-coupon signed adjustment subtracts a whole period coupon and removes buyer entitlement',()=>{const cum=calculateBondAccruedPrice({...base,elapsedDays:178});const ex=calculateBondAccruedPrice({...base,elapsedDays:178,nextCouponEntitled:false});expect(cum.accruedCash-ex.accruedCash).toBeCloseTo(30,12);expect(ex.accruedCash).toBeCloseTo(-90/181,12);expect(ex.dirtyCash).toBeCloseTo(984-90/181,12);expect(ex.buyerNextCoupon).toBe(0)});
+ test('zero coupon and scale consistency',()=>{const z=calculateBondAccruedPrice({...base,couponRate:0});expect(z.accruedCash).toBe(0);expect(z.dirtyCash).toBe(z.cleanCash);for(const factor of[.1,3,100]){const x=calculateBondAccruedPrice({...base,face:base.face*factor});const y=calculateBondAccruedPrice(base);expect(x.dirtyCash).toBeCloseTo(y.dirtyCash*factor,7);expect(x.dirtyQuote).toBeCloseTo(y.dirtyQuote,10)}});
+ test('rejects invalid authors before SSR',()=>{for(const change of[{face:0},{couponRate:NaN},{frequency:3},{cleanQuote:Infinity},{periodDays:0},{elapsedDays:181},{elapsedDays:-1},{nextCouponEntitled:'yes'}])expect(()=>renderToStaticMarkup(createElement(BondAccruedPrice,{...base,...change} as any))).toThrow()});
+ test('localized fallback and actual table focus exist without hydration',()=>{const html=renderToStaticMarkup(createElement(BondAccruedPrice,{...base,locale:'es-ES',tableLabel:'Conciliación exacta',chartLabel:'Ajuste con signo',unitLabel:'euros'}));expect(html).toContain('14,917127');expect(html).toContain('aria-label="Conciliación exacta"');expect(html).toContain('tabindex="0"');expect(html).toContain('max-w-full overflow-x-auto');expect(html).toContain('aria-label="Ajuste con signo"')});
+});
