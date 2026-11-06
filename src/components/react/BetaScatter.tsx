@@ -16,6 +16,8 @@ export interface BetaScatterProps {
   marketAxisLabel?: string;
   /** Y-axis label (portfolio return per period). */
   portfolioAxisLabel?: string;
+  /** Accessible SVG description; {beta} and {alpha} are replaced with the selected values. */
+  chartLabel?: string;
   /** Readout label for the slope. */
   betaLabel?: string;
   /** Readout label for the intercept. */
@@ -57,27 +59,25 @@ const jitter = (i: number): number =>
   Math.sin(i * 1.7 + 0.6) * 2.4 + ((i % 3) - 1) * 1.1;
 
 /**
- * Scatter + regression plot that makes alpha and beta visible.
+ * Synthetic scatter illustrating an excess-return model with preset coefficients.
  *
- * Each point is one period: market return on X, portfolio return on Y. A fitted
- * straight line runs through the cloud — its *slope is beta* (how hard the
- * portfolio swings with the market) and its *y-intercept is alpha* (the return
- * earned independent of the market). Toggle between Defensive (β≈0.5), Tracks
- * market (β≈1.0) and Aggressive (β≈1.5) to watch the line rotate, and flip the
- * alpha control to lift the whole line by +3%. Quadrant gridlines through the
- * origin show what the portfolio does when the market is up vs. down. The line
- * animates toward its new slope/intercept; `prefers-reduced-motion` snaps it.
+ * Both axes show returns above the same per-period cash reference. Beta rotates
+ * the preset line; alpha shifts its intercept. Deterministic jitter illustrates
+ * observation-level deviations and is not an empirical regression fit. These
+ * controls explain the model rather than estimate or establish manager skill.
+ * Animation respects prefers-reduced-motion and all prose labels are props.
  */
 export function BetaScatter({
   title = 'Reading alpha and beta off the line',
-  marketAxisLabel = 'Market return',
-  portfolioAxisLabel = 'Portfolio return',
+  marketAxisLabel = 'Market excess return',
+  portfolioAxisLabel = 'Portfolio excess return',
+  chartLabel = 'Synthetic scatter of portfolio excess return against market excess return. The preset line has beta {beta} and alpha {alpha}%. Individual observations can differ from the line.',
   betaLabel = 'Beta (slope)',
   alphaLabel = 'Alpha (intercept)',
   defensiveLabel = 'Defensive',
   marketNeutralLabel = 'Tracks market',
   aggressiveLabel = 'Aggressive',
-  caption = 'Slope = beta (market sensitivity). Intercept = alpha (return above the market). A steeper line swings harder; lifting it adds skill.',
+  caption = 'Synthetic points illustrate an excess-return model. Beta changes the line’s slope; alpha changes its intercept. Neither control establishes manager skill, and individual observations can differ from the line.',
   className,
 }: BetaScatterProps) {
   const presets: BetaPreset[] = [
@@ -189,7 +189,7 @@ export function BetaScatter({
         viewBox={`0 0 ${W} ${H}`}
         className="mt-3 w-full"
         role="img"
-        aria-label={`Scatter of portfolio return against market return. A fitted line runs through the points: its slope is beta (currently ${targetBeta.toFixed(1)}) and its y-intercept is alpha (currently ${targetAlpha >= 0 ? '+' : ''}${targetAlpha}%).`}
+        aria-label={chartLabel.replaceAll('{beta}', targetBeta.toFixed(1)).replaceAll('{alpha}', `${targetAlpha >= 0 ? '+' : ''}${targetAlpha}`)}
       >
         {/* Outer frame */}
         <rect
