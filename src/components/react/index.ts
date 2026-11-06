@@ -897,3 +897,6 @@ export type { ExerciseOptionType, ExercisePosition, ExerciseStyle, ExerciseSettl
 
 export { simulateRepaymentStructures, RepaymentStructures } from '@/components/react/RepaymentStructures';
 export type { RepaymentStructureInputs, RepaymentStructureRow, RepaymentStructurePlan, RepaymentStructuresProps } from '@/components/react/RepaymentStructures';
+
+export { COPULA_RHOS, COPULA_NUS, COPULA_QUANTILES, calculateCopulaTail, CopulaTailComparison } from '@/components/react/CopulaTailComparison';
+export type { CopulaTailRow, CopulaTailComparisonProps } from '@/components/react/CopulaTailComparison';
