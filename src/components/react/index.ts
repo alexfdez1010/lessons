@@ -939,3 +939,9 @@ export type { BasisHedgeInputs, BasisHedgeExplorerProps, MinimumVarianceInputs, 
 
 export { calculateYieldDuration, YieldDurationWorkbench } from '@/components/react/YieldDurationWorkbench';
 export type { YieldDurationInputs, DurationCashFlow, YieldDurationResult, YieldDurationWorkbenchProps } from '@/components/react/YieldDurationWorkbench';
+
+export { evidenceNormalCdf, calculateNormalEvidence, HypothesisEvidenceLab } from '@/components/react/HypothesisEvidenceLab';
+export type { EvidenceInputs, HypothesisEvidenceLabProps } from '@/components/react/HypothesisEvidenceLab';
+
+export { calculateTestingMultiplicity, MultipleTestingRisk } from '@/components/react/MultipleTestingRisk';
+export type { MultipleTestingRiskProps } from '@/components/react/MultipleTestingRisk';

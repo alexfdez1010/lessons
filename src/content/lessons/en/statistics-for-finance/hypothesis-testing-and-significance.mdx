@@ -1,414 +1,215 @@
 ---
-title: "Hypothesis Testing & Significance"
-description: "How quants decide whether an edge is real: null vs alternative hypotheses, the t-test and the test statistic, the p-value (and its rampant misreading), Type I/II errors and power, plus finance's deadliest trap — data snooping — and why statistical significance is not economic relevance."
+title: "Hypothesis Testing: Conditional Evidence, Power and Economic Relevance"
+description: "Calculate model-conditional p-values and confidence intervals, distinguish errors and power, account for dependent financial data and multiple searches, and compare estimated effects with costs."
 topic: "en/statistics-for-finance"
 order: 6
-minutes: 12
-updated: 2026-06-07
+minutes: 35
+updated: 2026-11-06
 ---
 
-import { Callout, MCQ, Quiz, FillBlank, MatchConcepts, Categorize, Reveal, MindMap, SamplingHistogram, TsOverfitCurve } from '@/components/react';
+import { Callout, MCQ, Quiz, ThinkReveal, FillBlank, MatchConcepts, Categorize, MindMap, HypothesisEvidenceLab, MultipleTestingRisk } from '@/components/react';
 
-A backtest spits out a number: your strategy made 0.4% a month on average. Glorious — except a coin-flipping monkey would *also* post some average, and sometimes a flattering one, by sheer luck. The whole job of **hypothesis testing** is to stand between you and that monkey: it forces you to answer one ruthless question before you celebrate. *If my edge were actually zero, how often would random noise alone hand me a result this good?* If the answer is "all the time," you've discovered nothing. If it's "almost never," you might — *might* — have something real.
+A report estimates a gross trading edge of 2 basis points and prints p=0.0455. That is not a 95.45% probability of a genuine opportunity. Change the dependence assumptions and the p-value can change; subtract a known 3-basis-point cost and the estimated net mean becomes negative. The number is useful only with its question, model and research process attached.
 
-This is the capstone of the statistics course. Everything before it — distributions, the normal, expectation and variance, the standard error and the Central Limit Theorem — was building the machinery you'll now point at a single, career-defining question: **is this edge real, or is it luck?**
+A **hypothesis test** compares observed data with what a specified statistical model would produce under a stated hypothesis. It can detect incompatibility with that model; it does not identify a unique cause, prove an effect, calculate the probability of skill or guarantee future profitability. Here one **basis point (bp)** is 0.01 percentage point of return. All examples are invented; no live strategy is evaluated.
 
-<MCQ
-  client:visible
-  pretest
-  question="The core purpose of a hypothesis test is to:"
-  options={[
-    { text: 'Decide whether the data is surprising enough to reject the assumption that there is no effect', correct: true },
-    { text: 'Prove that your hypothesis is definitely true' },
-    { text: 'Compute the average return of a strategy' },
-    { text: 'Guarantee a strategy will be profitable in the future' },
-  ]}
-  explanation="A test assumes 'no effect' (the null) and asks how surprising the observed data would be under that assumption. It never proves a hypothesis true and it makes no profit guarantee — it only quantifies how hard the data fights the null."
-/>
+## Specify the null, statistic and sampling model together
 
-## The logic of testing: assume nothing, then look for surprise
+<MCQ client:visible pretest question="Does stating H₀: mean edge=0 completely determine a p-value?" options={[{text:'No; the sampling model, statistic, tail rule and research design also matter',correct:true},{text:'Yes; every zero-mean dataset has the same normal sampling distribution'},{text:'Yes; a positive observed mean alone determines its significance'},{text:'No; a null hypothesis can never specify a numerical mean'}]} explanation="A mean restriction alone does not specify variance, dependence, distribution or selection. A p-value is computed under the null and the other assumptions of the test." />
 
-**Analogy.** A hypothesis test is a courtroom. The defendant — your strategy's edge — is **presumed innocent of having any effect**. "Innocent" here means *the true edge is zero*; that presumption is the **null hypothesis** $H_0$. The prosecution's claim, the **alternative hypothesis** $H_1$, is that there *is* an effect. You don't get to declare guilt because the strategy "looks profitable." You convict only if the evidence is so improbable under innocence that "it was just luck" stops being credible.
+The **null hypothesis** $H_0$ specifies the claim tested: for example mean gross excess return $\mu=0$ relative to a benchmark fixed before looking at the data. The **alternative** might be two-sided, $\mu\ne0$, or one-sided, such as $\mu>0$. A null need not be zero: testing whether a gross mean covers a known cost 3 bp asks about a different reference value. Choose the tail rule, sample/stopping plan and test family before searching for a favourable result.
 
-**Definitions.**
-
-- **Null hypothesis $H_0$** — the boring, no-effect baseline. For a strategy: *the true mean return is $0$*. For a regression coefficient: *the true slope is $0$*. We assume it's true and try to embarrass it.
-- **Alternative hypothesis $H_1$** — the interesting claim that there *is* an effect (mean $\neq 0$, slope $\neq 0$). A **two-sided** $H_1$ says "different from zero in either direction"; a **one-sided** $H_1$ says "specifically greater than zero" (or specifically less).
-
-The asymmetry is the whole point. We never *prove* $H_1$; we only **reject $H_0$** when the data is too surprising to square with it — or **fail to reject** when it isn't. "Fail to reject" is an acquittal, not a declaration of innocence: absence of evidence isn't evidence of absence.
-
-<Callout variant="info" title="Why assume the thing you're hoping is false?">
-Assuming the null lets you actually compute something. "There's no edge" is a precise, single-numbered world (mean $= 0$) where you can calculate exactly how the data should scatter. "There's *some* edge" is a vague cloud of infinitely many possible effect sizes — you can't compute a probability against it. So you pin down the null, measure how weird your data looks inside it, and let that weirdness do the talking.
-</Callout>
-
-<MCQ
-  client:visible
-  question="Your strategy posts a positive average return, but the test 'fails to reject the null.' This means:"
-  options={[
-    { text: 'The data is not surprising enough to rule out luck — you have not shown the edge is real', correct: true },
-    { text: 'You have proven the strategy has exactly zero edge' },
-    { text: 'The strategy is guaranteed to lose money' },
-    { text: 'The null hypothesis has been proven true' },
-  ]}
-  explanation="Failing to reject is an acquittal, not a proof of innocence. The positive average could easily be luck; you simply lack the evidence to claim a real edge. It does not prove the edge is zero or that you'll lose."
-/>
-
-## The test statistic and the t-test: turning an edge into a z-distance
-
-**Analogy.** Raw averages aren't comparable — a 0.4% monthly edge is impressive for a sleepy bond fund and trivial for a wild crypto strategy, because the *noise* differs. A **test statistic** rescales the edge into a universal unit: *how many standard errors away from zero is it?* It's the z-score idea from the normal-distribution lesson, applied to an estimate instead of a single observation.
-
-**Definition.** For a sample of $n$ returns with mean $\bar{x}$ and standard deviation $s$, recall from the sampling lesson that the **standard error** of the mean is $\mathrm{SE} = s / \sqrt{n}$. The **t-statistic** for testing $H_0:\ \mu = 0$ is
+For a mean estimate $\bar x$ and a null value $\mu_0$, a standardised statistic divides the estimated gap by its **standard error (SE)**, the sampling standard deviation of the estimator. Under an iid Gaussian model with **known** individual standard deviation $\sigma$:
 
 $$
-t = \frac{\bar{x} - 0}{s / \sqrt{n}} = \frac{\bar{x}}{\mathrm{SE}}.
+\mathrm{SE}(\bar X)=\frac{\sigma}{\sqrt n},\qquad
+Z=\frac{\bar X-\mu_0}{\sigma/\sqrt n}\sim N(0,1)\quad\text{under }H_0.
 $$
 
-In words: *the edge, measured in standard errors.* A big $|t|$ means the estimate sits far out in the tail of the "no-effect" distribution — the data is surprising if $H_0$ is true. By the Central Limit Theorem, for a decent sample size $\bar{x}$ is approximately normal, so $t$ behaves like a standard normal (the t-distribution it's named after just adds slightly fatter tails for small $n$). A rough rule of thumb: $|t| > 2$ is the classic "significant at roughly 5%" threshold.
+“Iid” means independent and identically distributed. Known $\sigma$ is a deliberate teaching assumption. With unknown variance estimated by sample $s$, **iid normal observations** instead give an exact Student statistic with $n-1$ degrees of freedom:
 
-**Worked example.** A strategy has a monthly mean return of $\bar{x} = 0.8\%$ with a monthly standard deviation of $s = 4\%$, measured over $n = 36$ months.
+$$
+T=\frac{\bar X-\mu_0}{s/\sqrt n}\sim t_{n-1}\quad\text{under }H_0.
+$$
 
-| Step | Computation | Result |
-|---|---|---|
-| Standard error | $\mathrm{SE} = 4\% / \sqrt{36} = 4\% / 6$ | $0.667\%$ |
-| t-statistic | $t = 0.8\% / 0.667\%$ | $1.20$ |
+A **degree of freedom** here reflects estimating the mean before estimating variance. The distinction changes probabilities, especially for small samples. If $n=36$, $\bar x=1\%$, $s=3\%$ and $\mu_0=0$, then SE$=3\%/6=0.5\%$ and $t=2$. Its two-sided $t_{35}$ p-value is approximately 0.053308, not the standard-normal 0.045500. The 5% two-sided critical value is about 2.030108, not 1.96. A blanket “t above 2 proves an edge” misstates both the reference distribution and the inference. [Penn State distinguishes known-variance normal and unknown-variance t procedures](https://online.stat.psu.edu/stat415/Lesson09).
 
-A t-stat of $1.20$ is *below* $2$ — the edge is barely more than one standard error from zero. Verdict: **not significant**. With this much month-to-month noise and only three years of data, an average of 0.8% is the kind of thing luck produces routinely. Now watch what more data does: keep the same $\bar{x}$ and $s$ but stretch to $n = 144$ months (12 years). Then $\mathrm{SE} = 4\%/12 = 0.333\%$ and $t = 0.8\%/0.333\% = 2.40$ — now significant. **The edge didn't change; the standard error shrank because $n$ grew.** That $\sqrt{n}$ in the denominator is doing all the work.
+### Dependence can change the denominator
 
-<SamplingHistogram
-  client:visible
-  title="The null distribution and its tails"
-  normalLabel="Thin-tailed null (Normal)"
-  fatTailLabel="Fat-tailed reality"
-  drawLabel="Draw samples"
-  samplesLabel="Samples drawn"
-  densityLabel="Sampling density"
-  caption="Under the null, your t-statistic is a draw from this bell centered at zero. A result far out in the tail is 'surprising'. But real returns are fat-tailed: extreme t-stats happen far more often than the thin-tailed bell predicts — so a 't above 2' is less rare, and less convincing, than the textbook normal claims. Toggle the fat-tailed view and watch the edges fill in."
-/>
+For a stationary series with marginal variance $\sigma^2$ and lag correlations $\rho_k$:
 
-<FillBlank
-  client:visible
-  question="Fill in the mechanics of the t-statistic."
-  text="The t-statistic equals the estimate divided by its {{standard error|standard deviation|variance}}. Holding the mean and standard deviation fixed, collecting more data makes the t-statistic {{larger|smaller|unchanged}}, because the standard error shrinks with {{the square root of n|n|n squared}}."
-  explanation="t = estimate / SE, and SE = s/√n. More data shrinks SE (by √n), so the same edge yields a larger t — which is exactly why long, clean samples are so prized: they let a small-but-real edge clear the significance bar."
-/>
+$$
+\operatorname{Var}(\bar X)=\frac{\sigma^2}{n}
+\left[1+2\sum_{k=1}^{n-1}\left(1-\frac{k}{n}\right)\rho_k\right].
+$$
 
-<MCQ
-  client:visible
-  question="A strategy's mean monthly return is 0.5% with standard deviation 3% over 36 months. Its t-statistic for H₀: μ = 0 is closest to:"
-  options={[
-    { text: 'About 1.0', correct: true },
-    { text: 'About 3.0' },
-    { text: 'About 6.0' },
-    { text: 'About 0.17' },
-  ]}
-  explanation="SE = 3% / √36 = 3% / 6 = 0.5%. So t = 0.5% / 0.5% = 1.0 — well below 2, not significant. The trap answers come from forgetting to divide s by √n (using s directly gives the 0.17 mis-step, or skipping the SE entirely)."
-/>
+An invented stationary Gaussian AR(1) model has correlations $\rho_k=0.75^k$: observations retain some influence from previous observations. With $n=10,000$ and marginal $\sigma=100$bp, the independent SE would be 1 bp. The bracket above is 6.9976, so the correct **known model SE** is $1\sqrt{6.9976}=2.645298$bp. For the same observed mean 2 bp and null 0, $z=2/2.645298\approx0.756059$, giving two-sided p≈0.449614.
 
-## The p-value: the probability of data this extreme — under the null
+<table tabIndex={0} aria-label="Worked comparison table 1" className="block w-full max-w-full overflow-x-auto text-left text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600">
+  <thead><tr><th scope="col">Model for the invented sample</th><th scope="col">SE of mean</th><th scope="col">Statistic for observed 2 bp</th><th scope="col">Two-sided p</th></tr></thead>
+  <tbody>
+    <tr><th scope="row">Independent Gaussian, known marginal SD 100 bp</th><td>1 bp</td><td>2</td><td>0.045500</td></tr>
+    <tr><th scope="row">Stationary Gaussian AR(1), known correlation 0.75</th><td>2.645298 bp</td><td>0.756059</td><td>0.449614</td></tr>
+  </tbody>
+</table>
 
-**Analogy.** The p-value is your **surprise meter**. Crank the machine assuming the null is true, then read off: *how often would pure noise produce a result at least as extreme as the one I actually got?* A tiny p-value means "noise basically never does this" — strong evidence against the null. A big p-value means "noise does this all the time" — shrug.
+<HypothesisEvidenceLab client:visible title="Use the standard error implied by the dependence model" standardErrorBps={2.645297714813968} costBps={0} />
 
-**Definition.** The **p-value** is the probability, *computed assuming $H_0$ is true*, of observing a test statistic at least as extreme as the one you got. You compare it to a pre-chosen **significance level $\alpha$** (the threshold you'll accept for crying "real," conventionally $0.05$):
+This positive dependence increases uncertainty. Dependence need not always increase it: negative lag covariances can reduce the variance of a mean. Estimating those quantities adds uncertainty absent from this known-model example. [CFA's model-misspecification reading discusses serial correlation and inference problems](https://www.cfainstitute.org/insights/professional-learning/refresher-readings/2026/model-misspecification).
 
-- If $p \leq \alpha$: **reject $H_0$** — call the result *statistically significant*.
-- If $p > \alpha$: **fail to reject $H_0$**.
+### When to use a reference distribution
 
-A t-stat of $2.0$ corresponds to a two-sided $p \approx 0.046$; a t-stat of $1.20$ (our first worked example) to $p \approx 0.23$ — i.e. noise would reproduce that "edge" about 23% of the time. Of course it wasn't significant.
+Check distribution, finite moments, dependence, changing variance, overlapping returns and a stable parameter before choosing a procedure. A suitable central limit theorem can justify approximate normal inference under its conditions; raw fat-tailed returns do not automatically tell you the exact distribution of a studentised mean. Heteroskedasticity/autocorrelation-consistent SEs or block resampling require their own assumptions. More observations do not repair look-ahead bias, an invalid stopping rule, regime changes or a wrong model automatically.
 
-<Callout variant="warning" title="The single most abused number in statistics">
-The p-value is **NOT** the probability that the null is true. Read that again. $p = 0.03$ does **not** mean "there's a 3% chance there's no edge" or "a 97% chance the strategy works." It means: *if the edge were truly zero, data this extreme would show up 3% of the time.* It's $P(\text{data} \mid H_0)$, never $P(H_0 \mid \text{data})$ — the conditional is flipped. Confusing the two is the **prosecutor's fallacy**, and it has talked more traders into doomed strategies than any other single error.
-</Callout>
+<FillBlank client:visible question="Attach the statistic to its conditions" text="Exact Student t inference for a mean with unknown variance uses {{iid normal observations|any dependent series|only a positive sample mean}} and {{n −1|n+1|one fixed}} degrees of freedom. Serial covariance can alter {{the standard error of the mean|the unit of a basis point|the stated null value by definition}}." explanation="The simple s/√n denominator and exact t law have assumptions. The null alone does not supply them." />
 
-A second, subtler trap: **statistical significance is a yes/no verdict at your chosen $\alpha$, not a measure of effect size.** A microscopic, useless edge can be "highly significant" with enough data, and a huge, valuable edge can be "not significant" with too little. The p-value answers "is it distinguishable from zero?" — never "is it big?"
+## A p-value and a confidence interval describe conditional evidence
 
-<MCQ
-  client:visible
-  question="A study reports p = 0.02 for a trading signal. Which interpretation is correct?"
-  options={[
-    { text: 'If the signal truly had no edge, data this extreme would occur about 2% of the time', correct: true },
-    { text: 'There is a 2% probability that the signal has no edge' },
-    { text: 'There is a 98% probability the signal is profitable' },
-    { text: 'The signal will be profitable 98% of the time it trades' },
-  ]}
-  explanation="p = P(data this extreme | null is true) = 2%. It is NOT P(null is true) and says nothing about future profitability or win rate. Flipping the conditional is the prosecutor's fallacy."
-/>
+<ThinkReveal client:visible prompt="A valid two-sided test reports p=0.03. Is there a 3% probability that the null is true, or a 97% probability the strategy will profit?" hint="Which hypothesis and model were assumed while computing the tail area?" text="Neither. Under the stated null and model, the probability of a statistic at least as extreme under the selected rule is 3%. It is not a posterior probability of the null, a probability that chance caused the result, or a profit forecast." />
 
-<MatchConcepts
-  client:visible
-  question="Match each piece of testing vocabulary to what it actually means."
-  pairs={[
-    { term: 'Null hypothesis H₀', definition: 'The no-effect baseline we assume true and try to reject (e.g. mean return = 0)' },
-    { term: 'Alternative hypothesis H₁', definition: 'The claim that there is a real effect (mean ≠ 0)' },
-    { term: 'p-value', definition: 'P(data at least this extreme | the null is true)' },
-    { term: 'Significance level α', definition: 'The pre-chosen threshold a p-value must clear to count as significant' },
-    { term: 'Test statistic t', definition: 'The estimate rescaled into standard errors from zero' },
-  ]}
-  explanation="H₀ is the baseline we attack; H₁ is the effect we hope for; the p-value is the probability of the data under H₀ (not of H₀ given the data); α is the line in the sand; and t is the edge measured in standard errors."
-/>
+A **p-value** is a tail probability under $H_0$ **and the sampling/selection assumptions**. For a two-sided standard-normal statistic:
 
-## Type I and Type II errors, and the power to tell them apart
+$$
+p=P_{H_0,\,\mathrm{model}}(|Z|\ge|z_{\mathrm{observed}}|)
+=2\left[1-\Phi(|z_{\mathrm{observed}}|)\right],
+$$
 
-**Analogy.** Back in the courtroom: two ways to blow the verdict. Convict an innocent defendant (declare an edge that isn't there) — a **Type I error**, a *false positive*. Or acquit a guilty one (miss an edge that's real) — a **Type II error**, a *false negative*. You can't drive both to zero at once: a jury that never convicts the innocent also lets more of the guilty walk.
+where $\Phi$ is the standard-normal cumulative distribution. It includes outcomes **at least as extreme**, not just the exact observed data. Small p indicates a particular kind of incompatibility with the specified model; it does not prove the tested alternative or tell us which assumption failed. [The ASA's statement explains these limits and why thresholds alone do not settle a substantive conclusion](https://www.amstat.org/asa/files/pdfs/P-valuestatement.pdf).
 
-**Definitions.**
+For a prechosen significance level $\alpha$, a valid procedure rejects when its rejection rule is met, often written $p\le\alpha$. “Statistically significant at 5%” describes that procedure's decision, not the size, truth, durability or economic value of the effect. Values just either side of 0.05 are not two different kinds of reality.
 
-- **Type I error (false positive), rate $\alpha$** — rejecting $H_0$ when it's actually true. You "found" an edge that's pure noise. You *set* this rate: choosing $\alpha = 0.05$ means accepting a 5% false-positive rate per test.
-- **Type II error (false negative), rate $\beta$** — failing to reject $H_0$ when $H_1$ is actually true. A real edge slipped through undetected.
-- **Statistical power $= 1 - \beta$** — the probability of *correctly* detecting a real effect. High power = a sensitive test that rarely misses genuine edges.
+### Work the normal p-value and its matching interval
 
-**The trade-off.** Tighten $\alpha$ (demand more proof before convicting — say $\alpha = 0.01$) and you cut false positives, but you also make it harder to detect real effects, so $\beta$ rises and power falls. The cure for *both* is the same lever from the last two lessons: **more data**. A larger $n$ shrinks the standard error, which sharpens the whole machine — you can hold $\alpha$ low *and* gain power. There's no free lunch except sample size.
+Return to the **independent Gaussian known-SD model**: $n=10,000$, $\sigma=100$bp, SE$=1$bp, observed gross mean 2 bp and $H_0:\mu=0$. Then:
 
-| Reality → / Your verdict ↓ | $H_0$ true (no edge) | $H_1$ true (real edge) |
-|---|---|---|
-| **Reject $H_0$** ("edge!") | Type I error — false positive (rate $\alpha$) | Correct — power ($1-\beta$) |
-| **Fail to reject** ("nothing") | Correct — true negative | Type II error — false negative (rate $\beta$) |
+$$
+z=(2-0)/1=2,
+$$
+$$
+p=2[1-\Phi(2)]\approx2(1-0.977249868)
+=0.045500264.
+$$
 
-<Categorize
-  client:visible
-  question="Sort each finance scenario by which error it represents."
-  buckets={["Type I (false positive)", "Type II (false negative)"]}
-  items={[
-    { text: 'You greenlight a strategy whose real edge is zero; it was a lucky backtest', bucket: 'Type I (false positive)' },
-    { text: 'You reject a regression signal that is, in truth, a genuine predictor', bucket: 'Type II (false negative)' },
-    { text: 'A momentum factor that actually works fails your test on a too-short sample', bucket: 'Type II (false negative)' },
-    { text: 'A risk model flags a "regime shift" that was just ordinary noise', bucket: 'Type I (false positive)' },
-    { text: 'You discard a real but small alpha because your test lacked the power to see it', bucket: 'Type II (false negative)' },
-  ]}
-  explanation="Type I = acting on an edge that isn't there (false alarm). Type II = missing an edge that is there (a miss). Underpowered tests on short samples drive Type II errors; loose thresholds and lucky backtests drive Type I."
-  instructions="Place each scenario in its error bucket."
-  checkLabel="Check"
-  retryLabel="Try again"
-  explanationLabel="Explanation"
-  allCorrectLabel="✓ All sorted"
-  partialResultWord="correct"
-/>
+The matching two-sided 95% **confidence interval for the mean** is:
 
-<MCQ
-  client:visible
-  question="A risk team tightens its significance threshold from α = 0.05 to α = 0.01 with the sample size unchanged. Holding everything else fixed, this will:"
-  options={[
-    { text: 'Reduce false positives (Type I) but raise false negatives (Type II), lowering power', correct: true },
-    { text: 'Reduce both Type I and Type II errors at once' },
-    { text: 'Raise power while also cutting false positives' },
-    { text: 'Have no effect on either error rate' },
-  ]}
-  explanation="With n fixed, α and β trade off: demanding stronger evidence cuts false positives but makes real effects harder to detect, so β rises and power (1−β) falls. The only way to improve both at once is more data."
-/>
+$$
+\bar x\pm z_{0.975}\mathrm{SE}
+=2\pm1.959963985(1)
+=[0.040036,\ 3.959964]\text{ bp}.
+$$
 
-## The finance trap: data snooping, p-hacking, and backtest overfitting
+Zero is just outside this interval, matching rejection at 5% in this model. A mean interval is not a range containing 95% of individual trade returns. Its **coverage** refers to the procedure: across repeated samples generated under its assumptions,95% of the intervals would cover the fixed mean. After this interval is observed, frequentist coverage is not a 95% posterior probability assigned to that fixed parameter. It also does not guarantee the mean remains constant in a future regime. [NIST explains the test–interval correspondence](https://www.itl.nist.gov/div898/handbook/prc/section1/prc15.htm).
 
-**Analogy.** Buy one lottery ticket and winning is a miracle. Buy a million tickets and *someone's* ticket wins — but that winner isn't skilled, just selected. Test one strategy at $\alpha = 0.05$ and a false positive is a 1-in-20 fluke. Test **1,000** strategies on the same data and, by pure luck, *about 50 of them* will clear the 5% bar with zero real edge. Cherry-pick the best-looking one, publish its glorious backtest, and you've "discovered" noise. This is **data snooping** — and it is the single most lethal mistake in quantitative finance.
+<HypothesisEvidenceLab client:visible title="Normal p-value and matching mean intervals" costBps={0} />
 
-**The mechanism.** Each test has a 5% false-positive rate *in isolation*. But significance was never designed to survive being run a thousand times and reporting only the winner. The probability that *at least one* of $m$ independent true-null tests fires a false positive is $1 - (1 - \alpha)^m$. For $\alpha = 0.05$:
+Move the observed mean while keeping the assumed true mean for power fixed. The p-value and interval change with the sample estimate; the planning power does not. Switching from 5% to 1% changes the decision threshold and widens the matching interval, but leaves the observed p-value unchanged.
 
-| Strategies tested $m$ | P(at least one false "discovery") |
-|---|---|
-| 1 | $0.05$ |
-| 10 | $1 - 0.95^{10} \approx 0.40$ |
-| 50 | $1 - 0.95^{50} \approx 0.92$ |
-| 1,000 | $\approx 1.00$ (virtually certain) |
+### When to report them
 
-By 50 tries it's a coin flip *against* you; by 1,000 a false discovery is essentially guaranteed. This is why a single dazzling backtest, divorced from the count of how many strategies were tried to find it, is nearly worthless evidence. The same disease wears other names: **p-hacking** (tweaking the rule, the window, the universe until $p$ slips under $0.05$) and **backtest overfitting** (adding parameters until the strategy memorizes the history's noise).
+Report the estimate, units, interval, p-value, null, model and research design together. Failing to reject does not prove zero; rejecting does not prove profitable or causal. A more relevant null can concern a specified cost or economically meaningful margin, rather than zero. A Bayesian posterior requires an explicit likelihood and prior; it cannot be obtained by reading $1-p$ as a probability of success.
 
-<TsOverfitCurve
-  client:visible
-  title="Backtest soars, live trading collapses"
-  complexityLabel="Strategies tried / parameters added"
-  inSampleLabel="In-sample (backtest)"
-  outSampleLabel="Out-of-sample (live)"
-  performanceLabel="Apparent edge"
-  caption="Crank the dial — try more variants, add more parameters — and the in-sample backtest keeps climbing as it fits the noise. But the out-of-sample (live) curve rises to a sweet spot, then falls off a cliff: past it you're mining quirks that won't repeat. The widening gap is overfitting you'll pay for in real money."
-/>
+<MatchConcepts client:visible question="Match each quantity to its interpretation" pairs={[{term:'Two-sided p-value',definition:'Null-and-model probability of a statistic at least as extreme under the chosen rule'},{term:'95% confidence coverage',definition:'Repeated-sampling success rate of an interval procedure under its assumptions'},{term:'Observed effect estimate',definition:'The sample estimate in stated economic units, with uncertainty'},{term:'Significance level',definition:'A preselected test-error threshold, not the probability a reported discovery is false'}]} />
 
-**The defenses.** The fix is to make the bar *harder* the more you searched. The crude-but-honest **Bonferroni** correction divides your threshold by the number of tests: testing $m$ strategies, demand $p \leq \alpha/m$ for each (so $1{,}000$ strategies at an overall $5\%$ means each must clear $p \leq 0.00005$ — a t-stat near $4$, not $2$). Practitioners also use the **deflated Sharpe ratio**, which discounts a strategy's Sharpe for the number of trials it took to find and for non-normal returns, and they insist on **out-of-sample** validation: hold back data the strategy never saw, because noise that was memorized in-sample won't reappear out-of-sample.
+## Power is a planning probability at a specified alternative
 
-<Callout variant="tip" title="Always ask: how many did you try?">
-A backtest's t-statistic is meaningless without its denominator of attempts. A t-stat of 2 from the *first and only* idea you tested is real evidence. The same t-stat of 2 from the *best of 500* ransacked variants is almost certainly noise — you'd expect dozens of t-stats above 2 from 500 dead strategies by luck alone. The honest question is never "is this significant?" but "is this significant *given how hard I searched*?"
-</Callout>
+<MCQ client:visible pretest question="A test fails to reject zero. Can that alone establish that any useful effect is absent?" options={[{text:'No; evaluate uncertainty and power for a specified meaningful effect',correct:true},{text:'Yes; a non-significant estimate proves the parameter is exactly zero'},{text:'Yes; Type II errors are impossible whenever p exceeds 0.05'},{text:'No; power is simply one minus the observed p-value'}]} explanation="A procedure may often miss an effect of a relevant size. Power is computed at an assumed alternative and design, not as 1−p after observing the result." />
 
-<Reveal client:visible>
-**Spaced recall — back to the standard error.** Why does a longer backtest make a real edge easier to prove, and a false one *harder* to fake? Think before you peek.
+A **Type I error** rejects a true null. A valid level-$\alpha$ test controls that probability at most $\alpha$ under its stated null/design; our continuous known-normal test has exact size $\alpha$. This is not the probability that a particular rejection is wrong. A **Type II error** fails to reject at a specified false-null parameter. Its probability is $\beta$ at that parameter; **power** is $1-\beta$.
 
-The t-statistic is $t = \bar{x} / \mathrm{SE}$ with $\mathrm{SE} = s/\sqrt{n}$. As $n$ grows, the standard error shrinks like $1/\sqrt{n}$ (the Central Limit Theorem result from the sampling lesson). For a **real** edge, $\bar{x}$ stays put while SE falls, so $t$ climbs and significance becomes easier. For a **fake** edge, the lucky $\bar{x}$ itself tends to wash toward zero as more data dilutes the fluke — so the false signal *decays* with sample size. More data is the great honest filter: it amplifies truth and erodes luck. That's exactly why out-of-sample testing on fresh data is the data-snooper's nemesis.
-</Reveal>
+<table tabIndex={0} aria-label="Worked comparison table 2" className="block w-full max-w-full overflow-x-auto text-left text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600">
+  <thead><tr><th scope="col">Decision</th><th scope="col">Null true</th><th scope="col">Specified alternative true</th></tr></thead>
+  <tbody>
+    <tr><th scope="row">Reject</th><td>Type I error</td><td>Detection; probability is power</td></tr>
+    <tr><th scope="row">Fail to reject</th><td>No Type I error</td><td>Type II error; probability $\beta$</td></tr>
+  </tbody>
+</table>
 
-<MCQ
-  client:visible
-  question="A quant tests 200 strategies at α = 0.05 and reports the single best one, with p = 0.04, as a 'significant discovery.' The biggest problem is:"
-  options={[
-    { text: 'With 200 tests, roughly 10 false positives are expected by chance, so the cherry-picked winner is likely noise', correct: true },
-    { text: 'p = 0.04 is above the 0.05 threshold, so it is not significant' },
-    { text: 'The standard error was computed incorrectly' },
-    { text: 'Nothing — p < 0.05 means the discovery is solid' },
-  ]}
-  explanation="At α = 0.05, about 200 × 0.05 = 10 of the 200 tests fire false positives by pure luck. Reporting only the best survivor without correcting for the 200 attempts (e.g. Bonferroni p ≤ 0.05/200 = 0.00025) is textbook data snooping. The p-value itself is fine; the multiplicity is the crime."
-/>
+Power depends on effect size, SE, threshold and design. There is no single power number for every nonzero effect. For known-normal two-sided testing, define $\delta=(\mu_* -\mu_0)/\mathrm{SE}$ and critical $c=z_{1-\alpha/2}$:
 
-## Significance is not economic relevance
+$$
+\mathrm{Power}(\mu_*)=\Phi(-c-\delta)+1-\Phi(c-\delta).
+$$
 
-**Analogy.** A bathroom scale precise enough to detect a single grain of rice can *prove* you gained weight after a sneeze — a real, statistically significant change that no one would ever act on. In markets, a tiny edge can be unmistakably real and still utterly worthless, because **the market charges admission**: bid-ask spreads, commissions, slippage, and market impact all skim the return before it reaches your pocket.
+Assume a **true mean for planning** of 2 bp versus null 0, with known SE 1 bp. Thus $\delta=2$. At $\alpha=0.05$, $c=1.959964$:
 
-**The point.** Statistical significance answers *"is this edge distinguishable from zero?"* Economic relevance answers a completely different question: *"is what's left after trading costs worth trading?"* With enough data, a $0.01\%$ monthly edge can post a t-stat of $5$ — bulletproof significance — and yet vanish the instant you subtract a $0.05\%$ round-trip cost. Significant, and net-negative.
+$$
+\mathrm{Power}=\Phi(-3.959964)+1-\Phi(-0.040036)
+\approx0.516005.
+$$
 
-**Worked example.** A high-turnover signal earns a gross edge of $0.04\%$ per trade, established over a huge sample with a t-stat of $6$ — about as statistically real as evidence gets.
+Only about 51.6005% of repetitions reject under that particular 2 bp alternative; about 48.3995% miss it. At $\alpha=0.01$, critical 2.575829 gives power≈28.2368% with the same effect and SE. Stricter false-alarm control reduces detection probability here. Neither number is the probability that the observed 2 bp estimate is true. [Penn State teaches power as a probability conditional on a specified alternative](https://online.stat.psu.edu/statprogram/reviews/statistical-concepts/power-analysis).
 
-| Quantity | Value |
-|---|---|
-| Gross edge per trade | $+0.04\%$ |
-| Round-trip transaction cost | $-0.06\%$ |
-| **Net edge per trade** | $-0.02\%$ |
+<HypothesisEvidenceLab client:visible title="Changing the assumed effect changes power, not the sample already observed" costBps={0} />
 
-The edge is real, significant, and **loses money on every trade** once costs bite. A practitioner who stops at the p-value ships a strategy that's statistically flawless and financially suicidal. Always run the second test: *significant, sure — but does it survive costs, capacity, and turnover?*
+### When to plan sample size or interpret a non-rejection
 
-<Callout variant="warning" title="Two tests, not one">
-Significance and profitability are different hurdles, and a strategy must clear **both**. The p-value tells you the edge is unlikely to be luck; it tells you nothing about whether the edge is *large enough* to beat the spread, the commission, and the slippage. Quant graveyards are full of strategies with gorgeous t-statistics and negative net returns. "Statistically significant" is a starting gun, not a finish line.
-</Callout>
+Choose a meaningful effect before collecting the confirmation sample. More independent, comparable observations can reduce SE and increase power at fixed size; reducing measurement noise, using an appropriate paired design or changing the relevant test can also help. More data is not the only lever, and a longer changing-regime history need not estimate one stable current mean better. To support a sufficiently small effect rather than exactly zero, use an explicitly designed equivalence or non-inferiority procedure with stated margins; a large ordinary p-value is not that test.
 
-<MCQ
-  client:visible
-  question="A signal's gross edge is highly statistically significant (t = 5) but tiny in size. What's the right conclusion?"
-  options={[
-    { text: 'It may still be unprofitable after trading costs — significance does not imply economic relevance', correct: true },
-    { text: 'A high t-stat guarantees the strategy will be profitable' },
-    { text: 'A tiny edge can never be statistically significant' },
-    { text: 'Transaction costs are irrelevant once significance is established' },
-  ]}
-  explanation="Significance only says the edge is distinguishable from zero. A tiny edge can be bulletproof-significant yet net-negative after spreads, commissions and slippage. You must test economic relevance — net of costs — separately."
-/>
+<Categorize client:visible question="Classify the probability rather than guessing from a single outcome" buckets={['Type I error','Type II error','Power at a specified alternative','Not provided by p alone']} items={[{text:'Rejecting a true zero mean under the stated design',bucket:'Type I error'},{text:'Failing to reject when the stipulated true mean is 2 bp',bucket:'Type II error'},{text:'51.6005% detection at true mean 2 bp and SE 1 bp in the example',bucket:'Power at a specified alternative'},{text:'Probability that the reported strategy is genuinely profitable',bucket:'Not provided by p alone'}]} />
 
-## Putting it together
+## Searching many strategies changes the inference
 
-Hypothesis testing is the discipline that separates an edge from a fluke. Assume the null (no effect), rescale your estimate into a t-statistic ($t = \bar{x}/\mathrm{SE}$), and read off a p-value: *how often noise alone would fake a result this extreme.* Reject the null only when that p clears your $\alpha$ — never mistaking the p-value for the probability the null is true. Respect the $\alpha/\beta$ trade-off and chase power with more data. Then survive the two finance-specific gauntlets: **data snooping** — correct for every strategy you tried, because 1,000 tests breed ~50 lucky "discoveries" — and **economic relevance** — a significant edge still has to beat the costs. Significance is where the analysis starts, not where it ends.
+<ThinkReveal client:visible prompt="Twenty independent tests each have a true null and size 5%. Is the chance of at least one false rejection 5%,100% or another value?" hint="Compute the chance that none rejects first." text="None rejects with probability 0.95²⁰. At least one rejects with probability 1−0.95²⁰≈64.1514%. The expected count is 20 × 0.05=1, which is a different quantity from that probability." />
 
-<MindMap
-  client:visible
-  title="Hypothesis testing — the whole machine"
-  caption="Assume the null, measure surprise with a t-stat and p-value, mind the two error types, then defuse finance's twin traps: data snooping and the gap between significance and profit."
-  root={{
-    label: 'Hypothesis testing',
-    children: [
-      {
-        label: 'The logic',
-        children: [
-          { label: 'H₀: no effect (assume true)' },
-          { label: 'H₁: a real effect exists' },
-          { label: 'Reject H₀, or fail to reject' },
-          { label: 'Never prove H₁ — only reject H₀' },
-        ],
-      },
-      {
-        label: 'Test statistic',
-        children: [
-          { label: 't = x̄ / SE, with SE = s/√n' },
-          { label: 'Edge measured in standard errors' },
-          { label: '|t| > 2 ≈ significant at 5%' },
-          { label: 'More data shrinks SE, raises t' },
-        ],
-      },
-      {
-        label: 'p-value',
-        children: [
-          { label: 'P(data this extreme | H₀ true)' },
-          { label: 'Compare to α (often 0.05)' },
-          { label: 'NOT P(H₀ true) — flipped conditional' },
-          { label: 'Significant ≠ large effect' },
-        ],
-      },
-      {
-        label: 'Errors & power',
-        children: [
-          { label: 'Type I: false positive (rate α)' },
-          { label: 'Type II: false negative (rate β)' },
-          { label: 'Power = 1 − β' },
-          { label: 'α/β trade off; more data helps both' },
-        ],
-      },
-      {
-        label: 'Finance trap: snooping',
-        children: [
-          { label: '1,000 tests → ~50 lucky 5% hits' },
-          { label: 'p-hacking & backtest overfitting' },
-          { label: 'Bonferroni: demand p ≤ α/m' },
-          { label: 'Deflated Sharpe; out-of-sample' },
-        ],
-      },
-      {
-        label: 'Significance ≠ profit',
-        children: [
-          { label: 'Tiny real edge can be net-negative' },
-          { label: 'Costs: spread, commission, slippage' },
-          { label: 'Two tests: significant AND profitable' },
-        ],
-      },
-    ],
-  }}
-/>
+**Multiplicity** means making several statistical comparisons. **Data snooping** includes searching rules, windows, assets or parameters and reporting a favourable result while ignoring the search. Even if each unselected test were valid, selection changes the interpretation of the winner. If the underlying test was invalid, merely counting attempts will not fix it.
 
-<Quiz
-  client:visible
-  title="Recap: hypothesis testing & significance"
-  questions={[
-    {
-      question: 'In testing whether a strategy has an edge, what does the null hypothesis H₀ assume?',
-      options: [
-        { text: 'The true edge is zero — there is no effect', correct: true },
-        { text: 'The strategy is definitely profitable' },
-        { text: 'The returns are not normally distributed' },
-        { text: 'The sample size is too small' },
-      ],
-      explanation: 'H₀ is the no-effect baseline (mean return = 0). We assume it, then check whether the data is too surprising to be compatible with it.',
-    },
-    {
-      question: 'A strategy returns 0.6% monthly with standard deviation 3.6% over 36 months. Its t-statistic for H₀: μ = 0 is closest to:',
-      options: [
-        { text: '1.0', correct: true },
-        { text: '6.0' },
-        { text: '0.17' },
-        { text: '3.6' },
-      ],
-      explanation: 'SE = 3.6% / √36 = 3.6% / 6 = 0.6%, so t = 0.6% / 0.6% = 1.0 — not significant. Forgetting to divide by √n (using s = 3.6% directly) gives the 0.17 trap.',
-    },
-    {
-      question: 'A backtest reports p = 0.03. Which statement is correct?',
-      options: [
-        { text: 'If the true edge were zero, data this extreme would occur 3% of the time', correct: true },
-        { text: 'There is a 3% chance the edge is zero' },
-        { text: 'There is a 97% chance the strategy is profitable' },
-        { text: 'The strategy wins 97% of its trades' },
-      ],
-      explanation: 'p = P(data this extreme | null true) = 3%. It is not P(null true) and says nothing about profitability or win rate — flipping the conditional is the prosecutor’s fallacy.',
-    },
-    {
-      question: 'Increasing statistical power (1 − β) without raising the false-positive rate is best achieved by:',
-      options: [
-        { text: 'Collecting more data to shrink the standard error', correct: true },
-        { text: 'Loosening α from 0.05 to 0.10' },
-        { text: 'Testing more strategies on the same data' },
-        { text: 'Reporting only the best backtest' },
-      ],
-      explanation: 'More data shrinks SE, sharpening the test so you gain power while keeping α fixed. Loosening α buys power only by accepting more false positives; testing more strategies and cherry-picking is data snooping, which manufactures false positives.',
-    },
-    {
-      question: 'A team tests 1,000 strategies at α = 0.05 and trumpets the best one. The core danger is:',
-      options: [
-        { text: 'Around 50 strategies clear the 5% bar by luck alone, so the winner is probably noise', correct: true },
-        { text: 'The p-value formula is wrong for large samples' },
-        { text: 'Testing many strategies reduces the false-positive rate' },
-        { text: 'A t-stat above 2 can never arise from a true-null strategy' },
-      ],
-      explanation: 'At α = 0.05, about 1,000 × 0.05 = 50 true-null strategies fire false positives by chance. Cherry-picking the best without a multiple-testing correction (Bonferroni p ≤ α/m, deflated Sharpe, out-of-sample) is data snooping.',
-    },
-    {
-      question: 'A signal has a gross edge of +0.03% per trade with a t-stat of 7, but round-trip costs are 0.05%. The correct read is:',
-      options: [
-        { text: 'It is statistically significant yet economically negative — significance is not relevance', correct: true },
-        { text: 'A t-stat of 7 guarantees profitability regardless of costs' },
-        { text: 'The edge is not significant because it is small' },
-        { text: 'Transaction costs cannot exceed a significant edge' },
-      ],
-      explanation: 'Net edge = 0.03% − 0.05% = −0.02% per trade: real and significant, but it loses money after costs. Significance answers "distinguishable from zero?"; profitability is a separate test the strategy must also pass.',
-    },
-  ]}
-/>
+For $m$ **independent, true-null tests of exact size** $\alpha$:
 
-That closes the statistics course: you can now take a number off a backtest and interrogate it like a quant — *is this real, or is it luck, and even if it's real, is it worth trading?* Every later course that claims an "edge," a "factor," or a "signal" is implicitly making a hypothesis-testing claim. Now you know how to audit it.
+$$
+P(\text{at least one false rejection})=1-(1-\alpha)^m.
+$$
+
+For 20 at 5%, this is $1-0.95^{20}=0.641514\ldots$. The expected false-rejection count is $m\alpha=1$; it does not mean exactly one will occur. Without independence, the product formula need not hold. The union bound gives probability at most $\min(1,m\alpha)$ if each test's true-null rejection probability is at most $\alpha$. For 20 it only gives the upper bound 1, not an exact forecast.
+
+The **Bonferroni** rule tests each member of a specified family at $\alpha/m$. For family level 5% and 20 tests:
+
+$$
+\alpha_{\mathrm{per\ test}}=0.05/20=0.0025.
+$$
+
+For valid marginal p-values and the stated family, the union bound gives overall false-rejection probability at most $20\times0.0025=0.05$ under all true nulls; more generally it controls the probability of rejecting any true null in that family. **Independence is not required for this control.** It can be conservative, and changing the family or hiding searches changes the claim. [NIST describes Bonferroni simultaneous control](https://www.itl.nist.gov/div898/handbook/prc/section4/prc473.htm).
+
+<MultipleTestingRisk client:visible title="One family: probability, expected count and correction are different" />
+
+### When to validate a researched strategy
+
+Log the full search, specify the family and use appropriate corrections or a fresh confirmation plan. Keep validation genuinely unused in tuning and consider time order, leakage, survivorship and overlapping observations. An out-of-sample period stops being untouched once it repeatedly guides revisions. Neither a correction nor a holdout guarantees profitability or fixes future distribution changes. A selected p=0.04 does not itself tell you the posterior probability that the strategy is noise; that requires assumptions about alternatives, prevalence and selection.
+
+<MCQ client:visible allowMultiple question="Which claims follow from the 20-test example? Select all that apply." options={[{text:'64.1514% uses independence and true nulls of exact size 5%',correct:true},{text:'A Bonferroni threshold 0.0025 controls a 5% family with valid p-values without independence',correct:true},{text:'Expected false count 1 means a false rejection is certain'},{text:'The smallest reported p-value gives the probability the winning strategy is false'}]} explanation="A probability of at least one event, an expected number of events and a posterior probability of a selected hypothesis are three different objects." />
+
+## Economic relevance requires an estimate in net units and uncertainty
+
+<MCQ client:visible pretest question="A gross mean is statistically significant at 5%. Does that prove the strategy earns positive net returns?" options={[{text:'No; estimate costs, relevant net effect and uncertainty under a suitable design',correct:true},{text:'Yes; significance turns every trade into a positive payoff'},{text:'Yes; costs cannot exceed a statistically significant estimate'},{text:'No; a small effect can never be statistically significant'}]} explanation="Statistical incompatibility with gross zero is a different question from the size and uncertainty of a net return. Significant does not mean true, durable or profitable." />
+
+Return to the independent known-normal example: observed gross mean 2 bp, SE 1 bp, two-sided p≈0.0455 and 95% gross interval[0.040036,3.959964]bp. Stipulate a known constant **total cost 3 bp per observation**, measured in the same units and not already included in the gross returns. Then:
+
+$$
+\widehat\mu_{\mathrm{net}}=2-3=-1\text{ bp},
+$$
+$$
+CI_{\mathrm{net}}=[0.040036-3,\ 3.959964-3]
+=[-2.959964,\ 0.959964]\text{ bp}.
+$$
+
+A known constant subtraction leaves SE unchanged. The estimated net mean is negative and the interval includes both negative and positive net means. This does not show a loss on every trade, prove the true net mean is negative, or establish that gross mean 2 bp is a fixed fact. A two-sided test of **net zero** uses $z=-1$ and p≈0.317311, a different null from gross zero. With uncertain or variable costs, their variance and covariance with gross outcomes must also enter the analysis.
+
+<HypothesisEvidenceLab client:visible title="Subtract a certain 3 bp cost in the same observation units" />
+
+### When to turn research into a decision
+
+State gross versus net, benchmark, exposure, turnover and the cost horizon. Check spreads, commissions, slippage, market impact, capacity and funding where relevant; do not subtract a per-trade cost from an annual mean without conversion. Report uncertainty and out-of-sample evidence. The minimum effect worth implementing depends on risk and constraints; no universal p threshold substitutes for that decision. A favourable historical estimate, however precise under its model, is not a promised future return.
+
+<FillBlank client:visible question="Keep the economic conclusion narrower than the data" text="Gross estimate 2 bp minus known cost 3 bp gives net estimate {{−1 bp|+5 bp|+1 bp}}. With net interval crossing zero, we have {{uncertainty about the net mean|proof of a loss on every trade|a guaranteed future profit}}. Subtracting uncertain costs requires {{their uncertainty and dependence|ignoring them if gross p is small|changing basis points into probabilities}}." explanation="The estimate and interval concern a mean under a model. They neither fix every individual outcome nor resolve future parameter and cost changes." />
+
+## Connect the question, the model and the decision
+
+<MindMap client:visible title="Read statistical evidence with its conditions" root={{label:'Hypothesis testing',children:[{label:'Specify',children:[{label:'Null parameter and economic units'},{label:'Tail rule model stopping and search family'},{label:'Normal known SE versus iid-normal Student t'}]},{label:'Quantify',children:[{label:'Estimate and valid SE'},{label:'P is conditional tail probability'},{label:'Confidence coverage is a procedure property'},{label:'Dependence can alter mean uncertainty'}]},{label:'Plan',children:[{label:'Type I controls false rejection under null'},{label:'Power at a specified alternative'},{label:'Non-rejection is not proof of zero'}]},{label:'Search honestly',children:[{label:'Independent family probability differs from expected count'},{label:'Bonferroni uses valid p-values without independence'},{label:'Full search and unused confirmation data matter'}]},{label:'Decide economically',children:[{label:'Net mean size and uncertainty'},{label:'Costs units capacity risk and changing regimes'},{label:'No posterior or profitability claim from p alone'}]}]}} />
+
+<Quiz client:visible title="Audit the inference, not just the threshold" questions={[
+ {question:'Under the known-normal model, z=2 gives p≈0.0455. What is the defensible reading?',options:[{text:'A two-sided null-and-model tail probability, not a probability of skill or profit',correct:true},{text:'A 4.55% chance the null hypothesis is true'},{text:'A 95.45% chance the next trade wins'},{text:'Proof that the alternative is true and all assumptions hold'}],explanation:'The tail area assumes the null and model. It cannot invert that conditioning or identify a unique explanation.'},
+ {question:'A mean test with iid normal data, n=36 and unknown variance gives t=2. Which reference is appropriate?',options:[{text:'Student t with 35 degrees of freedom; two-sided p≈0.0533',correct:true},{text:'Standard normal exactly; two-sided p≈0.0455'},{text:'A probability of 95% that the mean is nonzero'},{text:'A guaranteed profit because t is a positive number'}],explanation:'Estimating variance changes the exact reference distribution. The 35-df 5% critical value is about 2.0301.'},
+ {question:'Which quantities stay distinct? Select all that apply.',allowMultiple:true,options:[{text:'Power at an assumed alternative and the observed p-value',correct:true},{text:'A mean confidence interval and the distribution of individual returns',correct:true},{text:'One minus p and the posterior probability the strategy is profitable'},{text:'Failure to reject and proof the parameter equals zero'}],explanation:'Power is a design probability; p is a conditional tail area; a mean interval describes parameter uncertainty under a procedure. None supplies the other claims automatically.'},
+ {question:'Twenty independent true-null tests each have size 5%. What is the probability of at least one false rejection?',options:[{text:'Approximately 64.1514%',correct:true},{text:'Exactly 5%'},{text:'Exactly 100%, since the expected count is 1'},{text:'Exactly 0.25%, the Bonferroni per-test threshold'}],explanation:'1−0.95²⁰≈0.641514. Expected count, family probability and corrected per-test threshold differ.'},
+ {question:'Gross estimate 2 bp, certain cost 3 bp and unchanged SE 1 bp. Which statement follows?',options:[{text:'Estimated net mean −1 bp; the stated 95% net interval still crosses zero',correct:true},{text:'Every trade loses exactly 1 bp'},{text:'Gross significance guarantees a positive true net mean'},{text:'Known constant cost doubles the standard error automatically'}],explanation:'Subtract the same known 3 bp from the mean and both interval endpoints. It changes the tested economic reference, not the variance of the estimate.'},
+ {question:'A positively dependent return sample is analysed with s/√n as if independent. What needs checking?',options:[{text:'Whether the SE and reference distribution correctly account for dependence and selection',correct:true},{text:'Only whether the sample has at least 30 rows'},{text:'Whether p can be renamed a probability that chance caused the result'},{text:'Whether adding more overlapping observations guarantees valid inference'}],explanation:'Financial dependence, heteroskedasticity, changing regimes and research design affect inference. Large row counts alone do not verify a sampling model.'},
+]} />
