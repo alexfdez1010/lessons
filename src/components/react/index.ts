@@ -945,3 +945,6 @@ export type { EvidenceInputs, HypothesisEvidenceLabProps } from '@/components/re
 
 export { calculateTestingMultiplicity, MultipleTestingRisk } from '@/components/react/MultipleTestingRisk';
 export type { MultipleTestingRiskProps } from '@/components/react/MultipleTestingRisk';
+
+export { calculateBopAccounts, BopAccountBridge, calculateExternalPosition, ExternalPositionBridge } from '@/components/react/ExternalAccountsBridge';
+export type { BopInputs, BopAccountBridgeProps, ExternalPositionInputs, ExternalPositionBridgeProps } from '@/components/react/ExternalAccountsBridge';
