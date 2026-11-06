@@ -264,8 +264,8 @@ export type { TwoAssetFrontierProps } from '@/components/react/TwoAssetFrontier'
 export { EfficientFrontier, default as EfficientFrontierDefault } from '@/components/react/EfficientFrontier';
 export type { EfficientFrontierProps } from '@/components/react/EfficientFrontier';
 
-export { CapitalMarketLine, default as CapitalMarketLineDefault } from '@/components/react/CapitalMarketLine';
-export type { CapitalMarketLineProps } from '@/components/react/CapitalMarketLine';
+export { CapitalMarketLine, createCmlGeometry, calculateFixedBasketMix, default as CapitalMarketLineDefault } from '@/components/react/CapitalMarketLine';
+export type { CapitalMarketLineProps, CmlInputs } from '@/components/react/CapitalMarketLine';
 
 export { SecurityMarketLine, default as SecurityMarketLineDefault } from '@/components/react/SecurityMarketLine';
 export type { SecurityMarketLineProps } from '@/components/react/SecurityMarketLine';
