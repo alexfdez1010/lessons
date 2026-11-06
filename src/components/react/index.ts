@@ -948,3 +948,6 @@ export type { MultipleTestingRiskProps } from '@/components/react/MultipleTestin
 
 export { calculateBopAccounts, BopAccountBridge, calculateExternalPosition, ExternalPositionBridge } from '@/components/react/ExternalAccountsBridge';
 export type { BopInputs, BopAccountBridgeProps, ExternalPositionInputs, ExternalPositionBridgeProps } from '@/components/react/ExternalAccountsBridge';
+
+export { calculateCoveredParity, CoveredParityRoutes } from '@/components/react/CoveredParityRoutes';
+export type { CoveredParityInputs, CoveredParityResult, CoveredParityRoutesProps } from '@/components/react/CoveredParityRoutes';
