@@ -918,3 +918,6 @@ export type { BondOutcomeInputs, BondOutcomeExplorerProps } from '@/components/r
 
 export { parseDayCountDate, calculateDayCount, DayCountAccrual } from '@/components/react/DayCountAccrual';
 export type { CivilDate, DayCountResult, DayCountAccrualProps } from '@/components/react/DayCountAccrual';
+
+export { refinanceLoanSchedule, calculateRefinancingExit, RefinancingExitComparison, calculateCollateralSale, CollateralSaleOutcome } from '@/components/react/RefinancingExitComparison';
+export type { RefinanceInputs, RefinanceMonth, RefinanceResult, RefinancingExitComparisonProps, CollateralSaleOutcomeProps } from '@/components/react/RefinancingExitComparison';
