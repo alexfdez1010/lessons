@@ -146,7 +146,7 @@ export type { TotalReturnStackProps } from '@/components/react/TotalReturnStack'
 export { DiversifyBasket, default as DiversifyBasketDefault } from '@/components/react/DiversifyBasket';
 export type { DiversifyBasketProps } from '@/components/react/DiversifyBasket';
 
-export { BondCashflows, default as BondCashflowsDefault } from '@/components/react/BondCashflows';
+export { BondCashflows, calculateBondSchedule, default as BondCashflowsDefault } from '@/components/react/BondCashflows';
 export type { BondCashflowsProps } from '@/components/react/BondCashflows';
 
 export { PriceYieldSeesaw, default as PriceYieldSeesawDefault } from '@/components/react/PriceYieldSeesaw';
@@ -912,3 +912,6 @@ export type { ReinvestmentInputs, ReinvestmentRow, ReinvestmentResult, Reinvestm
 
 export { calculateModifiedDietz, ModifiedDietzTimeline } from '@/components/react/ModifiedDietzTimeline';
 export type { DietzCashFlow, ModifiedDietzInputs, ModifiedDietzTimelineProps } from '@/components/react/ModifiedDietzTimeline';
+
+export { calculateBondOutcome, BondOutcomeExplorer } from '@/components/react/BondOutcomeExplorer';
+export type { BondOutcomeInputs, BondOutcomeExplorerProps } from '@/components/react/BondOutcomeExplorer';

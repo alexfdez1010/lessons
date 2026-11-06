@@ -38,6 +38,10 @@ export interface BondCashflowsProps {
   years?: number;
   /** Initial payments per year (1 = annual, 2 = semiannual). Defaults to `1`. */
   frequency?: 1 | 2;
+  /** Number-formatting locale, including accessible descriptions. */
+  locale?: string;
+  /** Accessible model schedule with {face}, {rate}, {years}, {couponDates}, {coupon}, {payments}, {final} tokens. */
+  chartLabel?: string;
   className?: string;
 }
 
@@ -46,21 +50,26 @@ const prefersReducedMotion = (): boolean =>
   typeof window.matchMedia === 'function' &&
   window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-const money = (prefix: string, value: number): string =>
-  `${prefix}${new Intl.NumberFormat('en-US', {
-    maximumFractionDigits: 2,
-    minimumFractionDigits: value % 1 === 0 ? 0 : 2,
-  }).format(value)}`;
+/** Scheduled nominal fixed-rate bullet payments, conditional on issuer performance. */
+export function calculateBondSchedule(face: number, rate: number, years: number, frequency: number) {
+  if (!Number.isFinite(face) || face <= 0 || face > 1e12 || !Number.isFinite(rate) || rate < 0 || rate > 0.1 ||
+      !Number.isInteger(years) || years < 1 || years > 10 || (frequency !== 1 && frequency !== 2)) {
+    throw new Error('BondCashflows: positive finite face, coupon from zero to 10%, integer years 1–10 and frequency 1 or 2 required.');
+  }
+  const coupon = face * rate / frequency;
+  const couponDates = years * frequency;
+  const flows = Array.from({ length: couponDates }, (_, index) => ({ time: (index + 1) / frequency, amount: coupon + (index === couponDates - 1 ? face : 0) })).filter((flow) => flow.amount > 0);
+  return { coupon, couponDates: coupon > 0 ? couponDates : 0, paymentCount: flows.length, totalInterest: coupon * couponDates, maturityPayment: coupon + face, flows };
+}
 
-/**
- * Interactive bond cash-flow chart. A bond pays small periodic *coupons* over
- * its life plus one big *face-value* repayment at maturity — this draws that on
- * a horizontal time axis so a beginner literally *sees* the income stream. Each
- * coupon date gets a short brand-coloured bar; the final period stacks that
- * coupon on top of a much taller accent-coloured principal bar. Drag the
- * coupon-rate and years sliders or flip annual/semiannual and the bars plus the
- * readouts recompute live; bars rise left-to-right on mount. Respects
- * `prefers-reduced-motion` (jumps straight to the final state).
+const money = (prefix: string, value: number, locale: string): string =>
+  prefix + new Intl.NumberFormat(locale, { maximumFractionDigits: 2, minimumFractionDigits: value % 1 === 0 ? 0 : 2 }).format(value);
+
+/** Scheduled cash-flow model for a fixed nominal bullet bond without early redemption.
+ * Positive coupons and one principal repayment are shown assuming full timely payment.
+ * Zero coupon has only one positive payment. Market price, actual default recovery,
+ * purchasing power and currency conversion are not inferred by this schedule.
+ * Only bar-group transforms animate. Reduced motion presents the same values without the reveal animation.
  */
 export function BondCashflows({
   title = "A bond's cash flows",
@@ -70,19 +79,22 @@ export function BondCashflows({
   yearsLabel = 'Years to maturity',
   frequencyLabel = 'Payments per year',
   perCouponLabel = 'Coupon per payment',
-  totalInterestLabel = 'Total interest received',
+  totalInterestLabel = 'Total scheduled coupon interest',
   maturityPaymentLabel = 'Final payment at maturity',
   annualLabel = 'Annual',
   semiannualLabel = 'Semiannual',
-  paymentsLabel = 'Number of payments',
-  caption = 'A bond drips small coupons along the way, then hands back the whole face value at maturity — that last bar is a coupon stacked on top of your principal coming home.',
+  paymentsLabel = 'Positive scheduled payments',
+  caption = 'Scheduled fixed nominal bullet-bond payments, assuming full timely issuer performance and no early redemption. The chart omits purchase price, default recovery, currency effects and inflation.',
   currencyPrefix = '$',
   faceValue = 1000,
   couponRate = 0.05,
   years = 5,
   frequency = 1,
+  locale = 'en-US',
+  chartLabel = 'Model schedule assuming full timely payment: face {face}, annual coupon {rate}%, maturity {years} years, {couponDates} coupon dates at {coupon} each, {payments} positive payments and final payment {final}. Purchase price and investment outcome are not shown.',
   className,
 }: BondCashflowsProps) {
+  calculateBondSchedule(faceValue, couponRate, years, frequency);
   const id = useId();
   const [rateState, setRateState] = useState(couponRate);
   const [yearsState, setYearsState] = useState(years);
@@ -96,11 +108,10 @@ export function BondCashflows({
   const padTop = 14;
   const padBottom = 26; // room for the baseline + axis ticks
 
-  const coupon = (faceValue * rateState) / freqState;
+  const schedule = calculateBondSchedule(faceValue, rateState, yearsState, freqState);
+  const { coupon, totalInterest, maturityPayment } = schedule;
   const nPayments = yearsState * freqState;
-  const totalInterest = coupon * nPayments;
-  const maturityPayment = coupon + faceValue;
-  const ratePct = Math.round(rateState * 100);
+  const ratePct = rateState * 100;
 
   // Tallest bar is the final coupon + face value; scale everything to it.
   const maxV = Math.max(maturityPayment, 1);
@@ -112,7 +123,7 @@ export function BondCashflows({
   const slots = nPayments;
   const slotW = (W - padX * 2) / Math.max(slots, 1);
   const barW = Math.max(4, Math.min(slotW * 0.5, 26));
-  const slotX = (i: number) => padX + slotW * i + slotW / 2; // centre of slot i (0-based)
+  const slotX = (i: number) => padX + (W - padX * 2) * ((i + 1) / nPayments);
 
   // Animate bars rising whenever inputs change.
   useEffect(() => {
@@ -147,23 +158,24 @@ export function BondCashflows({
     return (progress - start) / (end - start);
   };
 
-  const ariaLabel =
-    `${title}: a ${money(currencyPrefix, faceValue)} bond paying a ${ratePct}% coupon ` +
-    `${freqState === 2 ? 'semiannually' : 'annually'} for ${yearsState} years makes ` +
-    `${nPayments} payments of ${money(currencyPrefix, coupon)}, then repays the face value ` +
-    `for a final payment of ${money(currencyPrefix, maturityPayment)}.`;
+  const number = new Intl.NumberFormat(locale, { maximumFractionDigits: 4 });
+  const ariaLabel = chartLabel.replaceAll('{face}', money(currencyPrefix, faceValue, locale))
+    .replaceAll('{rate}', number.format(ratePct)).replaceAll('{years}', number.format(yearsState))
+    .replaceAll('{couponDates}', number.format(schedule.couponDates)).replaceAll('{coupon}', money(currencyPrefix, coupon, locale))
+    .replaceAll('{payments}', number.format(schedule.paymentCount)).replaceAll('{final}', money(currencyPrefix, maturityPayment, locale));
+
 
   return (
     <figure
       className={cx(
-        'my-6 rounded-card border border-ink-100 bg-surface p-5 shadow-soft',
+        'not-prose my-6 rounded-card border border-ink-100 bg-surface p-5 shadow-soft',
         className,
       )}
     >
-      <figcaption className="flex items-center justify-between gap-3">
+      <figcaption className="flex flex-wrap items-center justify-between gap-3">
         <span className="font-medium text-ink-900">{title}</span>
         <span className="rounded-pill bg-brand-600 px-3 py-1 text-sm font-medium text-white">
-          {principalLabel}: {money(currencyPrefix, faceValue)}
+          {principalLabel}: {money(currencyPrefix, faceValue, locale)}
         </span>
       </figcaption>
 
@@ -198,12 +210,12 @@ export function BondCashflows({
           const reveal = barReveal(i);
 
           // Coupon bar (every period).
-          const cH = barH(coupon) * reveal;
+          const cH = barH(coupon);
           // Principal bar only on the final period, drawn beneath the coupon.
-          const pH = isLast ? barH(faceValue) * reveal : 0;
+          const pH = isLast ? barH(faceValue) : 0;
 
           return (
-            <g key={i}>
+            <g key={i} transform={'translate(0 ' + baselineY + ') scale(1 ' + reveal + ') translate(0 ' + (-baselineY) + ')'}>
               {isLast && pH > 0 && (
                 <rect
                   x={x0}
@@ -266,17 +278,17 @@ export function BondCashflows({
             className="flex items-center justify-between text-sm text-ink-700"
           >
             <span>{couponRateLabel}</span>
-            <span className="font-mono text-ink-900">{ratePct}%</span>
+            <span className="font-mono text-ink-900">{number.format(ratePct)}%</span>
           </label>
           <input
             id={`${id}-rate`}
             type="range"
             min={0}
             max={10}
-            step={1}
+            step={0.01}
             value={ratePct}
             onChange={(e) => setRateState(Number(e.target.value) / 100)}
-            className="mt-2 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
+            className="mt-2 h-8 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
           />
         </div>
         <div>
@@ -295,7 +307,7 @@ export function BondCashflows({
             step={1}
             value={yearsState}
             onChange={(e) => setYearsState(Number(e.target.value))}
-            className="mt-2 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
+            className="mt-2 h-8 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
           />
         </div>
       </div>
@@ -305,7 +317,7 @@ export function BondCashflows({
         <legend className="text-sm text-ink-700">{frequencyLabel}</legend>
         <div
           className="mt-2 inline-flex rounded-pill border border-ink-200 bg-surface-sunken/40 p-1"
-          role="radiogroup"
+          role="group"
           aria-label={frequencyLabel}
         >
           {([1, 2] as const).map((f) => {
@@ -314,8 +326,7 @@ export function BondCashflows({
               <button
                 key={f}
                 type="button"
-                role="radio"
-                aria-checked={active}
+                aria-pressed={active}
                 onClick={() => setFreqState(f)}
                 className={cx(
                   'rounded-pill px-4 py-1 text-sm font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500',
@@ -339,25 +350,25 @@ export function BondCashflows({
         <div className="rounded-card border border-ink-100 bg-surface-sunken/40 px-3 py-2">
           <dt className="text-ink-500">{perCouponLabel}</dt>
           <dd className="font-mono text-lg font-semibold text-brand-700">
-            {money(currencyPrefix, coupon)}
+            {money(currencyPrefix, coupon, locale)}
           </dd>
         </div>
         <div className="rounded-card border border-ink-100 bg-surface-sunken/40 px-3 py-2">
           <dt className="text-ink-500">{paymentsLabel}</dt>
           <dd className="font-mono text-lg font-semibold text-ink-900">
-            {nPayments}
+            {number.format(schedule.paymentCount)}
           </dd>
         </div>
         <div className="rounded-card border border-ink-100 bg-surface-sunken/40 px-3 py-2">
           <dt className="text-ink-500">{totalInterestLabel}</dt>
           <dd className="font-mono text-lg font-semibold text-ink-900">
-            {money(currencyPrefix, totalInterest)}
+            {money(currencyPrefix, totalInterest, locale)}
           </dd>
         </div>
         <div className="rounded-card border border-ink-100 bg-surface-sunken/40 px-3 py-2">
           <dt className="text-ink-500">{maturityPaymentLabel}</dt>
           <dd className="font-mono text-lg font-semibold text-accent-600">
-            {money(currencyPrefix, maturityPayment)}
+            {money(currencyPrefix, maturityPayment, locale)}
           </dd>
         </div>
       </dl>
