@@ -885,3 +885,9 @@ export type { NpvProfile, NpvProfilesProps } from '@/components/react/NpvProfile
 
 export { calculateRebalance, isRebalanceDue, RebalanceDrift } from '@/components/react/RebalanceDrift';
 export type { RebalancePath, RebalanceRule, RebalanceInput, RebalanceResult, RebalanceDriftProps } from '@/components/react/RebalanceDrift';
+
+export { calculateSwapReturnLedger, SwapReturnLedger } from '@/components/react/SwapReturnLedger';
+export type { SwapReturnInputs, SwapReturnLedgerProps } from '@/components/react/SwapReturnLedger';
+
+export { calculateLendingCollateral, SecuritiesLendingCollateral } from '@/components/react/SecuritiesLendingCollateral';
+export type { LendingCollateralInputs, LendingCollateralResult, SecuritiesLendingCollateralProps } from '@/components/react/SecuritiesLendingCollateral';

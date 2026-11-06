@@ -34,6 +34,8 @@ export interface IndexWeightsProps {
   equalWeightNote?: string;
   /** One-line takeaway shown under the chart. */
   caption?: string;
+  /** Locale used for percentages and market-cap values. */
+  locale?: string;
   className?: string;
 }
 
@@ -54,9 +56,6 @@ const prefersReducedMotion = (): boolean =>
   window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 const easeOutCubic = (t: number): number => 1 - Math.pow(1 - t, 3);
-
-/** Format a 0–1 weight as a percentage string with one decimal. */
-const formatPct = (weight: number): string => `${(weight * 100).toFixed(1)}%`;
 
 /**
  * Interactive anatomy of a stock index. Eight fictional companies (one giant,
@@ -88,11 +87,16 @@ export function IndexWeights({
   othersLegendLabel = 'Everyone else',
   equalWeightNote = 'Equal weighting ignores market cap — move the slider and nothing changes.',
   caption,
+  locale = 'en-US',
   className,
 }: IndexWeightsProps) {
   if (companies.length < 2) {
     throw new Error('IndexWeights needs at least 2 companies.');
   }
+
+  const percent = new Intl.NumberFormat(locale, { style: 'percent', minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  const marketCapNumber = new Intl.NumberFormat(locale);
+  const formatPct = (weight: number): string => percent.format(weight);
 
   const id = useId();
   const rafRef = useRef<number | null>(null);
@@ -177,7 +181,7 @@ export function IndexWeights({
   return (
     <figure
       className={cx(
-        'my-6 rounded-card border border-ink-100 bg-surface p-5 shadow-soft',
+        'not-prose my-6 rounded-card border border-ink-100 bg-surface p-5 shadow-soft',
         className,
       )}
     >
@@ -315,7 +319,7 @@ export function IndexWeights({
           </label>
           <span className="font-mono text-sm font-semibold text-ink-900">
             <span className="sr-only">{marketCapLabel}: </span>
-            {giantCap.toLocaleString()}
+            {marketCapNumber.format(giantCap)}
           </span>
         </div>
         <input
@@ -327,7 +331,7 @@ export function IndexWeights({
           value={giantCap}
           onChange={(event) => setGiantCap(Number(event.target.value))}
           className="mt-2 w-full accent-brand-600"
-          aria-valuetext={`${giantCap.toLocaleString()}`}
+          aria-valuetext={`${marketCapNumber.format(giantCap)}`}
         />
         {scheme === 'equal' ? (
           <p className="mt-1 text-sm text-ink-500">{equalWeightNote}</p>
