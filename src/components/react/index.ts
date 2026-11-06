@@ -864,3 +864,6 @@ export type { CorrelationVsCausationBacktestProps } from '@/components/react/Cor
 
 export { CashFlowReturnComparison, calculateCashFlowReturns } from '@/components/react/CashFlowReturnComparison';
 export type { CashFlowReturnComparisonProps } from '@/components/react/CashFlowReturnComparison';
+
+export { calculateCashCycle, DaysOfCashCycle } from '@/components/react/DaysOfCashCycle';
+export type { DaysOfCashCycleProps } from '@/components/react/DaysOfCashCycle';
