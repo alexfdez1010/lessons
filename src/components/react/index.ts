@@ -1008,3 +1008,9 @@ export type { VolatilityGrowthLabProps } from '@/components/react/VolatilityGrow
 
 export { calculateDiscreteShortfall, TailMassAllocation } from '@/components/react/TailMassAllocation';
 export type { DiscreteTailAtom, TailMassAllocationProps } from '@/components/react/TailMassAllocation';
+
+export { calculateDiffusionKelly, compareBinaryFraction, DiffusionKellyLab } from '@/components/react/DiffusionKellyLab';
+export type { DiffusionKellyInputs, DiffusionKellyLabProps } from '@/components/react/DiffusionKellyLab';
+
+export { leveragedJumpBudget, LeveragedJumpBudget } from '@/components/react/LeveragedJumpBudget';
+export type { LeveragedJumpBudgetProps } from '@/components/react/LeveragedJumpBudget';
