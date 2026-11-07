@@ -1116,3 +1116,6 @@ export type { QaeBudgetLabels, QaeBudgetMode, QaeEstimationBudgetProps } from '@
 
 export { initialReserveBooks, reserveBookTotals, reserveBalanceScenario, toyCapitalCapacity, ReserveBalanceSheetLab, bankIncome, bankRepricing, bankMaturity, bankCreditStress, bankLiquidityStress, BankFundingLab } from '@/components/react/BankingBalanceLabs';
 export type { ReserveBook, ReserveEntity, ReserveBooks, ReserveOperation, ReserveBalanceLabels, ReserveBalanceSheetLabProps, BankIncomeInputs, BankFundingLabels, BankFundingLabProps } from '@/components/react/BankingBalanceLabs';
+
+export { policyClaim, poolMoments, insuranceInputs, insuranceCase, InsuranceRiskLab } from '@/components/react/InsuranceRiskLab';
+export type { InsuranceRiskMode, InsuranceRiskLabels, InsuranceRiskLabProps } from '@/components/react/InsuranceRiskLab';
