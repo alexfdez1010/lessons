@@ -124,10 +124,10 @@ export function CrossSectionScatter({
   // Geometry.
   const W = 520;
   const H = 360;
-  const padL = 52;
+  const padL = 68;
   const padR = 20;
   const padT = 20;
-  const padB = 44;
+  const padB = 52;
   const plotW = W - padL - padR;
   const plotH = H - padT - padB;
 
@@ -149,17 +149,19 @@ export function CrossSectionScatter({
     return { xMin: xLo, xMax: xHi, yMin: yLo, yMax: yHi };
   }, [points, fit]);
 
+  // Normalize only rendered SVG geometry across server/browser math libraries.
+  const renderCoordinate = (value: number): number => Number(value.toFixed(3));
   const toX = (v: number): number =>
-    padL + ((v - xMin) / (xMax - xMin || 1)) * plotW;
+    renderCoordinate(padL + ((v - xMin) / (xMax - xMin || 1)) * plotW);
   const toY = (v: number): number =>
-    padT + plotH - ((v - yMin) / (yMax - yMin || 1)) * plotH;
+    renderCoordinate(padT + plotH - ((v - yMin) / (yMax - yMin || 1)) * plotH);
 
   // Fit-line endpoints across the visible x-range.
   const lx1 = xMin;
   const lx2 = xMax;
   const lp1 = { x: toX(lx1), y: toY(fit.intercept + fit.slope * lx1) };
   const lp2 = { x: toX(lx2), y: toY(fit.intercept + fit.slope * lx2) };
-  const lineLen = Math.hypot(lp2.x - lp1.x, lp2.y - lp1.y);
+  const lineLen = renderCoordinate(Math.hypot(lp2.x - lp1.x, lp2.y - lp1.y));
 
   // Scroll-trigger: animate when the figure enters the viewport.
   const figRef = useRef<HTMLElement | null>(null);
@@ -225,7 +227,7 @@ export function CrossSectionScatter({
     <figure
       ref={figRef}
       className={cx(
-        'my-6 rounded-card border border-ink-100 bg-surface p-5 shadow-soft',
+        'not-prose my-6 min-w-0 rounded-card border border-ink-100 bg-surface p-5 shadow-soft',
         className,
       )}
     >
@@ -236,150 +238,154 @@ export function CrossSectionScatter({
         </span>
       </figcaption>
 
-      <svg
-        viewBox={`0 0 ${W} ${H}`}
-        className="mt-4 w-full"
-        role="img"
-        aria-label={ariaLabel}
+      <div
+        tabIndex={0}
+        role="region"
+        aria-label={title}
+        className="mt-4 max-w-full overflow-x-auto rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
       >
-        {/* Plot background */}
-        <rect
-          x={padL}
-          y={padT}
-          width={plotW}
-          height={plotH}
-          rx={6}
-          fill="var(--color-surface-sunken)"
-          opacity={0.4}
-        />
-
-        {/* Y gridlines + tick labels */}
-        {yTicks.map((t, i) => {
-          const gy = toY(t);
-          return (
-            <g key={`y-${i}`}>
-              <line
-                x1={padL}
-                y1={gy}
-                x2={padL + plotW}
-                y2={gy}
-                stroke="var(--color-ink-100)"
-                strokeWidth={1}
-              />
-              <text
-                x={padL - 6}
-                y={gy + 3}
-                textAnchor="end"
-                fontSize="10"
-                fill="var(--color-ink-400)"
-              >
-                {fmt(t, 1)}
-              </text>
-            </g>
-          );
-        })}
-
-        {/* X gridlines + tick labels */}
-        {xTicks.map((t, i) => {
-          const gx = toX(t);
-          return (
-            <g key={`x-${i}`}>
-              <line
-                x1={gx}
-                y1={padT}
-                x2={gx}
-                y2={padT + plotH}
-                stroke="var(--color-ink-100)"
-                strokeWidth={1}
-                opacity={0.6}
-              />
-              <text
-                x={gx}
-                y={padT + plotH + 16}
-                textAnchor="middle"
-                fontSize="10"
-                fill="var(--color-ink-400)"
-              >
-                {fmt(t, 2)}
-              </text>
-            </g>
-          );
-        })}
-
-        {/* Best-fit regression line — slope = premium, intercept = pricing error.
-            Drawn with a dash-offset reveal triggered on scroll. */}
-        <line
-          x1={lp1.x}
-          y1={lp1.y}
-          x2={lp2.x}
-          y2={lp2.y}
-          stroke="var(--color-accent-600)"
-          strokeWidth={3}
-          strokeLinecap="round"
-          strokeDasharray={lineLen}
-          strokeDashoffset={lineOffset}
-          style={
-            reduced
-              ? undefined
-              : { transition: 'stroke-dashoffset 900ms ease-out' }
-          }
-        />
-
-        {/* Scatter points — pop/fade in on scroll, staggered. */}
-        {points.map((pt, i) => {
-          const cxp = toX(pt.x);
-          const cyp = toY(pt.y);
-          const delay = reduced ? 0 : 120 + i * 70;
-          return (
-            <circle
-              key={`pt-${i}`}
-              cx={cxp}
-              cy={cyp}
-              r={5}
-              fill="var(--color-brand-500)"
-              stroke="var(--color-surface)"
-              strokeWidth={1.5}
-              opacity={shown ? 1 : 0}
-              style={{
-                transformBox: 'fill-box',
-                transformOrigin: 'center',
-                transform: shown ? 'scale(1)' : 'scale(0.2)',
-                transition: reduced
-                  ? undefined
-                  : `opacity 320ms ease-out ${delay}ms, transform 320ms cubic-bezier(0.34, 1.56, 0.64, 1) ${delay}ms`,
-              }}
-            >
-              <title>
-                {pt.label ? `${pt.label}: ` : ''}
-                {`${xLabel} ${fmt(pt.x, 2)}, ${yLabel} ${fmt(pt.y, 1)}`}
-              </title>
-            </circle>
-          );
-        })}
-
-        {/* X axis title */}
-        <text
-          x={padL + plotW / 2}
-          y={H - 6}
-          textAnchor="middle"
-          fontSize="10"
-          fill="var(--color-ink-500)"
+        <svg
+          viewBox={`0 0 ${W} ${H}`}
+          className="block h-auto w-full min-w-[520px]"
+          role="img"
+          aria-label={ariaLabel}
         >
-          {xLabel}
-        </text>
+          {/* Plot background */}
+          <rect
+            x={padL}
+            y={padT}
+            width={plotW}
+            height={plotH}
+            rx={6}
+            fill="var(--color-surface-sunken)"
+            opacity={0.4}
+          />
 
-        {/* Y axis title */}
-        <text
-          x={14}
-          y={padT + plotH / 2}
-          fontSize="10"
-          fill="var(--color-ink-500)"
-          textAnchor="middle"
-          transform={`rotate(-90 14 ${padT + plotH / 2})`}
-        >
-          {yLabel}
-        </text>
-      </svg>
+          {/* Y gridlines + tick labels */}
+          {yTicks.map((t, i) => {
+            const gy = toY(t);
+            return (
+              <g key={`y-${i}`}>
+                <line
+                  x1={padL}
+                  y1={gy}
+                  x2={padL + plotW}
+                  y2={gy}
+                  stroke="var(--color-ink-100)"
+                  strokeWidth={1}
+                />
+                <text
+                  x={padL - 6}
+                  y={renderCoordinate(gy + 3)}
+                  textAnchor="end"
+                  fontSize="14"
+                  fill="var(--color-ink-600)"
+                >
+                  {fmt(t, 1)}
+                </text>
+              </g>
+            );
+          })}
+
+          {/* X gridlines + tick labels */}
+          {xTicks.map((t, i) => {
+            const gx = toX(t);
+            return (
+              <g key={`x-${i}`}>
+                <line
+                  x1={gx}
+                  y1={padT}
+                  x2={gx}
+                  y2={padT + plotH}
+                  stroke="var(--color-ink-100)"
+                  strokeWidth={1}
+                  opacity={0.6}
+                />
+                <text
+                  x={gx}
+                  y={padT + plotH + 22}
+                  textAnchor="middle"
+                  fontSize="14"
+                  fill="var(--color-ink-600)"
+                >
+                  {fmt(t, 2)}
+                </text>
+              </g>
+            );
+          })}
+
+          {/* Best-fit regression line — slope = premium, intercept = pricing error.
+              Drawn with a dash-offset reveal triggered on scroll. */}
+          <line
+            x1={lp1.x}
+            y1={lp1.y}
+            x2={lp2.x}
+            y2={lp2.y}
+            stroke="var(--color-accent-600)"
+            strokeWidth={3}
+            strokeLinecap="round"
+            strokeDasharray={lineLen}
+            strokeDashoffset={lineOffset}
+            style={
+              reduced
+                ? undefined
+                : { transition: 'stroke-dashoffset 900ms ease-out' }
+            }
+          />
+
+          {/* Scatter points — pop/fade in on scroll, staggered. */}
+          {points.map((pt, i) => {
+            const cxp = toX(pt.x);
+            const cyp = toY(pt.y);
+            const delay = reduced ? 0 : 120 + i * 70;
+            return (
+              <circle
+                key={`pt-${i}`}
+                cx={cxp}
+                cy={cyp}
+                r={5}
+                fill="var(--color-brand-500)"
+                stroke="var(--color-surface)"
+                strokeWidth={1.5}
+                opacity={shown ? 1 : 0}
+                style={{
+                  transformBox: 'fill-box',
+                  transformOrigin: 'center',
+                  transform: shown ? 'scale(1)' : 'scale(0.2)',
+                  transition: reduced
+                    ? undefined
+                    : `opacity 320ms ease-out ${delay}ms, transform 320ms cubic-bezier(0.34, 1.56, 0.64, 1) ${delay}ms`,
+                }}
+              >
+                <title>{`${pt.label ? `${pt.label}: ` : ''}${xLabel} ${fmt(pt.x, 2)}, ${yLabel} ${fmt(pt.y, 1)}`}</title>
+              </circle>
+            );
+          })}
+
+          {/* X axis title */}
+          <text
+            x={padL + plotW / 2}
+            y={H - 6}
+            textAnchor="middle"
+            fontSize="14"
+            fill="var(--color-ink-600)"
+          >
+            {xLabel}
+          </text>
+
+          {/* Y axis title */}
+          <text
+            x={14}
+            y={padT + plotH / 2}
+            fontSize="14"
+            fill="var(--color-ink-600)"
+            textAnchor="middle"
+            transform={`rotate(-90 14 ${padT + plotH / 2})`}
+          >
+            {yLabel}
+          </text>
+        </svg>
+      </div>
 
       {/* Readouts */}
       <dl className="mt-4 grid grid-cols-2 gap-3 text-sm" aria-live="polite">

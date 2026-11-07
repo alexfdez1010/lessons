@@ -1038,3 +1038,6 @@ export type { CallModelInput, HedgeIntervalInput, DeltaLedgerLabels, DeltaHedgeL
 
 export { toyLossQuantile, simulateToyLosses, quantileStandardError, expiryPutLedger, ProbabilityMeasureComparison, HorizonPutRepricing, MonteCarloQuantileLab, QuantilePrecision } from '@/components/react/MonteCarloVarLab';
 export type { ToyLossModel, ProbabilityMeasureLabels, ProbabilityMeasureComparisonProps, PutRepricingLabels, HorizonPutRepricingProps, MonteCarloLabels, MonteCarloQuantileLabProps, PrecisionLabels, QuantilePrecisionProps } from '@/components/react/MonteCarloVarLab';
+
+export { fitOneFactor, makeSyntheticExposures, exposureEstimateAt, evaluateExposureNext, exposureEvaluationMse, compareExposureSplit, RollingExposureLab } from '@/components/react/RollingExposureLab';
+export type { FactorObservation, OneFactorFit, SyntheticExposureInputs, RollingExposureView, RollingExposureLabels, RollingExposureLabProps } from '@/components/react/RollingExposureLab';
