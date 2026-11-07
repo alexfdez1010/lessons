@@ -1014,3 +1014,6 @@ export type { DiffusionKellyInputs, DiffusionKellyLabProps } from '@/components/
 
 export { leveragedJumpBudget, LeveragedJumpBudget } from '@/components/react/LeveragedJumpBudget';
 export type { LeveragedJumpBudgetProps } from '@/components/react/LeveragedJumpBudget';
+
+export { calculateInputSensitivity, calculateMeanInformation, rankExampleRows, calculateSampleInformation, calculateFrozenHoldout, EstimationSensitivityLab } from '@/components/react/EstimationSensitivityLab';
+export type { SensitivityInputs, EstimationSensitivityLabels, EstimationSensitivityLabProps } from '@/components/react/EstimationSensitivityLab';
