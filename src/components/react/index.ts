@@ -1020,3 +1020,6 @@ export type { SensitivityInputs, EstimationSensitivityLabels, EstimationSensitiv
 
 export { concentratedAmounts, calculateConcentratedPosition, ConcentratedInventoryExplorer, calculateRangeDeposit, RangeDepositBudget, calculateRangeFeePath, RangeFeePathLedger, calculateRangeRecenter, RangeRecenterComparison } from '@/components/react/ConcentratedRangeRisk';
 export type { ConcentratedPositionInputs, ConcentratedInventoryExplorerProps, RangeDepositInputs, RangeDepositBudgetProps, RangeFeePathInputs, RangeFeePathLedgerProps, RangeRecenterInputs, RangeRecenterComparisonProps } from '@/components/react/ConcentratedRangeRisk';
+
+export { validateMultiKelly, calculateMultiKelly, calculateConstrainedMultiKelly, calculateMultiBudget, calculateMultiRay, MultiAssetKellyLab } from '@/components/react/MultiAssetKellyLab';
+export type { Pair, MultiKellyInputs, MultiAssetKellyLabels, MultiAssetKellyLabProps } from '@/components/react/MultiAssetKellyLab';
