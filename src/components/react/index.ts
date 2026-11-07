@@ -1071,3 +1071,6 @@ export type { PairedOLSFit, PairedRegressionLabels, PairedRegressionLabProps } f
 
 export { binaryLogGrowth, optimalBinaryStake, robustBinaryStake, finiteBinaryUpdate, clusteredWinRateSE, EdgeEstimationInformation, EdgeGrowthSensitivity, RobustKellyChoice, FiniteBinaryBelief } from '@/components/react/UncertainEdgeSizing';
 export type { EdgeInformationLabels, EdgeEstimationInformationProps, EdgeSensitivityLabels, EdgeGrowthSensitivityProps, RobustChoiceLabels, RobustKellyChoiceProps, FiniteBeliefLabels, FiniteBinaryBeliefProps } from '@/components/react/UncertainEdgeSizing';
+
+export { calculateFxParity, calculateUncoveredCarry, calculateFxExpectation, calculateLeveragedFxCarry, calculateFxLiquidityPath, FxParityCarryLab } from '@/components/react/FxParityCarryLab';
+export type { UncoveredCarryInputs, FxScenario, LeveragedFxCarryInputs, FxParityCarryView, FxParityCarryLabProps } from '@/components/react/FxParityCarryLab';
