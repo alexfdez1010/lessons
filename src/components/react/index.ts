@@ -1056,3 +1056,6 @@ export type { FisherLabels, FisherPurchasingPowerProps, PeriodLabels, EffectiveP
 
 export { blackScholesNormalCdf, calculateBlackScholes, physicalLognormalSummary, BlackScholesLab } from '@/components/react/BlackScholesLab';
 export type { BlackScholesInputs, BlackScholesResult, PhysicalLognormalInputs, BlackScholesView, BlackScholesLabProps } from '@/components/react/BlackScholesLab';
+
+export { validateVisibleBook, illustrativeOrderBids, illustrativeOrderAsks, calculateVisibleExecution, calculateSpreadRoundTrip, calculateQueueFill as calculateOrderQueueFill, calculateConditionalStop, OrderExecutionLab } from '@/components/react/OrderExecutionLab';
+export type { VisibleOrderLevel, OrderSide, OrderInstruction, ImmediateTimeInForce, VisibleExecutionInputs, ConditionalStopInputs, OrderExecutionLabels, OrderExecutionLabProps } from '@/components/react/OrderExecutionLab';
