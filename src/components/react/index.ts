@@ -996,3 +996,6 @@ export type { CdsQuoteInputs, CdsQuoteBridgeProps, CashCarryInputs, CashCdsCarry
 
 export { calculatePredictivePaths, PredictivePathRisk } from '@/components/react/PredictivePathRisk';
 export type { PredictivePathInputs, PredictivePathRiskProps } from '@/components/react/PredictivePathRisk';
+
+export { absorbingChainMatrices, absorbingChainDistribution, AbsorbingReserveChain, AbsorbingMatrixWorkbench } from '@/components/react/AbsorbingChainLab';
+export type { Matrix2, AbsorptionStep, AbsorbingReserveChainProps, AbsorbingMatrixWorkbenchProps } from '@/components/react/AbsorbingChainLab';
