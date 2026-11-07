@@ -14,6 +14,20 @@ export interface LognormalPriceProps {
   strike?: number;
   /** Option type — flips which side of K is shaded. Defaults to `'call'`. */
   type?: 'call' | 'put';
+  /** Continuous annual pricing rate; Q price drift is rate minus dividend yield. */
+  rate?: number;
+  /** Continuous proportional annual dividend yield. */
+  dividendYield?: number;
+  /** Locale for human-readable amounts only, never native values or SVG paths. */
+  locale?: string;
+  /** Accessible description template. */
+  chartLabel?: string;
+  chartScrollLabel?: string;
+  scrollHint?: string;
+  measureLabel?: string;
+  spotLabel?: string;
+  priceAxisLabel?: string;
+  yearUnitLabel?: string;
   /** Slider label for volatility. */
   volLabel?: string;
   /** Slider label for time to expiry. */
@@ -38,12 +52,6 @@ const prefersReducedMotion = (): boolean =>
   typeof window.matchMedia === 'function' &&
   window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-const num = (value: number, digits = 2): string =>
-  new Intl.NumberFormat('en-US', { maximumFractionDigits: digits }).format(value);
-
-const pct = (value: number): string =>
-  new Intl.NumberFormat('en-US', { maximumFractionDigits: 1 }).format(value * 100);
-
 // Standard normal CDF via the Abramowitz–Stegun erf approximation (max error ~1e-7).
 const normCdf = (z: number): number => {
   const t = 1 / (1 + 0.2316419 * Math.abs(z));
@@ -56,19 +64,20 @@ const normCdf = (z: number): number => {
   return z >= 0 ? 1 - p : p;
 };
 
-/**
- * Lognormal terminal-price distribution under Black–Scholes / geometric Brownian
- * motion. The risk-free rate `r` is fixed at 0 here so the median terminal price
- * stays anchored near spot and the picture stays about *dispersion*, not drift.
- *
- * Given spot S0, volatility σ and time T, ln(S_T) is normal with
- *   mean m = ln(S0) + (r − σ²/2)·T  and  sd = σ·√T,
- * so S_T is lognormal. The curve plots that density across the price axis; the
- * shaded mass on the in-the-money side of strike K equals the risk-neutral
- * probability of finishing ITM — exactly N(d2) for a call. Raising σ or T fattens
- * the right tail and spreads the distribution, moving that probability around.
- * Respects `prefers-reduced-motion` (the curve snaps instead of morphing).
- */
+export interface LognormalPriceInputs { spot: number; volatility: number; time: number; strike: number; rate?: number; dividendYield?: number }
+/** Continuous helper domain is independent of the legacy viewer's native grids. */
+export function calculateLognormalPrice(x: LognormalPriceInputs) {
+  const r = x.rate ?? 0, q = x.dividendYield ?? 0;
+  if (![x.spot, x.volatility, x.time, x.strike, r, q].every(Number.isFinite) || x.spot <= 0 || x.strike <= 0 || x.volatility <= 0 || x.time <= 0 || x.spot > 1e9 || x.strike > 1e9 || x.volatility > 5 || x.time > 100 || Math.abs(r) > 2 || Math.abs(q) > 2) throw new Error('LognormalPrice: supply finite supported positive spot, strike, volatility and years, with matched annual continuous rate and dividend yield.');
+  const sd = x.volatility * Math.sqrt(x.time), logMean = Math.log(x.spot) + (r - q - x.volatility * x.volatility / 2) * x.time, d2 = (Math.log(x.spot / x.strike) + (r - q - x.volatility * x.volatility / 2) * x.time) / sd, median = Math.exp(logMean), mean = x.spot * Math.exp((r - q) * x.time);
+  if (sd === 0 || median <= 0 || ![sd, logMean, d2, median, mean].every(Number.isFinite)) throw new Error('LognormalPrice: the positive-dispersion density is outside its finite numerical domain; use supported scales or a separate deterministic boundary model.');
+  return { sd, logMean, d2, median, mean, callProbability: normCdf(d2), putProbability: normCdf(-d2) };
+}
+
+/** Pricing-measure lognormal terminal density with Q ex-dividend drift r−q.
+ * The finite plot indicates the exercise region; the full-CDF probability is
+ * evaluated separately, including tails outside the plotted price window.
+ * Defaults preserve the existing rate=yield=0 illustration. */
 export function LognormalPrice({
   title = 'Where might the price land?',
   spot = 100,
@@ -76,6 +85,16 @@ export function LognormalPrice({
   time = 1,
   strike = 110,
   type = 'call',
+  rate = 0,
+  dividendYield = 0,
+  locale = 'en-US',
+  chartLabel = '{title}. Under the Q lognormal model with continuous annual rate {rate} and dividend yield {yield}, volatility {volatility} and remaining years {time}, the {side} exercise probability is about {probability}. Median terminal price {median}. The finite density plot truncates tails; the readout evaluates the full CDF.',
+  chartScrollLabel = 'Scrollable terminal-price density: {title}',
+  scrollHint = 'Focus the density plot and use left/right arrow keys, or scroll horizontally, to read the full price axis.',
+  measureLabel = 'Pricing-measure illustration: continuous annual r = {rate}, q = {yield}; Q ex-dividend price drift is r−q. The chart is a model density, not a physical forecast or an option value.',
+  spotLabel = 'Current spot',
+  priceAxisLabel = 'Horizontal: terminal price. Vertical shape: lognormal density, not option value.',
+  yearUnitLabel = 'yr',
   volLabel = 'Volatility σ',
   timeLabel = 'Time to expiry (years)',
   strikeLabel = 'Strike K',
@@ -83,27 +102,28 @@ export function LognormalPrice({
   putLabel = 'Put',
   probItmLabel = 'Probability in the money',
   medianPriceLabel = 'Median terminal price',
-  caption = 'Under geometric Brownian motion the terminal price is lognormally distributed — skewed right, since a stock can multiply but never fall below zero. The shaded mass past the strike is the risk-neutral chance of finishing in the money: that area is N(d₂) in Black–Scholes. Crank up volatility or time and the tail fattens, shifting the odds.',
+  caption = 'A Q lognormal density is a pricing-model assumption. The call shades prices above strike and the put below; their probabilities need not rise when volatility or time increases. The finite plot truncates tails, while the probability readout uses the full normal-CDF formula. Neither a density nor an exercise probability is an option price.',
   className,
 }: LognormalPriceProps) {
-  const id = useId();
-  const r = 0; // risk-free drift, fixed for a dispersion-focused picture
-
-  const S0 = Math.max(1, spot);
-  const [volState, setVolState] = useState(Math.min(0.8, Math.max(0.05, vol)));
-  const [timeState, setTimeState] = useState(Math.min(3, Math.max(0.1, time)));
-  const [strikeState, setStrikeState] = useState(Math.max(1, strike));
+  const isGrid = (value: number, min: number, max: number, step: number) => Number.isFinite(value) && value >= min && value <= max && Math.abs((value - min) / step - Math.round((value - min) / step)) < 1e-8;
+  if (!Number.isFinite(spot) || spot < 2 || spot > 1e6 || !isGrid(vol, .05, .8, .01) || !isGrid(time, .1, 3, .1) || !isGrid(strike, Math.round(spot * .4), Math.round(spot * 2), 1) || !['call', 'put'].includes(type)) throw new Error('LognormalPrice: viewer author values must fit the unchanged native grids: volatility 5–80% by 1 percentage point, years 0.1–3 by 0.1 and integer strike within the spot-relative slider bounds. Supply finite spot 2–1,000,000. Continuous helper inputs have a separate domain.');
+  calculateLognormalPrice({ spot, volatility: vol, time, strike, rate, dividendYield });
+  const id = useId(), num = (value: number, digits = 2) => new Intl.NumberFormat(locale, { maximumFractionDigits: digits }).format(value), pct = (value: number) => new Intl.NumberFormat(locale, { style: 'percent', maximumFractionDigits: 1 }).format(value), percent = (value: number) => new Intl.NumberFormat(locale, { style: 'percent', maximumFractionDigits: 2 }).format(value), coordinate = (value: number) => Number(value.toFixed(3)), pathNumber = (value: number) => coordinate(value).toString();
+  const S0 = spot;
+  const [volState, setVolState] = useState(vol);
+  const [timeState, setTimeState] = useState(time);
+  const [strikeState, setStrikeState] = useState(strike);
   const [typeState, setTypeState] = useState<'call' | 'put'>(type);
-
+  const model = calculateLognormalPrice({ spot: S0, volatility: volState, time: timeState, strike: strikeState, rate, dividendYield });
   const W = 520;
   const H = 240;
-  const padX = 12;
+  const padX = 28;
   const padY = 16;
   const padBottom = 28; // room for axis labels
 
   // Distribution parameters of ln(S_T).
-  const sd = volState * Math.sqrt(timeState);
-  const m = Math.log(S0) + (r - (volState * volState) / 2) * timeState;
+  const sd = model.sd;
+  const m = model.logMean;
 
   const pdf = (s: number): number => {
     if (s <= 0) return 0;
@@ -116,7 +136,7 @@ export function LognormalPrice({
   const xMax = Math.min(sMax, S0 * 8);
   const xMin = 0;
 
-  const x = (s: number) => padX + ((s - xMin) / (xMax - xMin)) * (W - padX * 2);
+  const x = (s: number) => coordinate(padX + ((s - xMin) / (xMax - xMin)) * (W - padX * 2));
 
   const SAMPLES = 240;
   const grid: { s: number; p: number }[] = [];
@@ -129,11 +149,11 @@ export function LognormalPrice({
   }
   const yTop = padY;
   const yBase = H - padBottom;
-  const y = (p: number) => yBase - (pMax > 0 ? p / pMax : 0) * (yBase - yTop);
+  const y = (p: number) => coordinate(yBase - (pMax > 0 ? p / pMax : 0) * (yBase - yTop));
 
   // Curve path.
   const curvePath = grid
-    .map((g, i) => `${i === 0 ? 'M' : 'L'} ${num(x(g.s), 2)} ${num(y(g.p), 2)}`)
+    .map((g, i) => `${i === 0 ? 'M' : 'L'} ${pathNumber(x(g.s))} ${pathNumber(y(g.p))}`)
     .join(' ');
 
   // Shaded ITM region: for a call, S_T > K (right of strike); for a put, S_T < K.
@@ -144,18 +164,15 @@ export function LognormalPrice({
     const first = shadedPoints[0];
     const last = shadedPoints[shadedPoints.length - 1];
     shadePath =
-      `M ${num(x(first.s), 2)} ${num(yBase, 2)} ` +
-      shadedPoints.map((g) => `L ${num(x(g.s), 2)} ${num(y(g.p), 2)}`).join(' ') +
-      ` L ${num(x(last.s), 2)} ${num(yBase, 2)} Z`;
+      `M ${pathNumber(x(first.s))} ${pathNumber(yBase)} ` +
+      shadedPoints.map((g) => `L ${pathNumber(x(g.s))} ${pathNumber(y(g.p))}`).join(' ') +
+      ` L ${pathNumber(x(last.s))} ${pathNumber(yBase)} Z`;
   }
 
-  // ITM probability via the closed-form N(d2) — the exact, tail-robust integral
-  // of the lognormal density above (call) or below (put) the strike.
-  const d2 = (Math.log(S0 / strikeState) + (r - (volState * volState) / 2) * timeState) / sd;
-  const probItm = typeState === 'call' ? normCdf(d2) : normCdf(-d2);
-
-  // Median of a lognormal is exp(m); mean is exp(m + sd²/2).
-  const median = Math.exp(m);
+  // The legacy normal-CDF approximation is unchanged; this is the full
+  // modeled probability, not a numerical area over the truncated chart.
+  const probItm = typeState === 'call' ? model.callProbability : model.putProbability;
+  const median = model.median;
 
   // Strike / spot marker pixel positions.
   const strikeX = x(strikeState);
@@ -192,25 +209,24 @@ export function LognormalPrice({
 
   const axisTicks = [0, 0.25, 0.5, 0.75, 1].map((f) => xMin + f * (xMax - xMin));
 
-  const itmSideLabel =
-    typeState === 'call'
-      ? `prices above the strike (${num(strikeState, 0)})`
-      : `prices below the strike (${num(strikeState, 0)})`;
+  const description = chartLabel.replaceAll('{title}', title).replaceAll('{rate}', percent(rate)).replaceAll('{yield}', percent(dividendYield)).replaceAll('{volatility}', percent(volState)).replaceAll('{time}', num(timeState, 1)).replaceAll('{side}', typeState === 'call' ? callLabel : putLabel).replaceAll('{probability}', percent(probItm)).replaceAll('{median}', num(median));
+  const measure = measureLabel.replaceAll('{rate}', percent(rate)).replaceAll('{yield}', percent(dividendYield));
 
   return (
     <figure
       className={cx(
-        'my-6 rounded-card border border-ink-100 bg-surface p-5 shadow-soft',
+        'not-prose my-6 min-w-0 rounded-card border border-ink-100 bg-surface p-5 shadow-soft',
         className,
       )}
     >
-      <figcaption className="flex items-center justify-between gap-3">
+      <figcaption className="flex flex-wrap items-center justify-between gap-3">
         <span className="font-medium text-ink-900">{title}</span>
         <span className="rounded-pill bg-brand-600 px-3 py-1 text-sm font-medium text-white">
-          σ {num(volState * 100, 0)}% · T {num(timeState, 1)}y
+          σ {percent(volState)} · T {num(timeState, 1)} {yearUnitLabel}
         </span>
       </figcaption>
 
+      <p className="mt-3 text-sm leading-relaxed text-ink-600">{measure}</p>
       {/* Legend */}
       <div className="mt-4 flex flex-wrap gap-4 text-sm">
         <span className="inline-flex items-center gap-2 text-ink-700">
@@ -221,23 +237,15 @@ export function LognormalPrice({
           <span className="h-1 w-5 rounded-pill bg-accent-500" aria-hidden="true" />
           {medianPriceLabel}
         </span>
+        <span className="inline-flex items-center gap-2 text-ink-700"><span className="h-1 w-5 rounded-pill bg-ink-400" aria-hidden="true" />{spotLabel}</span>
       </div>
 
+      <div role="region" tabIndex={0} aria-label={chartScrollLabel.replaceAll('{title}', title)} className="mt-3 max-w-full overflow-x-auto rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600">
       <svg
         viewBox={`0 0 ${W} ${H}`}
-        className="mt-3 w-full"
+        className="block w-full min-w-[624px]"
         role="img"
-        aria-label={`${title}. With volatility ${num(
-          volState * 100,
-          0,
-        )} percent and ${num(
-          timeState,
-          1,
-        )} years to expiry, the terminal price is lognormally distributed. The shaded mass over ${itmSideLabel} is about ${pct(
-          probItm,
-        )} percent — the risk-neutral probability of finishing in the money. The median terminal price is ${num(
-          median,
-        )}.`}
+        aria-label={description}
       >
         {/* Baseline */}
         <line
@@ -261,7 +269,7 @@ export function LognormalPrice({
               x={x(tick)}
               y={yBase + 18}
               textAnchor="middle"
-              fontSize={11}
+              fontSize={12}
               fill="var(--color-ink-400)"
             >
               {num(tick, 0)}
@@ -289,7 +297,7 @@ export function LognormalPrice({
           opacity={0.5 + 0.5 * morph}
         />
 
-        {/* Median (expected-ish center) marker — accent */}
+        {/* Median terminal-price marker — accent */}
         <line
           x1={x(median)}
           y1={yTop}
@@ -323,22 +331,25 @@ export function LognormalPrice({
           x={Math.min(W - padX - 2, Math.max(padX + 12, strikeX))}
           y={yTop + 12}
           textAnchor="middle"
-          fontSize={11}
+          fontSize={12}
           fontWeight={600}
           fill="var(--color-brand-700)"
         >
           K
         </text>
       </svg>
+      </div>
+      <p className="mt-2 text-sm text-ink-700">{priceAxisLabel}</p>
+      <p className="mt-2 text-sm text-ink-600">{scrollHint}</p>
 
       {/* Call / put toggle */}
-      <div className="mt-4 inline-flex rounded-pill border border-ink-100 p-1" role="group">
+      <div className="mt-4 inline-flex rounded-pill border border-ink-100 p-1" role="group" aria-label={`${callLabel} / ${putLabel}`}>
         <button
           type="button"
           aria-pressed={typeState === 'call'}
           onClick={() => setTypeState('call')}
           className={cx(
-            'rounded-pill px-4 py-1 text-sm font-medium transition-colors',
+            'min-h-10 rounded-pill px-4 py-1 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600',
             typeState === 'call'
               ? 'bg-brand-600 text-white'
               : 'text-ink-600 hover:text-ink-900',
@@ -351,7 +362,7 @@ export function LognormalPrice({
           aria-pressed={typeState === 'put'}
           onClick={() => setTypeState('put')}
           className={cx(
-            'rounded-pill px-4 py-1 text-sm font-medium transition-colors',
+            'min-h-10 rounded-pill px-4 py-1 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600',
             typeState === 'put'
               ? 'bg-brand-600 text-white'
               : 'text-ink-600 hover:text-ink-900',
@@ -369,7 +380,7 @@ export function LognormalPrice({
             className="flex items-center justify-between text-sm text-ink-700"
           >
             <span>{volLabel}</span>
-            <span className="font-mono text-ink-900">{num(volState * 100, 0)}%</span>
+            <span className="font-mono text-ink-900">{percent(volState)}</span>
           </label>
           <input
             id={`${id}-vol`}
@@ -378,8 +389,9 @@ export function LognormalPrice({
             max={80}
             step={1}
             value={Math.round(volState * 100)}
+            aria-valuetext={percent(volState)}
             onChange={(e) => setVolState(Number(e.target.value) / 100)}
-            className="mt-2 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
+            className="mt-2 h-8 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
           />
         </div>
         <div>
@@ -397,8 +409,9 @@ export function LognormalPrice({
             max={3}
             step={0.1}
             value={timeState}
+            aria-valuetext={`${num(timeState, 1)} ${yearUnitLabel}`}
             onChange={(e) => setTimeState(Number(e.target.value))}
-            className="mt-2 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
+            className="mt-2 h-8 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
           />
         </div>
         <div>
@@ -416,8 +429,9 @@ export function LognormalPrice({
             max={Math.round(S0 * 2)}
             step={1}
             value={Math.round(strikeState)}
+            aria-valuetext={num(strikeState, 0)}
             onChange={(e) => setStrikeState(Number(e.target.value))}
-            className="mt-2 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
+            className="mt-2 h-8 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
           />
         </div>
       </div>
@@ -426,7 +440,7 @@ export function LognormalPrice({
       <dl className="mt-4 grid grid-cols-2 gap-3 text-sm" aria-live="polite">
         <div className="rounded-card border border-ink-100 bg-surface-sunken/40 px-3 py-2">
           <dt className="text-ink-500">{probItmLabel}</dt>
-          <dd className="font-mono text-lg font-semibold text-brand-700">{pct(probItm)}%</dd>
+          <dd className="font-mono text-lg font-semibold text-brand-700">{pct(probItm)}</dd>
         </div>
         <div className="rounded-card border border-ink-100 bg-surface-sunken/40 px-3 py-2">
           <dt className="text-ink-500">{medianPriceLabel}</dt>

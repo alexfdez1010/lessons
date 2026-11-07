@@ -285,8 +285,8 @@ export type { OptionDriversBarsProps, OptionDriver, DriverEffect } from '@/compo
 export { BinomialTree, calculateBinomialTree, default as BinomialTreeDefault } from '@/components/react/BinomialTree';
 export type { BinomialTreeProps, BinomialTreeInputs } from '@/components/react/BinomialTree';
 
-export { LognormalPrice, default as LognormalPriceDefault } from '@/components/react/LognormalPrice';
-export type { LognormalPriceProps } from '@/components/react/LognormalPrice';
+export { LognormalPrice, calculateLognormalPrice, default as LognormalPriceDefault } from '@/components/react/LognormalPrice';
+export type { LognormalPriceProps, LognormalPriceInputs } from '@/components/react/LognormalPrice';
 
 export { GreeksCurve, default as GreeksCurveDefault } from '@/components/react/GreeksCurve';
 export type { GreeksCurveProps } from '@/components/react/GreeksCurve';
@@ -1053,3 +1053,6 @@ export type { HouseholdEvent, TransactionLabels, HouseholdTransactionEffectsProp
 
 export { realGrowthFactors, matchedAnnualFactors, fixedBasketReturn, FisherPurchasingPower, EffectivePeriodBridge, FixedBasketPurchasingPower } from '@/components/react/RealPurchasingPower';
 export type { FisherLabels, FisherPurchasingPowerProps, PeriodLabels, EffectivePeriodBridgeProps, BasketLabels, FixedBasketPurchasingPowerProps } from '@/components/react/RealPurchasingPower';
+
+export { blackScholesNormalCdf, calculateBlackScholes, physicalLognormalSummary, BlackScholesLab } from '@/components/react/BlackScholesLab';
+export type { BlackScholesInputs, BlackScholesResult, PhysicalLognormalInputs, BlackScholesView, BlackScholesLabProps } from '@/components/react/BlackScholesLab';

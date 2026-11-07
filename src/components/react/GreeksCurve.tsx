@@ -189,8 +189,10 @@ export function GreeksCurve({
   if (vLo > 0) vLo = 0;
   if (vHi < 0) vHi = 0;
 
-  const x = (s: number) => padX + ((s - sMin) / (sMax - sMin)) * (W - padX * 2);
-  const y = (v: number) => padY + (1 - (v - vLo) / (vHi - vLo)) * (H - padY * 2);
+  // Normalize drawing coordinates across server and browser math libraries.
+  const coordinate = (value: number) => Number(value.toFixed(3));
+  const x = (s: number) => coordinate(padX + ((s - sMin) / (sMax - sMin)) * (W - padX * 2));
+  const y = (v: number) => coordinate(padY + (1 - (v - vLo) / (vHi - vLo)) * (H - padY * 2));
 
   const curvePath = (() => {
     let d = '';
