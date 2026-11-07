@@ -1050,3 +1050,6 @@ export type { LinkedDiscountLabels, LinkedDiscountFactorsProps } from '@/compone
 
 export { householdTransaction, reconcileHouseholdMonth, oneYearBorrowingCash, HouseholdTransactionEffects, HouseholdMonthReconciliation, BorrowingCashBridge } from '@/components/react/HouseholdFlowLedger';
 export type { HouseholdEvent, TransactionLabels, HouseholdTransactionEffectsProps, MonthlyLabels, HouseholdMonthReconciliationProps, BorrowLabels, BorrowingCashBridgeProps } from '@/components/react/HouseholdFlowLedger';
+
+export { realGrowthFactors, matchedAnnualFactors, fixedBasketReturn, FisherPurchasingPower, EffectivePeriodBridge, FixedBasketPurchasingPower } from '@/components/react/RealPurchasingPower';
+export type { FisherLabels, FisherPurchasingPowerProps, PeriodLabels, EffectivePeriodBridgeProps, BasketLabels, FixedBasketPurchasingPowerProps } from '@/components/react/RealPurchasingPower';
