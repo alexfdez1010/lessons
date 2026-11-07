@@ -28,6 +28,15 @@ export interface CreditTriangleProps {
   percentSuffix?: string;
   /** Suffix appended to basis-point values. Defaults to `' bp'`. */
   bpSuffix?: string;
+  initialSpreadBp?: number;
+  initialRecoveryPct?: number;
+  locale?: string;
+  chartLabel?: string;
+  defaultMarkerLabel?: string;
+  defaultAreaLabel?: string;
+  measureLabel?: string;
+  chartScrollLabel?: string;
+  scrollHint?: string;
   className?: string;
 }
 
@@ -36,8 +45,12 @@ const prefersReducedMotion = (): boolean =>
   typeof window.matchMedia === 'function' &&
   window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-const pct1 = (value: number, suffix: string): string =>
-  `${value.toFixed(1)}${suffix}`;
+const renderCoordinate = (value: number): number => Number(value.toFixed(3));
+export function calculateCreditTriangle(spreadBp: number, recovery: number, years: number) {
+  if (!Number.isFinite(spreadBp) || spreadBp < 0 || spreadBp > 10000 || !Number.isFinite(recovery) || recovery < 0 || recovery >= 1 || !Number.isFinite(years) || years < 0 || years > 100) throw new Error('CreditTriangle: provide finite supported nonnegative spread/time and a recovery assumption from zero to below one.');
+  const hazard = spreadBp / 10000 / (1 - recovery), survival = Math.exp(-hazard * years);
+  return { hazard, survival, cumulativeDefault: 1 - survival };
+}
 
 /**
  * The credit triangle and the survival curve. A CDS spread is roughly the annual
@@ -59,27 +72,39 @@ export function CreditTriangle({
   title = 'The credit triangle & the survival curve',
   spreadLabel = 'CDS spread',
   recoveryLabel = 'Recovery rate R',
-  hazardLabel = 'Implied hazard rate λ',
+  hazardLabel = 'Implied pricing intensity λ per year',
   survivalAxisLabel = 'Survival probability',
   yearsAxisLabel = 'Years',
   oneYearDefaultLabel = '1y default prob',
   fiveYearSurvivalLabel = '5y survival',
   fiveYearDefaultLabel = '5y default prob',
   tenYearDefaultLabel = '10y default prob',
-  caption = 'A CDS spread is roughly the annual cost of insuring against a loss that, when it happens, is (1−R) of notional — so hazard λ ≈ spread / (1−R). Compound that survival every instant and you get the exponential survival curve exp(−λt); the gap below it is the cumulative chance of default by each horizon.',
+  caption = 'In this flat continuous-premium pricing model, intensity λ = spread / (1−R) and survival is exp(−λt). The gap from 100% down to the survival curve is cumulative pricing default at each horizon. Recovery is an assumed pricing input, and these model-implied probabilities are not measured physical default frequencies.',
   percentSuffix = '%',
   bpSuffix = ' bp',
+  initialSpreadBp = 200,
+  initialRecoveryPct = 40,
+  locale = 'en-US',
+  chartLabel = '{title}. A {spread} bp par-equivalent spread and recovery {recovery} imply pricing intensity {hazard} per year in the flat continuous model. Pricing survival is {survival5} at year 5 and {survival10} at year 10; cumulative pricing default is {default5} and {default10}. These are model-implied pricing probabilities, not measured physical frequencies.',
+  defaultMarkerLabel = 'default',
+  defaultAreaLabel = 'Cumulative default at each horizon',
+  measureLabel = 'Model-implied pricing probabilities under a flat-intensity continuous-premium approximation; not a forecast of physical default frequencies.',
+  chartScrollLabel = 'Scrollable pricing survival curve from zero to ten years',
+  scrollHint = 'Focus the chart and use left/right arrow keys, or scroll horizontally, to read the entire scale.',
   className,
 }: CreditTriangleProps) {
+  if (!Number.isFinite(initialSpreadBp) || initialSpreadBp < 25 || initialSpreadBp > 800 || (initialSpreadBp - 25) % 5 !== 0 || !Number.isInteger(initialRecoveryPct) || initialRecoveryPct < 0 || initialRecoveryPct > 80) throw new Error('CreditTriangle: initial author values must fit the unchanged spread range 25–800 by 5 bp and recovery range 0–80 by 1 percentage point.');
+  const pct1 = (value: number, suffix: string) => `${new Intl.NumberFormat(locale, { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(value)}${suffix}`;
+  const number = (value: number) => new Intl.NumberFormat(locale).format(value);
   const id = useId();
-  const [spreadBp, setSpreadBp] = useState(200); // 25..800 basis points
-  const [recoveryPct, setRecoveryPct] = useState(40); // 0..80 percent
+  const [spreadBp, setSpreadBp] = useState(initialSpreadBp); // 25..800 basis points
+  const [recoveryPct, setRecoveryPct] = useState(initialRecoveryPct); // 0..80 percent
   const [progress, setProgress] = useState(1); // 0 → 1 (curve draw-in)
   const rafRef = useRef<number | null>(null);
 
   // Credit triangle: λ = (spread / 10000) / (1 − R).
   const recovery = recoveryPct / 100;
-  const lambda = spreadBp / 10000 / Math.max(1e-6, 1 - recovery);
+  const lambda = calculateCreditTriangle(spreadBp, recovery, 0).hazard;
 
   // Survival / default helpers.
   const survival = (t: number) => Math.exp(-lambda * t);
@@ -93,7 +118,7 @@ export function CreditTriangle({
   // --- Chart geometry -------------------------------------------------------
   const W = 520;
   const H = 240;
-  const padL = 40;
+  const padL = 64;
   const padR = 14;
   const padTop = 14;
   const padBottom = 30;
@@ -102,9 +127,9 @@ export function CreditTriangle({
   const plotW = W - padL - padR;
   const plotH = H - padTop - padBottom;
 
-  const x = (year: number) => padL + (year / span) * plotW;
+  const x = (year: number) => renderCoordinate(padL + (year / span) * plotW);
   // y maps a probability (0..1) onto the plot, 100% at top.
-  const y = (p: number) => padTop + (1 - p) * plotH;
+  const y = (p: number) => renderCoordinate(padTop + (1 - p) * plotH);
 
   // Survival curve sampled finely, revealed up to `progress`.
   const SAMPLES = 100;
@@ -170,19 +195,12 @@ export function CreditTriangle({
   // x-axis ticks at 0,2,4,6,8,10 years.
   const xTicks = [0, 2, 4, 6, 8, 10];
 
-  const ariaLabel =
-    `${title}: a ${spreadBp}${bpSuffix} CDS spread with a ${recoveryPct}${percentSuffix} recovery rate ` +
-    `implies an annual hazard rate of ${pct1(lambdaPct, percentSuffix)} per year. ` +
-    `The survival probability decays exponentially from 100% at year 0 to ` +
-    `${pct1(fiveYearSurvival * 100, percentSuffix)} at year 5 and ` +
-    `${pct1(survival(10) * 100, percentSuffix)} at year 10, so the cumulative chance of default ` +
-    `reaches ${pct1(fiveYearDefault * 100, percentSuffix)} by year 5 and ` +
-    `${pct1(tenYearDefault * 100, percentSuffix)} by year 10.`;
+  const ariaLabel = chartLabel.replaceAll('{title}', title).replaceAll('{spread}', number(spreadBp)).replaceAll('{recovery}', pct1(recoveryPct, percentSuffix)).replaceAll('{hazard}', pct1(lambdaPct, percentSuffix)).replaceAll('{survival5}', pct1(fiveYearSurvival * 100, percentSuffix)).replaceAll('{survival10}', pct1(survival(10) * 100, percentSuffix)).replaceAll('{default5}', pct1(fiveYearDefault * 100, percentSuffix)).replaceAll('{default10}', pct1(tenYearDefault * 100, percentSuffix));
 
   return (
     <figure
       className={cx(
-        'my-6 rounded-card border border-ink-100 bg-surface p-5 shadow-soft',
+        'not-prose my-6 min-w-0 rounded-card border border-ink-100 bg-surface p-5 shadow-soft',
         className,
       )}
     >
@@ -207,13 +225,15 @@ export function CreditTriangle({
             className="h-3 w-3 rounded-sm bg-accent-500/40"
             aria-hidden="true"
           />
-          {fiveYearDefaultLabel}
+          {defaultAreaLabel}
         </span>
       </div>
 
+      <p className="mt-3 text-sm text-ink-700">{measureLabel}</p>
+      <div tabIndex={0} role="region" aria-label={chartScrollLabel} className="mt-3 max-w-full overflow-x-auto rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600">
       <svg
         viewBox={`0 0 ${W} ${H}`}
-        className="mt-3 w-full"
+        className="block h-auto w-full min-w-[650px]"
         role="img"
         aria-label={ariaLabel}
       >
@@ -232,7 +252,7 @@ export function CreditTriangle({
               x={padL - 6}
               y={y(p) + 3}
               textAnchor="end"
-              fontSize={10}
+              fontSize={12}
               fill="var(--color-ink-500)"
               fontFamily="var(--font-mono)"
             >
@@ -280,7 +300,7 @@ export function CreditTriangle({
             <text
               x={x(5) + 8}
               y={y(fiveYearSurvival) - 6}
-              fontSize={10}
+              fontSize={12}
               fill="var(--color-brand-700)"
               fontFamily="var(--font-mono)"
             >
@@ -289,11 +309,11 @@ export function CreditTriangle({
             <text
               x={x(5) + 8}
               y={y(fiveYearSurvival) + 12}
-              fontSize={10}
+              fontSize={12}
               fill="var(--color-accent-600)"
               fontFamily="var(--font-mono)"
             >
-              {pct1(fiveYearDefault * 100, percentSuffix)} def
+              {pct1(fiveYearDefault * 100, percentSuffix)} {defaultMarkerLabel}
             </text>
           </g>
         )}
@@ -315,7 +335,7 @@ export function CreditTriangle({
             x={x(year)}
             y={y(0) + 16}
             textAnchor="middle"
-            fontSize={11}
+            fontSize={12}
             fill="var(--color-ink-500)"
             fontFamily="var(--font-mono)"
           >
@@ -328,7 +348,7 @@ export function CreditTriangle({
           x={padL + plotW / 2}
           y={H - 2}
           textAnchor="middle"
-          fontSize={11}
+          fontSize={12}
           fill="var(--color-ink-500)"
         >
           {yearsAxisLabel}
@@ -337,13 +357,15 @@ export function CreditTriangle({
           x={12}
           y={padTop + plotH / 2}
           textAnchor="middle"
-          fontSize={11}
+          fontSize={12}
           fill="var(--color-ink-500)"
           transform={`rotate(-90 12 ${padTop + plotH / 2})`}
         >
           {survivalAxisLabel}
         </text>
       </svg>
+      </div>
+      <p className="mt-2 text-xs text-ink-600 sm:hidden">{scrollHint}</p>
 
       {/* Sliders */}
       <div className="mt-4 grid gap-4 sm:grid-cols-2">
@@ -354,7 +376,7 @@ export function CreditTriangle({
           >
             <span>{spreadLabel}</span>
             <span className="font-mono text-ink-900">
-              {spreadBp}
+              {number(spreadBp)}
               {bpSuffix}
             </span>
           </label>
@@ -366,7 +388,7 @@ export function CreditTriangle({
             step={5}
             value={spreadBp}
             onChange={(e) => setSpreadBp(Number(e.target.value))}
-            className="mt-2 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
+            className="mt-2 h-8 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
           />
         </div>
         <div>
@@ -376,7 +398,7 @@ export function CreditTriangle({
           >
             <span>{recoveryLabel}</span>
             <span className="font-mono text-ink-900">
-              {recoveryPct}
+              {number(recoveryPct)}
               {percentSuffix}
             </span>
           </label>
@@ -388,57 +410,57 @@ export function CreditTriangle({
             step={1}
             value={recoveryPct}
             onChange={(e) => setRecoveryPct(Number(e.target.value))}
-            className="mt-2 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
+            className="mt-2 h-8 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
           />
         </div>
       </div>
 
       {/* Readouts */}
       <dl
-        className="mt-4 grid grid-cols-2 gap-3 text-sm lg:grid-cols-4"
+        className="mt-4 grid min-w-0 gap-3 text-sm sm:grid-cols-2 lg:grid-cols-3"
         aria-live="polite"
       >
         <div className="rounded-card border border-ink-100 bg-surface-sunken/40 px-3 py-2">
           <dt className="text-ink-500">{hazardLabel}</dt>
-          <dd className="font-mono text-lg font-semibold text-brand-700">
+          <dd className="break-words font-mono text-lg font-semibold text-brand-700">
             {pct1(lambdaPct, percentSuffix)}
           </dd>
         </div>
         <div className="rounded-card border border-ink-100 bg-surface-sunken/40 px-3 py-2">
           <dt className="text-ink-500">{oneYearDefaultLabel}</dt>
-          <dd className="font-mono text-lg font-semibold text-ink-900">
+          <dd className="break-words font-mono text-lg font-semibold text-ink-900">
             {pct1(oneYearDefault * 100, percentSuffix)}
           </dd>
         </div>
         <div className="rounded-card border border-ink-100 bg-surface-sunken/40 px-3 py-2">
           <dt className="text-ink-500">{fiveYearSurvivalLabel}</dt>
-          <dd className="font-mono text-lg font-semibold text-brand-700">
+          <dd className="break-words font-mono text-lg font-semibold text-brand-700">
             {pct1(fiveYearSurvival * 100, percentSuffix)}
           </dd>
         </div>
         <div className="rounded-card border border-ink-100 bg-surface-sunken/40 px-3 py-2">
           <dt className="text-ink-500">{fiveYearDefaultLabel}</dt>
-          <dd className="font-mono text-lg font-semibold text-accent-600">
+          <dd className="break-words font-mono text-lg font-semibold text-accent-600">
             {pct1(fiveYearDefault * 100, percentSuffix)}
           </dd>
         </div>
         <div className="rounded-card border border-ink-100 bg-surface-sunken/40 px-3 py-2">
           <dt className="text-ink-500">{spreadLabel}</dt>
-          <dd className="font-mono text-lg font-semibold text-ink-900">
-            {spreadBp}
+          <dd className="break-words font-mono text-lg font-semibold text-ink-900">
+            {number(spreadBp)}
             {bpSuffix}
           </dd>
         </div>
         <div className="rounded-card border border-ink-100 bg-surface-sunken/40 px-3 py-2">
           <dt className="text-ink-500">{recoveryLabel}</dt>
-          <dd className="font-mono text-lg font-semibold text-ink-900">
-            {recoveryPct}
+          <dd className="break-words font-mono text-lg font-semibold text-ink-900">
+            {number(recoveryPct)}
             {percentSuffix}
           </dd>
         </div>
         <div className="rounded-card border border-ink-100 bg-surface-sunken/40 px-3 py-2">
           <dt className="text-ink-500">{tenYearDefaultLabel}</dt>
-          <dd className="font-mono text-lg font-semibold text-accent-600">
+          <dd className="break-words font-mono text-lg font-semibold text-accent-600">
             {pct1(tenYearDefault * 100, percentSuffix)}
           </dd>
         </div>

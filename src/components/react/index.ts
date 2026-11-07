@@ -695,7 +695,7 @@ export type { AutocallLadderProps } from '@/components/react/AutocallLadder';
 export { CdsCashflow, default as CdsCashflowDefault } from '@/components/react/CdsCashflow';
 export type { CdsCashflowProps } from '@/components/react/CdsCashflow';
 
-export { CreditTriangle, default as CreditTriangleDefault } from '@/components/react/CreditTriangle';
+export { CreditTriangle, calculateCreditTriangle, default as CreditTriangleDefault } from '@/components/react/CreditTriangle';
 export type { CreditTriangleProps } from '@/components/react/CreditTriangle';
 
 export { CdsIndexBasis, default as CdsIndexBasisDefault } from '@/components/react/CdsIndexBasis';
@@ -1026,3 +1026,6 @@ export type { Pair, MultiKellyInputs, MultiAssetKellyLabels, MultiAssetKellyLabP
 
 export { calculateTwoStatePrices, calculateClaimArbitrage, StatePriceExplorer, calculateThreeStatePrices, ThreeStatePriceFamily } from '@/components/react/StatePriceBudgets';
 export type { TwoStatePriceInputs, StatePriceLabels, StatePriceView, StatePriceExplorerProps, ThreeStateInputs, ThreeStatePriceFamilyProps } from '@/components/react/StatePriceBudgets';
+
+export { calculateCdsLegs, CdsLegsLedger, calculateCdsMark, CdsMarkLedger, calculateHazardCurve, bootstrapHazardCurve, HazardCurveLedger } from '@/components/react/CdsPricingLedger';
+export type { CdsLegInputs, CdsLegsLedgerProps, CdsMarkInputs, CdsMarkLedgerProps, HazardCurveInputs, HazardCurveLedgerProps } from '@/components/react/CdsPricingLedger';
