@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { cx } from '@/components/react/cx';
 
+/** Author range props must fit the unchanged native control intervals and steps; the pure helper has a continuous financial domain. */
 export interface BinomialTreeProps {
   /** Heading above the tree. */
   title?: string;
@@ -38,6 +39,21 @@ export interface BinomialTreeProps {
   optionValueLabel?: string;
   /** One-line takeaway shown under the tree. */
   caption?: string;
+  /** Number/currency separators, without changing the tree arithmetic. */
+  locale?: string;
+  /** Localized SVG description template for a consistent market. */
+  chartLabel?: string;
+  inconsistentChartLabel?: string;
+  invalidMarketLabel?: string;
+  invalidMarketExplanation?: string;
+  unavailableLabel?: string;
+  nodeUnavailableLabel?: string;
+  stepLabel?: string;
+  oneStepLabel?: string;
+  typeGroupLabel?: string;
+  chartScrollLabel?: string;
+  scrollHint?: string;
+  periodLabel?: string;
   className?: string;
 }
 
@@ -45,9 +61,6 @@ const prefersReducedMotion = (): boolean =>
   typeof window !== 'undefined' &&
   typeof window.matchMedia === 'function' &&
   window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
-const num = (value: number, digits = 2): string =>
-  new Intl.NumberFormat('en-US', { maximumFractionDigits: digits }).format(value);
 
 interface TreeNode {
   /** Column (time step) 0…steps. */
@@ -57,7 +70,7 @@ interface TreeNode {
   /** Asset price at this node. */
   price: number;
   /** Option value at this node (payoff at terminal nodes, discounted value inside). */
-  value: number;
+  value: number | null;
   /** Whether this node is a terminal (payoff) node. */
   terminal: boolean;
   /** Pixel position. */
@@ -65,57 +78,11 @@ interface TreeNode {
   y: number;
 }
 
-/**
- * Interactive one- or two-step **risk-neutral binomial option-pricing** tree.
- *
- * From a spot price S0 the asset multiplies by `u` (up) or `d` (down) each
- * period. Under the risk-neutral measure the up-probability is
- * q = (e^{rT} − d) / (u − d), where T is one period here. Terminal nodes pay the
- * option's intrinsic value — max(S − K, 0) for a call, max(K − S, 0) for a put —
- * and every internal node is the **discounted, q-weighted** average of its two
- * children: e^{−rT}·[q·V_up + (1 − q)·V_down]. Rolling that back to the root
- * gives the option's fair value today.
- *
- * Move the sliders (spot, u, d, rate, strike) or flip call/put and the values
- * roll back from the terminal column to the root, fading/growing as they update.
- * `d` is clamped below `u` (and below 1) and divide-by-zero near u ≈ d is
- * guarded. Respects `prefers-reduced-motion` (values snap instead of animating).
- */
-export function BinomialTree({
-  title = 'Pricing an option by rolling back a tree',
-  spot = 100,
-  up = 1.2,
-  down = 0.85,
-  rate = 0.05,
-  strike = 100,
-  steps = 2,
-  type = 'call',
-  spotLabel = 'Spot price (S₀)',
-  upLabel = 'Up-factor (u)',
-  downLabel = 'Down-factor (d)',
-  rateLabel = 'Risk-free rate (r)',
-  strikeLabel = 'Strike (K)',
-  callLabel = 'Call',
-  putLabel = 'Put',
-  riskNeutralProbLabel = 'Risk-neutral prob. (q)',
-  optionValueLabel = 'Option value today',
-  caption = 'Each terminal node pays the option’s intrinsic value, and every node before it is the discounted, q-weighted average of its two children. Roll that back to the root and you have the fair price — no real-world probability or drift required.',
-  className,
-}: BinomialTreeProps) {
-  const id = useId();
-  const nSteps = steps === 1 ? 1 : 2;
-
-  const [spotState, setSpotState] = useState(spot);
-  const [upState, setUpState] = useState(up);
-  const [downState, setDownState] = useState(down);
-  const [rateState, setRateState] = useState(rate);
-  const [strikeState, setStrikeState] = useState(strike);
-  const [typeState, setTypeState] = useState<'call' | 'put'>(type);
-
-  // Animation progress 0 → 1 for the roll-back; columns reveal in sequence.
-  const [progress, setProgress] = useState(1);
-  const rafRef = useRef<number | null>(null);
-
+export interface BinomialTreeInputs { spot: number; up: number; down: number; rate: number; strike: number; steps: 1 | 2; type: 'call' | 'put' }
+/** Preserve the legacy valid-tree arithmetic; inconsistent cash growth is an educational state, not a priced option. */
+export function calculateBinomialTree(input: BinomialTreeInputs) {
+  const { spot: spotState, up: upState, down: downState, rate: rateState, strike: strikeState, steps: nSteps, type: typeState } = input;
+  if (![spotState, upState, downState, rateState, strikeState].every(Number.isFinite) || spotState <= 0 || strikeState < 0 || upState <= 0 || downState <= 0 || upState <= downState || rateState < 0 || ![1, 2].includes(nSteps) || !['call', 'put'].includes(typeState)) throw new Error('BinomialTree: provide finite positive spot and ordered positive factors, nonnegative strike, a nonnegative finite rate, one or two steps and call or put. Cash growth outside the factors is shown as an inconsistent market, not rejected.');
   // Sanitize factors: keep d < 1 < u and avoid u ≈ d.
   const u = Math.max(1.01, upState);
   const d = Math.min(0.99, Math.max(0.4, downState));
@@ -127,7 +94,8 @@ export function BinomialTree({
   const discount = Math.exp(-r); // e^{−rT}
   const denom = u - dSafe;
   const qRaw = denom > 1e-9 ? (growth - dSafe) / denom : 0.5;
-  const q = Math.min(1, Math.max(0, qRaw)); // clamp into [0,1] for display sanity
+  const valid = growth > dSafe && growth < u;
+  const q = valid ? qRaw : null;
 
   const payoff = (price: number): number =>
     typeState === 'call'
@@ -170,15 +138,95 @@ export function BinomialTree({
   for (let ups = 0; ups <= nSteps; ups++) {
     nodes[nSteps][ups].value = payoff(nodes[nSteps][ups].price);
   }
+  if (valid) {
   for (let col = nSteps - 1; col >= 0; col--) {
     for (let ups = 0; ups <= col; ups++) {
       const vUp = nodes[col + 1][ups + 1].value;
       const vDown = nodes[col + 1][ups].value;
-      nodes[col][ups].value = discount * (q * vUp + (1 - q) * vDown);
+      nodes[col][ups].value = discount * (q! * vUp! + (1 - q!) * vDown!);
     }
   }
 
+  } else {
+    for (let col = 0; col < nSteps; col++) for (const node of nodes[col]) node.value = null;
+  }
+
+  if (!Number.isFinite(growth) || nodes.flat().some(node => !Number.isFinite(node.price) || node.value !== null && !Number.isFinite(node.value))) throw new Error('BinomialTree: the inputs exceed the finite numerical domain of this illustration.');
   const rootValue = nodes[0][0].value;
+
+  return { u, dSafe, r, growth, discount, qRaw, q, valid, nodes, rootValue, W, H };
+}
+
+/**
+ * Interactive one- or two-step **risk-neutral binomial option-pricing** tree.
+ *
+ * From a spot price S0 the asset multiplies by `u` (up) or `d` (down) each
+ * period. Under the risk-neutral measure the up-probability is
+ * q = (e^{rT} − d) / (u − d), where T is one period here. Terminal nodes pay the
+ * option's intrinsic value — max(S − K, 0) for a call, max(K − S, 0) for a put —
+ * and every internal node is the **discounted, q-weighted** average of its two
+ * children: e^{−rT}·[q·V_up + (1 − q)·V_down]. Rolling that back to the root
+ * gives the option's fair value today.
+ *
+ * Move the sliders (spot, u, d, rate, strike) or flip call/put and the values
+ * roll back from the terminal column to the root, fading/growing as they update.
+ * Legacy factor bounds are retained. Cash growth outside the strict
+ * no-arbitrage interval displays an inconsistent-market state, without a q or price. Respects `prefers-reduced-motion` (values snap instead of animating).
+ */
+export function BinomialTree({
+  title = 'Pricing an option by rolling back a tree',
+  spot = 100,
+  up = 1.2,
+  down = 0.85,
+  rate = 0.05,
+  strike = 100,
+  steps = 2,
+  type = 'call',
+  spotLabel = 'Spot price (S₀)',
+  upLabel = 'Up-factor (u)',
+  downLabel = 'Down-factor (d)',
+  rateLabel = 'Risk-free rate (r)',
+  strikeLabel = 'Strike (K)',
+  callLabel = 'Call',
+  putLabel = 'Put',
+  riskNeutralProbLabel = 'Risk-neutral prob. (q)',
+  optionValueLabel = 'Option value today',
+  caption = 'In a consistent model, terminal nodes show intrinsic payoffs and earlier nodes use the discounted risk-neutral average. Cash growth must be strictly between the factors; inconsistent markets keep terminal payoffs visible but have no rolled-back option price. Real-world probabilities are not forecast by this display.',
+  locale = 'en-US',
+  chartLabel = '{title}. A {steps}-step risk-neutral tree for a {type}, with spot {spot}, strike {strike}, up factor {up}, down factor {down} and annual continuously compounded rate {rate} percent. The risk-neutral up probability is {q}; option value today is {value}.',
+  inconsistentChartLabel = '{title}. The stock-price nodes and terminal payoffs are shown, but cash growth {growth} is not strictly between down factor {down} and up factor {up}. There is no arbitrage-free q or rolled-back option price under this two-possible-state model.',
+  invalidMarketLabel = 'Financially inconsistent model inputs',
+  invalidMarketExplanation = 'Cash growth must lie strictly between the down and up factors when both states are possible. The stock and cash already admit an arbitrage under the frictionless assumptions. No probability is clipped and no option price is supplied for this state.',
+  unavailableLabel = 'Unavailable',
+  nodeUnavailableLabel = '—',
+  stepLabel = '{steps}-step',
+  oneStepLabel = '1-step',
+  typeGroupLabel = 'Option payoff type',
+  chartScrollLabel = 'Scrollable binomial stock-price and option-payoff tree',
+  scrollHint = 'Focus the chart and use the left and right arrow keys, or scroll horizontally, to inspect every node.',
+  periodLabel = 'Each step is one year; r is an annual continuously compounded rate. The bank grows by exp(r) per step.',
+  className,
+}: BinomialTreeProps) {
+  calculateBinomialTree({ spot, up, down, rate, strike, steps, type });
+  // Author values must be representable by the unchanged native controls. The helper remains continuous.
+  const controls = [[spot, 20, 200, 1], [strike, 20, 200, 1], [up, 1.05, 1.6, .01], [down, .5, .95, .01], [rate, 0, .1, .005]];
+  if (controls.some(([value, min, max, step]) => value < min || value > max || Math.abs((value - min) / step - Math.round((value - min) / step)) > 1e-8)) throw new Error('BinomialTree: authored range values must fit the unchanged native intervals and grids: spot and strike 20–200 by 1, up 1.05–1.60 by 0.01, down 0.50–0.95 by 0.01 and rate 0–0.10 by 0.005.');
+  const num = (value: number, digits = 2): string => new Intl.NumberFormat(locale, { maximumFractionDigits: digits }).format(value);
+  const id = useId();
+  const nSteps = steps === 1 ? 1 : 2;
+
+  const [spotState, setSpotState] = useState(spot);
+  const [upState, setUpState] = useState(up);
+  const [downState, setDownState] = useState(down);
+  const [rateState, setRateState] = useState(rate);
+  const [strikeState, setStrikeState] = useState(strike);
+  const [typeState, setTypeState] = useState<'call' | 'put'>(type);
+
+  // Animation progress 0 → 1 for the roll-back; columns reveal in sequence.
+  const [progress, setProgress] = useState(1);
+  const rafRef = useRef<number | null>(null);
+
+  const { u, dSafe, r, growth, q, valid, nodes, rootValue, W, H } = calculateBinomialTree({ spot: spotState, up: upState, down: downState, rate: rateState, strike: strikeState, steps: nSteps, type: typeState });
 
   // Re-run the roll-back animation whenever inputs change. Columns fade in from
   // the terminal side (right) to the root (left).
@@ -228,30 +276,28 @@ export function BinomialTree({
     }
   }
 
-  const ariaLabel =
-    `${title}. A ${nSteps}-step risk-neutral binomial tree for a ${
-      typeState === 'call' ? callLabel : putLabel
-    } with spot ${num(spotState)}, strike ${num(strikeState)}, up-factor ${num(u)}, ` +
-    `down-factor ${num(dSafe)} and rate ${num(r * 100)} percent. The risk-neutral ` +
-    `up-probability is ${num(q, 3)} and the option is worth ${num(rootValue)} today.`;
+  const fields: Record<string, string> = { title, steps: String(nSteps), type: typeState === 'call' ? callLabel : putLabel, spot: num(spotState), strike: num(strikeState), up: num(u), down: num(dSafe), rate: num(r * 100), growth: num(growth, 6), q: q === null ? unavailableLabel : num(q, 3), value: rootValue === null ? unavailableLabel : num(rootValue) };
+  const ariaLabel = (valid ? chartLabel : inconsistentChartLabel).replace(/\{([a-z]+)\}/gi, (match, key) => fields[key] ?? match);
 
   return (
     <figure
       className={cx(
-        'my-6 rounded-card border border-ink-100 bg-surface p-5 shadow-soft',
+        'not-prose my-6 min-w-0 rounded-card border border-ink-100 bg-surface p-5 shadow-soft',
         className,
       )}
     >
       <figcaption className="flex items-center justify-between gap-3">
         <span className="font-medium text-ink-900">{title}</span>
-        <span className="rounded-pill bg-brand-600 px-3 py-1 text-sm font-medium text-white">
-          {nSteps}-step
+        <span className="shrink-0 whitespace-nowrap rounded-pill bg-brand-600 px-3 py-1 text-sm font-medium text-white">
+          {nSteps === 1 ? oneStepLabel : stepLabel.replaceAll('{steps}', String(nSteps))}
         </span>
       </figcaption>
 
+      <p className="mt-3 text-sm text-ink-700">{periodLabel}</p>
+      <div tabIndex={0} role="region" aria-label={chartScrollLabel} className="mt-4 max-w-full overflow-x-auto rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600">
       <svg
         viewBox={`0 0 ${W} ${H}`}
-        className="mt-4 w-full"
+        className="block h-auto w-full min-w-[672px]"
         role="img"
         aria-label={ariaLabel}
       >
@@ -279,7 +325,7 @@ export function BinomialTree({
             ? 'var(--color-surface)'
             : 'var(--color-surface-sunken)';
           const stroke = n.terminal
-            ? n.value > 1e-6
+            ? n.value !== null && n.value > 1e-6
               ? 'var(--color-brand-500)'
               : 'var(--color-ink-300)'
             : 'var(--color-accent-500)';
@@ -296,9 +342,9 @@ export function BinomialTree({
               {/* Asset price (top line) */}
               <text
                 x={n.x}
-                y={n.y - 3}
+                y={n.y - 4}
                 textAnchor="middle"
-                fontSize={11}
+                fontSize={12}
                 fontWeight={600}
                 fill="var(--color-ink-700)"
               >
@@ -307,13 +353,13 @@ export function BinomialTree({
               {/* Option value / payoff (bottom line) */}
               <text
                 x={n.x}
-                y={n.y + 11}
+                y={n.y + 12}
                 textAnchor="middle"
-                fontSize={11}
+                fontSize={12}
                 fontWeight={700}
                 fill={n.terminal ? 'var(--color-ink-500)' : 'var(--color-accent-600)'}
               >
-                {num(n.value * reveal)}
+                {n.value === null ? nodeUnavailableLabel : num(n.value * reveal)}
               </text>
               {/* small up/down tag for clarity on the top/bottom branches */}
               {isUp && (
@@ -344,11 +390,14 @@ export function BinomialTree({
           opacity={0.6}
         />
       </svg>
+      </div>
+      <p className="mt-2 text-xs text-ink-600 sm:hidden">{scrollHint}</p>
 
       {/* Type toggle */}
       <div
         className="mt-2 inline-flex rounded-pill border border-ink-100 bg-surface-sunken/40 p-1 text-sm"
         role="group"
+        aria-label={typeGroupLabel}
       >
         {(['call', 'put'] as const).map((opt) => (
           <button
@@ -386,7 +435,7 @@ export function BinomialTree({
             step={1}
             value={spotState}
             onChange={(e) => setSpotState(Number(e.target.value))}
-            className="mt-2 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
+            className="mt-2 h-8 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
           />
         </div>
 
@@ -406,7 +455,7 @@ export function BinomialTree({
             step={1}
             value={strikeState}
             onChange={(e) => setStrikeState(Number(e.target.value))}
-            className="mt-2 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
+            className="mt-2 h-8 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
           />
         </div>
 
@@ -426,7 +475,7 @@ export function BinomialTree({
             step={0.01}
             value={upState}
             onChange={(e) => setUpState(Number(e.target.value))}
-            className="mt-2 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
+            className="mt-2 h-8 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
           />
         </div>
 
@@ -446,7 +495,7 @@ export function BinomialTree({
             step={0.01}
             value={downState}
             onChange={(e) => setDownState(Number(e.target.value))}
-            className="mt-2 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
+            className="mt-2 h-8 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
           />
         </div>
 
@@ -466,20 +515,21 @@ export function BinomialTree({
             step={0.005}
             value={rateState}
             onChange={(e) => setRateState(Number(e.target.value))}
-            className="mt-2 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
+            className="mt-2 h-8 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
           />
         </div>
       </div>
 
+      {!valid && <div role="status" className="mt-4 rounded-card bg-surface-sunken p-3 text-sm text-ink-800"><p className="font-semibold">{invalidMarketLabel}</p><p className="mt-2">{invalidMarketExplanation}</p></div>}
       {/* Readouts */}
-      <dl className="mt-4 grid grid-cols-2 gap-3 text-sm" aria-live="polite">
+      <dl className="mt-4 grid min-w-0 gap-3 text-sm sm:grid-cols-2" aria-live="polite">
         <div className="rounded-card border border-ink-100 bg-surface-sunken/40 px-3 py-2">
           <dt className="text-ink-500">{riskNeutralProbLabel}</dt>
-          <dd className="font-mono text-lg font-semibold text-brand-700">{num(q, 3)}</dd>
+          <dd className="break-words font-mono text-lg font-semibold text-brand-700">{q === null ? unavailableLabel : num(q, 3)}</dd>
         </div>
         <div className="rounded-card border border-ink-100 bg-surface-sunken/40 px-3 py-2">
           <dt className="text-ink-500">{optionValueLabel}</dt>
-          <dd className="font-mono text-lg font-semibold text-accent-600">{num(rootValue)}</dd>
+          <dd className="break-words font-mono text-lg font-semibold text-accent-600">{rootValue === null ? unavailableLabel : num(rootValue)}</dd>
         </div>
       </dl>
 

@@ -282,8 +282,8 @@ export type { TimeDecayCurveProps } from '@/components/react/TimeDecayCurve';
 export { OptionDriversBars, default as OptionDriversBarsDefault } from '@/components/react/OptionDriversBars';
 export type { OptionDriversBarsProps, OptionDriver, DriverEffect } from '@/components/react/OptionDriversBars';
 
-export { BinomialTree, default as BinomialTreeDefault } from '@/components/react/BinomialTree';
-export type { BinomialTreeProps } from '@/components/react/BinomialTree';
+export { BinomialTree, calculateBinomialTree, default as BinomialTreeDefault } from '@/components/react/BinomialTree';
+export type { BinomialTreeProps, BinomialTreeInputs } from '@/components/react/BinomialTree';
 
 export { LognormalPrice, default as LognormalPriceDefault } from '@/components/react/LognormalPrice';
 export type { LognormalPriceProps } from '@/components/react/LognormalPrice';
@@ -1023,3 +1023,6 @@ export type { ConcentratedPositionInputs, ConcentratedInventoryExplorerProps, Ra
 
 export { validateMultiKelly, calculateMultiKelly, calculateConstrainedMultiKelly, calculateMultiBudget, calculateMultiRay, MultiAssetKellyLab } from '@/components/react/MultiAssetKellyLab';
 export type { Pair, MultiKellyInputs, MultiAssetKellyLabels, MultiAssetKellyLabProps } from '@/components/react/MultiAssetKellyLab';
+
+export { calculateTwoStatePrices, calculateClaimArbitrage, StatePriceExplorer, calculateThreeStatePrices, ThreeStatePriceFamily } from '@/components/react/StatePriceBudgets';
+export type { TwoStatePriceInputs, StatePriceLabels, StatePriceView, StatePriceExplorerProps, ThreeStateInputs, ThreeStatePriceFamilyProps } from '@/components/react/StatePriceBudgets';
