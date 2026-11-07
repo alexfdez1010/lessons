@@ -1047,3 +1047,6 @@ export type { CreditTransitionMatrix, CreditStateDistribution, CreditMigrationPo
 
 export { calculateLinkedFactors, valueLinkedSchedule, calculateLinkedFlowPath, LinkedDiscountFactors } from '@/components/react/LinkedDiscountFactors';
 export type { LinkedDiscountLabels, LinkedDiscountFactorsProps } from '@/components/react/LinkedDiscountFactors';
+
+export { householdTransaction, reconcileHouseholdMonth, oneYearBorrowingCash, HouseholdTransactionEffects, HouseholdMonthReconciliation, BorrowingCashBridge } from '@/components/react/HouseholdFlowLedger';
+export type { HouseholdEvent, TransactionLabels, HouseholdTransactionEffectsProps, MonthlyLabels, HouseholdMonthReconciliationProps, BorrowLabels, BorrowingCashBridgeProps } from '@/components/react/HouseholdFlowLedger';
