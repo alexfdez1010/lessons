@@ -1062,3 +1062,6 @@ export type { VisibleOrderLevel, OrderSide, OrderInstruction, ImmediateTimeInFor
 
 export { calculateDatedCarry, calculateCarryBand, calculateYieldCarry, calculateConvenienceResidual, calculateSettlementCarry, CarryReplicationLab } from '@/components/react/CarryReplicationLab';
 export type { DatedCarryCash, CarryBandInputs, SettlementCarryInputs, CarryReplicationView, CarryReplicationLabProps } from '@/components/react/CarryReplicationLab';
+
+export { calculateWeightedMoments, calculatePairedMoments, calculateTwoAssetRisk, calculateFiniteJointLoss, CorrelationRiskLab } from '@/components/react/CorrelationRiskLab';
+export type { PairedValue, WeightedPair, CorrelationRiskLabels, CorrelationRiskLabProps } from '@/components/react/CorrelationRiskLab';
