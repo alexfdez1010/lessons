@@ -987,3 +987,6 @@ export type { QueueFillInputs, QueueFillAllocationProps, LimitOrderDecisionInput
 
 export { calculateParetoTail, ParetoTailMean } from '@/components/react/ParetoTailMean';
 export type { ParetoTailInputs, ParetoTailMeanProps } from '@/components/react/ParetoTailMean';
+
+export { closeoutCashLedger, closeoutClock, CloseoutTimeline, CloseoutGapExplorer, CloseoutScenarioComparison } from '@/components/react/CloseoutGapLab';
+export type { CloseoutInputs, CloseoutTimelineEvent, CloseoutTimelineProps, CloseoutGapExplorerProps, CloseoutScenarioComparisonProps } from '@/components/react/CloseoutGapLab';

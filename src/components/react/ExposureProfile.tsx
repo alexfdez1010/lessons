@@ -37,11 +37,6 @@ export interface ExposureProfileProps {
   className?: string;
 }
 
-const prefersReducedMotion = (): boolean =>
-  typeof window !== 'undefined' &&
-  typeof window.matchMedia === 'function' &&
-  window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
 /**
  * Credit-exposure profile of a derivative over its life.
  *
@@ -94,11 +89,11 @@ export function ExposureProfile({
   const [collateral, setCollateral] = useState(false);
 
   const W = 540;
-  const H = 280;
+  const H = 320;
   const padLeft = 44;
   const padRight = 16;
   const padTop = 20;
-  const padBottom = 52;
+  const padBottom = 92;
   const plotW = W - padLeft - padRight;
   const plotH = H - padTop - padBottom;
 
@@ -170,8 +165,6 @@ export function ExposureProfile({
     : instrument === 'swap'
       ? swapExplanation
       : fxExplanation;
-
-  const transition = prefersReducedMotion() ? undefined : { transition: 'd 300ms ease' };
 
   return (
     <figure
@@ -261,8 +254,8 @@ export function ExposureProfile({
             <line x1={x(t)} y1={y(0)} x2={x(t)} y2={y(0) + 4} stroke="var(--color-ink-300)" />
             <text
               x={x(t)}
-              y={y(0) + 16}
-              fontSize={10}
+              y={y(0) + 40}
+              className="text-[34px] sm:text-[12px]"
               fill="var(--color-ink-500)"
               textAnchor="middle"
             >
@@ -272,7 +265,7 @@ export function ExposureProfile({
         ))}
 
         {/* PFE shaded area */}
-        <path d={pfeArea} fill="var(--color-accent-400)" opacity={0.18} style={transition} />
+        <path d={pfeArea} fill="var(--color-accent-400)" opacity={0.18} className="motion-safe:transition-[d] motion-safe:duration-300 motion-safe:ease-[ease] motion-reduce:transition-none" />
         {/* PFE line */}
         <path
           d={linePath('pfe')}
@@ -282,7 +275,7 @@ export function ExposureProfile({
           strokeDasharray="5 3"
           strokeLinejoin="round"
           strokeLinecap="round"
-          style={transition}
+          className="motion-safe:transition-[d] motion-safe:duration-300 motion-safe:ease-[ease] motion-reduce:transition-none"
         />
         {/* EE line */}
         <path
@@ -292,26 +285,26 @@ export function ExposureProfile({
           strokeWidth={3}
           strokeLinejoin="round"
           strokeLinecap="round"
-          style={transition}
+          className="motion-safe:transition-[d] motion-safe:duration-300 motion-safe:ease-[ease] motion-reduce:transition-none"
         />
 
         {/* Axis titles */}
         <text
           x={padLeft + plotW / 2}
           y={H - 8}
-          fontSize={11}
+          className="text-[34px] sm:text-[12px]"
           fill="var(--color-ink-700)"
           textAnchor="middle"
         >
           {timeAxisLabel}
         </text>
         <text
-          x={14}
+          x={36}
           y={padTop + plotH / 2}
-          fontSize={11}
+          className="text-[34px] sm:text-[12px]"
           fill="var(--color-ink-700)"
           textAnchor="middle"
-          transform={`rotate(-90 14 ${padTop + plotH / 2})`}
+          transform={`rotate(-90 36 ${padTop + plotH / 2})`}
         >
           {exposureAxisLabel}
         </text>
