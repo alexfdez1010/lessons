@@ -1059,3 +1059,6 @@ export type { BlackScholesInputs, BlackScholesResult, PhysicalLognormalInputs, B
 
 export { validateVisibleBook, illustrativeOrderBids, illustrativeOrderAsks, calculateVisibleExecution, calculateSpreadRoundTrip, calculateQueueFill as calculateOrderQueueFill, calculateConditionalStop, OrderExecutionLab } from '@/components/react/OrderExecutionLab';
 export type { VisibleOrderLevel, OrderSide, OrderInstruction, ImmediateTimeInForce, VisibleExecutionInputs, ConditionalStopInputs, OrderExecutionLabels, OrderExecutionLabProps } from '@/components/react/OrderExecutionLab';
+
+export { calculateDatedCarry, calculateCarryBand, calculateYieldCarry, calculateConvenienceResidual, calculateSettlementCarry, CarryReplicationLab } from '@/components/react/CarryReplicationLab';
+export type { DatedCarryCash, CarryBandInputs, SettlementCarryInputs, CarryReplicationView, CarryReplicationLabProps } from '@/components/react/CarryReplicationLab';
