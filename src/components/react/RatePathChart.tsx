@@ -24,6 +24,10 @@ export interface RatePathChartProps {
   variablePaymentReadoutLabel?: string;
   /** One-line takeaway shown under the chart. */
   caption?: string;
+  /** Optional accessible description for a caller-specific comparison. */
+  chartLabel?: string;
+  /** Number-format locale; defaults preserve existing callers. */
+  locale?: string;
   /** Currency symbol prefixed to money values. Defaults to `'$'`. */
   currencyPrefix?: string;
   /** Loan principal. Defaults to `200000`. */
@@ -42,8 +46,8 @@ const prefersReducedMotion = (): boolean =>
   typeof window.matchMedia === 'function' &&
   window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-const money = (prefix: string, value: number): string =>
-  `${prefix}${new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(
+const money = (prefix: string, value: number, locale = 'en-US'): string =>
+  `${prefix}${new Intl.NumberFormat(locale, { maximumFractionDigits: 0 }).format(
     Math.round(value),
   )}`;
 
@@ -98,6 +102,8 @@ export function RatePathChart({
   fixedPaymentReadoutLabel = 'Fixed monthly payment',
   variablePaymentReadoutLabel = 'Variable payment (end of term)',
   caption = 'A fixed rate locks your payment for the whole loan — a flat line. A variable rate re-prices with the market: it costs less when rates fall and bites hard when they rise. The gap is the bet you make by going variable.',
+  chartLabel,
+  locale = 'en-US',
   currencyPrefix = '$',
   principal = 200000,
   fixedRate = 0.06,
@@ -218,12 +224,14 @@ export function RatePathChart({
         viewBox={`0 0 ${W} ${H}`}
         className="mt-3 w-full"
         role="img"
-        aria-label={`${title}: under the "${activeScenarioLabel}" scenario, the fixed monthly payment stays flat at ${money(
+        aria-label={chartLabel ?? `${title}: under the "${activeScenarioLabel}" scenario, the fixed monthly payment stays flat at ${money(
           currencyPrefix,
           fixedPay,
+          locale,
         )} while the variable monthly payment ends the term at ${money(
           currencyPrefix,
           finalVariable,
+          locale,
         )}.`}
       >
         {/* Axis baseline */}
@@ -303,13 +311,13 @@ export function RatePathChart({
         <div className="rounded-card border border-ink-100 bg-surface-sunken/40 px-3 py-2">
           <dt className="text-ink-500">{fixedPaymentReadoutLabel}</dt>
           <dd className="font-mono text-lg font-semibold text-brand-700">
-            {money(currencyPrefix, fixedPay)}
+            {money(currencyPrefix, fixedPay, locale)}
           </dd>
         </div>
         <div className="rounded-card border border-ink-100 bg-surface-sunken/40 px-3 py-2">
           <dt className="text-ink-500">{variablePaymentReadoutLabel}</dt>
           <dd className="font-mono text-lg font-semibold text-ink-900">
-            {money(currencyPrefix, finalVariable)}
+            {money(currencyPrefix, finalVariable, locale)}
           </dd>
         </div>
       </dl>

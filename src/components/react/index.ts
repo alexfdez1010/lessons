@@ -1113,3 +1113,6 @@ export type { ModelAuditMode, ModelAuditLabels, TemporalModelAuditProps } from '
 
 export { qaeCanonicalBound, qaeMedianFailure, qaePayoffEncoding, qaeAtomRisk, qaeResourceBudget, QaeEstimationBudget } from '@/components/react/QaeEstimationBudget';
 export type { QaeBudgetLabels, QaeBudgetMode, QaeEstimationBudgetProps } from '@/components/react/QaeEstimationBudget';
+
+export { initialReserveBooks, reserveBookTotals, reserveBalanceScenario, toyCapitalCapacity, ReserveBalanceSheetLab, bankIncome, bankRepricing, bankMaturity, bankCreditStress, bankLiquidityStress, BankFundingLab } from '@/components/react/BankingBalanceLabs';
+export type { ReserveBook, ReserveEntity, ReserveBooks, ReserveOperation, ReserveBalanceLabels, ReserveBalanceSheetLabProps, BankIncomeInputs, BankFundingLabels, BankFundingLabProps } from '@/components/react/BankingBalanceLabs';
