@@ -1068,3 +1068,6 @@ export type { PairedValue, WeightedPair, CorrelationRiskLabels, CorrelationRiskL
 
 export { scorePairedPredictions, fitPairedOLS, evaluatePairedOLS, PairedRegressionLab } from '@/components/react/PairedRegressionLab';
 export type { PairedOLSFit, PairedRegressionLabels, PairedRegressionLabProps } from '@/components/react/PairedRegressionLab';
+
+export { binaryLogGrowth, optimalBinaryStake, robustBinaryStake, finiteBinaryUpdate, clusteredWinRateSE, EdgeEstimationInformation, EdgeGrowthSensitivity, RobustKellyChoice, FiniteBinaryBelief } from '@/components/react/UncertainEdgeSizing';
+export type { EdgeInformationLabels, EdgeEstimationInformationProps, EdgeSensitivityLabels, EdgeGrowthSensitivityProps, RobustChoiceLabels, RobustKellyChoiceProps, FiniteBeliefLabels, FiniteBinaryBeliefProps } from '@/components/react/UncertainEdgeSizing';
