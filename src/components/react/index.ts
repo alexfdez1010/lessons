@@ -1077,3 +1077,6 @@ export type { UncoveredCarryInputs, FxScenario, LeveragedFxCarryInputs, FxParity
 
 export { calculateIndexedPayment, calculateLaggedReference, calculateRealIndexedPrice, calculateInflationBreakeven, calculateInflationCompensation, InflationLinkedBondLab } from '@/components/react/InflationLinkedBondLab';
 export type { RealIndexedPriceInputs, InflationBreakevenInputs, InflationLinkedLabels, InflationLinkedBondLabProps } from '@/components/react/InflationLinkedBondLab';
+
+export { BARRIER_PATHS, validateBarrierPath, downBarrierEvent, barrierCashLedger, gbmDownBridgeProbability, terminalUpOutCall, gapExitLedger, BarrierMonitoringPaths, BarrierParityCashLedger, BarrierTerminalBoundary, BarrierGapExecution, BarrierBridgeProbability } from '@/components/react/BarrierMonitoringLab';
+export type { BarrierMonitoring, BarrierPathNode, MonitoringPathLabels, BarrierMonitoringPathsProps, ParityCashLabels, BarrierParityCashLedgerProps, TerminalBoundaryLabels, BarrierTerminalBoundaryProps, GapExecutionLabels, BarrierGapExecutionProps, BridgeProbabilityLabels, BarrierBridgeProbabilityProps } from '@/components/react/BarrierMonitoringLab';

@@ -34,6 +34,10 @@ export interface BarrierPayoffProps {
   knockOutNote?: string;
   /** Explanatory note for the knock-in structure. */
   knockInNote?: string;
+  /** Accessible chart description; tokens: title, type, scenario, strike, barrier, terminal, status, payoff. */
+  chartLabel?: string;
+  /** Text above the first barrier-touch marker. */
+  touchMarkerLabel?: string;
   className?: string;
 }
 
@@ -68,7 +72,7 @@ const PATH_BREACH = [100, 104, 109, 114, 121, 124, 118, 113, 111, 109, 110];
  * lines, then reports the option's status (alive / knocked out / never
  * activated) and its settlement payoff. The two scenario buttons swap between a
  * path that touches the barrier and one that does not, so the learner can watch
- * the same terminal price produce wildly different payoffs depending on whether
+ * the constructed paths produce different settlement payoffs depending on whether
  * the barrier was breached *along the way*.
  */
 export function BarrierPayoff({
@@ -88,8 +92,11 @@ export function BarrierPayoff({
   currencyPrefix = '$',
   knockOutNote = 'An up-and-out call behaves like a normal call UNLESS the underlying ever touches the barrier — at which point it is extinguished for good, even if it later finishes deep in the money. Touch the barrier and the most painful thing happens: you can be right about direction and still collect nothing. Because it can die, a knock-out is always CHEAPER than the equivalent vanilla.',
   knockInNote = 'An up-and-in call does not exist until the underlying touches the barrier. If the barrier is never breached, the option simply never comes alive — it expires worthless even if it ends in the money. Only a path that crosses the barrier brings it to life, after which it pays like a vanilla call. Knock-in + knock-out = vanilla: on every path exactly one of the pair is live.',
+  chartLabel = '{title}: {type} struck at {strike} with a barrier at {barrier}. {scenario}. The underlying finishes at {terminal}; {status}. Settlement payoff {payoff}.',
+  touchMarkerLabel = 'touch!',
   className,
 }: BarrierPayoffProps) {
+  if (!chartLabel.trim() || !touchMarkerLabel.trim()) throw Error('BarrierPayoff chart and touch-marker labels must be nonempty.');
   const [type, setType] = useState<'out' | 'in'>('out');
   const [scenario, setScenario] = useState<'breach' | 'no-breach'>('no-breach');
 
@@ -188,16 +195,15 @@ export function BarrierPayoff({
         viewBox={`0 0 ${W} ${H}`}
         className="mt-4 w-full"
         role="img"
-        aria-label={`${title}: a ${
-          type === 'out' ? knockOutLabel : knockInLabel
-        } struck at ${money(currencyPrefix, STRIKE)} with a barrier at ${money(
-          currencyPrefix,
-          BARRIER,
-        )}. On the selected path the underlying ${
-          touched ? 'touches' : 'never touches'
-        } the barrier and finishes at ${money(currencyPrefix, terminal)}, so the option is ${
-          alive ? 'alive' : 'worthless'
-        } and settles for ${money(currencyPrefix, payoff)}.`}
+        aria-label={chartLabel
+          .replaceAll('{title}', title)
+          .replaceAll('{type}', type === 'out' ? knockOutLabel : knockInLabel)
+          .replaceAll('{scenario}', touched ? breachLabel : noBreachLabel)
+          .replaceAll('{strike}', money(currencyPrefix, STRIKE))
+          .replaceAll('{barrier}', money(currencyPrefix, BARRIER))
+          .replaceAll('{terminal}', money(currencyPrefix, terminal))
+          .replaceAll('{status}', status)
+          .replaceAll('{payoff}', money(currencyPrefix, payoff))}
       >
         {/* Barrier line */}
         <line
@@ -261,7 +267,7 @@ export function BarrierPayoff({
               fontWeight={600}
               fill="var(--color-accent-700)"
             >
-              touch!
+              {touchMarkerLabel}
             </text>
           </g>
         )}
