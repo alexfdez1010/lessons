@@ -1095,3 +1095,6 @@ export type { GbmInputs, GbmEngineLabels, GbmEngineLabProps } from '@/components
 
 export { calculatePutCallPayoffs, calculatePutCallParity, calculateIdealParityBudget, calculateDividendParity, calculateExecutablePutCallBudget, inferPutCallFunding, calculateEuropeanBox, calculateAmericanParityBounds, PutCallFundingLab } from '@/components/react/PutCallFundingLab';
 export type { ParityBudgetDirection, IdealParityBudgetInputs, KnownParityDividend, ExecutablePutCallInputs, ImpliedFundingStatus, EuropeanBoxDirection, EuropeanBoxInputs, PutCallFundingView, PutCallFundingLabels, PutCallFundingLabProps } from '@/components/react/PutCallFundingLab';
+
+export { proxyPolicyPopulation, abnormalReturn, routingActionPopulation, selectedIndependentPopulation, approximateAlphaInterval, PredictionAndActionLab } from '@/components/react/PredictionAndActionLab';
+export type { CausalLabMode, ProxyPolicy, CausalLabLabels, PredictionAndActionLabProps } from '@/components/react/PredictionAndActionLab';
