@@ -1089,3 +1089,6 @@ export type { ImpactCostMode, ImpactCostLabels, ImpactCostLabProps } from '@/com
 
 export { brinsonEffects, twoSectorAttribution, cashAndFeeAttribution, brinsonFlowAccount, linkedBrinsonAttribution, BrinsonAttributionLab } from '@/components/react/BrinsonAttributionLab';
 export type { AttributionSector, AllocationConvention, AttributionConvention, FlowAllocation, LinkIdentity, BrinsonLabMode, BrinsonLabLabels, BrinsonAttributionLabProps } from '@/components/react/BrinsonAttributionLab';
+
+export { gbmExactStep, gbmMoments, gbmCoupledSteps, simulateGbmPaths, gbmMeasureComparison, gbmCalibration, gbmDriftStandardError, GbmEngineLab } from '@/components/react/GbmEngineLab';
+export type { GbmInputs, GbmEngineLabels, GbmEngineLabProps } from '@/components/react/GbmEngineLab';

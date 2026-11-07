@@ -1,342 +1,727 @@
 ---
-title: "Geometric Brownian Motion"
-description: "The engine under simulated asset prices: random walks, drift versus diffusion, why GBM keeps prices positive and lognormal, and how to roll one random draw per step into a whole fan of price paths."
+title: "Geometric Brownian Motion: Drift, Exact Steps and Model Risk"
+description: "Separate price and log drift, derive mean versus median, compare exact transitions with coupled Euler steps, distinguish physical and pricing laws and measure parameter uncertainty."
 topic: "en/monte-carlo-finance"
 order: 3
-minutes: 9
-updated: 2026-06-05
+minutes: 38
+updated: 2026-11-06
 ---
 
-import { Callout, MCQ, Quiz, Reveal, FillBlank, Categorize, MatchConcepts, MindMap, GbmPaths } from '@/components/react';
+import { Callout, MCQ, FillBlank, MatchConcepts, Categorize, MindMap, Quiz, GbmEngineLab } from '@/components/react';
 
-You can now sample from any distribution you like (lesson 2). But a single random draw is a single dot — a one-off coin flip. A *price* is a story that unfolds over time: tomorrow built on today, the day after built on tomorrow. To simulate a stock, you don't want one draw — you want a **path**, hundreds of draws chained nose-to-tail so each day inherits where the last one left off. The model that does this chaining, the workhorse under almost every Monte Carlo engine in finance, is **Geometric Brownian Motion (GBM)**. This lesson is about the engine itself: how one random number per step rolls into a whole fan of plausible futures.
+A model with 10 % price drift and 20 % volatility has an expected one-year price of **110.517092** from 100. Its median is **108.328707**. Neither figure is a promise about one future path, and neither says that 10 % is the expected log return. One label on a simulator can hide three different quantities.
+
+**Geometric Brownian motion**, GBM, is a tractable continuous-time model for a positive price. It is useful because we can derive its law and simulate its values exactly on chosen dates. That gives us a benchmark against which to check simulation code. Whether it describes an actual market, and which probability law the task needs, are separate modeling decisions.
+
+All examples below are invented. Price units are USD, time is in **years**, coefficients are constant within a scenario, and there are no costs or corporate actions. We begin with no dividends; the pricing-law section introduces a specified continuous dividend rule.
+
+## 1. Give price drift and log drift different names
 
 <MCQ
   client:visible
+  question={"In dS/S = mu dt + sigma dW, choose mu = 10 % and sigma = 20 %. What is the expected annual log-growth rate?"}
+  options={[
+  {
+    "text": "8 %, because the log drift subtracts half the variance",
+    "correct": true
+  },
+  {
+    "text": "10 %, because level drift is always the same as log drift",
+    "correct": false
+  },
+  {
+    "text": "12 %, because the log drift adds half the variance",
+    "correct": false
+  }
+]}
+  explanation={"Log drift is .10 − .20²/2 = .08. The one-year expected simple price return is exp(.10) − 1, another quantity."}
   pretest
-  question="What does Geometric Brownian Motion actually model?"
-  options={[
-    { text: 'How an asset price evolves step by step as a random walk in percentage (log) terms, keeping prices positive', correct: true },
-    { text: 'The exact price a stock will reach in one year' },
-    { text: 'The fair value of an option given today’s inputs' },
-    { text: 'The correlation between two different stocks' },
-  ]}
-  explanation="GBM is a model for how a single price wanders over time: each step adds a random percentage move, so prices compound multiplicatively, stay positive, and end up lognormally distributed. It predicts no single future — it generates the whole cloud of possible ones."
 />
 
-## The random walk, and why the naive version is broken
 
-**Analogy.** Picture a drunkard leaving the pub. Each step he lurches a random amount left or right. Where he ends up after a hundred steps is a **random walk** — the sum of a hundred little random shocks. Prices feel the same: tomorrow's price is today's price plus some random jostle.
+Let S_t be price and W_t a **standard Brownian motion**: over a time interval Δt, its increment is normal with mean zero and variance Δt; increments on disjoint intervals are independent. Thus ΔW = √Δt Z with a fresh independent standard normal Z for each non-overlapping step. Brownian motion has continuous paths; it is not a sequence of independent price levels.
 
-The tempting first model writes that literally. Tomorrow's price equals today's plus a random shock measured in dollars:
+The GBM stochastic differential equation is
 
-$$S_{t+1} = S_t + \sigma\, Z, \quad Z \sim N(0,1)$$
+$$
+\frac{dS_t}{S_t}=\mu\,dt+\sigma\,dW_t.
+$$
 
-This is an **additive (arithmetic) random walk**, and for prices it is broken in two ways.
+Here μ is the **instantaneous price-return drift**, per year, under the chosen probability law. Sigma σ is the **diffusion coefficient**, in inverse square-root years: log-return standard deviation over Δt is σ√Δt. A quoted annualized σ of 20 % does not say the finite one-year simple return has exactly 20 % standard deviation.
 
-First, **it can go negative.** A normal shock has no floor — string together enough bad draws and $S_t$ marches straight through zero into negative territory. A stock can't cost &minus;$4. The model permits an impossible state.
+Apply the [Itô rule taught in the prerequisite course](/stochastic-processes/ito-and-sdes) to f(S) = log S. Its derivatives are f′ = 1/S and f″ = −1/S², so the log drift is
 
-Second, **a fixed dollar shock is nonsense across price levels.** A $1 wiggle is a yawn on a $1000 stock (0.1%) and an earthquake on a $1 penny stock (100%). Real markets don't move in fixed dollars — they move in **percentages**. A blue chip and a penny stock can both have 2% days; they will never have the same *dollar* days. The additive walk bakes in the wrong unit.
+$$
+m=f'(S)\mu S+\tfrac12 f''(S)\sigma^2S^2
+=\mu-\tfrac12\sigma^2.
+$$
 
-<MCQ
+Consequently the **exact transition** for this constant-coefficient model is
+
+$$
+\begin{aligned}
+\ell&=m\Delta t+\sigma\sqrt{\Delta t}\,Z,\\
+S_{t+\Delta t}&=S_t e^{\ell},\qquad
+R=e^{\ell}-1.
+\end{aligned}
+$$
+
+The symbol ℓ is a **log return**; R is the corresponding **simple price return**. A log return 0.10 gives simple return e^0.10 − 1 ≈ 10.517092 %, not exactly 10 %. [Columbia’s Brownian simulation notes construct independent normal increments and multiplicative lognormal ratios](https://www.columbia.edu/~ks20/4404-Sigman/4404-Notes-sim-BM.pdf); their drift notation for the log process corresponds to our m.
+
+### Work one adopted trading-day step
+
+Take S = 100, μ = 0.10, σ = 0.20 and Δt = 1/252. This is an adopted model convention of 252 equal trading intervals per year, not a calendar law. With Z =  + 1:
+
+- Annual log drift m = 0.10 − 0.20²/2 = **0.08**.
+- Deterministic log component = 0.08/252 = **0.000317460**.
+- Diffusion component = 0.20√(1/252) × 1 = **0.012598816**.
+- Log return ℓ = **0.012916276**; price = 100 exp(ℓ) = **101.300005**.
+
+For Z = −1, the log return is 0.000317460 − 0.012598816 = −0.012281355 and price is **98.779375**. Exponentiation, rather than a sign restriction on Z, keeps the mathematical price positive.
+
+<GbmEngineLab
   client:visible
-  question="Why is a naive additive random walk (tomorrow’s price = today’s + a normal dollar shock) a bad model for stock prices?"
-  options={[
-    { text: 'It allows negative prices and treats a fixed dollar move as equally meaningful on a 1 stock and a 1000 stock', correct: true },
-    { text: 'It is too slow to simulate on a computer' },
-    { text: 'It assumes prices never change from day to day' },
-    { text: 'It requires knowing the future correlation matrix' },
-  ]}
-  explanation="An additive normal shock has no lower bound, so prices can go negative, and a fixed dollar move is trivial on an expensive stock but catastrophic on a cheap one. Real prices move in percentages, not fixed dollars — which is exactly what GBM fixes."
+  view={"step"}
+  title={"Turn a chosen normal shock into an exact price factor"}
+  caption={"Initial state: price 100, level drift 10 %, sigma 20 %, adopted 1/252-year interval and Z = 1 give log return.012916276 and price 101.300005. The selected shock is a numerical scenario; move the interval or shock to recalculate."}
 />
 
-## GBM's fix: walk in log returns, not dollars
 
-GBM repairs both flaws with one move: **don't add a random number to the price — multiply the price by a random factor.** Equivalently, do the random walk on the **log return** rather than on the price itself. Model the *percentage* change, and two things fall out for free.
+### When to use it
 
-Because the change is multiplicative, the price can only ever be scaled up or down — never pushed below zero. Multiply $100 by anything positive and you stay positive. And because the move is a percentage, a 2% shock means the same thing whether the stock costs $5 or $5000. Both problems vanish at once.
-
-This connects straight to the **lognormal prices** you met in options pricing. If each step's log return is normal, and you add up many normal log returns, the *total* log return is normal too — which means the **price** (the exponential of that total) is **lognormal**. A lognormal variable can't be negative and is **right-skewed**: a long tail of big winners on the upside, a floor at zero on the downside. That is exactly the shape of real long-horizon stock returns, and it's the shape GBM produces by construction.
-
-| | **Additive random walk** | **Geometric Brownian Motion** |
-|---|---|---|
-| **What does the walking** | The price, in dollars | The log return (percentage) |
-| **Shock type** | Add a normal dollar amount | Multiply by a random factor |
-| **Can the price go negative?** | Yes — broken | No — stays positive |
-| **Same shock on a 5 vs 5000 stock?** | Wildly different in % | Identical in % |
-| **Resulting price distribution** | Normal (symmetric) | Lognormal (right-skewed) |
+Use the exact transition when the constant-coefficient GBM law is the intended model. Match drift, volatility and time units before drawing shocks. Additive normal models can be useful for other quantities, but an unrestricted normal dollar shock can make a limited-liability stock price negative; GBM avoids that state by construction. Its lognormal shape is an assumption to assess, not a universal description of stock returns.
 
 <FillBlank
   client:visible
-  question="Fill in why GBM beats the additive walk."
-  text="GBM does the random walk on the {{log return|dollar price|trading volume}}, so price changes are {{multiplicative|additive|fixed}}, which keeps prices {{positive|symmetric|constant}} and makes the price distribution {{lognormal|uniform|normal}}."
-  explanation="Walking in log returns makes each step a percentage multiplier, so prices compound, never cross zero, and end up lognormal (right-skewed) — the same lognormal prices you met in options pricing."
+  question={"Keep the rate and return definitions distinct."}
+  text={"With mu 10 % and sigma 20 %, log drift is {{8 %|10 %|12 %}} per year. A log return 0.10 gives simple return about {{10.517092 %|10 %|8 %}}. The GBM exponential step is {{exact on its chosen grid|an Euler step by another name|a promise of market calibration}}."}
+  explanation={"Half the variance is .02, so m = .08. Simple return is exp(log return) − 1. Exact constant-coefficient grid sampling does not validate the economic model."}
 />
 
-## Drift versus diffusion: the discrete step
 
-Here is the engine itself — the formula you simulate one step at a time:
+## 2. Compute the mean, median and mode of the model law
 
-$$S_{t+\Delta t} = S_t \exp\!\left(\left(\mu - \tfrac{1}{2}\sigma^2\right)\Delta t + \sigma\sqrt{\Delta t}\,Z\right),\quad Z \sim N(0,1)$$
+<MCQ
+  client:visible
+  question={"The analytical one-year mean price exceeds its median in a positive-volatility GBM. Which definition distinguishes the median?"}
+  options={[
+  {
+    "text": "It is the model’s 50 % quantile, not the expected value or density peak",
+    "correct": true
+  },
+  {
+    "text": "It is the only terminal price that has positive point probability",
+    "correct": false
+  },
+  {
+    "text": "It is the same as the density peak in every lognormal law",
+    "correct": false
+  }
+]}
+  explanation={"A nondegenerate lognormal median splits probability in half. Its mode and mean have different formulas; no individual point carries positive probability."}
+  pretest
+/>
 
-Don't be spooked — every piece is something you already know. Take them one at a time:
 
-- **$S_t$** — today's price, where the step starts.
-- **$\mu$** — the **drift**: the expected log-growth rate per year (say 10% for a stock you expect to grow). This is the *deterministic* pull, the direction the price leans on average.
-- **$\sigma$** — the **volatility**: the annual standard deviation of returns, your old friend. This scales the *random* jostle.
-- **$\Delta t$** — the **time step**, in years. For a daily simulation, $\Delta t = 1/252$ (252 trading days per year). Smaller step = finer-grained path.
-- **$Z$** — a fresh **standard normal draw**, a brand-new $N(0,1)$ sample at *every single step*. This is precisely the lesson-2 sampling, now chained: one draw per day, 252 draws for a year.
-- **$\sqrt{\Delta t}$** — the random part scales with the *square root* of time, because variance (not standard deviation) adds linearly. Over a step a quarter as long, the random move shrinks only by a half, not a quarter.
+The arithmetic mean, the middle quantile and the density peak answer different questions. For positive σ and T, horizon log return is normal with mean mT and variance σ²T. Substituting those into the [lognormal moment formulas](https://itl.nist.gov/div898/handbook/eda/section3/eda3669.htm) gives
 
-The exponent splits cleanly into two parts. The **drift term** $\left(\mu - \tfrac{1}{2}\sigma^2\right)\Delta t$ is deterministic — it's the same every step, the steady lean. The **diffusion term** $\sigma\sqrt{\Delta t}\,Z$ is random — it's the dice-roll, the wandering. Drift is where the price *wants* to go; diffusion is the noise that knocks it around on the way. Every GBM step is a tug-of-war between the two.
+$$
+\begin{aligned}
+E[S_T]&=S_0e^{\mu T},\\
+\operatorname{median}(S_T)&=S_0e^{(\mu-\sigma^2/2)T},\\
+\operatorname{mode}(S_T)&=S_0e^{(\mu-3\sigma^2/2)T},\\
+\operatorname{Var}(S_T)&=S_0^2e^{2\mu T}(e^{\sigma^2T}-1).
+\end{aligned}
+$$
 
-<Callout variant="info" title="Why exp(...) and not just multiply?">
-Wrapping the step in $\exp(\cdot)$ is what makes the move multiplicative. The thing inside the exponent is a (normal) **log return**; exponentiating turns it into a growth *factor* like 1.013 or 0.987 that you multiply onto the price. That single $\exp$ is the entire reason prices stay positive and end up lognormal — it's the "geometric" in Geometric Brownian Motion.
-</Callout>
+The **median** has half the model probability below it and half above. The **mode** is the highest point of the continuous density; it is not an outcome with positive point probability. The **mean** averages values weighted by their probabilities. It matters for an expected payoff, while the median describes a quantile. Neither is automatically the right personal planning target.
+
+### Three summaries of the same one-year model
+
+With S₀ = 100, μ = 10 %, σ = 20 % and T = 1:
+
+<table tabIndex={0} aria-label="Analytical one-year GBM summaries and finite-return units" className="my-6 block w-full max-w-full overflow-x-auto text-left text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600">
+  <thead><tr><th scope="col" className="p-2">Summary</th><th scope="col" className="p-2">Arithmetic or definition</th><th scope="col" className="p-2">Result</th></tr></thead>
+  <tbody>
+    <tr><th scope="row" className="p-2 font-medium">Mean price</th><td className="p-2">100 exp(.10)</td><td className="p-2">110.517092 USD</td></tr>
+    <tr><th scope="row" className="p-2 font-medium">Median price</th><td className="p-2">100 exp(.08)</td><td className="p-2">108.328707 USD</td></tr>
+    <tr><th scope="row" className="p-2 font-medium">Mode price</th><td className="p-2">100 exp(.04)</td><td className="p-2">104.081077 USD</td></tr>
+    <tr><th scope="row" className="p-2 font-medium">Price standard deviation</th><td className="p-2">sqrt(100² exp(.20)(exp(.04) − 1))</td><td className="p-2">22.326306 USD</td></tr>
+    <tr><th scope="row" className="p-2 font-medium">Expected simple return</th><td className="p-2">exp(.10) − 1</td><td className="p-2">10.517092 %</td></tr>
+    <tr><th scope="row" className="p-2 font-medium">Median simple return</th><td className="p-2">exp(.08) − 1</td><td className="p-2">8.328707 %</td></tr>
+  </tbody>
+</table>
+
+
+The expected-minus-median one-year simple-return gap here is about **2.188385 percentage points**, distinct from the **2-point** instantaneous level/log drift gap.
+
+The normal exponential moment explains the correction exactly:
+
+$$
+E[e^{mT+\sigma\sqrt T Z}]
+=e^{mT}e^{\sigma^2T/2}=e^{\mu T}.
+$$
+
+The gap between the **instantaneous level drift μ** and **expected log-growth rate m** is exactly σ²/2 in this GBM model. That does not make half the variance an exact arithmetic-versus-geometric gap for every finite sequence of simple returns. A + 50 %/−50 % pair, for example, requires its own product; the [return-measurement lesson](/kelly-and-cagr/arithmetic-vs-geometric-mean) distinguishes those definitions.
+
+<GbmEngineLab
+  client:visible
+  view={"moments"}
+  title={"Compare marginal summaries under one model law"}
+  caption={"Initial state: price 100, level drift 10 %, sigma 20 % and one year give mean 110.517092, median 108.328707 and mode 104.081077. Moving sigma at fixed mu leaves the analytical mean fixed while other summaries change."}
+/>
+
+
+### When to use it
+
+At fixed μ in this model, increasing σ leaves the analytical mean unchanged and lowers the median; the variance increases. At σ = 0, all three price summaries become S₀e^(μT). At T = 0 they equal S₀. Positive-σ GBM never reaches zero in finite time, although it can come arbitrarily close; there is no atom of default loss at zero. A default model needs different structure.
+
+A curve joining the median at successive dates is a **pointwise median curve**, not a selected “most likely path”. It helps summarize marginal laws without pretending one smooth line is the future.
 
 <MatchConcepts
   client:visible
-  question="Match each symbol in the GBM step to what it means."
+  question={"Choose a summary by its mathematical task."}
   pairs={[
-    { term: 'mu', definition: 'Drift — expected log-growth rate per year' },
-    { term: 'sigma', definition: 'Volatility — annual standard deviation of returns' },
-    { term: 'delta t', definition: 'Length of one time step, e.g. 1/252 for daily' },
-    { term: 'Z', definition: 'A fresh standard normal draw at every single step' },
-    { term: 'the exp wrapper', definition: 'Makes the move multiplicative, keeping prices positive' },
-  ]}
-  explanation="Drift (mu) is the deterministic lean, volatility (sigma) scales the random jostle, delta t sets the step size, Z is the per-step random draw, and the exponential makes each step a growth factor — the heart of GBM."
+  {
+    "term": "Mean",
+    "definition": "Probability-weighted price expectation, useful for an expected payoff"
+  },
+  {
+    "term": "Median",
+    "definition": "Price threshold with half the continuous model probability below it"
+  },
+  {
+    "term": "Mode",
+    "definition": "Price at the maximum of the continuous marginal density"
+  }
+]}
 />
 
-## The mysterious &minus;½σ² term
 
-You probably eyed that $-\tfrac{1}{2}\sigma^2$ sitting next to the drift and wondered where it crawled in from. It's called the **Itô correction**, but forget the calculus — the intuition is the genuinely useful part, and you already met it as **variance drag**.
-
-**Analogy.** A stock drops 50% one day and gains 50% the next. Are you back where you started? No — you're at $100 \to 50 \to 75$. You're down 25%, despite the *average* daily return being a cheerful $(-50\% + 50\%)/2 = 0\%$. Volatility quietly ate your money. The **arithmetic mean** return (the simple average) overstates what you actually *compound*; the **geometric mean** (what your wealth really grows at) is always lower, and the gap between them widens with volatility.
-
-That gap is exactly $\tfrac{1}{2}\sigma^2$. The drift you *feel* in your compounded wealth isn't the raw $\mu$ — it's $\mu - \tfrac{1}{2}\sigma^2$. The correction term docks your growth rate by half the variance to account for the drag that bouncing around inflicts on compounding. Leave it out and your simulated paths drift systematically *too high*: you'd be claiming the price grows at its arithmetic average, which volatility makes impossible to actually achieve.
-
-**The consequence.** Two stocks with the *same* expected return $\mu$ but different volatility do **not** grow your money at the same rate. The more volatile one suffers more drag and compounds slower. This is why, in a moment, you'll see the *median* GBM path drift below the *mean*: the average is dragged up by a few lucky exponential winners, but the typical path lags, taxed by its own variance.
+## 3. Compare the exact transition with Euler on the same shocks
 
 <MCQ
   client:visible
-  question="Why does the GBM step subtract ½σ² from the drift?"
+  question={"A one-year Euler update from 100 uses mu = .1, sigma = .2 and Z = −6. It gives −10. What does that establish?"}
   options={[
-    { text: 'To correct for variance drag — volatility makes compounded (geometric) growth fall below the arithmetic-average return', correct: true },
-    { text: 'To make the price more likely to go negative' },
-    { text: 'To cancel out the time step delta t entirely' },
-    { text: 'Because volatility increases the geometric growth rate' },
-  ]}
-  explanation="A +50% then −50% swing leaves you down 25% even though the average move is 0%. That gap is ½σ². The correction docks the drift so simulated paths compound at the realistic geometric rate, not the inflated arithmetic one. Drop it and paths drift too high."
+  {
+    "text": "Euler has left the positive GBM state space for this chosen shock",
+    "correct": true
+  },
+  {
+    "text": "The exact GBM law assigns this stock a negative price of −10",
+    "correct": false
+  },
+  {
+    "text": "The exact price must be clipped to zero before the next step",
+    "correct": false
+  }
+]}
+  explanation={"Euler uses factor 1 + .1 − 1.2 = −.1. The exact exponential update remains positive. Clipping creates another approximation."}
+  pretest
 />
 
-## One step, worked end to end
 
-Let's actually turn the crank once. Take a stock with:
+An **Euler–Maruyama step** approximates the SDE directly:
 
-- $S_0 = 100$ (starting price)
-- $\mu = 10\%$ per year $= 0.10$ (drift)
-- $\sigma = 20\%$ per year $= 0.20$ (volatility)
-- $\Delta t = 1/252 \approx 0.003968$ (one trading day)
+$$
+\widetilde S_{t+\Delta t}
+=\widetilde S_t(1+\mu\Delta t+\sigma\Delta W).
+$$
 
-**Step 1 — the drift per step.** The deterministic part of the exponent is $\left(\mu - \tfrac{1}{2}\sigma^2\right)\Delta t$. First the variance-drag-adjusted drift: $\mu - \tfrac{1}{2}\sigma^2 = 0.10 - \tfrac{1}{2}(0.20)^2 = 0.10 - 0.02 = 0.08$ per year. Per day: $0.08 \times \tfrac{1}{252} \approx 0.000317$. Tiny — a daily lean of about +0.0317%.
+It differs from the exact exponential transition. [Oxford’s SDE simulation notes separate Euler approximation, pathwise error and expected-payoff error](https://people.maths.ox.ac.uk/gilesm/infomm/lec3-2x2.pdf). Comparing methods should use the **same Brownian increments**; otherwise a different draw can masquerade as a scheme error.
 
-**Step 2 — the diffusion magnitude per step.** The random part scales by $\sigma\sqrt{\Delta t} = 0.20 \times \sqrt{1/252} = 0.20 \times 0.06300 \approx 0.01260$. So a one-standard-deviation day is about a 1.26% jostle — *forty times larger* than the drift. On any single day, randomness utterly dominates the gentle drift. (That's why one day tells you nothing and a year tells you a lot: drift accumulates, noise partly cancels.)
+### One full-year step can lose positivity
 
-**Step 3 — draw a Z and take the step.** Suppose today's normal draw lands at $Z = +1.0$ (a one-sigma up day). The exponent is:
+For S₀ = 100, μ = 0.10, σ = 0.20, T = 1 and Z = 1:
 
-$$0.000317 + 0.01260 \times 1.0 = 0.01292$$
+- Exact price = 100 exp(0.08 + 0.20) = **132.312981**.
+- Euler value = 100(1 + 0.10 + 0.20) = **130**.
 
-Exponentiate to get the growth factor: $\exp(0.01292) \approx 1.01300$. Multiply onto the price:
+For the specified shock Z = −6, exact price is 100 exp(0.08 − 1.20) = **32.627979**. Euler gives 100(1 + 0.10 − 1.20) = **−10**. That negative value is a numerical approximation’s failure to preserve this model’s state space, not a negative stock price under GBM. Silently clipping it to zero changes the scheme and its distribution again.
 
-$$S_{t+\Delta t} = 100 \times 1.01300 = 101.30$$
+<GbmEngineLab
+  client:visible
+  view={"coupled"}
+  z={-6}
+  bridge={0}
+  title={"Inspect positivity before accepting an Euler result"}
+  caption={"Initial state: price 100, mu 10 %, sigma 20 %, one year, total Z = −6 and half-shock offset b = 0. The exact terminal price is 32.627979; one Euler step gives −10 and two Euler half-steps give 20.25. The negative numerical value is retained and explained rather than clipped."}
+/>
 
-A one-sigma-up day nudged $100 to about $101.30. Had $Z$ come in at $-1.0$ instead, the factor would be $\exp(0.000317 - 0.01260) \approx \exp(-0.01228) \approx 0.98780$, landing the price at about $98.78.
 
-**Step 4 — roll it 252 times.** Now chain it: feed $101.30$ back in as the new $S_t$, draw a *fresh* $Z$, take another step. Do this 252 times, each with its own independent normal draw, and you've simulated one full year — one complete **price path**, one possible future for the stock. The drift quietly accumulates across the year; the noise wanders up and down but its ups and downs partly cancel, so over 252 steps the drift finally becomes visible under the jitter.
+### Couple two half-steps to one full step
+
+Use half-step standardized shocks + 1 and −1. Each Brownian increment is ±√0.5, so their sum is zero. The exact terminal price is 100 exp(0.08 × 1 + 0.20 × 0) = **108.328707**. Two Euler factors are 1.05 ± 0.20√0.5:
+
+$$
+\begin{aligned}
+\widetilde S_1
+&=100[(1.05+0.20\sqrt{0.5})
+(1.05-0.20\sqrt{0.5})]\\
+&=100(1.1025-0.02)=108.25.
+\end{aligned}
+$$
+
+The corresponding one-step Euler value with the same total Brownian increment is **110**. Here splitting improves the terminal approximation, but an individual path’s error need not shrink monotonically under every refinement. Convergence statements concern a specified error criterion and assumptions.
+
+<GbmEngineLab
+  client:visible
+  view={"coupled"}
+  z={0}
+  bridge={1}
+  title={"Couple fine and coarse steps to one Brownian realization"}
+  caption={"Initial state: total Z = 0 and chosen half-shock offset b = 1 give half-period standard shocks + 1/−1. Exact terminal price 108.328707 compares with two-step Euler 108.25 and one-step Euler 110. The manually chosen offset is not an additional independent normal sample."}
+/>
+
+
+### When to use it
+
+For constant-coefficient GBM, the exponential method samples the correct joint law **at the chosen grid dates** without Euler time-step bias. A terminal-only payoff can use one exact terminal draw. A continuously monitored barrier or time integral needs information between dates: exact sampled endpoints alone do not settle whether a crossing occurred in between. Monitoring approximations, bridge techniques and contract observation dates need their own treatment.
 
 <MCQ
   client:visible
-  question="In the worked example (sigma = 20%/yr, daily steps), the one-day diffusion magnitude (~1.26%) is about 40× the one-day drift (~0.03%). What does that tell you?"
+  question={"Half-step standard shocks + 1 and −1, each over .5 year, have total Brownian increment zero. For mu = .1 and sigma = .2, what do two Euler steps from 100 produce?"}
   options={[
-    { text: 'On any single day, randomness dominates; drift only becomes visible after it accumulates over many steps', correct: true },
-    { text: 'The drift term is a mistake and should be deleted' },
-    { text: 'A single day’s path is enough to estimate the annual return precisely' },
-    { text: 'Volatility has no effect on where the price ends up' },
-  ]}
-  explanation="Per step, the random jostle swamps the tiny drift, so one day is almost pure noise. But drift adds up step after step while noise partly cancels, so over a full year the gentle lean finally emerges from under the jitter — which is exactly why you simulate whole paths, not single steps."
+  {
+    "text": "108.25, versus exact terminal 100 exp(.08)≈108.328707",
+    "correct": true
+  },
+  {
+    "text": "110, because two Euler factors are always one full Euler factor",
+    "correct": false
+  },
+  {
+    "text": "100, because cancelling Brownian increments also cancel deterministic drift",
+    "correct": false
+  }
+]}
+  explanation={"The two factors are 1.05±.2 sqrt(.5). Their product is 1.1025−.02 = 1.0825. Exact exponentiation gives exp(.08) for the same total Brownian increment."}
 />
 
-## Why one path is useless and a thousand is gold
 
-Here is the trap. You run GBM once, get a path that ends at $134, and conclude "the stock will be worth $134." **Wrong.** That single path is *one* draw from an infinite cloud of possible futures — a single roll of a 252-sided dice rolled 252 times over. Run it again with fresh random draws and you'll land somewhere completely different. One path tells you almost nothing.
+## 4. Keep the finite fan separate from analytical expectations
 
-The power comes from simulating **thousands of paths**. Each is a different possible future; together they trace out the entire **distribution of outcomes**. Now you can ask real questions: *what's the median ending price? The 5th percentile (a bad year)? The chance of ending below $80?* None of those is answerable from one path; all of them fall out of ten thousand.
-
-And the shape of that fan is the lognormal you were promised. It's **right-skewed**: a handful of paths catch a long winning streak and rocket far above the crowd (no ceiling on the upside), while the worst paths are floored at zero. Those few exponential winners drag the **mean** ending price *above* the **median** — the typical path lands lower than the average, because the average is inflated by a small number of moonshots. The mean is not the most likely outcome; in a right-skewed world, most paths land *below* average.
-
-The island below is that fan. Each thread is one GBM path starting from the same price; the cloud they form is the outcome distribution. Drag the drift to tilt the whole cloud up or down, and crank the volatility to watch the fan widen — and the right-skew exaggerate — as variance drag pushes the typical path further below the lucky outliers.
-
-<GbmPaths
+<MCQ
   client:visible
-  title="A fan of GBM price paths"
-  driftLabel="Drift (annual)"
-  volLabel="Volatility (annual)"
-  resimulateLabel="Resimulate"
-  startLabel="Start"
-  caption="Every thread is one possible future, all launched from the same starting price. The whole fan is the distribution of outcomes. Raise the volatility and the fan flares wider while a few lucky paths run far above the crowd — the right-skewed lognormal shape. Nudge the drift and the entire cloud tilts. Hit resimulate to draw a fresh batch of random futures."
+  question={"At fixed GBM parameters, you redraw the visual’s eight paths. Which quantity can change?"}
+  options={[
+  {
+    "text": "Their sample terminal mean while the analytical mean stays fixed",
+    "correct": true
+  },
+  {
+    "text": "The population mean because drawing paths changes the model drift",
+    "correct": false
+  },
+  {
+    "text": "The observation horizon used to estimate drift from market data",
+    "correct": false
+  }
+]}
+  explanation={"Resampling changes a finite numerical sample. It does not change fixed model parameters or add market observations."}
+  pretest
 />
+
+
+A path is one realization of a model. A fan is a finite sample of them. An analytical distribution assigns probabilities to all possible outcomes. Drawing eight lines does not turn the first object into the third.
+
+The visual below uses eight independent-normal pseudo-random paths on eight intervals, with a reproducible seed. It overlays the **analytical mean** and **pointwise median**, and reports the eight-path sample mean and median separately. Resampling changes the sample, while fixed μ, σ and T leave the analytical summaries unchanged.
+
+### A terminal realization is not the conditional mean
+
+Our one-year μ = 10 %, σ = 20 % model has price 132.312981 for standardized terminal shock + 1 and 88.692044 for shock −1. Those are two stipulated scenarios. Averaging just those two prices gives **110.502513**, already different from the analytical mean **110.517092**; two symmetric normal locations are not an exact integration of the exponential payoff.
+
+<GbmEngineLab
+  client:visible
+  view={"fan"}
+  title={"Compare a small sampled fan with analytical curves"}
+  caption={"Initial state: eight reproducible paths over eight intervals, price 100, mu 10 %, sigma 20 %, one year and seed 0. Analytical mean and pointwise median remain separate from sample summaries. Drawing another sample changes the displayed paths, not the fixed model law."}
+/>
+
+
+### When to use it
+
+Use simulations to estimate a target quantity under the chosen law, and attach an error estimate appropriate to that estimator. More independent paths can reduce sampling error; the [convergence lesson](/monte-carlo-finance/convergence-and-variance-reduction) examines the required moment and estimator conditions. GBM’s finite moments make many such calculations tractable, but a small realized sample need not have its sample mean above its sample median just because the population does.
+
+A finely sampled path can help with a grid-dependent payoff, but more dates on the same path do not become more independent paths. More simulated paths also do not verify the drift estimate, add missing jumps or turn model probabilities into observed market frequencies.
+
+<MCQ
+  client:visible
+  question={"Select both statements that preserve the finite-sample distinction."}
+  options={[
+  {
+    "text": "An eight-path sample mean or median can move when the seed changes",
+    "correct": true
+  },
+  {
+    "text": "More dates on one path do not become more independent model paths",
+    "correct": true
+  },
+  {
+    "text": "The sample mean must exceed its sample median in every eight-path sample",
+    "correct": false
+  },
+  {
+    "text": "A large fan estimates the true market law without parameter assumptions",
+    "correct": false
+  }
+]}
+  explanation={"Population shape does not impose every sample ordering. Grid resolution, independent path count and model validity answer separate questions."}
+  allowMultiple
+/>
+
+
+## 5. Choose the probability law and handle dividends explicitly
+
+<MCQ
+  client:visible
+  question={"A Q model has continuous r = 3 % and cash-dividend yield q = 2 %. Which drift belongs to ex-dividend price?"}
+  options={[
+  {
+    "text": "1 % level drift and −1 % log drift when sigma = 20 %",
+    "correct": true
+  },
+  {
+    "text": "3 % level drift and 1 % log drift despite the cash dividend",
+    "correct": false
+  },
+  {
+    "text": "8 % level drift because an invented physical forecast uses 8 %",
+    "correct": false
+  }
+]}
+  explanation={"Q ex-dividend drift is r−q = .01; log drift subtracts .20²/2 = .02, giving −.01. The q = 0 case alone has level drift r."}
+  pretest
+/>
+
+
+Use **P** for a stipulated physical law describing real-world uncertainty and **Q** for a pricing law in the specified no-arbitrage model. They can assign different probabilities and drifts to the same future paths. Q is not a claim that investors are personally indifferent to risk.
+
+Now let S be **ex-dividend price**: dividends are separate cash payments, not part of this quoted price change. Assume constant continuous financing rate r and proportional cash-dividend yield q, with payment qS_t dt per share. Under the stated frictionless stock/cash replication assumptions:
+
+$$
+\begin{aligned}
+\frac{dS_t}{S_t}&=\mu_Pdt+\sigma dW_t^P,\\
+\frac{dS_t}{S_t}&=(r-q)dt+\sigma dW_t^Q.
+\end{aligned}
+$$
+
+Thus the Q log drift is r − q − σ²/2. Using r alone for ex-dividend price is the **q = 0 case**. The [SOA educational note specifies continuous proportional dividend cash and reinvested share growth](https://www.soa.org/globalassets/assets/files/edu/MFE-27-07.pdf); [CFA’s contingent-claim discussion places pricing inside its replication assumptions](https://www.cfainstitute.org/insights/professional-learning/refresher-readings/2026/valuation-contingent-claims).
+
+### Reconcile the terminal price with dividend value
+
+Take S₀ = 100, μ_P = 8 %, σ = 20 %, r = 3 %, q = 2 % and T = 1. Expected terminal ex-dividend price under P is 100 e^0.08 = **108.328707**. Under Q it is 100 e^0.01 = **101.005017**. Discounting the latter at r gives
+
+$$
+e^{-rT}E_Q[S_T]=100e^{-qT}=98.019867.
+$$
+
+That is below 100 because the terminal share alone excludes the earlier dividend cash. The Q expected present value of the continuous cash dividends is 100(1 − e^−0.02) = **1.980133**. Together **98.019867 + 1.980133 = 100**.
+
+Alternatively reinvest every dividend into shares: the share count becomes e^(qT), and under Q the expected discounted terminal **total-return wealth** is 100. Under our different P drift it is 100 e^((0.08 + 0.02 − 0.03) × 1) = **107.250818**, not an arbitrage-free pricing identity.
+
+<GbmEngineLab
+  client:visible
+  view={"measure"}
+  muPct={8}
+  title={"Reconcile ex-dividend price and dividend value under Q"}
+  caption={"Initial state: physical price drift 8 %, sigma 20 %, continuous r 3 %, cash-dividend yield q 2 % and one year. Q price drift is 1 %; terminal ex-dividend PV 98.019867 plus dividend PV 1.980133 gives 100. Zero sigma with incompatible deterministic drifts shows an explicit model warning."}
+/>
+
+
+### When to use it
+
+State whether the task is a physical scenario, a Q pricing expectation or a total-return account. Specify funding, dividends, discounting and market assumptions before replacing a drift. If σ = 0, changing probabilities cannot change a deterministic path: incompatible physical total-return and financing rates do not become an arbitrage-free common model by relabeling P as Q. The visual explains that boundary instead of silently treating two incompatible deterministic laws as an equivalent measure change.
 
 <FillBlank
   client:visible
-  question="Fill in why we simulate many paths."
-  text="A single path is just {{one possible future|the guaranteed outcome|the average}}, so it tells you almost nothing. Thousands of paths reveal the {{distribution of outcomes|exact final price|risk-free rate}}, which is {{right-skewed|symmetric|uniform}} — so a few big winners pull the {{mean above the median|median above the mean|price below zero}}."
-  explanation="One path is a single draw; the fan of thousands is the outcome distribution. Because GBM produces lognormal (right-skewed) prices, rare exponential winners lift the mean above the median, so the typical path lands below average."
+  question={"Reconcile the Q ex-dividend share and earlier cash dividends."}
+  text={"With S 0 = 100, r 3 %, q 2 %, T 1, Q discounted expected terminal ex-dividend price is {{98.019867|100|101.005017}} USD. Add Q present value of continuous dividends {{1.980133|2.000000|0}} to recover {{100|103|108.328707}}."}
+  explanation={"The terminal share alone has PV 100 exp(−.02). The expected discounted dividend cash supplies 100(1−exp(−.02)). Their sum is 100 under the stated Q model."}
 />
 
-## Pitfalls: GBM is a baseline, not the truth
 
-GBM is gorgeous and it is *wrong* — usefully wrong, the way a frictionless plane is useful in physics, but wrong in ways that matter when money is on the line. Two assumptions are doing heavy lifting:
+## 6. Estimate parameters without promising that a year reveals the drift
 
-**Constant volatility.** GBM uses a single fixed $\sigma$ forever. Real markets have **volatility clustering** — calm stretches and stormy stretches arrive in clumps (big moves beget big moves). A model with one constant $\sigma$ can't capture that rhythm; it sprinkles its volatility evenly, like a weather forecast that predicts the same drizzle every day of the year.
-
-**Independent normal increments.** GBM assumes each day's $Z$ is an independent, *normal* draw. Reality has **fat tails** (crashes happen far more often than a normal allows — the 1987 single-day move was a "25-sigma" event a normal model says should never occur in the universe's lifetime) and **jumps** (prices gap on news without trading through the intervening levels). GBM's smooth, continuous, thin-tailed paths simply can't gap or crash the way real prices do.
-
-So treat GBM as the **honest baseline**: the simplest model that gets positivity, percentage moves, and lognormal shape right — and the foundation everything fancier is built *on top of*. When its assumptions chafe, quants reach for richer engines: **jump-diffusion** (bolt sudden gaps onto GBM), **stochastic volatility** (let $\sigma$ itself wander randomly, e.g. the Heston model), and others you'll meet later. GBM isn't the destination; it's the launchpad.
-
-<Categorize
+<MCQ
   client:visible
-  question="Sort each statement: a faithful feature of GBM, or a real-market behaviour GBM misses?"
-  buckets={['GBM gets this right', 'GBM misses this']}
-  items={[
-    { text: 'Prices stay positive no matter how many bad days', bucket: 'GBM gets this right' },
-    { text: 'Returns are measured in percentages, not fixed dollars', bucket: 'GBM gets this right' },
-    { text: 'Long-horizon prices come out lognormal (right-skewed)', bucket: 'GBM gets this right' },
-    { text: 'Calm and stormy periods cluster together over time', bucket: 'GBM misses this' },
-    { text: 'Crashes happen far more often than a normal would allow (fat tails)', bucket: 'GBM misses this' },
-    { text: 'Prices can gap suddenly on news without trading through', bucket: 'GBM misses this' },
-  ]}
-  explanation="GBM nails positivity, percentage moves, and the lognormal shape. It assumes constant volatility and independent normal increments, so it misses volatility clustering, fat tails, and jumps — gaps that richer models (jump-diffusion, stochastic vol) are built to add."
+  question={"Under ideal constant Gaussian log increments with known sigma, does daily rather than monthly sampling within the same one-year horizon reduce the drift estimator’s sigma/sqrt(T) standard error?"}
+  options={[
+  {
+    "text": "No; the fixed observation horizon still supplies one year of drift information",
+    "correct": true
+  },
+  {
+    "text": "Yes; dividing the year into twelve times more dates creates twelve years",
+    "correct": false
+  },
+  {
+    "text": "Yes; drift uncertainty vanishes whenever the path is observed daily",
+    "correct": false
+  }
+]}
+  explanation={"The ideal log-drift estimate is the endpoint log change divided by the total observed time. Its standard error depends on that horizon, not just the count of subdivisions."}
+  pretest
 />
 
-<Reveal client:visible>
-  <details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
-    <summary className="cursor-pointer font-medium">If GBM is wrong about fat tails and jumps, why is it still everywhere?</summary>
 
-    Because it is the best *simple* thing that gets the essentials right, and simplicity buys you three precious things: it has closed-form answers (the Black–Scholes formula falls straight out of GBM, no simulation needed), it needs only two parameters you can actually estimate (drift and volatility), and it's the shared baseline everyone understands. Richer models — jump-diffusion, stochastic volatility — are quite literally *GBM plus corrections*: you start from the GBM skeleton and bolt on jumps or a wandering sigma. You can't appreciate, calibrate, or debug those extensions without fluency in the baseline they extend. GBM is wrong in known, bounded ways, and knowing exactly *how* it's wrong is what lets you reach for the right fix. The right model is the simplest one that doesn't lie about your particular problem — and for a startling amount of finance, GBM is honest enough.
-  </details>
-</Reveal>
+Model coefficients are inputs; fitted coefficients are uncertain estimates. For n equally spaced observed log returns ℓ_i at interval Δ, the Gaussian constant-parameter **maximum-likelihood estimates**, MLEs, are
 
-## Putting it together
+$$
+\begin{aligned}
+\widehat m&=\frac{\bar\ell}{\Delta},\\
+\widehat\sigma^2&=\frac{1}{n\Delta}
+\sum_{i=1}^{n}(\ell_i-\bar\ell)^2,\\
+\widehat\mu&=\widehat m+\tfrac12\widehat\sigma^2.
+\end{aligned}
+$$
 
-Geometric Brownian Motion is the engine under simulated prices. It walks not the dollar price but the **log return**, so moves are multiplicative percentages — which keeps prices positive and makes the price distribution **lognormal**. Each discrete step, $S_{t+\Delta t} = S_t \exp\!\left(\left(\mu - \tfrac{1}{2}\sigma^2\right)\Delta t + \sigma\sqrt{\Delta t}\,Z\right)$, is a tug-of-war between a deterministic **drift** and a random **diffusion** driven by a fresh standard normal $Z$. The $-\tfrac{1}{2}\sigma^2$ term is **variance drag** made honest: it docks growth so paths compound at the realistic geometric rate. Chain 252 of these and you get one path — a single possible future. Roll *thousands* and you get the whole right-skewed fan, the outcome distribution where a few exponential winners lift the mean above the median. And remember GBM is a **baseline**, not gospel: constant vol and normal increments miss the clustering, fat tails, and jumps that fancier models add.
+The bar denotes the sample mean. The variance MLE uses divisor **n**, rather than the n − 1 used for the usual unbiased variance estimate under these IID assumptions. [MIT’s GBM lecture discusses this level/log parameter distinction and estimation frequency](https://ocw.mit.edu/courses/18-642-topics-in-mathematics-with-applications-in-finance-fall-2024/1M4kbTRRqekKhDctRz40f6vyYXc-X6GX1_transcript.pdf).
+
+### Fit four invented quarterly log returns
+
+Use −0.04, 0.02, 0.08 and 0.10, at Δ = 0.25 years. Their mean is 0.16/4 = **0.04**. Deviations from that mean are −0.08, −0.02, 0.04 and 0.06; squared deviations sum to 0.0064 + 0.0004 + 0.0016 + 0.0036 = **0.012**.
+
+Therefore m̂ = 0.04/0.25 = **0.16 per year**, σ̂² = 0.012/(4 × 0.25) = **0.012 per year**, σ̂ = **0.109544512 per square-root year** and μ̂ = 0.16 + 0.012/2 = **0.166 per year**.
+
+A simulator expecting level drift μ should receive 0.166 for these fitted inputs. Feeding it the already-corrected log drift 0.16 and subtracting half the variance again would produce log drift 0.154: a second correction that the data did not request.
+
+### Distinguish sampling frequency from observation horizon
+
+With known σ in the ideal model, the log-drift estimator over observation horizon T_obs satisfies
+
+$$
+\widehat m=\frac{\log(S_{T_{\mathrm{obs}}}/S_0)}{T_{\mathrm{obs}}},
+\qquad \operatorname{SE}(\widehat m)=\frac{\sigma}{\sqrt{T_{\mathrm{obs}}}}.
+$$
+
+This follows from log-return variance σ²T_obs; [Duke’s Brownian-with-drift notes derive the endpoint estimator and its σ²/T variance](https://www2.stat.duke.edu/courses/Spring12/sta357/lec/brmot.pdf). With known σ = 20 %, one observed year gives a drift standard error of **20 percentage points per year**. Twenty-five observed years give **4 points**, if the same constant-parameter law remains appropriate throughout. Daily rather than monthly observation within the same year does not shrink this ideal drift error; more independent simulated paths do not create more years of market evidence.
+
+<GbmEngineLab
+  client:visible
+  view={"calibration"}
+  title={"Keep fixed fitted data separate from an observation-horizon scenario"}
+  caption={"The four fixed quarterly log returns give annual log drift.16, variance.012, sigma.109544512 and price drift.166. Initial separate known-sigma 20 %/one-year scenario gives drift SE 20 percentage points per year. Changing its horizon does not add observations to the four-return data set."}
+/>
+
+
+### When to use it
+
+Fit a clearly specified series: split-adjusted price changes, ex-dividend prices and reinvested total returns are not interchangeable inputs. Check spacing, units, parameter stability and estimation error. The known-σ calculation above is a conditional information benchmark, not a confidence interval for an actual market forecast; estimated volatility and structural uncertainty add further questions.
+
+Constant-σ GBM has continuous paths and independent Gaussian log increments. It does not generate jumps, changing volatility regimes or default-to-zero states by itself. A larger simulation only explores those same assumptions more precisely. Use sensitivity scenarios, diagnostic evidence and a model that represents the exposure when those omissions matter; no fixed number of observations guarantees the drift has become clear.
+
+<MCQ
+  client:visible
+  question={"Four quarterly log returns have mean.04 and centered-square sum.012. Using MLE divisor n = 4 and interval.25 years, which annual parameter pair is consistent?"}
+  options={[
+  {
+    "text": "Log drift.16 and level drift.166, with variance.012",
+    "correct": true
+  },
+  {
+    "text": "Log drift.166 and level drift.16, with variance.012",
+    "correct": false
+  },
+  {
+    "text": "Both drifts.04 because the observation interval never matters",
+    "correct": false
+  }
+]}
+  explanation={"mHat = .04/.25 = .16. VarianceHat = .012/(4 × .25) = .012; muHat = .16 + .012/2 = .166. Feeding mHat into a level-drift slot would subtract the correction twice."}
+/>
+
+
+## Connect the law, code and decision
 
 <MindMap
   client:visible
-  title="Geometric Brownian Motion — the whole engine"
-  caption="Walk the log return, split each step into drift and diffusion, chain many draws into a path, and simulate thousands of paths to see the lognormal fan of futures."
+  title={"GBM law simulation and uncertainty"}
   root={{
-    label: 'Geometric Brownian Motion',
-    children: [
-      {
-        label: 'Why not an additive walk',
-        children: [
-          { label: 'Additive: price can go negative' },
-          { label: 'Additive: fixed dollar move misjudges price level' },
-          { label: 'GBM walks the log return (percentage) instead' },
-        ],
-      },
-      {
-        label: 'The discrete step',
-        children: [
-          { label: 'Drift term: (mu − ½σ²)·delta t, deterministic' },
-          { label: 'Diffusion term: sigma·√(delta t)·Z, random' },
-          { label: 'Fresh standard normal Z every step' },
-          { label: 'exp wrapper keeps prices positive and lognormal' },
-        ],
-      },
-      {
-        label: 'Variance drag (−½σ²)',
-        children: [
-          { label: 'Geometric growth < arithmetic average' },
-          { label: 'Volatility eats compounded returns' },
-          { label: 'Median path lands below the mean' },
-        ],
-      },
-      {
-        label: 'Why many paths',
-        children: [
-          { label: 'One path = one possible future, near useless' },
-          { label: 'Thousands reveal the outcome distribution' },
-          { label: 'Right-skewed: winners pull mean above median' },
-        ],
-      },
-      {
-        label: 'Limits — a baseline only',
-        children: [
-          { label: 'Constant vol misses volatility clustering' },
-          { label: 'Normal increments miss fat tails and jumps' },
-          { label: 'Fancier: jump-diffusion, stochastic vol' },
-        ],
-      },
-    ],
-  }}
+  "label": "GBM law simulation and uncertainty",
+  "children": [
+    {
+      "label": "Specify the law",
+      "children": [
+        {
+          "label": "Level drift mu and log drift m"
+        },
+        {
+          "label": "Time units and positive exponential factor"
+        }
+      ]
+    },
+    {
+      "label": "Choose the summary",
+      "children": [
+        {
+          "label": "Mean median and density mode"
+        },
+        {
+          "label": "Finite sample differs from marginal law"
+        }
+      ]
+    },
+    {
+      "label": "Check numerical scheme",
+      "children": [
+        {
+          "label": "Shared Brownian increments"
+        },
+        {
+          "label": "Euler and continuous monitoring errors differ"
+        }
+      ]
+    },
+    {
+      "label": "Choose P or Q",
+      "children": [
+        {
+          "label": "Physical ex-dividend scenarios"
+        },
+        {
+          "label": "Q uses r−q and accounts for dividends"
+        }
+      ]
+    },
+    {
+      "label": "Estimate with scope",
+      "children": [
+        {
+          "label": "MLE log parameters then recover mu"
+        },
+        {
+          "label": "Known-sigma drift SE depends on observed time"
+        }
+      ]
+    }
+  ]
+}}
 />
+
 
 <Quiz
   client:visible
-  title="Recap: Geometric Brownian Motion"
+  title={"Apply the law and numerical scope"}
   questions={[
-    {
-      question: 'What is the single change GBM makes to fix the broken additive random walk?',
-      options: [
-        { text: 'It walks the log return (multiplicative percentage moves) instead of adding dollar shocks to the price', correct: true },
-        { text: 'It uses a uniform distribution instead of a normal one' },
-        { text: 'It removes randomness so prices follow a straight line' },
-        { text: 'It lets prices become negative to model defaults' },
-      ],
-      explanation: 'GBM does the random walk on the log return, so each step multiplies the price by a growth factor. That makes moves percentages (meaningful at any price level), keeps prices positive, and yields a lognormal price distribution.',
-    },
-    {
-      question: 'In the GBM step, which part is deterministic and which is random?',
-      options: [
-        { text: 'The drift term (mu − ½σ²)·delta t is deterministic; the diffusion term sigma·√(delta t)·Z is random', correct: true },
-        { text: 'Both terms are random because Z appears in each' },
-        { text: 'The drift is random and the diffusion is fixed' },
-        { text: 'Neither term changes from step to step' },
-      ],
-      explanation: 'The drift term is the same every step — a steady lean. The diffusion term carries the fresh standard normal draw Z, so it is the random jostle. Each step is a tug-of-war between the two.',
-    },
-    {
-      question: 'Why does the exponent subtract ½σ² from the drift?',
-      options: [
-        { text: 'Variance drag: volatility makes geometric (compounded) growth fall below the arithmetic average, so the drift is docked to stay realistic', correct: true },
-        { text: 'To make the simulation run faster' },
-        { text: 'To guarantee every path ends above its starting price' },
-        { text: 'Because higher volatility raises compounded growth' },
-      ],
-      explanation: 'A +50%/−50% pair leaves you down 25% despite a 0% average — that gap is ½σ². The correction lowers the drift so paths compound at the achievable geometric rate; omit it and paths drift systematically too high.',
-    },
-    {
-      question: 'One GBM path ends at 134. What can you legitimately conclude about the stock’s future?',
-      options: [
-        { text: 'Almost nothing — it is one draw from a cloud of futures; you need thousands of paths to learn the distribution of outcomes', correct: true },
-        { text: 'The stock will definitely be worth 134' },
-        { text: 'The stock’s volatility must be zero' },
-        { text: 'The mean and median ending prices are both 134' },
-      ],
-      explanation: 'A single path is one random future and tells you next to nothing. Only the fan of thousands reveals the outcome distribution — median, percentiles, probabilities — and that distribution is right-skewed, so the mean sits above the median.',
-    },
-    {
-      question: 'Which real-market behaviour does plain GBM fail to capture?',
-      options: [
-        { text: 'Volatility clustering, fat tails, and sudden jumps — its constant σ and normal increments smooth all three away', correct: true },
-        { text: 'That prices stay positive' },
-        { text: 'That returns are measured in percentages' },
-        { text: 'That long-horizon prices are lognormal' },
-      ],
-      explanation: 'GBM correctly delivers positivity, percentage moves, and lognormal prices. But constant volatility misses clustering, and independent normal increments miss fat tails and jumps — gaps that jump-diffusion and stochastic-vol models are built to fill.',
-    },
-  ]}
+  {
+    "question": "Price 100, mu 10 %, sigma 20 %, T 1 and terminal standard shock 0: what exact price follows?",
+    "options": [
+      {
+        "text": "100 exp(.08)≈108.328707",
+        "correct": true
+      },
+      {
+        "text": "100 exp(.10)≈110.517092",
+        "correct": false
+      },
+      {
+        "text": "100(1 + .10) = 110",
+        "correct": false
+      }
+    ],
+    "explanation": "A zero selected shock gives the median exponent.08, not the expected-price exponent.10 or Euler factor 1.10."
+  },
+  {
+    "question": "Which two statements distinguish GBM moments from finite-return shortcuts?",
+    "options": [
+      {
+        "text": "mu−sigma²/2 is the exact expected log-growth rate for this SDE",
+        "correct": true
+      },
+      {
+        "text": "Expected one-year simple return is exp(mu) − 1 rather than mu itself",
+        "correct": true
+      },
+      {
+        "text": "Every finite arithmetic/geometric return gap equals half its variance exactly",
+        "correct": false
+      },
+      {
+        "text": "A positive-volatility GBM price has positive probability mass at zero",
+        "correct": false
+      }
+    ],
+    "explanation": "The exact lognormal model gives the first two identities. Generic finite simple-return sequences need their own products, and GBM stays strictly positive at finite time.",
+    "allowMultiple": true
+  },
+  {
+    "question": "A coupled Euler update gives −10 while the exact GBM update gives 32.627979. What should the comparison report?",
+    "options": [
+      {
+        "text": "The unclipped Euler failure of positivity under the specified shock",
+        "correct": true
+      },
+      {
+        "text": "A true negative stock price generated by the GBM distribution",
+        "correct": false
+      },
+      {
+        "text": "A replacement exact price of zero without changing the model",
+        "correct": false
+      }
+    ],
+    "explanation": "The numerical scheme failed to preserve the model state space. Clipping is a different approximation; do not silently relabel it as exact GBM."
+  },
+  {
+    "question": "At fixed parameters, eight simulated terminal values have sample mean below their sample median. Does that contradict a lognormal population mean above its median?",
+    "options": [
+      {
+        "text": "No; a finite sample need not reproduce the population ordering",
+        "correct": true
+      },
+      {
+        "text": "Yes; every sample must obey every population moment inequality",
+        "correct": false
+      },
+      {
+        "text": "Yes; the simulator must change mu until the ordering reverses",
+        "correct": false
+      }
+    ],
+    "explanation": "Sampling variation can change finite-sample ordering. Compare estimators and their uncertainty with analytical targets rather than forcing a predetermined pattern."
+  },
+  {
+    "question": "In the stated constant-rate model, r 3 % and cash-dividend yield q 2 % imply which Q ex-dividend price drift?",
+    "options": [
+      {
+        "text": "1 % instantaneous level drift; r alone applies when q = 0",
+        "correct": true
+      },
+      {
+        "text": "3 % instantaneous level drift even when dividends are separate",
+        "correct": false
+      },
+      {
+        "text": "8 % instantaneous drift whenever the physical estimate is 8 %",
+        "correct": false
+      }
+    ],
+    "explanation": "The Q price drift is r−q. Discount pricing payoffs at r and retain the dividend cash or the declared reinvestment account."
+  },
+  {
+    "question": "Select both sound interpretations of the four-return fit and the separate drift-error scenario.",
+    "options": [
+      {
+        "text": "MLE log drift.16 and annual variance.012 imply level drift.166",
+        "correct": true
+      },
+      {
+        "text": "Known sigma 20 % gives ideal log-drift SE 4 points/year after 25 observed years",
+        "correct": true
+      },
+      {
+        "text": "Daily observations within one year automatically supply 25 years of drift evidence",
+        "correct": false
+      },
+      {
+        "text": "More simulated paths make the market’s unknown drift coefficient known exactly",
+        "correct": false
+      }
+    ],
+    "explanation": "Recover level drift by adding half the estimated variance. The known-sigma SE is sigma/sqrt(observed years); it does not promise parameter stability or add evidence through simulation.",
+    "allowMultiple": true
+  }
+]}
 />
-
-Next up — **Simulating Portfolio Outcomes** — we point this engine at a real goal. Feed GBM your retirement contributions and a multi-decade horizon, and the fan of paths becomes a **cone of outcomes**: the spread of pots you might retire on, from the unlucky 5th percentile to the lucky 95th. Same engine, now answering the question that actually keeps people up at night — *will I have enough?*
