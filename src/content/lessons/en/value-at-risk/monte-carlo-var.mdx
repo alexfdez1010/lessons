@@ -1,308 +1,359 @@
 ---
 title: "Monte Carlo VaR"
-description: "Estimate Value at Risk by simulating thousands of synthetic tomorrows from a chosen model, fully revaluing the portfolio in each, and reading the percentile of the simulated losses."
+description: "Specify horizon probabilities, revalue the current portfolio, choose a signed-loss quantile convention and distinguish finite simulation noise from parameter and model uncertainty."
 topic: "en/value-at-risk"
 order: 4
-minutes: 9
-updated: 2026-06-05
+minutes: 32
+updated: 2026-11-06
 ---
 
-import { Callout, MCQ, Quiz, Reveal, FillBlank, Categorize, MatchConcepts, MindMap, VarDistributionChart } from '@/components/react';
+import { Callout, MCQ, Quiz, ThinkReveal, FillBlank, MindMap, HistoricalVarLadder, ProbabilityMeasureComparison, HorizonPutRepricing, MonteCarloQuantileLab, QuantilePrecision } from '@/components/react';
 
-Historical VaR has a fatal flaw: it can only ever show you tomorrows that already happened. Your one year of data is your one year of data — 252 days, take it or leave it, and the crash you're really afraid of probably isn't in there. Parametric VaR fixes the data shortage by *assuming* a tidy normal bell curve, but then it lies about anything non-linear (hello, options). Monte Carlo VaR is the method that says: fine — if reality won't give me enough tomorrows, I'll **manufacture** them.
+A million simulated days can make a percentile look impressively stable. They cannot reveal a loss mechanism the generator has ruled out. Monte Carlo VaR needs both a well-defined calculation and a defensible model of the portfolio's horizon risks.
 
-The trick is gloriously simple in spirit. Pick a statistical model for how your risk factors move. Use a random-number generator to roll *thousands* of synthetic tomorrows out of that model. Reprice your entire portfolio in each one. Now you have ten thousand fake P&Ls — sort them, walk into the loss tail, and read off the percentile. It's historical VaR, except the history is one **you** invented, and you can invent as much of it as your laptop can stand.
+The method samples joint market scenarios, revalues today's positions in each and estimates a loss quantile. We will inspect each link using invented numbers whose answers can be checked without trusting the picture. Monte Carlo is a numerical method, not a distributional assumption or an automatic upgrade to the truth.
 
-<MCQ
-  client:visible
-  pretest
-  question="What is the core idea of Monte Carlo VaR?"
-  options={[
-    { text: 'Simulate many synthetic scenarios from a chosen model, revalue the portfolio in each, and read the loss percentile', correct: true },
-    { text: 'Use only the worst day actually observed in the past year as the VaR' },
-    { text: 'Assume returns are perfectly normal and read VaR off a z-table — no simulation needed' },
-    { text: 'Average every analyst’s VaR guess and call the mean your number' },
-  ]}
-  explanation="Monte Carlo VaR generates a large set of random scenarios from a statistical model, fully reprices the portfolio under each, collects the resulting P&Ls, and takes the percentile of the simulated losses. It is 'historical VaR on synthetic data you generate yourself.'"
+## Decide which probabilities the scenarios represent
+
+<MCQ client:visible pretest
+  question={"An option-pricing model reproduces market prices using risk-neutral weights. What follows for a physical 99% loss forecast?"}
+  options={[{"text": "The pricing weights need not be physical frequencies; the scenario measure still needs justification", "correct": true}, {"text": "Every price-calibrated probability is automatically a physical forecast"}, {"text": "Physical probabilities cannot be used in an outer risk simulation"}, {"text": "Changing probability weights changes each state’s contractual payoff"}]}
+  explanation={"Probability weights and scenario payoffs are separate. An outer physical model can use a conditional pricing model inside each scenario."}
 />
 
-## Simulate a thousand tomorrows
+A **risk factor** is a market input affecting value: a stock price, exchange rate, yield curve or implied volatility surface. Choose a horizon and a joint model for those inputs. For a real-world loss-frequency question, the scenario probabilities should represent a **physical model**, often written $P$: assumptions about possible market outcomes and their frequencies. Estimating that model from data introduces uncertainty.
 
-**Analogy.** A pilot doesn't wait for ten real engine fires to learn how the plane handles one — she runs the flight simulator a thousand times, each with slightly different gremlins. Monte Carlo VaR is the flight simulator for your portfolio: you can't *afford* to live through ten thousand market days, so you generate them in software and watch how your book reacts.
+A **risk-neutral pricing measure**, $Q$, serves a different purpose. When that representation is valid under the chosen no-arbitrage model, Q supplies weights that reproduce traded values as discounted expected payoffs. The discounting uses a specified savings account as the reference asset. Those pricing weights need not equal physical frequencies. A scenario-based VaR engine may therefore have a physical outer simulation and a pricing model inside each scenario. [MathWorks' worked example](https://www.mathworks.com/help/fininst/simulating-electricity-prices-with-mean-reversion-and-jump-diffusion.html) explicitly separates real-world calibration from risk-neutral option valuation.
 
-**Definition.** **Monte Carlo VaR** estimates Value at Risk by (1) choosing a statistical model for the risk factors that drive your portfolio, (2) drawing many random scenarios from that model, (3) revaluing the full portfolio in each scenario to get a profit-or-loss, and (4) taking the appropriate percentile of that simulated loss distribution. The name comes from the casino — it's the dice-rolling, random-sampling family of methods, applied to risk.
+### Identical outcomes with different weights
 
-A **risk factor** is any market variable your portfolio's value depends on: a stock price, an FX rate, an interest rate, an implied volatility. The **model** is your assumption about how those factors move — most commonly that one-day returns are **normal** (or that prices are **lognormal**, i.e. their logs are normal, which keeps prices positive) with a chosen mean $\mu$, volatility $\sigma$, and — when you have more than one factor — a **correlation matrix** tying them together so they move realistically in lockstep rather than independently.
+Consider a complete two-state, one-period market: stock now 100 USD, endpoint either 80 or 120, no dividends and zero interest. Stipulate physical down probability 4% and up probability 96%. These unusually optimistic numbers are invented assumptions, not an estimate.
 
-That correlation piece is the soul of the method for a real book. If your portfolio holds tech and oil, and your simulator lets them wander independently, you'll badly misjudge the days they crater *together*. The correlation matrix is what makes your synthetic tomorrows hang together like real market days.
+The no-arbitrage pricing weights satisfy $100=q(120)+(1-q)(80)$, so $q=0.5$ for up and $0.5$ for down. A **put** gives its holder the right to sell a share for its strike K; at expiry its payoff is $\max(K-S_h,0)$. The writer owes that payoff. A strike-100 put therefore pays 20 or zero, giving price $0.5(20)+0.5(0)=10$ USD per share under $Q$. Its physical expected payoff is $0.04(20)=0.8$ USD. An expected payoff under $P$ is not automatically a no-arbitrage price.
 
-<MCQ
-  client:visible
-  question="Why does a multi-asset Monte Carlo VaR need a correlation matrix and not just each asset’s own σ?"
-  options={[
-    { text: 'Because diversification and joint crashes depend on how assets move together, not just how much each moves alone', correct: true },
-    { text: 'Because the random-number generator refuses to run without one' },
-    { text: 'Because correlation replaces the need to know each asset’s volatility' },
-    { text: 'Because it converts lognormal returns into normal ones' },
-  ]}
-  explanation="Portfolio risk depends on co-movement. The correlation matrix lets the simulator draw scenarios where assets fall together (or offset), capturing both diversification benefits and the joint tail losses that single-asset σ alone would miss."
+Ten shares start at 1000 USD. Their horizon losses are $1000-10(80)=200$ or $1000-10(120)=-200$ USD. Under $P$, 96% of the mass is at −200, so the inverse-CDF 95% loss quantile is **−200**. Under $Q$, only 50% is there, so the same quantile is **+200**. The state losses never changed; their weights did.
+
+<ProbabilityMeasureComparison client:visible  />
+
+A negative signed VaR is allowed by this quantile definition: the chosen percentile is a gain. The model still assigns 4% probability to losing 200 USD. If a report floors VaR at zero, disclose that reporting rule separately rather than changing the definition silently.
+
+### When to use it
+
+Before simulating, record the horizon, currency, portfolio, probability measure and joint-factor assumptions. Pricing-calibrated scenarios can answer a pricing-distribution question; do not label their tail frequencies physical forecasts without a justified conversion.
+
+<MCQ client:visible
+  question={"The two-state example has physical down probability 4%. Its signed 95% stock VaR is −200 USD. Which interpretation is valid?"}
+  options={[{"text": "The selected quantile is a gain, while the model still assigns 4% to losing 200 USD", "correct": true}, {"text": "A negative VaR proves every model outcome is a gain"}, {"text": "The 4% down-state loss must be removed to make the VaR definition consistent"}, {"text": "The model has automatically estimated the real probability of a crash"}]}
+  explanation={"A quantile is not a worst-case bound. The stated physical weights are invented assumptions; no zero floor was applied."}
 />
 
-## The recipe, step by step
+## Revalue today's positions at the horizon
 
-Here is the whole method as a five-step cookbook. Memorise the shape — every Monte Carlo VaR engine on earth is some elaboration of these five lines.
+<ThinkReveal client:visible prompt="The desk now has two short put contracts, but its old scenario file valued one. Can you reuse the old P&Ls unchanged?" text="No. Revalue the current book. In the specified expiry case at stock 80, two contracts have cash 1200 and liability 4000, so P&L is −2800 USD." />
 
-1. **Specify the model and its parameters.** Decide the distribution (e.g. lognormal prices), and pin down each factor's $\mu$ and $\sigma$ plus the **covariance/correlation matrix** linking them. This is the one creative, dangerous step — everything downstream inherits whatever you assume here.
-2. **Generate $M$ scenarios.** Draw $M$ random scenarios — say $M = 10{,}000$ — from that model. Each scenario is one synthetic "tomorrow": a complete set of new values for every risk factor, drawn jointly so the correlations hold.
-3. **Fully reprice the portfolio under each scenario.** For every one of the $M$ scenarios, recompute the portfolio's value with the new factor values, and subtract today's value to get that scenario's P&L. "Fully" is the operative word — you re-run each instrument's actual pricing formula, not a linear approximation.
-4. **Sort the $M$ P&Ls** from worst to best. You now hold an empirical distribution of simulated outcomes — a histogram of ten thousand fake tomorrows.
-5. **Read the percentile.** The VaR at confidence $c$ is the loss at the $(1-c)$ percentile of that sorted list. For $c = 99\%$ and $M = 10{,}000$, that's the **100th-worst** simulated loss (1% of 10,000) — every scenario below it is in the tail.
+Monte Carlo supplies scenarios. The valuation step supplies their portfolio losses. Freeze **current holdings** for a declared static-book calculation; do not replay the positions the desk happened to hold in old data. If a strategy rebalances, simulate its specified trading and financing rule instead.
 
-The chart below is exactly the object you build in steps 4–5: the histogram of simulated outcomes, with the VaR line sitting at the chosen percentile and the loss tail beyond it shaded. Drag the confidence slider and watch the line march deeper into the manufactured tail.
+Use a single accounting definition. With intermediate distributions accumulated to the horizon, one convenient nominal horizon P&L is
 
-<VarDistributionChart
-  client:visible
-  title="The histogram of simulated outcomes"
-  confidenceLabel="Confidence level"
-  varLabel="VaR"
-  esLabel="Tail average"
-  meanLabel="Average outcome"
-  lossLabel="Loss"
-  caption="Ten thousand synthetic tomorrows pile up into this distribution. VaR is the percentile line; everything to its left is the simulated loss tail. Crank the confidence and the line slides further into the tail you manufactured."
+$$
+\Pi_h=V_h+D_h-V_0,\qquad L_h=-\Pi_h.
+$$
+
+Here $V_h$ is the value of the positions still held and $D_h$ contains relevant cash flows not already in that value. Include coupons, dividends, option settlements, financing and transaction costs when they belong to the chosen book. Cash kept inside a valued cash account must not also be counted again in $D_h$. An excess-return or discounted P&L definition requires its own financing benchmark; declare it.
+
+For an option that survives the horizon, shorten its remaining maturity and use the scenario's valuation inputs. At expiry, use the actual contractual payoff. Path-dependent instruments need sufficient path information and contractual monitoring; endpoint prices alone may not determine value. Full repricing respects the chosen pricing model's nonlinearities, not necessarily executable market prices or the true future distribution. [The RBA's comparison](https://www.rba.gov.au/publications/rdp/1997/9708/value-at-risk.html) distinguishes scenario revaluation from local sensitivity approximations.
+
+### A short put and its premium cash
+
+This is a separate invented book, not the 10-USD put above. Sell one put contract at a stipulated current mark of 6 USD per share, strike 100 and multiplier 100; hold the 600-USD premium in cash at zero interest until expiry. Initial net wealth is cash 600 minus option liability 600 = zero. There are no new trades or other cash flows.
+
+$$
+\Pi_h=600-100\max(100-S_h,0),\qquad
+L_h=100\max(100-S_h,0)-600.
+$$
+
+<table tabIndex={0} aria-label="Short-put premium cash, expiry obligation and signed loss at three stock prices" className="block w-full max-w-full overflow-x-auto text-left text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600">
+  <thead><tr><th scope="col">Expiry stock price in USD</th><th scope="col">Cash in USD</th><th scope="col">Put payment owed in USD</th><th scope="col">P&L in USD</th><th scope="col">Signed loss in USD</th></tr></thead>
+  <tbody>
+    <tr><th scope="row">80</th><td>600</td><td>2000</td><td>−1400</td><td>+1400</td></tr>
+    <tr><th scope="row">90</th><td>600</td><td>1000</td><td>−400</td><td>+400</td></tr>
+    <tr><th scope="row">110</th><td>600</td><td>0</td><td>+600</td><td>−600</td></tr>
+  </tbody>
+</table>
+
+Two current contracts double both cash and liability: at stock 80, $1200-4000=-2800$ USD P&L. Do not simulate an old one-contract book and report it as risk for today's two-contract exposure. Net wealth initially zero also does not imply unlimited credit or no collateral needs.
+
+<HorizonPutRepricing client:visible  />
+
+A long vanilla put has negative stock delta; selling it reverses the position delta to positive. A fall in the stock therefore hurts the short position locally. A spot-only delta approximation also omits time, volatility and curvature effects. Monte Carlo can use either full repricing or an approximation; the sampling method alone does not decide that choice.
+
+### When to use it
+
+Check one scenario by hand before running thousands. Reconcile valuation date, current position size, cash flows and units. Compare approximations with complete repricing where finite moves or nonlinear terms matter.
+
+<MCQ client:visible
+  question={"Which two account choices are correct for the declared short-put expiry book?"}
+  options={[{"text": "The 600 USD premium cash is included once in terminal net wealth", "correct": true}, {"text": "At stock 90, liability 1000 minus cash 600 gives loss 400 USD", "correct": true}, {"text": "The premium is income to subtract again after already including the cash balance"}, {"text": "An expiry payoff can value an unexpired option without remaining time or volatility"}]}
+  explanation={"Expiry settlement and retained cash produce the signed result. Counting the premium twice inflates profit; pre-expiry options require a valuation model."}
+  allowMultiple={true}
 />
 
-<FillBlank
-  client:visible
-  question="Fill in the Monte Carlo VaR recipe."
-  text="First specify the {{model and its parameters|exact future price|day’s closing level}}, then generate {{M random scenarios|one worst case|a single average path}}, then {{fully reprice|delta-approximate|ignore}} the portfolio under each, sort the P&Ls, and read VaR as the {{(1−c) percentile|mean|maximum gain}} of the simulated losses."
-  explanation="The pipeline is: model + parameters → M scenarios → full repricing in each → sort the P&Ls → take the (1−c) percentile of the losses. Full repricing (not a linear shortcut) is what lets Monte Carlo handle non-linear books correctly."
+## Choose the loss quantile convention explicitly
+
+<MCQ client:visible pretest
+  question={"With M=10000 distinct losses and the inverse-ECDF convention at c=99%, which observation is selected?"}
+  options={[{"text": "Ascending rank 9900, which is 101st from the worst", "correct": true}, {"text": "Ascending rank 9900, which is 100th from the worst"}, {"text": "Ascending rank 100, which is 100th from the best"}, {"text": "The maximum loss, independently of confidence"}]}
+  explanation={"k=ceil(0.99×10000)=9900. Descending one-based rank is M−k+1=101. There are 100 observations strictly larger."}
 />
 
-## The killer feature: nonlinear portfolios
+For each of $M$ equally weighted simulated losses, positive means losing and negative means gaining. Define the empirical cumulative distribution $\widehat F_M(\ell)$ as the fraction with $L_i\leq\ell$. We use its lower inverse:
 
-This is the reason Monte Carlo VaR exists, and the one argument that wins the meeting. **Parametric (delta-normal) VaR** approximates every position as a straight line: it takes each instrument's **delta** (its first-order sensitivity to the underlying) and assumes the P&L is just `delta × move`, with moves drawn from a normal bell. That's fine for a portfolio of plain stocks, whose payoff really *is* a straight line. It is dangerously wrong for options.
+$$
+\widehat{\mathrm{VaR}}_c=\inf\{\ell:\widehat F_M(\ell)\ge c\}
+=L_{(k)},\qquad k=\lceil cM\rceil,
+$$
 
-**Analogy.** Parametric VaR draws the tangent line to a curve and pretends the curve *is* the line. Near the touch point, the lie is harmless. Out in the tail — exactly where VaR lives — the curve has peeled far away from its tangent, and the line is telling you a fairy tale.
+where $L_{(1)}\le\cdots\le L_{(M)}$. This is the inverse-ECDF convention called **type 1** in [R's primary documentation](https://www.stat.ethz.ch/R-manual/R-patched/library/stats/html/quantile.html). Interpolated estimates, including type 7, are different finite-sample conventions.
 
-An option's payoff curves: it has **gamma**, the curvature of its value as the underlying moves (delta's own rate of change). Monte Carlo doesn't approximate — in step 3 it **fully reprices** every option at each simulated price, running the actual pricing model. So when a scenario throws a violent move, the simulated P&L reflects the option's true curved payoff, gamma and all. The tail of an optioned book — short straddles, structured notes, anything convex — comes out *right* instead of linearised into nonsense.
+For a hand-authored set of 20 simulated teaching losses, the largest three are 140, 200 and 500 USD. At 95%, $k=\lceil0.95(20)\rceil=19$, so VaR is 200 USD: second from the worst. Exactly one observation, 500, is strictly greater; its empirical probability is $1/20=5\%$. At 99%, $k=20$, so the sample VaR is its maximum, 500. Neither statement makes 500 a maximum possible future loss.
 
-**Worked intuition.** You're short a put, delta $-0.5$ today, on a \$100 stock. Parametric VaR sees a 10% down-move and predicts a loss of about `0.5 × $10 = $5` per share — straight-line. But as the stock falls, the put's delta steepens toward $-1$ (that's gamma at work), so the real loss accelerates past \$5, maybe to \$8 or \$9 per share. Monte Carlo, repricing the put at the simulated \$90, *sees* that accelerating loss. Delta-normal never does — it's still riding its flat tangent line off the cliff, reporting a comfortable number while the real book bleeds.
+<HistoricalVarLadder client:visible losses={[-100, -80, -60, -40, -20, 0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 120, 140, 200, 500]} confidence={0.95} confidenceLevels={[0.9,0.95,0.99]} currency="USD" title="Choose the signed-loss quantile under a declared convention" conventionMessage="Twenty invented teaching losses with equal weight 1/20. VaR uses ascending rank ceil(cM). ES fills exactly the upper 1−c mass of this empirical law; type 7 interpolation is a distinct estimator." caption="Hand-authored teaching list for checking ranks, not hidden random-generator output. Positive loss means losing, negative means gaining. The chart orders losses largest first. At 95%, VaR is 200 USD and only 500 lies strictly above it. Another interpolation convention can produce another finite-sample estimate. Empirical weights do not guarantee future coverage." />
 
-<MCQ
-  client:visible
-  question="Spot the trap. A risk team runs delta-normal (parametric) VaR on a book stuffed with short options and reports a reassuringly small number. What’s the danger?"
-  options={[
-    { text: 'Linearising convex payoffs hides gamma, so the true tail loss on a big move is far worse than the straight-line estimate', correct: true },
-    { text: 'Delta-normal always overstates risk, so the number is needlessly scary' },
-    { text: 'Monte Carlo would give the identical number, so the choice never matters' },
-    { text: 'Short options have no delta, so VaR is undefined and the report is blank' },
-  ]}
-  explanation="Delta-normal treats each option as its tangent line and assumes normal moves. Convex (gamma) payoffs peel away from that line in the tail, so the real loss on a large move dwarfs the linear estimate. Monte Carlo fully reprices each option and captures that curvature; parametric VaR confidently understates it."
+For $M=10{,}000$ and $c=99\%$, this convention selects ascending rank 9900, hence **rank 101 from the worst**, with 100 observations strictly above it if all losses are distinct. Calling it the “100th-worst” silently chooses a different boundary convention. With ties, the fraction strictly exceeding VaR can be smaller than $1-c$.
+
+The upper $c$ loss quantile and a negated lower P&L percentile need compatible conventions at discrete boundaries. For our 20 values, the lower inverse 5% P&L quantile is the worst P&L, −500; negating it gives 500, while the defined 95% loss quantile is 200. Keeping signed losses throughout avoids this off-by-one trap.
+
+### When to use it
+
+Record sign, confidence, sample size, scenario weights, rounding and quantile algorithm. Unequal probability weights need a weighted cumulative distribution, not the equal-weight rank formula.
+
+<FillBlank client:visible question="Keep loss sign and quantile rank consistent" text="For signed losses, positive means {{losing|gaining|zero risk}}. The inverse-ECDF VaR uses ascending rank {{ceil(cM)|ceil((1−c)M)|M}}. With 20 distinct observations at 95%, the selected rank is {{19|20|1}}, leaving {{one|nineteen|zero}} strictly worse observation." explanation="The convention acts on losses, not an unqualified lower P&L percentile. It selects the first loss where the cumulative empirical mass reaches c." />
+
+## More draws reduce one kind of uncertainty
+
+<MCQ client:visible pretest
+  question={"A new seed changes simulated VaR under unchanged inputs. What does that demonstrate?"}
+  options={[{"text": "Finite sampling variability within the fixed model", "correct": true}, {"text": "A necessary change in actual market risk"}, {"text": "A proof that the pricing formula is wrong"}, {"text": "A guarantee the new seed is more accurate"}]}
+  explanation={"The model distribution can be unchanged while its finite pseudo-sample changes. A particular new sample need not be closer to the model target."}
 />
 
-## Convergence and standard error
+Hold the model fixed and generate independent identically distributed (iid) draws. A new random seed changes the sample and may change its VaR. Reusing a seed makes the calculation reproducible; it does not validate the model. Increasing sample count can reduce the distribution of estimation error without moving every realised estimate monotonically toward its target.
 
-Monte Carlo gives a different answer every time you run it, because it's built on random draws. Run 10,000 paths today and 10,000 tomorrow and your VaR estimate wobbles a little between them. That wobble is **sampling error**, and the central fact about it is how it shrinks.
+Use a model with a known answer to see this. Ten fixed shares start at 100 USD each, with no cash flows. Suppose their signed total loss is uniform on $[-100,100]$ USD. Equivalently, simulate endpoint stock $S_h=100-L/10$, which lies between 90 and 110. The exact model cumulative probability is $F_L(\ell)=(\ell+100)/200$ on its support, so
 
-**Definition.** The standard error of a Monte Carlo estimate falls like $1/\sqrt{M}$, where $M$ is the number of paths. In plain terms: **to halve the error, you must quadruple the paths.** Accuracy is expensive — it improves only with the *square root* of effort, so the last digit of precision costs brutally more compute than the first.
+$$
+\mathrm{VaR}_{0.95}=-100+200(0.95)=90\text{ USD}.
+$$
 
-**Analogy.** It's like polling. A poll of 10,000 people isn't twice as precise as one of 5,000 — it's only about $\sqrt 2 \approx 1.4$ times as precise. Doubling the sample barely moves the margin of error; you have to *quadruple* it to cut that margin in half. Monte Carlo paths are voters, and the VaR is the election.
+For $M=400$, the sample inverse-CDF estimate selects rank $\lceil0.95(400)\rceil=380$. Its value will depend on the draw. The display reports that value, the analytic 90-USD model target and their difference; the target is known only because we invented the distribution.
 
-**Worked example.** Suppose at $M = 10{,}000$ paths your VaR estimate has a sampling standard error of \$1.0 million. Push to $M = 40{,}000$ — a 4× increase. The error scales by $1/\sqrt{4} = 1/2$, so it drops to about \$0.5 million. Quadruple the work, halve the noise. Want to halve it *again*, down to \$0.25 million? That's another 4×, to 160,000 paths. The compute bill compounds fast.
+<MonteCarloQuantileLab client:visible  />
 
-Because brute force is so costly, quants reach for **variance-reduction** tricks — ways to get the same accuracy from fewer paths:
+Change seed, sample size and confidence. A stable estimate near 90 means the numerical procedure is resolving this chosen uniform model. It does not show that market losses really have that distribution. The pseudo-random sample is deterministic for its displayed seed, and the table shows selected sorted rows rather than pretending to show every draw.
 
-- **Antithetic variates.** For every random scenario you draw, also use its mirror image (flip the sign of the random shocks). The pair partly cancels each other's noise, so the average converges faster.
-- **Control variates.** Lean on a related quantity whose answer you know *exactly* (say, the parametric VaR of a simplified version), and use the known error in that to correct your simulated estimate.
+### When to use it
 
-You don't need to implement these today — just know they exist, and that a good engine reaches a target precision with far fewer paths than the naive $1/\sqrt M$ count would demand.
+Use reproducible seeds for debugging and independent replications or justified uncertainty methods to study simulation precision. Separate parameter estimation uncertainty, horizon discretisation, valuation approximation and structural model error from finite sampling error.
 
-<FillBlank
-  client:visible
-  question="Fill in the convergence rule."
-  text="Monte Carlo sampling error shrinks like {{1/√M|1/M|1/M²}}, so to {{halve|quarter|double}} the error you must {{quadruple|double|halve}} the number of paths. {{Antithetic and control variates|Bigger time-steps|Lower confidence}} reach the same accuracy with fewer paths."
-  explanation="Error ∝ 1/√M means a 4× path increase halves the error. Variance-reduction techniques (antithetic variates, control variates) cut the noise for a given path count, so you hit a target precision more cheaply."
+<MCQ client:visible
+  question={"For uniform loss on [−100,100], what is the exact model 95% quantile?"}
+  options={[{"text": "90 USD, solving (q+100)/200=0.95", "correct": true}, {"text": "95 USD, using the confidence as a monetary amount"}, {"text": "100 USD, always taking the support maximum"}, {"text": "−90 USD, reversing the sign because it is VaR"}]}
+  explanation={"q=−100+200×0.95=90. Confidence is dimensionless and the loss quantile is in USD."}
 />
 
-<MCQ
-  client:visible
-  question="Your Monte Carlo VaR has a sampling error of $800k at 25,000 paths. Roughly how many paths do you need to cut that error to about $400k?"
-  options={[
-    { text: '100,000 paths — a 4× increase halves the error', correct: true },
-    { text: '50,000 paths — doubling the paths halves the error' },
-    { text: '12,500 paths — fewer paths, less error' },
-    { text: '26,000 paths — a tiny bump is enough' },
-  ]}
-  explanation="Error ∝ 1/√M, so halving it requires 4× the paths: 25,000 × 4 = 100,000. Doubling to 50,000 only cuts the error by 1/√2 ≈ 29%, not in half."
+## Quantile precision depends on the density in the tail
+
+<MCQ client:visible pretest
+  question={"Which input is missing from “quantile SE equals a constant divided by √M”?"}
+  options={[{"text": "The density at the model quantile, together with sampling and regularity conditions", "correct": true}, {"text": "Only the number of physical days on the desk’s trading calendar"}, {"text": "The current sample mean, which always determines tail precision"}, {"text": "An assumption that every extra draw moves the estimate closer"}]}
+  explanation={"The regular iid quantile asymptotic has constant sqrt(c(1−c))/f(q). Sparse tails, atoms and dependence require care."}
 />
 
-## Strengths and weaknesses
+The familiar square-root rule has conditions. For iid draws, fixed $0<c<1$, and a continuous positive density $f_L(q_c)$ at a unique smooth model quantile, the large-sample approximation is
 
-Monte Carlo is the **most flexible** VaR method, full stop. You can feed it *any* distribution — fat-tailed Student-t instead of the thin-tailed normal, skewed, regime-switching, whatever fits the data. It handles **non-linearity** (options, convexity) by full repricing. It handles **path-dependence** (barrier options, anything whose payoff depends on the route, not just the endpoint) by simulating whole paths. Multiple correlated factors? Just enlarge the covariance matrix. Nothing else in the VaR toolkit is this general.
+$$
+\operatorname{SE}(\widehat q_c)\approx
+\frac{\sqrt{c(1-c)/M}}{f_L(q_c)}.
+$$
 
-But that power comes with two heavy tolls.
+A useful intuition comes from counting draws below the true quantile. Their fraction has approximate standard deviation $\sqrt{c(1-c)/M}$. A small loss shift changes cumulative probability by approximately $f_L(q_c)$ times that shift. Dividing converts probability uncertainty to loss units. A sparse tail, with small density, gives larger quantile uncertainty for the same probability noise. [UW's statistical inference notes](https://courses.washington.edu/stat512/506-512Notes7.pdf), section 10.6, state the regular quantile limit and its exceptions.
 
-The first is the one that bites in practice: **it is only as good as the model you feed it.** A normal model with too-low a $\sigma$, a stale correlation matrix, or a thin-tailed distribution doesn't produce a vague or uncertain VaR — it produces a *confidently precise wrong number*. Ten thousand beautifully-sorted scenarios drawn from a bad model give you ten thousand beautifully-sorted lies. The pretty histogram launders the bad assumption into something that *looks* rigorous.
+### The uniform example in money units
 
-The second is mundane but real: **it's compute-heavy.** Full repricing of a large book across tens of thousands of paths — sometimes nested, if instruments themselves need simulation to price — can mean millions of valuations per VaR run. Historical and parametric VaR are nearly free by comparison.
+For uniform losses on $[-100,100]$, $f_L=1/200=0.005$ **per USD**. With $c=0.95$ and $M=10{,}000$,
 
-<Callout variant="warning" title="Garbage in, garbage out — at high resolution">
-Monte Carlo's realism is a trap as much as a feature. The polished, ten-thousand-path histogram **looks** authoritative no matter what went in — but if you fed it the wrong σ, a stale correlation matrix, or a thin-tailed normal where the real returns have fat tails, every digit of that VaR is wrong with total confidence. The method never warns you; it just renders your assumption in high resolution. Stress-test the *inputs*, not only the output, and never mistake a precise number for an accurate one.
-</Callout>
+$$
+\operatorname{SE}\approx
+\frac{\sqrt{0.95(0.05)/10000}}{0.005}
+=0.43588989\text{ USD}.
+$$
 
-<MatchConcepts
-  client:visible
-  question="Match each Monte Carlo property to what it buys you (or costs you)."
-  pairs={[
-    { term: 'Any distribution (e.g. Student-t)', definition: 'Capture fat tails the normal model misses' },
-    { term: 'Full repricing each scenario', definition: 'Get non-linear (option/gamma) payoffs right' },
-    { term: 'Simulate whole paths', definition: 'Handle path-dependent instruments like barriers' },
-    { term: 'Garbage-in, garbage-out', definition: 'A wrong model yields a confidently wrong VaR' },
-    { term: 'Millions of valuations per run', definition: 'Heavy compute cost versus the other methods' },
-  ]}
-  explanation="Monte Carlo’s flexibility — arbitrary distributions, full repricing, full paths — is its strength. Its weaknesses are total dependence on the input model and a steep compute bill."
+At 40,000 draws it is 0.21794495 USD: four times the draws halves this asymptotic standard error under the same conditions. This is not a deterministic absolute-error bound or uncertainty about the next day's loss. For a different smooth model with density 0.0002 per USD at that quantile, the same 10,000 draws give **10.89724736 USD** of approximate standard error.
+
+<QuantilePrecision client:visible  />
+
+Do not apply this formula mechanically at a probability atom, zero density or an extreme confidence level moving toward one as $M$ grows. Dependent draws change the variance calculation; an estimated density adds estimation error. Even a valid approximate confidence interval around the **model's quantile** does not become a guarantee of market coverage.
+
+Variance reduction also depends on the target estimator. Antithetic losses $-100,+100$ have 95% inverse-ECDF quantile +100. Replacing the pair with its average zero gives quantile zero: it changes the distribution rather than estimating the original quantile more efficiently. Tail-probability or weighted importance-sampling methods need correct estimators and uncertainty analysis; averaging scenario losses is not a generic VaR correction.
+
+### When to use it
+
+Use the square-root comparison when its sampling and regularity conditions are credible. For discrete or irregular tails, examine the actual quantile estimator and appropriate finite-sample or replication methods rather than inserting a nonexistent density.
+
+<MCQ client:visible
+  question={"Under the same smooth model and fixed confidence, SE is 0.43588989 USD at 10000 draws. What does the asymptotic rule predict at 40000?"}
+  options={[{"text": "About 0.21794495 USD of model-quantile sampling SE", "correct": true}, {"text": "Exactly 0.21794495 USD of next-day market loss"}, {"text": "A deterministic error bound of 0.10897247 USD"}, {"text": "No uncertainty about model parameters or tails"}]}
+  explanation={"Four times as many iid draws halves the asymptotic sampling SE under the stated conditions. It is neither a loss forecast nor a bound."}
 />
 
-## The three methods, side by side
+## A precise answer cannot repair missing model support
 
-You now hold all three VaR engines. Here's the cheat-sheet that decides which to reach for.
+<ThinkReveal client:visible prompt="Your loss generator has support [−100,100]. Will a billion additional draws reveal a 500 USD loss?" text="No. That model assigns the loss probability zero. You need an explicit alternative model or stress assumption, not just more draws." />
 
-| | **Historical** | **Parametric (delta-normal)** | **Monte Carlo** |
-|---|---|---|---|
-| **Distribution assumption** | None — uses the actual past returns | Assumes normal returns | Any chosen model (normal, t, custom) |
-| **Handles non-linearity?** | Yes (reprices on real past moves) | No — linearises via delta | Yes — full repricing each scenario |
-| **Data / compute cost** | Cheap; limited by data length | Cheapest — a formula and a z-score | Most expensive — many full revaluations |
-| **Fat-tail capture** | Only tails that actually occurred | Poor — thin normal tails | As good as the distribution you pick |
+Return to the uniform loss model. It assigns probability zero to any loss above 100 USD. No extra draws from it can reveal a 500-USD scenario. Now explicitly change the model: with probability 98%, draw a uniform loss on $[-100,100]$; with probability 2%, set loss to 500. This is an invented alternative physical model, not evidence of an actual crash frequency.
 
-The quick read: **parametric** is the fast, cheap default for linear books; **historical** is the assumption-light choice when you trust your data window and your book isn't wildly optioned; **Monte Carlo** is the heavyweight you bring out for non-linear, multi-factor, fat-tailed books where getting the tail right is worth the compute.
+Below 100, its cumulative probability is $0.98(\ell+100)/200$. Thus its 95% quantile solves $0.98(\ell+100)/200=0.95$:
 
-<Categorize
-  client:visible
-  question="Which VaR method best fits each job?"
-  buckets={['Parametric (delta-normal)', 'Historical simulation', 'Monte Carlo']}
-  items={[
-    { text: 'A simple long-only equity book, need a number in seconds', bucket: 'Parametric (delta-normal)' },
-    { text: 'A linear FX book where speed beats tail precision', bucket: 'Parametric (delta-normal)' },
-    { text: 'Trust the last year’s returns, want no distribution assumption', bucket: 'Historical simulation' },
-    { text: 'Reuse real past moves, modestly non-linear book', bucket: 'Historical simulation' },
-    { text: 'A book full of exotic options needing full repricing', bucket: 'Monte Carlo' },
-    { text: 'Many correlated factors with fat-tailed returns to model', bucket: 'Monte Carlo' },
-  ]}
-  explanation="Parametric wins on speed for linear books; historical wins when you trust your data and want no distribution assumption; Monte Carlo wins for non-linear, multi-factor, fat-tailed books where full repricing matters."
+$$
+q_{0.95}=-100+\frac{200(0.95)}{0.98}
+=93.87755102\text{ USD}.
+$$
+
+Its cumulative probability reaches only 0.98 at 100 and jumps to one at 500, so **99% VaR is 500 USD**. Under the original uniform model, 99% VaR was only $-100+200(0.99)=98$ USD. More accurate simulation of the original model cannot close that structural gap.
+
+<MonteCarloQuantileLab client:visible model="crash" confidence={0.99} />
+
+A chosen joint distribution matters just as much as each factor's separate distribution. A correlation matrix summarises second moments; it does not by itself determine joint tail dependence or changing crisis behaviour. A heavy-tailed marginal distribution also needs calibration and a joint model. Simulating full paths can accommodate contractual monitoring, but only under the stated path dynamics and resolution.
+
+### When to use it
+
+Compare plausible alternative models, parameter settings and stresses; test realised coverage under an appropriate backtesting design. Keep stress severity separate from probability. Historical simulation assumes a past shock sample is relevant to the current book; delta-normal assumes a normal linear approximation; Monte Carlo uses a chosen joint generator and valuation scheme. Each can be useful within its scope. None acquires correct tails merely from its method name.
+
+<MCQ client:visible
+  question={"In the 98% uniform plus 2% loss-at-500 model, why is 99% VaR 500 USD?"}
+  options={[{"text": "Cumulative mass is only 98% by 100 and first reaches 99% at 500", "correct": true}, {"text": "Every 2% stress must equal a 99% confidence interval width"}, {"text": "The largest sample loss always equals the maximum possible market loss"}, {"text": "A correlation matrix alone proves the crash probability is 2%"}]}
+  explanation={"This is an exact quantile of the invented mixture, not a calibrated crash forecast. The selected probability crosses inside its atom at 500."}
 />
 
-<Reveal client:visible>
-  <details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
-    <summary className="cursor-pointer font-medium">Why not always just use Monte Carlo, since it’s the most general?</summary>
+## Keep the model and the numerical answer separate
 
-    Because generality isn't free. Monte Carlo costs the most compute, demands the most modelling judgement (you must *choose* the distribution and estimate the covariance), and rewards a bad choice with a confidently wrong answer. For a plain linear book, parametric VaR gives essentially the same number in a millisecond with one formula — running 50,000 full revaluations to confirm what a z-score already told you is wasted effort. Use the heaviest tool only when the book's non-linearity, fat tails, or path-dependence actually *demand* it. The right method is the lightest one that doesn't lie about your particular portfolio.
-  </details>
-</Reveal>
+<MindMap client:visible title="Audit the simulation chain" root={{"label": "Monte Carlo VaR", "children": [{"label": "Specify the target", "children": [{"label": "Horizon, currency and current book"}, {"label": "Physical scenario weights versus pricing model"}]}, {"label": "Revalue", "children": [{"label": "Age contracts and include cash once"}, {"label": "Full repricing stays conditional on the model"}]}, {"label": "Read the quantile", "children": [{"label": "Signed losses and declared ECDF convention"}, {"label": "Ascending ceil(cM), descending M−k+1"}]}, {"label": "Quantify numerical precision", "children": [{"label": "Seeds, iid draws and regular quantile SE"}, {"label": "Density, atoms and dependence matter"}]}, {"label": "Challenge the model", "children": [{"label": "More draws cannot add excluded support"}, {"label": "Joint tails, parameters, path resolution and backtesting"}]}]}} />
 
-## Putting it together
-
-Monte Carlo VaR manufactures the tomorrows reality won't give you: pick a model, roll $M$ random scenarios, **fully reprice** the book in each, sort the P&Ls, and read the $(1-c)$ percentile of the losses. Its superpower is non-linearity — full repricing captures the gamma curvature that delta-normal linearises away — and its flexibility extends to any distribution, correlation structure, or path-dependence you can model. Its price is compute and, more insidiously, total dependence on the input model: feed it garbage and it returns a beautifully-rendered, high-confidence lie.
-
-<MindMap
-  client:visible
-  title="Monte Carlo VaR — the whole engine"
-  caption="Manufacture scenarios from a model, fully reprice, read the percentile — flexible and powerful, but only as honest as its inputs."
-  root={{
-    label: 'Monte Carlo VaR',
-    children: [
+<Quiz client:visible title="Check model, accounts and quantile" questions={[
+  {
+    "question": "A simulated portfolio gains 30 USD from its current value, including cash flows once. What signed loss enters the quantile calculation?",
+    "options": [
       {
-        label: 'The recipe',
-        children: [
-          { label: 'Specify model + parameters + covariance' },
-          { label: 'Generate M scenarios (e.g. 10,000)' },
-          { label: 'Fully reprice the portfolio in each' },
-          { label: 'Sort the P&Ls' },
-          { label: 'VaR = the (1−c) percentile loss' },
-        ],
+        "text": "−30 USD",
+        "correct": true
       },
       {
-        label: 'Killer feature',
-        children: [
-          { label: 'Full repricing captures non-linearity' },
-          { label: 'Gamma curvature gets the option tail right' },
-          { label: 'Parametric linearises and understates it' },
-        ],
+        "text": "+30 USD"
       },
       {
-        label: 'Convergence',
-        children: [
-          { label: 'Error shrinks like 1/√M' },
-          { label: 'Quadruple paths to halve the error' },
-          { label: 'Variance reduction: antithetic, control variates' },
-        ],
+        "text": "Zero because VaR cannot include gains"
       },
       {
-        label: 'Strengths and weaknesses',
-        children: [
-          { label: 'Most flexible: any distribution, fat tails, paths' },
-          { label: 'Garbage in, garbage out — model-dependent' },
-          { label: 'Compute-heavy: many full revaluations' },
-        ],
-      },
+        "text": "The initial portfolio value plus 30"
+      }
     ],
-  }}
-/>
-
-<Quiz
-  client:visible
-  title="Recap: Monte Carlo VaR"
-  questions={[
-    {
-      question: 'In the Monte Carlo recipe, what does "fully reprice the portfolio under each scenario" mean?',
-      options: [
-        { text: 'Re-run each instrument’s actual pricing model at the simulated factor values, not a linear approximation', correct: true },
-        { text: 'Multiply today’s value by the average simulated return' },
-        { text: 'Use each position’s delta and assume the P&L is linear' },
-        { text: 'Take the single worst scenario and ignore the rest' },
-      ],
-      explanation: 'Full repricing recomputes the true value of every instrument at each scenario’s factor values, capturing non-linear payoffs. Using delta and a linear P&L is the parametric shortcut, which Monte Carlo deliberately avoids.',
-    },
-    {
-      question: 'Why does Monte Carlo beat delta-normal VaR for a book of options?',
-      options: [
-        { text: 'It captures gamma (payoff curvature) by repricing each option at the simulated price, instead of linearising', correct: true },
-        { text: 'It always uses more confidence than parametric VaR' },
-        { text: 'Options have no delta, so parametric VaR cannot be computed' },
-        { text: 'It uses fewer scenarios, so there is less noise' },
-      ],
-      explanation: 'Option payoffs curve (gamma). Delta-normal rides the tangent line and understates the tail; Monte Carlo reprices each option at every simulated price, so the convex loss on a big move shows up correctly.',
-    },
-    {
-      question: 'You currently run 16,000 paths with a sampling error of $600k. Roughly how many paths halve the error to $300k?',
-      options: [
-        { text: '64,000 paths', correct: true },
-        { text: '32,000 paths' },
-        { text: '8,000 paths' },
-        { text: '20,000 paths' },
-      ],
-      explanation: 'Error ∝ 1/√M, so halving it needs 4× the paths: 16,000 × 4 = 64,000. Doubling to 32,000 only cuts the error by about 29%.',
-    },
-    {
-      question: 'Which statement best captures Monte Carlo VaR’s biggest weakness?',
-      options: [
-        { text: 'It is only as good as the model you feed it — a wrong σ or distribution yields a confidently precise but wrong VaR', correct: true },
-        { text: 'It cannot handle correlated risk factors' },
-        { text: 'It is forced to assume returns are normal, like parametric VaR' },
-        { text: 'It can only reproduce losses that actually occurred in the past' },
-      ],
-      explanation: 'Garbage in, garbage out: the polished histogram looks authoritative regardless of the inputs, so a bad model produces a precise-looking but wrong number. (Handling correlations and arbitrary distributions are strengths; reusing only past losses describes historical VaR.)',
-    },
-    {
-      question: 'A risk manager needs VaR in seconds for a plain long-only equity book and tail precision barely matters. Best method?',
-      options: [
-        { text: 'Parametric (delta-normal) — fast, cheap, and accurate enough for a linear book', correct: true },
-        { text: 'Monte Carlo with 100,000 paths and full repricing' },
-        { text: 'Monte Carlo with a fat-tailed Student-t and nested simulation' },
-        { text: 'Whichever method gives the smallest number' },
-      ],
-      explanation: 'A linear book’s payoff really is a straight line, so delta-normal is accurate and effectively instant. Reserving Monte Carlo’s heavy compute for that job wastes effort; pick the lightest method that doesn’t lie about your portfolio.',
-    },
-  ]}
-/>
-
-Next up — **Expected Shortfall (CVaR)** — we confront VaR's deepest flaw: it tells you the line you rarely cross, but says *nothing* about how bad it gets once you do. A \$10M VaR is identical whether the worst 1% averages an \$11M loss or a \$100M wipeout. Expected Shortfall answers the question VaR ducks — *given* we've blown past the threshold, what's the **average** loss in that tail? — and it's exactly the shaded region you've been watching to the left of every VaR line.
+    "explanation": "Loss is the negative of declared P&L. A reporting floor is separate from the signed sample."
+  },
+  {
+    "question": "The manual twenty-loss sample has largest values 500 and 200. At 95% under the declared inverse ECDF, what is VaR?",
+    "options": [
+      {
+        "text": "200 USD with 5% strictly above it",
+        "correct": true
+      },
+      {
+        "text": "500 USD with exactly 5% strictly above it"
+      },
+      {
+        "text": "350 USD from always averaging two tail values"
+      },
+      {
+        "text": "The mean of every loss and gain"
+      }
+    ],
+    "explanation": "Ascending rank ceil(0.95×20)=19 selects 200, leaving one of twenty strictly above."
+  },
+  {
+    "question": "Which two changes can alter risk conclusions even with negligible finite simulation noise?",
+    "options": [
+      {
+        "text": "Changing the physical joint tail model",
+        "correct": true
+      },
+      {
+        "text": "Updating today’s portfolio positions and cash-flow definition",
+        "correct": true
+      },
+      {
+        "text": "Only changing the seed in an otherwise identical model"
+      },
+      {
+        "text": "Displaying more decimal places without changing inputs"
+      }
+    ],
+    "explanation": "Structural scenarios and actual holdings change the target loss distribution. Seed and rounding mainly affect numerical output, not the underlying model.",
+    "allowMultiple": true
+  },
+  {
+    "question": "A model gives loss 500 probability zero. More samples return stable 99% VaR of 98. What has been established?",
+    "options": [
+      {
+        "text": "Numerical stability under that model, not the absence of a market loss of 500",
+        "correct": true
+      },
+      {
+        "text": "A physical guarantee that market loss can never exceed 98"
+      },
+      {
+        "text": "A validated universal joint dependence structure"
+      },
+      {
+        "text": "Automatic correctness of the option valuation formula"
+      }
+    ],
+    "explanation": "The simulation cannot discover states outside its assumed support. Stability and model validity are separate."
+  },
+  {
+    "question": "Antithetic losses −100 and +100 are replaced by their average before taking 95% VaR. What is wrong?",
+    "options": [
+      {
+        "text": "The averaging changes the target loss distribution and yields a different quantile",
+        "correct": true
+      },
+      {
+        "text": "Nothing: averaging always preserves every original quantile"
+      },
+      {
+        "text": "The original two losses have an undefined empirical distribution"
+      },
+      {
+        "text": "Variance reduction must always increase every tail probability"
+      }
+    ],
+    "explanation": "The two-observation inverse quantile is +100; the averaged zero outcome has quantile zero. A valid variance-reduction estimator needs separate justification."
+  },
+  {
+    "question": "Which circumstance prevents mechanically applying the smooth iid quantile-SE formula?",
+    "options": [
+      {
+        "text": "A point mass at the selected quantile",
+        "correct": true
+      },
+      {
+        "text": "A positive continuous density with fixed interior confidence"
+      },
+      {
+        "text": "Independent draws from the stated smooth loss model"
+      },
+      {
+        "text": "Expressing density per USD and SE in USD"
+      }
+    ],
+    "explanation": "At an atom the continuous positive-density derivation does not apply. A zero density or dependent sampling also needs different analysis."
+  }
+]} />

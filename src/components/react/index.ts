@@ -1035,3 +1035,6 @@ export type { CreditCashInputs, CreditRiskLabels, CreditRiskLabProps } from '@/c
 
 export { hedgeCallModel, deltaHedgeInterval, hedgePolicyScore, DeltaHedgeLedger, HedgePolicyComparison } from '@/components/react/DeltaHedgeLedger';
 export type { CallModelInput, HedgeIntervalInput, DeltaLedgerLabels, DeltaHedgeLedgerProps, HedgePolicyLabels, HedgePolicyComparisonProps } from '@/components/react/DeltaHedgeLedger';
+
+export { toyLossQuantile, simulateToyLosses, quantileStandardError, expiryPutLedger, ProbabilityMeasureComparison, HorizonPutRepricing, MonteCarloQuantileLab, QuantilePrecision } from '@/components/react/MonteCarloVarLab';
+export type { ToyLossModel, ProbabilityMeasureLabels, ProbabilityMeasureComparisonProps, PutRepricingLabels, HorizonPutRepricingProps, MonteCarloLabels, MonteCarloQuantileLabProps, PrecisionLabels, QuantilePrecisionProps } from '@/components/react/MonteCarloVarLab';
