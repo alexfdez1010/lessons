@@ -978,3 +978,6 @@ export type { EfficiencyToy, EfficiencyInputs, EfficiencySummary, MonteCarloEffi
 
 export { calculateEnterpriseEquity, EnterpriseEquityBridge, calculateSubsidiaryOwnership, SubsidiaryOwnershipBridge, calculateOptionExercise, OptionExerciseBridge } from '@/components/react/EnterpriseEquityBridge';
 export type { EnterpriseEquityInputs, EquityBridgeField, EnterpriseEquityBridgeProps, SubsidiaryOwnershipInputs, SubsidiaryOwnershipBridgeProps, OptionExerciseInputs, OptionExerciseBridgeProps } from '@/components/react/EnterpriseEquityBridge';
+
+export { calendarSpreadProfit, CalendarSpreadLedger, spreadMarginStress, CalendarMarginPath, localCalendarResidual, CalendarBasisBridge, FuturesRollAccounting, CommodityReturnAttribution } from '@/components/react/CalendarSpreadLab';
+export type { CalendarSpreadInputs, CalendarSpreadLedgerProps, CalendarMarginPathProps, CalendarBasisBridgeProps, FuturesRollAccountingProps, CommodityReturnAttributionProps } from '@/components/react/CalendarSpreadLab';
