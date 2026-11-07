@@ -1101,3 +1101,6 @@ export type { CausalLabMode, ProxyPolicy, CausalLabLabels, PredictionAndActionLa
 
 export { matchingHoldings, bondReceipts, fundingLedger, durationPayment, rollingLadder, matchingStress, CashFlowMatchingLab } from '@/components/react/CashFlowMatchingLab';
 export type { CashFlowMatchingLabels, CashFlowMatchingLabProps } from '@/components/react/CashFlowMatchingLab';
+
+export { tradeRewardLedger, penalisedReward, differentialSharpe, discountedRewards, shapedRewards, churnReward, RewardAccountingLab } from '@/components/react/RewardAccountingLab';
+export type { RewardLabMode, RewardAccountingLabels, RewardAccountingLabProps } from '@/components/react/RewardAccountingLab';

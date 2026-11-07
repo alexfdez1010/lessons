@@ -38,6 +38,12 @@ export interface ExecutionPolicyHeatmapProps {
   highLabel?: string;
   /** One-line takeaway shown under the grid. */
   caption?: string;
+  /** Accessible table name; defaults to the existing English axis description. */
+  tableLabel?: string;
+  /** Accessible table caption; defaults to the existing English description. */
+  tableCaption?: string;
+  /** Readout for the central approximately fair price-signal row. */
+  fairLabel?: string;
   className?: string;
 }
 
@@ -137,6 +143,9 @@ export function ExecutionPolicyHeatmap({
   lowLabel = 'Trade slowly',
   highLabel = 'Trade fast',
   caption = 'Same order, three policies. TWAP ignores price entirely — every row is identical. Almgren–Chriss front-loads to cut risk but is still price-blind. Only the RL policy conditions on the signal: it leans into cheap prints (top) and waits out expensive ones (bottom), while still ramping into the deadline so the order always fills. Change the reward and you change the map.',
+  tableLabel,
+  tableCaption,
+  fairLabel = '≈ fair',
   className,
 }: ExecutionPolicyHeatmapProps) {
   const id = useId();
@@ -170,12 +179,12 @@ export function ExecutionPolicyHeatmap({
   const selRate = grid[selRow][selCol];
   const selSignal = SIGNALS[selRow];
   const signalWord =
-    selSignal > 0.3 ? favourableLabel : selSignal < -0.3 ? unfavourableLabel : '≈ fair';
+    selSignal > 0.3 ? favourableLabel : selSignal < -0.3 ? unfavourableLabel : fairLabel;
 
   return (
     <figure
       className={cx(
-        'my-6 rounded-card border border-ink-100 bg-surface p-5 shadow-soft',
+        'not-prose my-6 min-w-0 rounded-card border border-ink-100 bg-surface p-5 shadow-soft',
         className,
       )}
     >
@@ -210,13 +219,14 @@ export function ExecutionPolicyHeatmap({
       </div>
 
       {/* Heatmap grid */}
-      <div className="mt-4 overflow-x-auto">
+      <div className="mt-4 min-w-0">
         <table
-          className="w-full border-separate border-spacing-1 text-center"
-          aria-label={`${title}. ${timeAxisLabel} across columns, ${signalAxisLabel} down rows.`}
+          tabIndex={0}
+          className="block w-full max-w-full overflow-x-auto border-separate border-spacing-1 text-center focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
+          aria-label={tableLabel ?? `${title}. ${timeAxisLabel} across columns, ${signalAxisLabel} down rows.`}
         >
           <caption className="sr-only">
-            {actionLabel} by {timeAxisLabel} and {signalAxisLabel}.
+            {tableCaption ?? `${actionLabel} by ${timeAxisLabel} and ${signalAxisLabel}.`}
           </caption>
           <thead>
             <tr>

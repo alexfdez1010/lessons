@@ -1,294 +1,394 @@
 ---
-title: "Reward Design & Its Pitfalls"
-description: "Turning 'make money carefully' into a single scalar — risk-adjusted rewards, charging the agent for transaction costs and impact, the discount factor and myopia, reward shaping done safely, and the reward-hacking horror stories that follow when you specify the objective wrong."
+title: "Reward Design and Its Pitfalls"
+description: "Build a cash-and-inventory reward ledger, account for liquidation and costs once, distinguish risk preferences from financial P&L, and derive the boundary conditions for potential-based shaping."
 topic: "en/reinforcement-learning-for-trading"
 order: 2
-minutes: 16
-updated: 2026-06-19
+minutes: 36
+updated: 2026-11-06
 ---
 
-import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, AsymmetryPayoff, PresentValueDecay } from '@/components/react';
+import { Callout, MCQ, Quiz, ThinkReveal, FillBlank, MatchConcepts, MindMap, RewardAccountingLab } from '@/components/react';
 
-In lesson 1 you built the MDP scaffolding: states, actions, transitions, a policy, the discounted return, and the discount factor γ. All of it hangs off one tiny number you have to invent yourself — the **reward** $r_t$. The agent does exactly one thing for a living: it makes the expected discounted sum of those numbers as large as it possibly can. It does not know what you *meant*. It knows what you *wrote*.
+A trading agent buys two shares, its screen reports a gain, and the episode ends. Did it make money? We still need its purchase price, cash balance, fees, closing position and a credible sale price. A green reward chart cannot supply the missing accounting.
 
-That gap — between the goal in your head ("make money, but don't blow up") and the scalar in your code — is where most applied-RL trading projects quietly die. Nobody ships a press release saying "our reward function had a sign error and the bot learned to churn." They just see a backtest that looks too good, deploy it, and watch it light money on fire in production. Reward design is the single highest-leverage, highest-danger decision in the whole pipeline. Let's treat it that way.
+In the previous lesson, a **policy** chose an action from a state. Here we choose what those actions are scored on. Separate three questions: what economic outcome occurred, what outcome we prefer under uncertainty, and what extra learning signal preserves that preference. They require different calculations.
 
-<MCQ
-  client:visible
-  pretest
-  question="You set the reward to raw per-step PnL — dollars made this step, with no risk term and no cost term, in a simulator with zero fees. What does a competent RL agent learn to do?"
-  options={[
-    { text: "Maximize leverage and trade constantly — variance and costs don't exist in this reward, so there's no reason to hold back", correct: true },
-    { text: "Trade cautiously, because more trading is obviously riskier", correct: false },
-    { text: "Converge to a buy-and-hold strategy to minimize effort", correct: false },
-    { text: "Refuse to take positions until it's highly confident", correct: false }
-  ]}
-  explanation="Expected PnL scales with position size, and you charged nothing for risk or trading. The optimal policy is therefore: lever up to the cap and flip positions as often as the signal twitches. The agent isn't reckless — it's obedient. You forgot to tell it that risk and costs are bad."
+All prices and policies below are invented. Cash earns zero; there are no external deposits, withdrawals, dividends, borrowing charges or taxes unless stated. Actions use information available at that point. A useful training signal does not establish a profitable or safe live strategy.
+
+## 1. Reconcile cash and inventory before scoring trades
+
+<MCQ client:visible pretest
+ question={"Buying two shares for USD 202, with no fee, necessarily creates a USD 202 loss?"}
+ options={[{"text": "No: cash falls while ownership rises; assess both at specified prices", "correct": true}, {"text": "Yes: every cash outflow is an equal loss"}, {"text": "No: purchases always create a guaranteed gain"}, {"text": "Yes: inventory is never part of wealth"}]}
+ explanation={"A purchase exchanges cash for an asset. Fill-versus-mark differences and fees can change wealth, but the purchase notional is not automatically a loss."}
 />
 
-## Turning intent into a scalar
+Think of a warehouse: buying stock moves value from the bank account to the shelf. Paying for the stock is not, by itself, a loss of the whole purchase amount. For shares, let $C_t$ be cash, $q_t$ the number of shares and $m_t$ a reference **mark**, the price used to value each held share. Marked wealth is
 
-RL needs **one number per step**. Not a vector of objectives, not a paragraph of nuance — a single scalar $r_t$ the agent can climb. The natural starting point in trading is **per-step profit and loss**.
+$$
+W_t=C_t+q_tm_t.
+$$
 
-There are two flavors, and the difference matters:
+For a signed trade $u_t$ (positive for a buy, negative for a sale), actual fill price $p_t$ and explicit fee $f_t\geq0$, the immediate cash/inventory update is
 
-- **Mark-to-market PnL** — the change in the *paper* value of your book each step, $r_t = \text{NAV}_t - \text{NAV}_{t-1}$. It rewards the agent continuously, even on positions you haven't closed. Great for dense feedback; dangerous because paper gains can be fictional (see reward hacking below).
-- **Realized PnL** — profit only counts when you actually close a position and book the cash. Honest, but **sparse**: the agent can go thousands of steps with $r_t = 0$, which makes credit assignment brutal.
+$$
+q_t^+=q_t+u_t,\qquad C_t^+=C_t-u_tp_t-f_t.
+$$
 
-Most practical setups use **mark-to-market PnL net of costs** as the base, because dense signal is worth a lot — but you have to make the mark trustworthy.
+A buy reduces cash and increases inventory. A sale does the reverse. A spread or price concession already embedded in $p_t$ has already affected cash; subtracting it again would charge it twice.
 
-The "one scalar" rule is simultaneously RL's superpower and its trap. Superpower: collapse "make money carefully over a long horizon" into a number and a general-purpose optimizer will find policies no human hand-coded rule would. Trap: *everything you care about must be inside that number.* Anything you leave out — risk, costs, capacity, ethics — the agent is free to trample, because trampling it is never penalized.
+Start with USD 1,000 and no shares. Buy two at USD 101, pay USD 1, and initially mark them at USD 100. Later the mark becomes USD 104. Finally sell both at USD 103 and pay another USD 1.
 
-<Callout variant="warning" title="The agent reads the spec, not your mind">
-Every objective you do not encode in the reward is an objective the agent will happily sacrifice to raise the one you did. "Don't take crazy risk" is not in raw PnL. So the agent takes crazy risk. This is not a bug in the agent — it's a bug in the reward.
-</Callout>
+<table tabIndex={0} aria-label="Cash, shares and marked wealth at each event" className="block w-full max-w-full overflow-x-auto text-left text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600">
+  <thead><tr><th scope="col">Event</th><th scope="col">Cash (USD)</th><th scope="col">Shares</th><th scope="col">Mark (USD/share)</th><th scope="col">Marked wealth (USD)</th><th scope="col">Change (USD)</th></tr></thead>
+  <tbody>
+    <tr><th scope="row">Start</th><td>1,000</td><td>0</td><td>100</td><td>1,000</td><td>—</td></tr>
+    <tr><th scope="row">Buy two at 101; fee 1</th><td>797</td><td>2</td><td>100</td><td>997</td><td>−3</td></tr>
+    <tr><th scope="row">Mark rises to 104</th><td>797</td><td>2</td><td>104</td><td>1,005</td><td>+8</td></tr>
+    <tr><th scope="row">Sell two at 103; fee 1</th><td>1,002</td><td>0</td><td>104</td><td>1,002</td><td>−3</td></tr>
+  </tbody>
+</table>
 
-## Risk-adjusted rewards
+The trade-level check agrees: $2(103-101)-1-1=2$ dollars. If the base reward is the marked wealth change, $r_t=W_{t+1}-W_t$, its **undiscounted** sum is $-3+8-3=2=W_T-W_0$. That cancellation is a telescoping sum, like adjoining lengths whose internal endpoints disappear.
 
-Raw expected PnL is linear in position size, so it rewards leverage without limit. Real investors don't want the highest mean — they want the best mean *per unit of risk*. The reward has to say so.
+<RewardAccountingLab client:visible mode="ledger" title="Follow cash and shares through the episode" caption="Invented account, zero cash return, no external flows. Start with USD 1,000 and zero shares. Buy two at 101 with the chosen entry fee, mark at 100 then 104, and sell two at 103 with the same fee. Fills already include the price concession. Signed bars show changes in marked wealth; the table reconciles cash and inventory. The initial fee is USD 1 per leg, not an adjustable claim about a market." />
 
-**Option 1 — Mean–variance penalty.** Subtract a risk term scaled by a risk-aversion knob $\lambda$:
+Marked P&L gives feedback while a position remains open. **Realised P&L** uses a convention for profits recognised on closing transactions; sparse realised rewards can postpone the loss on a position that the episode never closes. Neither accounting label proves that the mark or simulator fill is credible. With external flows, remove the contribution of those flows when measuring investment P&L; with financing and distributions, put their cash flows into the ledger.
 
-$$r_t = \Delta\text{PnL}_t - \lambda \cdot \text{risk}_t$$
+### When to use this ledger
 
-where $\text{risk}_t$ is often a running variance of returns, a squared-return proxy, or position-size penalty. Bigger $\lambda$ = more cowardly agent.
+Use it to test one action and an entire episode by hand. The state needs cash and inventory if they affect feasibility; time, outstanding orders and other relevant variables may also be necessary. A reward optimiser cannot repair missing economic transactions.
 
-**Option 2 — Differential Sharpe ratio.** The Sharpe ratio (mean return ÷ standard deviation of return) is an *episode-level* statistic, but RL wants a *per-step* reward. The **differential Sharpe ratio** is the trick: it's the instantaneous contribution of step $t$ to a rolling Sharpe, computed from exponential moving averages of the first moment $A_t$ and second moment $B_t$ of returns. It gives a dense, online reward whose long-run maximization *is* maximizing Sharpe — risk-adjustment baked directly into $r_t$.
+<FillBlank client:visible question="Reconcile the closing account." text="Cash after buying is {{797|799|1,000}}. The completed episode earns {{2|5|8}} USD, including both fees." explanation="1,000−2×101−1=797; sale adds206 and deducts1, leaving 1,002." />
 
-**Option 3 — Drawdown penalty.** Add a term that bites whenever the equity curve drops below its running peak, e.g. $-\beta \cdot \text{drawdown}_t$. This targets the thing humans actually panic about: the depth of the hole, not just the variance around the mean.
+## 2. Charge friction once and settle the final position
 
-### Worked example — same mean, different risk
-
-Two strategies, each averaging **\$10** PnL per step over 4 steps. Strategy A is steady; Strategy B is a rollercoaster.
-
-| Step | A (steady) | B (swingy) |
-|---|---|---|
-| 1 | +\$11 | +\$60 |
-| 2 | +\$9 | −\$40 |
-| 3 | +\$10 | +\$55 |
-| 4 | +\$10 | −\$35 |
-| **Mean** | **\$10** | **\$10** |
-| **Std dev** | ≈ \$0.71 | ≈ \$48.4 |
-
-Raw-PnL reward calls these a tie — both mean \$10. Now apply a mean–variance reward with $\lambda = 0.5$ on per-step variance (using $\text{Var}_A \approx 0.5$, $\text{Var}_B \approx 2344$):
-
-$$U_A = 10 - 0.5(0.5) = 9.75, \qquad U_B = 10 - 0.5(2344) \approx -1162$$
-
-The risk-adjusted reward correctly ranks A far above B. A Sharpe lens agrees: $\text{Sharpe}_A \approx 10/0.71 \approx 14$ versus $\text{Sharpe}_B \approx 10/48.4 \approx 0.21$. Same mean, wildly different quality — and only the risk-aware reward can tell.
-
-Why risk aversion isn't symmetric: a 50% loss needs a 100% gain to recover, so the *utility* of PnL is concave. The animation below shows that asymmetry — the pain of a loss outweighs the pleasure of the equal-sized gain, which is exactly why a variance or drawdown term belongs in the reward.
-
-<AsymmetryPayoff client:visible title="Why losses hurt more than equal gains help" caption="Concave utility: the agent should fear the downside more than it loves the upside." />
-
-### When to use it
-
-Use a **mean–variance** penalty when you want a single, tunable cowardice dial and have a clean variance estimate. Use the **differential Sharpe ratio** when Sharpe is literally the metric your stakeholders judge you on and you want the reward to optimize it directly. Use a **drawdown** term when survival and investor stomach-lining matter more than smooth variance — capital that's been redeemed after a 40% drawdown can't compound back. Many production rewards combine all three; just watch that the knobs don't fight each other.
-
-## Paying for what you do
-
-A frictionless simulator is a liar. In it, the agent can flip its entire book every step for free, so it does — harvesting tiny mark-to-market wiggles that evaporate the instant real costs show up. Costs **must** enter the reward, or you're training a strategy for a market that doesn't exist.
-
-The three charges that belong in $r_t$:
-
-- **Spread / commission** — you cross the bid–ask and pay fees on every trade. A fixed or proportional cost on traded notional.
-- **Slippage & market impact** — your own order pushes the price against you; bigger and faster orders push harder (often modeled as growing with the *square root* of size). Trade more, pay more — superlinearly.
-- **Turnover penalty** — an explicit $-\kappa \cdot |\Delta\text{position}_t|$ term that taxes churn directly, a blunt but effective brake on overtrading.
-
-### Worked example — profitable gross, dead net
-
-A signal predicts the next-step move and the agent rebalances fully each step. Suppose it captures an average **gross** edge of **\$4** per round-trip trade. The realistic cost of that round trip:
-
-| Cost component | Per round trip |
-|---|---|
-| Half-spread paid twice | \$2.50 |
-| Commission | \$0.50 |
-| Impact / slippage | \$2.00 |
-| **Total cost** | **\$5.00** |
-
-Net per trade: \$4 gross − \$5 cost = **−\$1**. The frictionless reward sees **+\$4** and trades like a maniac; the cost-aware reward sees **−\$1** and learns to *not* take this trade — or to trade only when the predicted edge clears the cost hurdle. Same signal, opposite policy, decided entirely by whether costs are in the scalar.
-
-<Callout variant="tip" title="Make the sim hurt before production does">
-A reward that charges realistic spread, commission, and impact turns the agent into its own transaction-cost analyst: it only trades when expected edge beats the cost hurdle, and it naturally prefers smaller, patient orders. If your backtest Sharpe collapses the moment you add costs, the strategy was never real — better to learn that in the sim than on the desk.
-</Callout>
-
-<FillBlank
-  client:visible
-  question="Fill in the failure mode of a frictionless reward:"
-  text="In a simulator with no transaction costs, an agent rewarded on raw PnL learns to {{overtrade|under-trade|hold forever}}, because flipping positions to capture tiny price wiggles is {{free in the sim but expensive in reality|always profitable everywhere|penalized by the discount factor}}."
-  explanation="No cost term means churn is free, so the agent churns to harvest micro-moves — moves that real spread, commission, and impact would more than erase. The fix is to put those costs into the reward."
+<MCQ client:visible pretest
+ question={"An episode ends with shares still open. Which number answers the liquidation question?"}
+ options={[{"text": "Cash plus proceeds from a specified feasible exit, less costs not already charged", "correct": true}, {"text": "Only the last favourable reference mark, regardless of sale depth"}, {"text": "Only realised profits, treating the open position as nonexistent"}, {"text": "The trade bonus, because reward units are legal tender"}]}
+ explanation={"Terminal ownership must be represented. Liquidation needs an executable fill/cost assumption; a mark alone is not the same quantity."}
 />
 
-## Myopia and the discount factor
+A restaurant bill has a total and its ingredients. A trading ledger likewise needs a net total and a decomposition that reconciles to it. In the same example, measuring the price move from entry mark 100 to exit mark 104 gives gross marked opportunity $2(104-100)=8$. Entry is USD 1 above its reference mark, and the sale is USD 1 below its reference mark: adverse fills cost $2+2=4$. Explicit fees cost $1+1=2$. Thus $8-4-2=2$ dollars net.
 
-The discount factor γ sets the agent's **horizon** — how much it cares about future rewards versus the one in front of it. A reward $k$ steps ahead is worth $\gamma^k$ today, so γ literally is a present-value decay on future rewards.
+The four dollars are already in the actual fills. You may use the decomposition to explain the result; you must not subtract them again from the cash-based net P&L. A separate turnover penalty, such as $\kappa|u_t|$, is either an explicitly modelled cost **not already charged** or an additional preference. It is not automatically a second real commission.
 
-- **γ too low (myopic).** The agent over-discounts the future and grabs immediate PnL. In trading this is lethal: it ignores the *cost of unwinding* a position later, the eventual stop-out, the impact of the exit trade. It builds positions it can't cheaply get out of because the exit pain is discounted into irrelevance.
-- **γ too high (far-sighted but noisy).** Returns sum over a very long horizon, so a single action's reward is buried under thousands of others. Credit assignment gets slow and high-variance — the agent struggles to learn *which* decision caused the eventual payoff.
+Now end the episode **before** selling. Cash 797 plus two shares marked at 104 is USD 1,005, a marked gain of 5. If the terminal executable price is 103 and the exit fee is 1, terminal cash is only $797+2(103)-1=1,002$. A different available exit price changes that result: at 99, cash is 994 and the liquidated P&L is −6.
 
-<PresentValueDecay client:visible title="The discount factor is a present-value decay" caption="This chart discounts a fixed future amount at rate r. For matching periods, the reinforcement-learning factor γ corresponds to 1/(1 + r): lowering r raises γ and gives more weight to distant rewards." />
+<RewardAccountingLab client:visible mode="terminal" title="Marked wealth and executable liquidation" caption="Invented same two-share account. Mark stays at 104; the chosen executable sale price and fee determine final cash. The two bars compare marked P&L and liquidated P&L relative to starting USD 1,000; the table also reports wealth levels. The decomposition uses reference marks, not an extra charge to subtract from net P&L." />
 
-### Worked example — γ flips the best action
+Three legitimate specifications answer different questions:
 
-Action **X** pays **+\$5** now then nothing. Action **Y** pays **\$0** now then **+\$10** exactly 3 steps later (think: a position that costs nothing today but pays off after a slow mean-reversion). Compare discounted values:
+- **Mandatory liquidation:** execute the residual inventory under a stated terminal fill and fee model, and include the resulting cash change.
+- **Continuing ownership:** retain the asset with a defined terminal value or continuation objective. An arbitrary episode boundary does not make the position disappear.
+- **Hard completion requirement:** restrict feasible actions so the mandate finishes, or explicitly solve a constrained problem. Completion still needs feasible liquidity and an execution model.
 
-| γ | Value of X | Value of Y ($10\gamma^3$) | Winner |
-|---|---|---|---|
-| 0.5 | 5.00 | 1.25 | X |
-| 0.9 | 5.00 | 7.29 | Y |
-| 0.99 | 5.00 | 9.70 | Y |
+A finite penalty is a trade-off, not a logical constraint. Suppose finishing costs USD 12 while leaving a share costs a terminal penalty of USD 5. A policy maximising negative cost prefers the penalty, since $-5>-12$. Raising the penalty may change this toy ranking; an arbitrary finite number does not guarantee completion across every state and possible cost.
 
-At γ = 0.5 the myopic agent takes the instant \$5 and never waits for the bigger delayed payoff. Crank γ to 0.9 and the same agent now correctly values patience. **Same rewards, same actions — a different γ picks a different optimal policy.** Choosing γ is choosing how far the agent is allowed to think.
+### When to use terminal accounting
 
-<Callout variant="info" title="γ is a modeling choice, not a free dial">
-People treat γ as a hyperparameter to grid-search, but it encodes a real economic assumption: the effective horizon over which this strategy is supposed to make decisions. A scalper and a position-trader want very different γ. Tune it, but tune it *with intent.*
-</Callout>
+Use it whenever training truncates a position or order. Compare reward, marked wealth and liquidation wealth separately. A real fill model needs spreads, depth, partial fills, adverse selection and applicable fees; declaring costs “realistic” does not validate it.
 
-## Reward shaping
+<ThinkReveal client:visible prompt="Is a USD 5 leftover penalty enough if completion costs USD 12?" hint="Compare the two objective values." text="No. With only those costs, leaving the position scores−5 and completing scores−12. A hard completion constraint and a finite penalty are distinct specifications." />
 
-When the true reward is sparse or delayed (realized-PnL-only, or a payoff that lands 200 steps after the decision), learning crawls. **Reward shaping** adds intermediate rewards to nudge the agent toward good behavior sooner — e.g. a small bonus for moving toward a target inventory, or for reducing risk.
+## 3. A risk penalty chooses a preference
 
-The danger: naive shaping **silently changes the optimum.** If you hand out bonuses for a proxy ("be flat by end of day"), the agent may learn to chase the proxy instead of the profit — and your new optimal policy is no longer the one you wanted.
-
-The safe version is **potential-based reward shaping (PBRS)**. You define a potential function $\Phi(s)$ over states and shape with the *difference of potentials*:
-
-$$F(s, s') = \gamma\,\Phi(s') - \Phi(s)$$
-
-Because every trajectory's shaping rewards **telescope** — successive terms cancel — PBRS provably leaves the set of optimal policies unchanged. You get faster, denser guidance with a guarantee that you haven't quietly rewritten the goal. Any shaping that *isn't* expressible as a potential difference is shaping that can move your optimum.
-
-<Callout variant="warning" title="Shaping bonuses are a backdoor objective">
-Every shaping term is a mini reward function with its own optimum. If it's not potential-based ($\gamma\Phi(s') - \Phi(s)$), you have just added a *second* goal the agent will optimize — possibly at the expense of the first. When the agent does something baffling, check whether a shaping bonus, not the real reward, is steering it.
-</Callout>
-
-<MatchConcepts
-  client:visible
-  question="Match each reward-design tool to what it actually does:"
-  pairs={[
-    { term: "Differential Sharpe ratio", definition: "Dense per-step reward whose long-run maximization equals maximizing the Sharpe ratio" },
-    { term: "Turnover penalty", definition: "A direct tax on trade size that discourages churn" },
-    { term: "Discount factor γ", definition: "Present-value decay that sets how far ahead the agent plans" },
-    { term: "Potential-based shaping", definition: "Adds dense guidance via Φ(s') − Φ(s) without changing the optimal policy" }
-  ]}
-  explanation="Each lever targets a distinct failure: variance (Sharpe), overtrading (turnover), horizon (γ), and sparse-reward learning speed (PBRS) — the last being the only shaping that's provably goal-preserving."
+<MCQ client:visible pretest
+ question={"A pays 9/11 and B −10/30 with equal probabilities. Under mean P&L alone, which wins?"}
+ options={[{"text": "They tie at USD 10; a preference or constraint is needed to rank this risk difference", "correct": true}, {"text": "B must win because variance itself raises the mean"}, {"text": "A must win because every optimiser secretly penalises variance"}, {"text": "Neither is feasible because all P&L must be positive"}]}
+ explanation={"These stipulated populations share the same mean. The raw mean objective does not penalise variance, nor does it force churn."}
 />
 
-## Reward hacking
+An accountant can tell us both strategies have the same average profit. Choosing between their distributions takes a preference. With one USD outcome per period, suppose A pays 9 or 11 with equal probability; B pays −10 or 30 with equal probability.
 
-Here's the nightmare that keeps RL practitioners up at night: the agent doesn't break the rules — it follows them *too well*. It maximizes the literal metric you wrote, finds a loophole you didn't see, and the literal metric soars while your actual goal craters. This is **reward hacking** (a.k.a. specification gaming), and trading is unusually rich in opportunities for it.
+<table tabIndex={0} aria-label="Population mean and variance preference comparison" className="block w-full max-w-full overflow-x-auto text-left text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600">
+  <thead><tr><th scope="col">Population quantity</th><th scope="col">A</th><th scope="col">B</th></tr></thead>
+  <tbody>
+    <tr><th scope="row">Mean, USD</th><td>$(9+11)/2=10$</td><td>$(−10+30)/2=10$</td></tr>
+    <tr><th scope="row">Variance, USD²</th><td>$[(-1)^2+1^2]/2=1$</td><td>$[(-20)^2+20^2]/2=400$</td></tr>
+    <tr><th scope="row">Mean minus 0.02 × variance, USD</th><td>9.98</td><td>2</td></tr>
+  </tbody>
+</table>
 
-Three real-flavored horror stories:
+This is the specified **population** distribution, so divide by two, not the sample variance denominator $n-1$. The criterion $J=\mathbb E[P]-\lambda\operatorname{Var}(P)$ has dollars as its output only if $\lambda$ has units per dollar. At $\lambda=0$, both tie; at positive $\lambda$, A wins here. No fee-free objective mathematically requires constant trading: with no predictive edge, flat exposure can also be optimal. Positive expected edge and available leverage can favour more exposure within the feasible set; the assumptions matter.
 
-- **Rebate / volume farming.** You added a small positive term for rebated maker volume to nudge passive trading. The agent learns to generate volume for its own sake — wash-like churn that books the rebate while doing nothing useful (and, on a real venue, possibly something illegal).
-- **Marking the book.** With a mark-to-market reward, an agent holding an illiquid position can trade a tiny size at a favorable print to **mark up** the whole position's paper value — manufacturing reward out of an inflated mark, not real profit. The PnL is fiction; the reward is real.
-- **Exploiting the fill model.** If the simulator always fills at the mid-price, the agent discovers it can "buy at mid and sell at mid" infinitely with zero spread cost — a profit machine that exists only because the sim's fill logic is wrong. It's not trading; it's farming a bug.
+<RewardAccountingLab client:visible mode="risk" title="Equal mean, different variance preference" caption="Invented one-period population: A pays 9 or 11 USD and B pays −10 or 30 USD, each with probability one half. Variances use population weights. Lambda is per USD, making mean minus lambda times USD-squared variance a USD criterion. Bars are preference scores, not cash earned or risk forecasts." />
 
-The common thread: the agent found where your **proxy** (the written reward) diverges from your **intent** (real risk-adjusted profit) and drove a truck through the gap. The defenses are the whole rest of this lesson — realistic costs, trustworthy marks, risk terms, conservative fill models — plus relentless suspicion of any backtest that looks too clean.
+Several often-labelled “risk rewards” are different objectives:
 
-<Categorize
-  client:visible
-  question="Sort each reward term into whether it points the agent at real profit or hands it a loophole to exploit:"
-  buckets={["Aligned", "Hackable"]}
-  items={[
-    { text: "Mark-to-market PnL net of realistic spread, commission, and impact", bucket: "Aligned" },
-    { text: "Differential Sharpe ratio with a drawdown penalty", bucket: "Aligned" },
-    { text: "Potential-based shaping toward a flat end-of-day inventory", bucket: "Aligned" },
-    { text: "A flat bonus per unit of trading volume", bucket: "Hackable" },
-    { text: "Mark-to-market reward on illiquid positions with no liquidity check", bucket: "Hackable" },
-    { text: "PnL computed against a sim that always fills at the mid-price", bucket: "Hackable" }
-  ]}
-  explanation="Aligned terms reward genuine, cost-aware, risk-adjusted profit (and PBRS preserves the optimum). Hackable terms create proxies the agent can inflate without making real money — volume for its own sake, paper marks on illiquid books, and free fills from a too-generous simulator."
+- Squared P&L is not variance: $\mathbb E[P^2]=\operatorname{Var}(P)+(\mathbb E[P])^2$. For A, it is $101$, not $1$ USD². Summing squared step P&L is not generally the variance of the whole episode; cross-period covariances and the policy also matter.
+- An inventory term $\eta q_t^2\Delta t$ penalises exposure-time. If $q=2$ shares, $\Delta t=1$ minute and $\eta=0.5$ USD/(share²·minute), its penalty is USD 2. It equals a particular variance contribution only under a derived price model and matching units.
+- A **drawdown** uses a running peak. Wealth 100→110→105 has drawdown $(110-105)/110=4.54545\%$. A state with wealth 105 and peak 110 differs from wealth 105 and peak 120. Include the needed peak in a Markov state rather than pretending current wealth alone determines this reward.
+
+### Differential Sharpe is a local derivative
+
+The Sharpe ratio uses return in excess of a specified risk-free cash return divided by the standard deviation of that excess return, with matching periods. Here cash earns zero. A rolling version uses $A$ for an exponentially weighted mean and $B$ for the second moment. Given current excess return $R$ and adaptation rate $\eta$,
+
+$$
+A'=A+\eta(R-A),\quad B'=B+\eta(R^2-B),\quad S=A/\sqrt{B-A^2}.
+$$
+
+The [differential Sharpe derivation by Moody and Saffell](https://people.idsia.ch/~juergen/rnnaissance2003talks/MoodySaffellTNN01.pdf) uses a first-order expansion. Its derivative at $\eta=0$ is:
+
+$$
+D=\frac{B(R-A)-\tfrac12A(R^2-B)}{(B-A^2)^{3/2}},\qquad S'-S\approx\eta D.
+$$
+
+Take $A=0.01$, $B=0.0004$, $R=0.02$, $\eta=0.01$. Then $B-A^2=0.0003$, $R-A=0.01$, $R^2-B=0$, and $D\approx0.769800$. The predicted first-order change is about 0.007698. Recomputing the updated moments gives the actual change shown below, rather than an equality asserted by the approximation.
+
+<RewardAccountingLab client:visible mode="sharpe" title="Local derivative versus actual moment update" caption="Illustrative rolling excess-return moments. Current return is adjustable; A=0.01, B=0.0004 and eta=0.01 stay fixed. Compare the first-order eta times D with the actual updated Sharpe difference. These dimensionless quantities are close, not identical. No annualisation or claim about future Sharpe is made." />
+
+The moments must belong in the state when reward depends on them. A zero or tiny $B-A^2$ makes the expression undefined or unstable; a chosen initialisation, variance floor or other regularisation changes the implemented objective. Maximising a sum of these local derivatives is **not generally identical** to maximising finite-episode or out-of-sample Sharpe. Even an exact episode statistic would still be a chosen criterion, not a guarantee of future performance.
+
+### When to use risk terms
+
+Specify the economic objective, units, time aggregation, state and constraints before selecting a proxy. Evaluate both net P&L and the intended risk measure. Hard leverage, inventory or loss limits can also be constraints; everything does not have to be squeezed into one unconstrained scalar.
+
+<MCQ client:visible
+ question={"Select two precise statements about risk rewards."}
+ options={[{"text": "E[P²] includes both variance and squared mean", "correct": true}, {"text": "Drawdown-dependent reward may require a running peak in the state", "correct": true}, {"text": "A sum of inventory squares always equals episode P&L variance"}, {"text": "Summed differential Sharpe is exactly any future realised Sharpe"}]}
+ explanation={"The squared-mean identity is exact. A peak is necessary information for drawdown. Exposure proxies and local derivatives require further assumptions, not universal equalities."}
+ allowMultiple={true}
 />
 
-<Reveal client:visible>
-  <details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
-    <summary className="cursor-pointer font-medium">Your live agent's backtest Sharpe is stellar but it dies in production. What's the first reward-design suspect?</summary>
+## 4. Discounting changes the objective
 
-    **Answer.** A frictionless or mid-fill simulator. If the reward never charged realistic spread, commission, and impact — or the sim filled every order at the mid — the agent learned to harvest costs and slippage that don't exist live. Re-run with a conservative cost and fill model; if the edge vanishes, it was a reward-hacking artifact, not a strategy.
-  </details>
-</Reveal>
-
-## Recap
-
-<MindMap
-  client:visible
-  root={{
-    label: "Reward Design",
-    children: [
-      { label: "One scalar per step", children: [
-        { label: "Mark-to-market vs realized PnL" },
-        { label: "Everything you care about must be inside it" }
-      ]},
-      { label: "Risk-adjusted", children: [
-        { label: "Mean minus λ times risk" },
-        { label: "Differential Sharpe ratio" },
-        { label: "Drawdown penalty" }
-      ]},
-      { label: "Pay for what you do", children: [
-        { label: "Spread and commission" },
-        { label: "Impact and slippage" },
-        { label: "Turnover penalty" }
-      ]},
-      { label: "Discount factor γ", children: [
-        { label: "Too low → myopic, ignores unwind cost" },
-        { label: "Too high → slow, noisy credit assignment" }
-      ]},
-      { label: "Shaping", children: [
-        { label: "Potential-based preserves optimum" },
-        { label: "Naive shaping moves the goal" }
-      ]},
-      { label: "Reward hacking", children: [
-        { label: "Volume and rebate farming" },
-        { label: "Marking illiquid books" },
-        { label: "Exploiting the fill model" }
-      ]}
-    ]
-  }}
+<MCQ client:visible pretest
+ question={"For a finite episode scored on terminal cash gain, is gamma below one automatically required?"}
+ options={[{"text": "No; gamma=1 can sum wealth changes to the terminal gain when the ledger is complete", "correct": true}, {"text": "Yes; every finite sum diverges with gamma=1"}, {"text": "Yes; gamma is necessarily the market interest rate"}, {"text": "No; gamma never affects policy ranking"}]}
+ explanation={"A finite well-defined sum needs no discount for convergence. Choosing discounting changes the objective unless a separate derivation says otherwise."}
 />
 
-<Quiz
-  client:visible
-  title="Reward design — final check"
-  questions={[
-    {
-      question: "Two strategies have identical mean per-step PnL, but strategy B's returns swing 50× more wildly. Which reward formulation ranks B below A, and why?",
-      options: [
-        { text: "A mean–variance or Sharpe-based reward, because it penalizes the variance B adds for no extra mean", correct: true },
-        { text: "Raw per-step PnL, because higher variance lowers the mean", correct: false },
-        { text: "Neither — with equal means they're identical under any reward", correct: false },
-        { text: "A pure turnover penalty, because variance equals turnover", correct: false }
-      ],
-      explanation: "Raw PnL ties them. Only a risk-aware reward (variance penalty or differential Sharpe) docks B for the extra risk it takes without earning extra mean."
-    },
-    {
-      question: "An agent in your sim flips its whole book every single step, capturing micro-moves. The same policy bleeds money live. The most likely reward-design cause is:",
-      options: [
-        { text: "The reward omits transaction costs (spread, commission, impact), so churn is free in the sim but expensive in reality", correct: true },
-        { text: "γ was set too high, making the agent far-sighted", correct: false },
-        { text: "The drawdown penalty was too aggressive", correct: false },
-        { text: "Potential-based shaping changed the optimal policy", correct: false }
-      ],
-      explanation: "Free churn is the signature of a cost-free reward. Real spread, commission, and impact would make most of those round-trips net-negative, so adding them to the reward kills the overtrading."
-    },
-    {
-      question: "Action X pays \$5 now; action Y pays \$0 now and \$10 three steps later. At γ = 0.5 the agent prefers X; at γ = 0.9 it prefers Y. What does this demonstrate?",
-      options: [
-        { text: "The discount factor changes which action is optimal — γ encodes the agent's planning horizon", correct: true },
-        { text: "Action Y is always better and γ is irrelevant", correct: false },
-        { text: "The reward function is broken because the answer changed", correct: false },
-        { text: "Higher γ always makes the agent take immediate rewards", correct: false }
-      ],
-      explanation: "Y's value is 10·γ³, which at γ=0.5 is 1.25 (loses to X's 5) but at γ=0.9 is 7.29 (beats X). Same rewards, different γ, different optimal policy — γ is a real economic choice about horizon."
-    },
-    {
-      question: "Why is potential-based reward shaping, F = γΦ(s′) − Φ(s), considered the 'safe' way to add intermediate guidance?",
-      options: [
-        { text: "Its shaping rewards telescope along any trajectory, so it provably leaves the set of optimal policies unchanged", correct: true },
-        { text: "It makes the reward sparser, which is always better", correct: false },
-        { text: "It removes the need for a discount factor", correct: false },
-        { text: "It guarantees the agent can never reward-hack anything", correct: false }
-      ],
-      explanation: "Because the shaping is a difference of potentials, the added terms cancel over a trajectory and the optimal policy is preserved — you speed up learning without secretly redefining the goal. (It does not, however, immunize against every other form of reward hacking.)"
-    }
-  ]}
+A reinforcement-learning **return** is the reward score $G=\sum_{t=0}^{T-1}\gamma^t r_t$, not automatically a financial percentage return. In a finite episode, $\gamma=1$ is valid when expectations are defined. Our ledger then sums to USD 2. With $\gamma=0.9$ it becomes
+
+$$
+G=-3+0.9(8)+0.9^2(-3)=1.77.
+$$
+
+That is a discounted score; terminal cash still rose by USD 2. Ignoring that distinction makes it tempting to celebrate a reward improvement that merely moved recognition of gains and losses between dates.
+
+In a separate choice, X pays a reward of 5 now; Y pays 10 exactly three reward steps later. The values are $5$ and $10\gamma^3$. At $\gamma=0.5$, Y is 1.25; at 0.9 it is 7.29. The ranking changes. Neither gamma is “correct” without the intended objective and timing convention.
+
+<RewardAccountingLab client:visible mode="discount" title="A reward score with a chosen discount factor" caption="Finite invented rewards. X pays 5 now; Y pays 10 three reward steps later. Bars are 5 and 10 times gamma cubed. The table separately shows the −3,+8,−3 ledger score under the selected gamma; economic terminal P&L remains USD 2. Gamma=1 is allowed for this finite example." />
+
+If a modeller deliberately wants deterministic financial discounting at rate $i$ per matching period, $\gamma=1/(1+i)$ connects the two conventions. In RL it can instead encode a task preference or be part of an infinite-horizon formulation. Changing decision-step duration without reconsidering discounting also changes what a distant event weighs: a consistent continuous time preference can use $\gamma(\Delta t)=e^{-\rho\Delta t}$.
+
+### When to choose gamma
+
+Choose it alongside the horizon, terminal treatment and units. A smaller gamma reduces the weight of a later exit cost, but does not prove the trained policy overtrades. A larger gamma changes both the optimisation problem and, often, estimation difficulty; it does not universally make a policy wiser or learning slower.
+
+<FillBlank client:visible question="Score and money are different quantities." text="With rewards −3,+8,−3 and gamma 0.9, the score is {{1.77|2|7.29}}, while liquidated P&L remains {{2|1.77|0}} USD." explanation="−3+7.2−2.43=1.77. Discounting the score does not rewrite the cash transactions." />
+
+## 5. Potential shaping needs its boundary condition
+
+<MCQ client:visible pretest
+ question={"Does writing F=gamma×next potential−current potential guarantee invariance when you stop at any terminal state?"}
+ options={[{"text": "Only with the appropriate policy-independent boundary term and consistent return definition", "correct": true}, {"text": "Yes, regardless of terminal potentials and stopping time"}, {"text": "Only when the potential is a forecast of guaranteed cash profit"}, {"text": "Yes, and it also guarantees faster learning and no simulator errors"}]}
+ explanation={"The finite sum is−Phi0+gamma^T PhiT. The terminal convention and same discount factor matter."}
 />
 
-You now know the most dangerous truth in applied RL: the agent optimizes the reward you *wrote*, with surgical literalness, and your entire job is to make that written scalar agree with what you actually want — risk-adjusted, cost-aware, sensibly horizoned, and free of loopholes. With a reward you trust, the next question is *how* the agent learns the policy that maximizes it. In **lesson 3, "Value-Based vs Policy-Gradient Methods,"** we split the two great families of learning algorithms — estimating values and acting greedily versus directly nudging the policy — and see which one fits a noisy, non-stationary market.
+A progress indicator can guide learning without becoming extra profit. Let $\Phi_t(s_t)$ be a finite-valued potential in reward units. In a finite task, include time in the state and add
+
+$$
+F_t=\gamma\Phi_{t+1}(s_{t+1})-\Phi_t(s_t).
+$$
+
+Use the **same gamma** in the shaping term and the return. Write out the weighted sum; the internal terms cancel:
+
+$$
+\sum_{t=0}^{T-1}\gamma^tF_t=-\Phi_0(s_0)+\gamma^T\Phi_T(s_T).
+$$
+
+Therefore the shaped return equals the base return plus that boundary term. For the same initial state, policy rankings are preserved if the remaining boundary is policy-independent. Setting **every terminal potential to zero** is a convenient convention even when stopping time differs. A common nonzero terminal value is constant at a fixed horizon, but can cease to be constant if $T$ depends on the policy and $\gamma<1$.
+
+Here both paths have two transitions, $\gamma=0.9$ and initial potential 3:
+
+<table tabIndex={0} aria-label="Two-path potential-shaping boundary calculation" className="block w-full max-w-full overflow-x-auto text-left text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600">
+  <thead><tr><th scope="col">Path</th><th scope="col">Base rewards</th><th scope="col">Intermediate potential</th><th scope="col">Terminal potential</th><th scope="col">Discounted base</th><th scope="col">Shaping sum</th><th scope="col">Shaped score</th></tr></thead>
+  <tbody>
+    <tr><th scope="row">A</th><td>0, 10</td><td>4</td><td>0</td><td>9</td><td>−3</td><td>6</td></tr>
+    <tr><th scope="row">B</th><td>0, 9</td><td>1</td><td>0</td><td>8.1</td><td>−3</td><td>5.1</td></tr>
+  </tbody>
+</table>
+
+For A, $F_0=0.9(4)-3=0.6$ and $F_1=0-4=-4$; weighted sum $0.6+0.9(-4)=-3$. For B it is $(-2.1)+0.9(-1)=-3$. The intermediate scores differ, but A still wins.
+
+<RewardAccountingLab client:visible mode="shaping" title="Keep the terminal term visible" caption="Two invented two-transition paths, same gamma and initial potential 3. A has intermediate potential 4 and terminal 0; B has intermediate 1 and the chosen terminal potential. Base rewards are 0,10 and 0,9. Compare discounted base, shaping and shaped scores; raising B terminal potential shows a policy-dependent boundary term, not safe progress." />
+
+Now incorrectly assign B terminal potential 5 while keeping A at zero and stopping the episode. B gains $0.9^2(5)=4.05$ more than before: its shaped score becomes 9.15, overtaking A's 6 although its base score was lower. The formula alone did not save this terminal convention.
+
+The [policy-invariance result of Ng, Harada and Russell](https://people.eecs.berkeley.edu/~russell/papers/icml99-shaping.pdf) gives the general potential-based construction. For a continuing discounted task, bounded potential and $0\leq\gamma<1$ make the limiting boundary vanish under the usual well-defined-return conditions. Undiscounted continuing tasks need other assumptions; this finite proof is not a blanket theorem for them. Non-potential bonuses can preserve a particular problem's ranking by coincidence, but lack this general guarantee.
+
+### When to use shaping
+
+Use it to supply intermediate information while testing the cancellation on completed and truncated episodes. Preserving the mathematical optimum does not guarantee faster learning with a particular approximator, convergence, honest fills or immunity to other reward hacks.
+
+<ThinkReveal client:visible prompt="Why can a common nonzero terminal potential still fail with variable episode length?" hint="Look at gamma raised to the stopping time." text="If gamma<1 and stopping time depends on policy, gamma^T times a common nonzero terminal value can differ. Zero terminal potential removes this boundary for every stopping time." />
+
+## 6. Audit economic results alongside the written reward
+
+<MCQ client:visible pretest
+ question={"Buy at midpoint 100 and sell at midpoint 100, with no price change and no fees. What is gross P&L?"}
+ options={[{"text": "Zero; any positive reward needs another specified cash flow or reward term", "correct": true}, {"text": "Positive because there were two fills"}, {"text": "Negative100 because the purchase notional is a loss"}, {"text": "A guaranteed spread capture without specifying bid/ask fills"}]}
+ explanation={"100−100=0. An unrealistic fill model can still overstate achievable performance, but unchanged midpoint round trips do not generate positive arithmetic profit."}
+/>
+
+A bonus ledger can become very profitable while the cash account quietly empties. Consider a one-share round trip at an unchanged midpoint of 100. If the simulator fills both legs at 100, gross profit is **zero**, not positive. With USD 1 fee on each leg, economic P&L is −2. Add an invented reward bonus of USD 2 per trade: two trades earn bonus 4, so the written reward is $-2+4=+2$. Doing nothing earns zero. The shaped objective now prefers this useless churn.
+
+<RewardAccountingLab client:visible mode="audit" title="A trade bonus can reward a losing round trip" caption="Invented flat-price one-share round trip: both fills at 100 and fee USD 1 per leg. Economic net is −2; add the chosen reward bonus per trade twice. A flat unchanged-mid round trip has zero gross profit, not a free gain. Bars compare economic P&L with the written reward; the bonus is not cash income." />
+
+A genuine maker rebate belongs in cash at its actual fee basis and date. A USD 0.20 rebate on a fill followed by USD 0.70 adverse marked price movement gives −0.50 before other costs; the rebate alone is not profit. Limit orders are not guaranteed fills, and extra turnover can increase exposure to adverse selection rather than collect a free spread.
+
+Another loophole is a manipulable mark: a tiny favourable print may value a much larger holding above what can be sold. Test the mark against depth, conservative liquidation and independent prices. A valid cash identity proves consistency of the assumed transactions; it does not prove those transactions were achievable.
+
+### When to run the audit
+
+For fixed policies, compare the written return with separately reconstructed cash, inventory, financing, fees and terminal liquidation. Check an unchanged-price round trip, no trade, a losing position left open and a forced exit. Preserve as-of information and action feasibility. Then test alternative fill/cost regimes out of sample; a reward term or stress test cannot certify future alignment.
+
+<MCQ client:visible
+ question={"A losing round trip has P&L −2 and receives two invented bonuses of 2. What should an audit report?"}
+ options={[{"text": "Economic−2, written reward+2; the bonus changed the objective", "correct": true}, {"text": "Economic+2 because all reward bonuses are cash income"}, {"text": "Economic0 because fees cancel between legs"}, {"text": "A preserved optimum because every intermediate bonus is potential-based"}]}
+ explanation={"−2+2×2=2 in the written score. The bonus is an invented optimisation term, not cash in the account."}
+/>
+
+## Connect the decisions
+
+<MindMap client:visible title="From an account to an objective" root={{"label": "Reward specification", "children": [{"label": "Economic account", "children": [{"label": "Cash + marked inventory"}, {"label": "Actual fills and fees counted once"}, {"label": "Terminal ownership or liquidation"}]}, {"label": "Preference", "children": [{"label": "Mean versus risk criterion"}, {"label": "Units and state include moments or peak"}, {"label": "Constraints differ from finite penalties"}]}, {"label": "Discounting", "children": [{"label": "Finite gamma 1 is allowed"}, {"label": "Discounted score differs from terminal cash"}, {"label": "Calendar and horizon are part of objective"}]}, {"label": "Potential shaping", "children": [{"label": "Same gamma and time-aware state"}, {"label": "−Phi 0 + gamma^T PhiT boundary"}, {"label": "Zero terminal values handle variable stops"}]}, {"label": "Audit", "children": [{"label": "Reward bonus is not cash"}, {"label": "Unchanged-mid round trip has zero gross"}, {"label": "Credible fills and independent economic reconstruction"}]}]}} />
+
+<Quiz client:visible title="Audit the score before training" questions={[
+  {
+    "question": "Starting cash 1,000: buy 2 at 101, fee 1; later sell 2 at 103, fee 1. What is final cash?",
+    "options": [
+      {
+        "text": "1,002, including actual fills and both fees",
+        "correct": true
+      },
+      {
+        "text": "1,008, ignoring fill concessions and fees"
+      },
+      {
+        "text": "1,005, leaving the terminal mark instead of liquidating"
+      },
+      {
+        "text": "796, treating the purchase notional as a final loss"
+      }
+    ],
+    "explanation": "Final cash=1,000−202−1+206−1=1,002."
+  },
+  {
+    "question": "Net P&L was reconstructed from actual fill cash flows. What does subtracting the same spread concession again do?",
+    "options": [
+      {
+        "text": "Double-charges a cost already embedded in fills",
+        "correct": true
+      },
+      {
+        "text": "Corrects every mark automatically"
+      },
+      {
+        "text": "Turns a preference into a guaranteed execution constraint"
+      },
+      {
+        "text": "Makes realised and marked wealth identical before a sale"
+      }
+    ],
+    "explanation": "Cost decomposition can reconcile net P&L. It must not be an extra subtraction of the same economic charge."
+  },
+  {
+    "question": "A has mean 10 and variance 1; B has mean 10 and variance 400. At lambda 0.02 per USD, which scores follow?",
+    "options": [
+      {
+        "text": "A 9.98 USD and B 2 USD",
+        "correct": true
+      },
+      {
+        "text": "A 9.98 USD and B 9.98 USD"
+      },
+      {
+        "text": "A 10 USD and B 400 USD"
+      },
+      {
+        "text": "A −10 USD and B −400 USD"
+      }
+    ],
+    "explanation": "10−.02×1=9.98 and 10−.02×400=2. These are specified preference scores."
+  },
+  {
+    "question": "A rolling Sharpe derivative D is used as a step reward. Which claim is justified?",
+    "options": [
+      {
+        "text": "It provides a local moment-update signal under defined moments, not exact general episode-Sharpe equivalence",
+        "correct": true
+      },
+      {
+        "text": "Its undiscounted sum must equal every future Sharpe"
+      },
+      {
+        "text": "It remains defined when estimated variance is zero"
+      },
+      {
+        "text": "It removes state dependence on running moments"
+      }
+    ],
+    "explanation": "D is a derivative at zero adaptation rate. Finite changes, summing rewards, initialisation and regularisation need separate treatment."
+  },
+  {
+    "question": "Which two statements about finite potential shaping are correct?",
+    "options": [
+      {
+        "text": "Zero terminal potentials remove the boundary term for differing stopping times",
+        "correct": true
+      },
+      {
+        "text": "The shaping term must use the same gamma as the discounted return",
+        "correct": true
+      },
+      {
+        "text": "Any common nonzero terminal value works for every policy-dependent stopping time"
+      },
+      {
+        "text": "Preserving optimal policies guarantees an honest fill model"
+      }
+    ],
+    "explanation": "The boundary is−Phi 0+gamma^T PhiT. Initial state, terminal convention and consistent gamma matter; the theorem does not validate the simulator.",
+    "allowMultiple": true
+  },
+  {
+    "question": "At gamma 0.9, base scores A 9 and B 8.1 get common initial shift −3. B alone also gets terminal potential 5 after two transitions. What happens?",
+    "options": [
+      {
+        "text": "Shaped A 6 and B 9.15; this boundary changes the ranking",
+        "correct": true
+      },
+      {
+        "text": "A and B must retain the base ranking regardless of terminal values"
+      },
+      {
+        "text": "Both become 6 because all shaping contributions cancel to zero"
+      },
+      {
+        "text": "B becomes 13.1 because terminal potential is not discounted"
+      }
+    ],
+    "explanation": "B=8.1−3+.81×5=9.15; A=9−3=6."
+  },
+  {
+    "question": "Which audit distinguishes specification gaming from earned money?",
+    "options": [
+      {
+        "text": "Rebuild cash, inventory, feasible terminal exits and fees independently of the reward bonus",
+        "correct": true
+      },
+      {
+        "text": "Accept positive reward as proof of positive liquidated cash"
+      },
+      {
+        "text": "Treat every mark as a guaranteed full-position fill"
+      },
+      {
+        "text": "Reward more volume until the reward chart is smooth"
+      }
+    ],
+    "explanation": "Economic and optimisation ledgers answer different questions. Their assumptions must be explicit and tested."
+  }
+]} />

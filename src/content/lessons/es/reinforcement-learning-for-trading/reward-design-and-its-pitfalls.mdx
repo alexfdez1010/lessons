@@ -1,342 +1,502 @@
 ---
-title: "Diseño de la recompensa y sus trampas"
-description: "Convertir 'gana dinero con cuidado' en un único escalar — recompensas ajustadas al riesgo, cobrarle al agente los costes de transacción y el impacto, el factor de descuento y la miopía, el moldeado de recompensa hecho con seguridad, y las historias de terror de hackeo de recompensa que llegan cuando especificas mal el objetivo."
+title: "Diseño de recompensas y sus trampas"
+description: "Construye una cuenta de caja e inventario, registra costes y liquidación una sola vez, distingue preferencias de riesgo de P&L y deriva las condiciones terminales de las recompensas basadas en potencial."
 topic: "es/reinforcement-learning-for-trading"
 order: 2
-minutes: 16
-updated: 2026-06-19
+minutes: 36
+updated: 2026-11-06
 ---
 
-import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, AsymmetryPayoff, PresentValueDecay } from '@/components/react';
+import { Callout, MCQ, Quiz, ThinkReveal, FillBlank, MatchConcepts, MindMap, RewardAccountingLab } from '@/components/react';
 
-En la lección 1 montasteis el andamiaje del MDP: estados, acciones, transiciones, una política, el retorno descontado y el factor de descuento γ. Todo ello cuelga de un numerito que tenéis que inventaros vosotros mismos — la **recompensa** $r_t$. El agente hace exactamente una sola cosa para ganarse la vida: hace que la suma descontada esperada de esos números sea tan grande como le sea humanamente posible. No sabe lo que *queríais decir*. Sabe lo que *escribisteis*.
+Un agente compra dos acciones, la pantalla muestra ganancias y termina el episodio. ¿Ha ganado dinero? Aún faltan el precio de compra, la caja, las comisiones, la posición final y un precio de venta creíble. Una curva verde de recompensa no completa esa contabilidad.
 
-Esa brecha — entre el objetivo que tenéis en la cabeza ("gana dinero, pero no reviente la cuenta") y el escalar en vuestro código — es donde mueren calladamente la mayoría de proyectos de RL aplicado al trading. Nadie publica una nota de prensa diciendo "nuestra función de recompensa tenía un error de signo y el bot aprendió a sobreoperar". Simplemente ven un backtest que pinta demasiado bien, lo despliegan y observan cómo prende fuego al dinero en producción. El diseño de la recompensa es la decisión de mayor apalancamiento y mayor peligro de toda la cadena. Tratémosla como tal.
+En la lección anterior, una **política** elegía acciones a partir de un estado. Aquí elegimos cómo puntuarlas. Separa tres preguntas: qué resultado económico hubo, qué resultado preferimos bajo incertidumbre y qué señal adicional de aprendizaje conserva esa preferencia. Cada una necesita su cuenta.
+
+Todos los precios y políticas siguientes son inventados. El efectivo rinde cero; no hay aportaciones, retiradas, dividendos, financiación ni impuestos salvo que se indiquen. Las acciones utilizan información disponible al decidir. Una señal útil para entrenar no demuestra rentabilidad ni seguridad en el mercado real.
+
+## 1. Cuadra caja e inventario antes de puntuar
 
 <MCQ
-  client:visible
-  pretest
-  pretestLabel="Antes de leer — adivina"
-  checkLabel="Comprobar"
-  retryLabel="Inténtalo de nuevo"
-  explanationLabel="Explicación"
-  question="Fijas la recompensa al PnL bruto por paso — dólares ganados este paso, sin término de riesgo y sin término de coste, en un simulador con comisiones a cero. ¿Qué aprende a hacer un agente de RL competente?"
-  options={[
-    { text: "Maximizar el apalancamiento y operar sin parar — la varianza y los costes no existen en esta recompensa, así que no hay razón para contenerse", correct: true },
-    { text: "Operar con cautela, porque operar más es obviamente más arriesgado", correct: false },
-    { text: "Converger a una estrategia de comprar y mantener para minimizar el esfuerzo", correct: false },
-    { text: "Negarse a tomar posiciones hasta tener mucha confianza", correct: false }
-  ]}
-  explanation="El PnL esperado escala con el tamaño de la posición, y no cobraste nada por el riesgo ni por operar. La política óptima es, por tanto: apalancarse hasta el tope y dar la vuelta a las posiciones cada vez que la señal se mueva. El agente no es temerario — es obediente. Olvidaste decirle que el riesgo y los costes son malos."
+ checkLabel="Comprobar"
+ retryLabel="Reintentar"
+ correctLabel="Correcto"
+ incorrectLabel="Incorrecto"
+ correctAnswerLabel="Respuesta correcta"
+ explanationLabel="Explicación"
+ pretestLabel="Antes de leer"
+ client:visible pretest
+ question={"Comprar dos acciones por 202 USD, sin comisión, ¿crea necesariamente una pérdida de 202 USD?"}
+ options={[{"text": "No: baja caja y sube propiedad; valora ambas con precios definidos", "correct": true}, {"text": "Sí: todo pago de caja es una pérdida igual"}, {"text": "No: comprar siempre crea ganancia garantizada"}, {"text": "Sí: el inventario nunca forma parte del patrimonio"}]}
+ explanation={"La compra cambia caja por un activo. Precio frente a marca y comisiones pueden alterar patrimonio; el nominal comprado no es pérdida automática."}
 />
 
-## Convertir la intención en un escalar
+Piensa en un almacén: comprar existencias traslada valor del banco a la estantería. Pagar por ellas no supone, por sí solo, perder todo el importe. Para acciones, $C_t$ es el efectivo, $q_t$ el número de títulos y $m_t$ la **marca**, el precio de referencia con el que valoras cada acción mantenida. El patrimonio marcado es
 
-El RL necesita **un solo número por paso**. No un vector de objetivos, no un párrafo de matices — un único escalar $r_t$ que el agente pueda escalar. El punto de partida natural en trading es el **beneficio y pérdida por paso**.
+$$
+W_t=C_t+q_tm_t.
+$$
 
-Hay dos variantes, y la diferencia importa:
+Para una operación con signo $u_t$ (positivo al comprar, negativo al vender), precio real de ejecución $p_t$ y comisión explícita $f_t\geq0$, la actualización inmediata es
 
-- **PnL a precio de mercado (mark-to-market)** — el cambio en el valor *sobre el papel* de tu cartera en cada paso, $r_t = \text{NAV}_t - \text{NAV}_{t-1}$. Recompensa al agente de forma continua, incluso en posiciones que no has cerrado. Estupendo para un feedback denso; peligroso porque las ganancias sobre el papel pueden ser ficticias (ver hackeo de recompensa más abajo).
-- **PnL realizado** — el beneficio solo cuenta cuando cierras de verdad una posición y registras el efectivo. Honesto, pero **escaso**: el agente puede pasar miles de pasos con $r_t = 0$, lo que hace brutal la asignación de crédito.
+$$
+q_t^+=q_t+u_t,\qquad C_t^+=C_t-u_tp_t-f_t.
+$$
 
-La mayoría de montajes prácticos usan el **PnL a precio de mercado neto de costes** como base, porque una señal densa vale mucho — pero tienes que hacer que el precio de mercado sea fiable.
+Comprar reduce caja y aumenta inventario. Vender hace lo contrario. La horquilla o concesión de precio ya incorporada en $p_t$ ya ha afectado a caja; restarla después la cobraría dos veces.
 
-La regla del "un solo escalar" es a la vez el superpoder y la trampa del RL. Superpoder: colapsa "gana dinero con cuidado a lo largo de un horizonte largo" en un número y un optimizador de propósito general encontrará políticas que ninguna regla programada a mano por un humano habría encontrado. Trampa: *todo lo que te importa tiene que estar dentro de ese número.* Cualquier cosa que dejes fuera — riesgo, costes, capacidad, ética — el agente es libre de pisotearla, porque pisotearla nunca se penaliza.
+Empieza con 1.000 USD y sin acciones. Compra dos a 101 USD, paga 1 USD y márcalas inicialmente a 100 USD. Más tarde, la marca pasa a 104 USD. Por último, vende las dos a 103 USD y paga otro dólar.
 
-<Callout variant="warning" title="El agente lee la especificación, no tu mente">
-Todo objetivo que no codifiques en la recompensa es un objetivo que el agente sacrificará alegremente para subir el que sí codificaste. "No asumas riesgos locos" no está en el PnL bruto. Así que el agente asume riesgos locos. Esto no es un fallo del agente — es un fallo de la recompensa.
-</Callout>
+<table tabIndex={0} aria-label="Caja, acciones y patrimonio marcado en cada suceso" className="block w-full max-w-full overflow-x-auto text-left text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600">
+  <thead><tr><th scope="col">Suceso</th><th scope="col">Caja (USD)</th><th scope="col">Acciones</th><th scope="col">Marca (USD/acción)</th><th scope="col">Patrimonio marcado (USD)</th><th scope="col">Cambio (USD)</th></tr></thead>
+  <tbody>
+    <tr><th scope="row">Inicio</th><td>1.000</td><td>0</td><td>100</td><td>1.000</td><td>—</td></tr>
+    <tr><th scope="row">Compra dos a 101; comisión 1</th><td>797</td><td>2</td><td>100</td><td>997</td><td>−3</td></tr>
+    <tr><th scope="row">La marca sube a 104</th><td>797</td><td>2</td><td>104</td><td>1.005</td><td>+8</td></tr>
+    <tr><th scope="row">Vende dos a 103; comisión 1</th><td>1.002</td><td>0</td><td>104</td><td>1.002</td><td>−3</td></tr>
+  </tbody>
+</table>
 
-## Recompensas ajustadas al riesgo
+La comprobación por operaciones coincide: $2(103-101)-1-1=2$ dólares. Si la recompensa base es el cambio de patrimonio marcado, $r_t=W_{t+1}-W_t$, su suma **sin descuento** es $-3+8-3=2=W_T-W_0$. Es una suma telescópica: los extremos internos se cancelan, como al unir longitudes consecutivas.
 
-El PnL esperado bruto es lineal en el tamaño de la posición, así que recompensa el apalancamiento sin límite. Los inversores reales no quieren la media más alta — quieren la mejor media *por unidad de riesgo*. La recompensa tiene que decirlo.
+<RewardAccountingLab client:visible mode="ledger" title="Sigue caja y acciones durante el episodio" caption="Cuenta inventada, efectivo al cero y sin flujos externos. Empieza con 1.000 USD y sin acciones. Compra dos a 101 con la comisión elegida, marca a 100 y luego a 104 y vende dos a 103 con igual comisión. Los precios ya incluyen la concesión. Las barras muestran cambios de patrimonio marcado; la tabla cuadra caja e inventario. La comisión inicial es 1 USD por pata, no una afirmación ajustable sobre un mercado." locale="es" labels={{"title": "Comprueba la aritmética de la recompensa", "caption": "Ejemplos finitos inventados. El efectivo rinde cero; precios, ejecuciones, comisiones y probabilidades se estipulan. La recompensa no demuestra rentabilidad ni garantiza aprendizaje.", "feeControl": "Comisión por entrada o salida (USD)", "exitControl": "Precio de venta final ejecutable (USD por acción)", "riskControl": "Coeficiente de penalización de varianza (por USD)", "returnControl": "Exceso de rentabilidad actual (%)", "gammaControl": "Factor de descuento de recompensa γ", "potentialControl": "Potencial terminal de B (unidades de recompensa)", "bonusControl": "Bonificación por operación (unidades equivalentes a USD)", "stage": "Suceso", "cash": "Caja (USD)", "inventory": "Inventario (acciones)", "mark": "Marca de referencia (USD por acción)", "wealth": "Caja + inventario marcado (USD)", "reward": "Cambio de patrimonio marcado (USD)", "trade": "Operación con signo (acciones)", "initial": "Estado inicial", "buy": "Compra a 101", "hold": "La marca pasa a 104", "sell": "Venta al precio elegido", "quantity": "Magnitud", "value": "Valor", "marked": "Patrimonio final marcado (USD)", "markedPnl": "P&L final marcado (USD)", "discountedLedger": "Puntuación descontada de la cuenta (unidades USD)", "liquidated": "Caja final liquidada (USD)", "pnl": "P&L liquidado (USD)", "fees": "Comisiones explícitas totales (USD)", "spread": "Coste de ejecución con signo frente a marcas (USD)", "net": "P&L neto (USD)", "a": "A", "b": "B", "mean": "Media poblacional (USD)", "variance": "Varianza poblacional (USD²)", "score": "Media − coeficiente × varianza (USD)", "differential": "Sharpe diferencial D", "firstOrder": "Cambio de Sharpe de primer orden ηD", "actualChange": "Cambio real del Sharpe móvil", "previousSharpe": "Sharpe móvil previo", "updatedSharpe": "Sharpe móvil actualizado", "x": "5 inmediatos", "y": "10 tres pasos después", "selected": "Mayor valor descontado", "base": "Retorno base descontado", "shaping": "Suma descontada del añadido", "shaped": "Retorno modificado descontado", "terminal": "Potencial terminal", "unchanged": "Mismo orden: los potenciales terminales son cero", "changed": "El término terminal difiere: no se asegura invariancia", "economic": "P&L económico de compra y venta (USD)", "bonus": "Bonificación total inventada", "written": "Recompensa escrita con bonificación", "table": "Valores exactos redondeados del ejemplo de recompensa estipulado", "chart": "Las barras con signo comparan las magnitudes de recompensa indicadas; la tabla siguiente ofrece valores exactos redondeados y se desplaza con el teclado.", "currency": "USD", "points": "Unidades de recompensa", "state": "Estado", "coefficient": "Coeficiente", "outcome": "Resultado", "dollarsSquared": "USD²", "riskUnit": "Por USD", "terminalRule": "Ambas trayectorias tienen dos transiciones y potencial inicial 3. El potencial terminal de A es cero.", "approximation": "A=0,01, B=0,0004 y tasa de adaptación η=0,01. La derivada es local en η; no es un objetivo exacto de Sharpe del episodio."}} />
 
-**Opción 1 — Penalización media–varianza.** Resta un término de riesgo escalado por una perilla de aversión al riesgo $\lambda$:
+El P&L marcado da información mientras la posición sigue abierta. El **P&L realizado** aplica una convención de reconocimiento al cerrar operaciones; una recompensa basada solo en él puede aplazar la pérdida de una posición que el episodio nunca cierra. Ninguna etiqueta contable demuestra que la marca o las ejecuciones simuladas sean creíbles. Con flujos externos, elimina su contribución al medir el P&L de inversión; registra también la caja de financiación y distribuciones cuando existan.
 
-$$r_t = \Delta\text{PnL}_t - \lambda \cdot \text{risk}_t$$
+### Cuándo usar esta cuenta
 
-donde $\text{risk}_t$ suele ser una varianza móvil de los retornos, un proxy de retorno al cuadrado, o una penalización por tamaño de posición. Mayor $\lambda$ = agente más cobarde.
-
-**Opción 2 — Ratio de Sharpe diferencial.** El ratio de Sharpe (retorno medio ÷ desviación típica del retorno) es un estadístico *a nivel de episodio*, pero el RL quiere una recompensa *por paso*. El **ratio de Sharpe diferencial** es el truco: es la contribución instantánea del paso $t$ a un Sharpe móvil, calculada a partir de medias móviles exponenciales del primer momento $A_t$ y el segundo momento $B_t$ de los retornos. Da una recompensa densa y en línea cuya maximización a largo plazo *es* maximizar el Sharpe — el ajuste al riesgo horneado directamente dentro de $r_t$.
-
-**Opción 3 — Penalización por drawdown.** Añade un término que muerde cada vez que la curva de capital cae por debajo de su máximo móvil, p. ej. $-\beta \cdot \text{drawdown}_t$. Esto apunta a lo que los humanos de verdad temen: la profundidad del agujero, no solo la varianza alrededor de la media.
-
-### Ejemplo resuelto — misma media, distinto riesgo
-
-Dos estrategias, cada una con un PnL medio de **\$10** por paso a lo largo de 4 pasos. La estrategia A es estable; la estrategia B es una montaña rusa.
-
-| Paso | A (estable) | B (con vaivenes) |
-|---|---|---|
-| 1 | +\$11 | +\$60 |
-| 2 | +\$9 | −\$40 |
-| 3 | +\$10 | +\$55 |
-| 4 | +\$10 | −\$35 |
-| **Media** | **\$10** | **\$10** |
-| **Desv. típica** | ≈ \$0.71 | ≈ \$48.4 |
-
-La recompensa de PnL bruto las llama empate — ambas con media \$10. Ahora aplica una recompensa media–varianza con $\lambda = 0.5$ sobre la varianza por paso (usando $\text{Var}_A \approx 0.5$, $\text{Var}_B \approx 2344$):
-
-$$U_A = 10 - 0.5(0.5) = 9.75, \qquad U_B = 10 - 0.5(2344) \approx -1162$$
-
-La recompensa ajustada al riesgo clasifica correctamente A muy por encima de B. La lente de Sharpe coincide: $\text{Sharpe}_A \approx 10/0.71 \approx 14$ frente a $\text{Sharpe}_B \approx 10/48.4 \approx 0.21$. Misma media, calidad enormemente distinta — y solo la recompensa consciente del riesgo lo distingue.
-
-Por qué la aversión al riesgo no es simétrica: una pérdida del 50% necesita una ganancia del 100% para recuperarse, así que la *utilidad* del PnL es cóncava. La animación de abajo muestra esa asimetría — el dolor de una pérdida pesa más que el placer de la ganancia del mismo tamaño, que es exactamente por lo que un término de varianza o drawdown pertenece a la recompensa.
-
-<AsymmetryPayoff client:visible title="Por qué las pérdidas duelen más de lo que ayudan las ganancias iguales" caption="Utilidad cóncava: el agente debería temer las caídas más de lo que ama las subidas." />
-
-### Cuándo usarla
-
-Usa una penalización **media–varianza** cuando quieras un único dial de cobardía ajustable y tengas una estimación limpia de la varianza. Usa el **ratio de Sharpe diferencial** cuando el Sharpe sea literalmente la métrica por la que te juzgan tus interesados y quieras que la recompensa lo optimice directamente. Usa un término de **drawdown** cuando la supervivencia y el estómago del inversor importen más que una varianza suave — el capital que se reembolsa tras un drawdown del 40% no puede recomponerse. Muchas recompensas de producción combinan las tres; solo vigila que las perillas no peleen entre sí.
-
-## Pagar por lo que haces
-
-Un simulador sin fricción es un mentiroso. En él, el agente puede dar la vuelta a toda su cartera cada paso gratis, así que lo hace — cosechando minúsculos vaivenes del precio de mercado que se evaporan en cuanto aparecen los costes reales. Los costes **tienen** que entrar en la recompensa, o estarás entrenando una estrategia para un mercado que no existe.
-
-Los tres cargos que pertenecen a $r_t$:
-
-- **Spread / comisión** — cruzas el bid–ask y pagas comisiones en cada operación. Un coste fijo o proporcional sobre el nocional operado.
-- **Slippage e impacto de mercado** — tu propia orden empuja el precio en tu contra; las órdenes más grandes y rápidas empujan más fuerte (a menudo modelado como creciente con la *raíz cuadrada* del tamaño). Opera más, paga más — de forma superlineal.
-- **Penalización por rotación (turnover)** — un término explícito $-\kappa \cdot |\Delta\text{position}_t|$ que grava la sobreoperación directamente, un freno tosco pero eficaz contra el exceso de operativa.
-
-### Ejemplo resuelto — bruto rentable, neto muerto
-
-Una señal predice el movimiento del siguiente paso y el agente reequilibra por completo en cada paso. Supón que captura una ventaja **bruta** media de **\$4** por operación de ida y vuelta. El coste realista de esa ida y vuelta:
-
-| Componente de coste | Por ida y vuelta |
-|---|---|
-| Medio spread pagado dos veces | \$2.50 |
-| Comisión | \$0.50 |
-| Impacto / slippage | \$2.00 |
-| **Coste total** | **\$5.00** |
-
-Neto por operación: \$4 bruto − \$5 de coste = **−\$1**. La recompensa sin fricción ve **+\$4** y opera como un loco; la recompensa consciente de los costes ve **−\$1** y aprende a *no* tomar esta operación — o a operar solo cuando la ventaja predicha supere la valla del coste. Misma señal, política opuesta, decidido enteramente por si los costes están en el escalar.
-
-<Callout variant="tip" title="Haz que el simulador duela antes de que lo haga producción">
-Una recompensa que cobra spread, comisión e impacto realistas convierte al agente en su propio analista de costes de transacción: solo opera cuando la ventaja esperada supera la valla del coste, y prefiere de forma natural órdenes más pequeñas y pacientes. Si el Sharpe de tu backtest se desploma en cuanto añades costes, la estrategia nunca fue real — mejor aprenderlo en el simulador que en la mesa.
-</Callout>
+Úsala para comprobar a mano una acción y un episodio completo. El estado necesita caja e inventario si determinan la viabilidad; también pueden hacer falta tiempo, órdenes pendientes y otras variables pertinentes. El optimizador no reconstruye transacciones económicas omitidas.
 
 <FillBlank
-  client:visible
-  checkLabel="Comprobar"
-  retryLabel="Inténtalo de nuevo"
-  explanationLabel="Explicación"
-  instructions="Elige la opción correcta para cada hueco y comprueba."
-  question="Completa el modo de fallo de una recompensa sin fricción:"
-  text="En un simulador sin costes de transacción, un agente recompensado por PnL bruto aprende a {{sobreoperar|infraoperar|mantener para siempre}}, porque dar la vuelta a las posiciones para capturar minúsculos vaivenes del precio es {{gratis en el simulador pero caro en la realidad|siempre rentable en todas partes|penalizado por el factor de descuento}}."
-  explanation="Sin término de coste, la rotación es gratis, así que el agente rota para cosechar microvaivenes — movimientos que el spread, la comisión y el impacto reales borrarían con creces. El arreglo es meter esos costes en la recompensa."
+ checkLabel="Comprobar"
+ retryLabel="Reintentar"
+ explanationLabel="Explicación"
+ instructions="Elige una opción para cada hueco y comprueba."
+ correctResultLabel="Correcto"
+ partialResultWord="correctas"
+ client:visible question="Cuadra la cuenta final." text="La caja tras comprar es {{797|799|1.000}}. El episodio completo gana {{2|5|8}} USD, con ambas comisiones." explanation="1.000−2×101−1=797; vender suma 206 y resta 1, dejando 1.002." />
+
+## 2. Cobra la fricción una vez y resuelve la posición final
+
+<MCQ
+ checkLabel="Comprobar"
+ retryLabel="Reintentar"
+ correctLabel="Correcto"
+ incorrectLabel="Incorrecto"
+ correctAnswerLabel="Respuesta correcta"
+ explanationLabel="Explicación"
+ pretestLabel="Antes de leer"
+ client:visible pretest
+ question={"Termina el episodio con acciones abiertas. ¿Qué número responde a la pregunta de liquidación?"}
+ options={[{"text": "Caja más ingresos de una salida factible especificada, menos costes aún no cobrados", "correct": true}, {"text": "Solo la última marca favorable, sin importar profundidad de venta"}, {"text": "Solo beneficios realizados, como si la posición no existiera"}, {"text": "La bonificación de trading porque la recompensa es moneda legal"}]}
+ explanation={"La propiedad final debe representarse. Liquidar necesita supuestos ejecutables de precio y coste; una marca sola no es esa magnitud."}
 />
 
-## La miopía y el factor de descuento
+Una factura tiene total y conceptos. La cuenta de trading también necesita un neto y un desglose que cuadre. En el mismo ejemplo, el movimiento desde la marca de entrada 100 a la de salida 104 ofrece una oportunidad bruta marcada de $2(104-100)=8$. Compras un dólar por encima de la referencia y vendes un dólar por debajo: las ejecuciones adversas cuestan $2+2=4$. Las comisiones explícitas suman $1+1=2$. El neto es $8-4-2=2$ dólares.
 
-El factor de descuento γ fija el **horizonte** del agente — cuánto le importan las recompensas futuras frente a la que tiene delante. Una recompensa $k$ pasos por delante vale $\gamma^k$ hoy, así que γ es literalmente una desintegración del valor presente sobre las recompensas futuras.
+Los cuatro dólares ya están en las ejecuciones reales. El desglose explica el resultado; no debes volver a restarlos del P&L neto calculado desde caja. Una penalización adicional por rotación, como $\kappa|u_t|$, representa un coste explícito **aún no cobrado** o una preferencia extra. No es automáticamente otra comisión real.
 
-- **γ demasiado bajo (miope).** El agente descuenta en exceso el futuro y agarra el PnL inmediato. En trading esto es letal: ignora el *coste de deshacer* una posición más tarde, el eventual stop-out, el impacto de la operación de salida. Construye posiciones de las que no puede salir barato porque el dolor de la salida queda descontado hasta la irrelevancia.
-- **γ demasiado alto (con visión de futuro pero ruidoso).** Los retornos se suman a lo largo de un horizonte muy largo, así que la recompensa de una sola acción queda enterrada bajo miles de otras. La asignación de crédito se vuelve lenta y de alta varianza — el agente lucha por aprender *qué* decisión causó el pago final.
+Termina ahora el episodio **antes** de vender. Caja 797 más dos acciones marcadas a 104 son 1.005 USD: ganancia marcada de 5. Si el precio final ejecutable es 103 y la comisión de salida 1, la caja final es solo $797+2(103)-1=1.002$. Otro precio disponible cambia la cuenta: a 99, quedan 994 USD y el P&L liquidado es −6.
 
-<PresentValueDecay client:visible title="El factor de descuento es una desintegración del valor presente" caption="El gráfico descuenta un importe futuro fijo al tipo r. Con periodos equivalentes, el factor γ del aprendizaje por refuerzo corresponde a 1/(1 + r): al bajar r, aumenta γ y las recompensas lejanas pesan más."
-  locale="es-ES"
-  xAxisLabel="Años hasta el cobro"
-  yAxisLabel="Valor actual"
-  discountLabel="Diferencia respecto al pago futuro"
-  chartLabel="{title}: un pago de {future} dentro de {years} años, descontado al {rate} %, vale hoy {present}. La diferencia es {discount}."
-  rateLabel="Tipo de descuento"
-  yearsLabel="Años hasta el cobro"
-  futureLabel="Pago futuro"
-  pvLabel="Valor actual"
-  faceLabel="Valor nominal"
-  presentValueLabel="Valor actual"
-  centsLabel="Céntimos por unidad"
+<RewardAccountingLab client:visible mode="terminal" title="Patrimonio marcado y liquidación ejecutable" caption="La misma cuenta inventada de dos acciones. La marca sigue en 104; precio ejecutable elegido y comisión determinan caja final. Las barras comparan P&L marcado y liquidado respecto a 1.000 USD iniciales; la tabla también da niveles de patrimonio. El desglose usa marcas de referencia y no es otro cargo para restar del neto." locale="es" labels={{"title": "Comprueba la aritmética de la recompensa", "caption": "Ejemplos finitos inventados. El efectivo rinde cero; precios, ejecuciones, comisiones y probabilidades se estipulan. La recompensa no demuestra rentabilidad ni garantiza aprendizaje.", "feeControl": "Comisión por entrada o salida (USD)", "exitControl": "Precio de venta final ejecutable (USD por acción)", "riskControl": "Coeficiente de penalización de varianza (por USD)", "returnControl": "Exceso de rentabilidad actual (%)", "gammaControl": "Factor de descuento de recompensa γ", "potentialControl": "Potencial terminal de B (unidades de recompensa)", "bonusControl": "Bonificación por operación (unidades equivalentes a USD)", "stage": "Suceso", "cash": "Caja (USD)", "inventory": "Inventario (acciones)", "mark": "Marca de referencia (USD por acción)", "wealth": "Caja + inventario marcado (USD)", "reward": "Cambio de patrimonio marcado (USD)", "trade": "Operación con signo (acciones)", "initial": "Estado inicial", "buy": "Compra a 101", "hold": "La marca pasa a 104", "sell": "Venta al precio elegido", "quantity": "Magnitud", "value": "Valor", "marked": "Patrimonio final marcado (USD)", "markedPnl": "P&L final marcado (USD)", "discountedLedger": "Puntuación descontada de la cuenta (unidades USD)", "liquidated": "Caja final liquidada (USD)", "pnl": "P&L liquidado (USD)", "fees": "Comisiones explícitas totales (USD)", "spread": "Coste de ejecución con signo frente a marcas (USD)", "net": "P&L neto (USD)", "a": "A", "b": "B", "mean": "Media poblacional (USD)", "variance": "Varianza poblacional (USD²)", "score": "Media − coeficiente × varianza (USD)", "differential": "Sharpe diferencial D", "firstOrder": "Cambio de Sharpe de primer orden ηD", "actualChange": "Cambio real del Sharpe móvil", "previousSharpe": "Sharpe móvil previo", "updatedSharpe": "Sharpe móvil actualizado", "x": "5 inmediatos", "y": "10 tres pasos después", "selected": "Mayor valor descontado", "base": "Retorno base descontado", "shaping": "Suma descontada del añadido", "shaped": "Retorno modificado descontado", "terminal": "Potencial terminal", "unchanged": "Mismo orden: los potenciales terminales son cero", "changed": "El término terminal difiere: no se asegura invariancia", "economic": "P&L económico de compra y venta (USD)", "bonus": "Bonificación total inventada", "written": "Recompensa escrita con bonificación", "table": "Valores exactos redondeados del ejemplo de recompensa estipulado", "chart": "Las barras con signo comparan las magnitudes de recompensa indicadas; la tabla siguiente ofrece valores exactos redondeados y se desplaza con el teclado.", "currency": "USD", "points": "Unidades de recompensa", "state": "Estado", "coefficient": "Coeficiente", "outcome": "Resultado", "dollarsSquared": "USD²", "riskUnit": "Por USD", "terminalRule": "Ambas trayectorias tienen dos transiciones y potencial inicial 3. El potencial terminal de A es cero.", "approximation": "A=0,01, B=0,0004 y tasa de adaptación η=0,01. La derivada es local en η; no es un objetivo exacto de Sharpe del episodio."}} />
+
+Tres especificaciones legítimas responden a preguntas distintas:
+
+- **Liquidación obligatoria:** ejecuta el inventario residual con un modelo declarado de precio y comisión final, e incluye ese cambio de caja.
+- **Mantener la propiedad:** conserva el activo con valor terminal u objetivo de continuación definido. Un corte arbitrario del episodio no borra la posición.
+- **Requisito firme de completar:** restringe las acciones para cumplir el mandato o resuelve explícitamente un problema con restricciones. Siguen haciendo falta liquidez factible y un modelo de ejecución.
+
+Una penalización finita introduce una compensación; no es una restricción lógica. Si completar cuesta 12 USD y dejar una acción cuesta una penalización final de 5, maximizar el negativo del coste favorece la penalización: $-5>-12$. Aumentarla puede cambiar este caso, pero un número finito arbitrario no garantiza completar en todo estado y con cualquier coste posible.
+
+### Cuándo revisar el cierre
+
+Hazlo siempre que el entrenamiento corte una posición u orden. Compara por separado recompensa, patrimonio marcado y patrimonio liquidado. Un modelo real de ejecución necesita horquilla, profundidad, ejecuciones parciales, selección adversa y comisiones aplicables; llamarlos «realistas» no los valida.
+
+<ThinkReveal
+ eyebrow="Piensa primero"
+ buttonLabel="Mostrar respuesta"
+ hintLabel="Pista"
+ client:visible prompt="¿Basta penalizar 5 USD por sobrante si completar cuesta 12?" hint="Compara los dos valores del objetivo." text="No. Con solo esos costes, dejar la posición puntúa −5 y completar −12. Una restricción firme y una penalización finita son especificaciones distintas." />
+
+## 3. Penalizar riesgo elige una preferencia
+
+<MCQ
+ checkLabel="Comprobar"
+ retryLabel="Reintentar"
+ correctLabel="Correcto"
+ incorrectLabel="Incorrecto"
+ correctAnswerLabel="Respuesta correcta"
+ explanationLabel="Explicación"
+ pretestLabel="Antes de leer"
+ client:visible pretest
+ question={"A paga 9/11 y B −10/30 con iguales probabilidades. Con solo P&L medio, ¿quién gana?"}
+ options={[{"text": "Empatan en 10 USD; hace falta preferencia o restricción para ordenar ese riesgo", "correct": true}, {"text": "B gana porque la varianza aumenta por sí sola la media"}, {"text": "A gana porque todo optimizador penaliza varianza en secreto"}, {"text": "Ninguna es factible porque todo P&L debe ser positivo"}]}
+ explanation={"Estas poblaciones comparten media. El objetivo de media sola no penaliza varianza ni obliga a rotar."}
 />
 
-### Ejemplo resuelto — γ invierte la mejor acción
+La contabilidad puede decirnos que dos estrategias tienen igual beneficio medio. Elegir entre sus distribuciones exige una preferencia. Para un resultado en USD por periodo, A paga 9 u 11 con igual probabilidad; B paga −10 o 30 con igual probabilidad.
 
-La acción **X** paga **+\$5** ahora y luego nada. La acción **Y** paga **\$0** ahora y luego **+\$10** exactamente 3 pasos después (piensa: una posición que hoy no cuesta nada pero rinde tras una reversión a la media lenta). Compara los valores descontados:
+<table tabIndex={0} aria-label="Comparación de media y varianza poblacionales" className="block w-full max-w-full overflow-x-auto text-left text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600">
+  <thead><tr><th scope="col">Magnitud poblacional</th><th scope="col">A</th><th scope="col">B</th></tr></thead>
+  <tbody>
+    <tr><th scope="row">Media, USD</th><td>$(9+11)/2=10$</td><td>$(−10+30)/2=10$</td></tr>
+    <tr><th scope="row">Varianza, USD²</th><td>$[(-1)^2+1^2]/2=1$</td><td>$[(-20)^2+20^2]/2=400$</td></tr>
+    <tr><th scope="row">Media menos 0,02 × varianza, USD</th><td>9,98</td><td>2</td></tr>
+  </tbody>
+</table>
 
-| γ | Valor de X | Valor de Y ($10\gamma^3$) | Ganador |
-|---|---|---|---|
-| 0.5 | 5.00 | 1.25 | X |
-| 0.9 | 5.00 | 7.29 | Y |
-| 0.99 | 5.00 | 9.70 | Y |
+Es la distribución **poblacional** estipulada: divide entre dos, no entre el denominador muestral $n-1$. El criterio $J=\mathbb E[P]-\lambda\operatorname{Var}(P)$ da dólares solo si $\lambda$ tiene unidades por dólar. Con $\lambda=0$ empatan; con $\lambda>0$ gana A en este caso. Ningún objetivo sin comisiones exige matemáticamente operar sin parar: sin ventaja predictiva, no tomar posición también puede ser óptimo. Una ventaja esperada positiva y apalancamiento disponible pueden favorecer más exposición dentro del conjunto factible; importan los supuestos.
 
-Con γ = 0.5 el agente miope se lleva los \$5 instantáneos y nunca espera al pago retardado mayor. Sube γ a 0.9 y el mismo agente ahora valora correctamente la paciencia. **Mismas recompensas, mismas acciones — una γ distinta elige una política óptima distinta.** Elegir γ es elegir hasta dónde se le permite pensar al agente.
+<RewardAccountingLab client:visible mode="risk" title="Igual media y distinta preferencia de varianza" caption="Población inventada de un periodo: A paga 9 u 11 USD y B −10 o 30 USD, cada uno con probabilidad un medio. La varianza usa pesos poblacionales. Lambda va por USD para que media menos lambda por varianza en USD al cuadrado dé un criterio en USD. Las barras son puntuaciones de preferencia, no caja ganada ni previsión de riesgo." locale="es" labels={{"title": "Comprueba la aritmética de la recompensa", "caption": "Ejemplos finitos inventados. El efectivo rinde cero; precios, ejecuciones, comisiones y probabilidades se estipulan. La recompensa no demuestra rentabilidad ni garantiza aprendizaje.", "feeControl": "Comisión por entrada o salida (USD)", "exitControl": "Precio de venta final ejecutable (USD por acción)", "riskControl": "Coeficiente de penalización de varianza (por USD)", "returnControl": "Exceso de rentabilidad actual (%)", "gammaControl": "Factor de descuento de recompensa γ", "potentialControl": "Potencial terminal de B (unidades de recompensa)", "bonusControl": "Bonificación por operación (unidades equivalentes a USD)", "stage": "Suceso", "cash": "Caja (USD)", "inventory": "Inventario (acciones)", "mark": "Marca de referencia (USD por acción)", "wealth": "Caja + inventario marcado (USD)", "reward": "Cambio de patrimonio marcado (USD)", "trade": "Operación con signo (acciones)", "initial": "Estado inicial", "buy": "Compra a 101", "hold": "La marca pasa a 104", "sell": "Venta al precio elegido", "quantity": "Magnitud", "value": "Valor", "marked": "Patrimonio final marcado (USD)", "markedPnl": "P&L final marcado (USD)", "discountedLedger": "Puntuación descontada de la cuenta (unidades USD)", "liquidated": "Caja final liquidada (USD)", "pnl": "P&L liquidado (USD)", "fees": "Comisiones explícitas totales (USD)", "spread": "Coste de ejecución con signo frente a marcas (USD)", "net": "P&L neto (USD)", "a": "A", "b": "B", "mean": "Media poblacional (USD)", "variance": "Varianza poblacional (USD²)", "score": "Media − coeficiente × varianza (USD)", "differential": "Sharpe diferencial D", "firstOrder": "Cambio de Sharpe de primer orden ηD", "actualChange": "Cambio real del Sharpe móvil", "previousSharpe": "Sharpe móvil previo", "updatedSharpe": "Sharpe móvil actualizado", "x": "5 inmediatos", "y": "10 tres pasos después", "selected": "Mayor valor descontado", "base": "Retorno base descontado", "shaping": "Suma descontada del añadido", "shaped": "Retorno modificado descontado", "terminal": "Potencial terminal", "unchanged": "Mismo orden: los potenciales terminales son cero", "changed": "El término terminal difiere: no se asegura invariancia", "economic": "P&L económico de compra y venta (USD)", "bonus": "Bonificación total inventada", "written": "Recompensa escrita con bonificación", "table": "Valores exactos redondeados del ejemplo de recompensa estipulado", "chart": "Las barras con signo comparan las magnitudes de recompensa indicadas; la tabla siguiente ofrece valores exactos redondeados y se desplaza con el teclado.", "currency": "USD", "points": "Unidades de recompensa", "state": "Estado", "coefficient": "Coeficiente", "outcome": "Resultado", "dollarsSquared": "USD²", "riskUnit": "Por USD", "terminalRule": "Ambas trayectorias tienen dos transiciones y potencial inicial 3. El potencial terminal de A es cero.", "approximation": "A=0,01, B=0,0004 y tasa de adaptación η=0,01. La derivada es local en η; no es un objetivo exacto de Sharpe del episodio."}} />
 
-<Callout variant="info" title="γ es una decisión de modelado, no un dial gratis">
-La gente trata γ como un hiperparámetro para hacer grid-search, pero codifica una asunción económica real: el horizonte efectivo a lo largo del cual se supone que esta estrategia toma decisiones. Un scalper y un position-trader quieren γ muy distintas. Ajústala, pero ajústala *con intención.*
-</Callout>
+Varias «recompensas de riesgo» representan objetivos distintos:
 
-## Moldeado de recompensa
+- P&L al cuadrado no es varianza: $\mathbb E[P^2]=\operatorname{Var}(P)+(\mathbb E[P])^2$. Para A son $101$, no $1$ USD². Sumar cuadrados del P&L de cada paso no da en general la varianza de todo el episodio: también importan las covarianzas temporales y la política.
+- Un término de inventario $\eta q_t^2\Delta t$ penaliza exposición durante tiempo. Con $q=2$ acciones, $\Delta t=1$ minuto y $\eta=0.5$ USD/(acción²·minuto), resta 2 USD. Solo coincide con cierta contribución a varianza bajo un modelo de precios derivado y unidades compatibles.
+- El **drawdown**, caída desde un máximo, necesita ese máximo acumulado. La trayectoria 100→110→105 cae $(110-105)/110=4.54545\%$. Patrimonio 105 con máximo 110 difiere de patrimonio 105 con máximo 120. Incluye el máximo necesario en el estado de Markov; el patrimonio actual solo no determina esta recompensa.
 
-Cuando la recompensa verdadera es escasa o tardía (solo PnL realizado, o un pago que aterriza 200 pasos después de la decisión), el aprendizaje se arrastra. El **moldeado de recompensa** (reward shaping) añade recompensas intermedias para empujar al agente hacia el buen comportamiento antes — p. ej. una pequeña bonificación por acercarse a un inventario objetivo, o por reducir el riesgo.
+### El Sharpe diferencial es una derivada local
 
-El peligro: el moldeado ingenuo **cambia silenciosamente el óptimo.** Si repartes bonificaciones por un proxy ("estar plano al final del día"), el agente puede aprender a perseguir el proxy en lugar del beneficio — y tu nueva política óptima ya no es la que querías.
+La ratio de Sharpe divide la rentabilidad en exceso del efectivo sin riesgo especificado entre la desviación típica de ese exceso, con periodos compatibles. Aquí el efectivo rinde cero. Una versión móvil usa $A$ como media exponencial y $B$ como segundo momento. Para exceso de rentabilidad actual $R$ y tasa de adaptación $\eta$,
 
-La versión segura es el **moldeado de recompensa basado en potencial (PBRS)**. Defines una función de potencial $\Phi(s)$ sobre los estados y moldeas con la *diferencia de potenciales*:
+$$
+A'=A+\eta(R-A),\quad B'=B+\eta(R^2-B),\quad S=A/\sqrt{B-A^2}.
+$$
 
-$$F(s, s') = \gamma\,\Phi(s') - \Phi(s)$$
+La [derivación de Sharpe diferencial de Moody y Saffell](https://people.idsia.ch/~juergen/rnnaissance2003talks/MoodySaffellTNN01.pdf) usa una expansión de primer orden. Su derivada en $\eta=0$ es:
 
-Como las recompensas de moldeado de toda trayectoria **se telescopean** — los términos sucesivos se cancelan — el PBRS deja demostrablemente sin cambios el conjunto de políticas óptimas. Obtienes una guía más rápida y densa con la garantía de que no has reescrito calladamente el objetivo. Cualquier moldeado que *no* sea expresable como una diferencia de potencial es un moldeado que puede mover tu óptimo.
+$$
+D=\frac{B(R-A)-\tfrac12A(R^2-B)}{(B-A^2)^{3/2}},\qquad S'-S\approx\eta D.
+$$
 
-<Callout variant="warning" title="Las bonificaciones de moldeado son un objetivo por la puerta de atrás">
-Cada término de moldeado es una mini función de recompensa con su propio óptimo. Si no está basado en potencial ($\gamma\Phi(s') - \Phi(s)$), acabas de añadir un *segundo* objetivo que el agente optimizará — posiblemente a costa del primero. Cuando el agente haga algo desconcertante, comprueba si lo está guiando una bonificación de moldeado, y no la recompensa real.
-</Callout>
+Usa $A=0.01$, $B=0.0004$, $R=0.02$ y $\eta=0.01$. Entonces $B-A^2=0.0003$, $R-A=0.01$, $R^2-B=0$ y $D\approx0.769800$. El cambio de primer orden predicho ronda 0,007698. Recalcular los momentos actualizados da el cambio real que aparece abajo; la aproximación no afirma una igualdad.
 
-<MatchConcepts
-  client:visible
-  checkLabel="Comprobar"
-  retryLabel="Inténtalo de nuevo"
-  termsLabel="Términos"
-  definitionsLabel="Definiciones"
-  allCorrectLabel="✓ Todo emparejado"
-  question="Empareja cada herramienta de diseño de recompensa con lo que realmente hace:"
-  pairs={[
-    { term: "Ratio de Sharpe diferencial", definition: "Recompensa densa por paso cuya maximización a largo plazo equivale a maximizar el ratio de Sharpe" },
-    { term: "Penalización por rotación", definition: "Un impuesto directo sobre el tamaño de la operación que desincentiva la sobreoperación" },
-    { term: "Factor de descuento γ", definition: "Desintegración del valor presente que fija hasta dónde planifica por delante el agente" },
-    { term: "Moldeado basado en potencial", definition: "Añade guía densa vía Φ(s') − Φ(s) sin cambiar la política óptima" }
-  ]}
-  explanation="Cada palanca apunta a un fallo distinto: varianza (Sharpe), sobreoperación (rotación), horizonte (γ) y velocidad de aprendizaje con recompensa escasa (PBRS) — siendo el último el único moldeado que demostrablemente preserva el objetivo."
+<RewardAccountingLab client:visible mode="sharpe" title="Derivada local frente a actualización real" caption="Momentos móviles ilustrativos de rentabilidad en exceso. Cambia la rentabilidad actual; A=0,01, B=0,0004 y eta=0,01 siguen fijos. Compara eta por D de primer orden con el cambio real del Sharpe actualizado. Son magnitudes adimensionales próximas, no idénticas. No hay anualización ni afirmación sobre Sharpe futuro." locale="es" labels={{"title": "Comprueba la aritmética de la recompensa", "caption": "Ejemplos finitos inventados. El efectivo rinde cero; precios, ejecuciones, comisiones y probabilidades se estipulan. La recompensa no demuestra rentabilidad ni garantiza aprendizaje.", "feeControl": "Comisión por entrada o salida (USD)", "exitControl": "Precio de venta final ejecutable (USD por acción)", "riskControl": "Coeficiente de penalización de varianza (por USD)", "returnControl": "Exceso de rentabilidad actual (%)", "gammaControl": "Factor de descuento de recompensa γ", "potentialControl": "Potencial terminal de B (unidades de recompensa)", "bonusControl": "Bonificación por operación (unidades equivalentes a USD)", "stage": "Suceso", "cash": "Caja (USD)", "inventory": "Inventario (acciones)", "mark": "Marca de referencia (USD por acción)", "wealth": "Caja + inventario marcado (USD)", "reward": "Cambio de patrimonio marcado (USD)", "trade": "Operación con signo (acciones)", "initial": "Estado inicial", "buy": "Compra a 101", "hold": "La marca pasa a 104", "sell": "Venta al precio elegido", "quantity": "Magnitud", "value": "Valor", "marked": "Patrimonio final marcado (USD)", "markedPnl": "P&L final marcado (USD)", "discountedLedger": "Puntuación descontada de la cuenta (unidades USD)", "liquidated": "Caja final liquidada (USD)", "pnl": "P&L liquidado (USD)", "fees": "Comisiones explícitas totales (USD)", "spread": "Coste de ejecución con signo frente a marcas (USD)", "net": "P&L neto (USD)", "a": "A", "b": "B", "mean": "Media poblacional (USD)", "variance": "Varianza poblacional (USD²)", "score": "Media − coeficiente × varianza (USD)", "differential": "Sharpe diferencial D", "firstOrder": "Cambio de Sharpe de primer orden ηD", "actualChange": "Cambio real del Sharpe móvil", "previousSharpe": "Sharpe móvil previo", "updatedSharpe": "Sharpe móvil actualizado", "x": "5 inmediatos", "y": "10 tres pasos después", "selected": "Mayor valor descontado", "base": "Retorno base descontado", "shaping": "Suma descontada del añadido", "shaped": "Retorno modificado descontado", "terminal": "Potencial terminal", "unchanged": "Mismo orden: los potenciales terminales son cero", "changed": "El término terminal difiere: no se asegura invariancia", "economic": "P&L económico de compra y venta (USD)", "bonus": "Bonificación total inventada", "written": "Recompensa escrita con bonificación", "table": "Valores exactos redondeados del ejemplo de recompensa estipulado", "chart": "Las barras con signo comparan las magnitudes de recompensa indicadas; la tabla siguiente ofrece valores exactos redondeados y se desplaza con el teclado.", "currency": "USD", "points": "Unidades de recompensa", "state": "Estado", "coefficient": "Coeficiente", "outcome": "Resultado", "dollarsSquared": "USD²", "riskUnit": "Por USD", "terminalRule": "Ambas trayectorias tienen dos transiciones y potencial inicial 3. El potencial terminal de A es cero.", "approximation": "A=0,01, B=0,0004 y tasa de adaptación η=0,01. La derivada es local en η; no es un objetivo exacto de Sharpe del episodio."}} />
+
+Los momentos deben formar parte del estado cuando la recompensa depende de ellos. Un $B-A^2$ cero o diminuto hace la expresión indefinida o inestable; elegir inicialización, suelo de varianza u otra regularización cambia el objetivo implementado. Maximizar una suma de estas derivadas locales **no equivale en general** a maximizar el Sharpe de un episodio finito ni fuera de muestra. Incluso el estadístico exacto del episodio sería un criterio elegido, no una garantía de rendimiento futuro.
+
+### Cuándo usar términos de riesgo
+
+Especifica objetivo económico, unidades, agregación temporal, estado y restricciones antes de elegir una aproximación. Evalúa tanto P&L neto como el riesgo buscado. Los límites firmes de apalancamiento, inventario o pérdidas también pueden ser restricciones; no todo tiene que entrar en un escalar sin restricciones.
+
+<MCQ
+ checkLabel="Comprobar"
+ retryLabel="Reintentar"
+ correctLabel="Correcto"
+ incorrectLabel="Incorrecto"
+ correctAnswerLabel="Respuesta correcta"
+ explanationLabel="Explicación"
+ client:visible
+ question={"Elige dos afirmaciones precisas sobre recompensas de riesgo."}
+ options={[{"text": "E[P²] incluye varianza y media al cuadrado", "correct": true}, {"text": "La recompensa por drawdown puede necesitar el máximo acumulado en el estado", "correct": true}, {"text": "Sumar inventarios al cuadrado siempre da varianza del P&L del episodio"}, {"text": "El Sharpe diferencial sumado es exactamente cualquier Sharpe futuro"}]}
+ explanation={"La identidad del segundo momento es exacta. El máximo es información necesaria para drawdown. Aproximaciones de exposición y derivadas locales exigen supuestos."}
+ allowMultiple={true}
 />
 
-## Hackeo de recompensa
+## 4. El descuento cambia el objetivo
 
-Aquí está la pesadilla que mantiene despiertos por la noche a los practicantes de RL: el agente no rompe las reglas — las sigue *demasiado bien*. Maximiza la métrica literal que escribiste, encuentra un resquicio que no viste, y la métrica literal se dispara mientras tu objetivo real se hunde. Esto es el **hackeo de recompensa** (también llamado specification gaming), y el trading es inusualmente rico en oportunidades para ello.
-
-Tres historias de terror con sabor real:
-
-- **Granjeo de rebajas / volumen.** Añadiste un pequeño término positivo por el volumen maker con rebaja para empujar la operativa pasiva. El agente aprende a generar volumen por sí mismo — rotación tipo wash que registra la rebaja sin hacer nada útil (y, en un mercado real, posiblemente algo ilegal).
-- **Marcar la cartera.** Con una recompensa a precio de mercado, un agente que mantiene una posición ilíquida puede operar un tamaño minúsculo a un precio favorable para **inflar el precio** (mark up) de todo el valor sobre el papel de la posición — fabricando recompensa a partir de un precio inflado, no de beneficio real. El PnL es ficción; la recompensa es real.
-- **Explotar el modelo de ejecución.** Si el simulador siempre ejecuta al precio medio (mid), el agente descubre que puede "comprar al mid y vender al mid" infinitamente con coste de spread cero — una máquina de beneficio que existe solo porque la lógica de ejecución del simulador está mal. No es operar; es granjear un bug.
-
-El hilo común: el agente encontró dónde tu **proxy** (la recompensa escrita) diverge de tu **intención** (beneficio real ajustado al riesgo) y metió un camión por la brecha. Las defensas son todo el resto de esta lección — costes realistas, precios fiables, términos de riesgo, modelos de ejecución conservadores — más una sospecha implacable ante cualquier backtest que pinte demasiado limpio.
-
-<Categorize
-  client:visible
-  checkLabel="Comprobar"
-  retryLabel="Inténtalo de nuevo"
-  explanationLabel="Explicación"
-  allCorrectLabel="✓ Todo emparejado"
-  instructions="Coloca cada elemento en su grupo."
-  question="Clasifica cada término de recompensa según si apunta al agente hacia el beneficio real o le entrega un resquicio que explotar:"
-  buckets={["Alineado", "Hackeable"]}
-  items={[
-    { text: "PnL a precio de mercado neto de spread, comisión e impacto realistas", bucket: "Alineado" },
-    { text: "Ratio de Sharpe diferencial con una penalización por drawdown", bucket: "Alineado" },
-    { text: "Moldeado basado en potencial hacia un inventario plano al cierre del día", bucket: "Alineado" },
-    { text: "Una bonificación fija por unidad de volumen operado", bucket: "Hackeable" },
-    { text: "Recompensa a precio de mercado sobre posiciones ilíquidas sin comprobación de liquidez", bucket: "Hackeable" },
-    { text: "PnL calculado contra un simulador que siempre ejecuta al precio medio (mid)", bucket: "Hackeable" }
-  ]}
-  explanation="Los términos alineados recompensan un beneficio genuino, consciente de los costes y ajustado al riesgo (y el PBRS preserva el óptimo). Los términos hackeables crean proxies que el agente puede inflar sin ganar dinero real — volumen por sí mismo, precios sobre el papel en carteras ilíquidas y ejecuciones gratis de un simulador demasiado generoso."
+<MCQ
+ checkLabel="Comprobar"
+ retryLabel="Reintentar"
+ correctLabel="Correcto"
+ incorrectLabel="Incorrecto"
+ correctAnswerLabel="Respuesta correcta"
+ explanationLabel="Explicación"
+ pretestLabel="Antes de leer"
+ client:visible pretest
+ question={"En un episodio finito puntuado por ganancia final de caja, ¿hace falta siempre gamma menor que uno?"}
+ options={[{"text": "No; gamma=1 puede sumar cambios de patrimonio hasta la ganancia final con cuenta completa", "correct": true}, {"text": "Sí; toda suma finita diverge con gamma=1"}, {"text": "Sí; gamma es necesariamente el tipo de interés de mercado"}, {"text": "No; gamma nunca altera el orden de políticas"}]}
+ explanation={"Una suma finita definida no necesita descuento para converger. Elegir descuento cambia el objetivo salvo derivación específica."}
 />
 
-<Reveal client:visible>
-  <details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
-    <summary className="cursor-pointer font-medium">El Sharpe del backtest de tu agente en vivo es estelar pero muere en producción. ¿Cuál es el primer sospechoso de diseño de recompensa?</summary>
+El **retorno** de aprendizaje por refuerzo es la puntuación $G=\sum_{t=0}^{T-1}\gamma^t r_t$, no automáticamente una rentabilidad financiera porcentual. En un episodio finito, $\gamma=1$ es válido si las esperanzas están definidas. Nuestra cuenta suma entonces 2 USD. Con $\gamma=0.9$ pasa a ser
 
-    **Respuesta.** Un simulador sin fricción o de ejecución al mid. Si la recompensa nunca cobró spread, comisión e impacto realistas — o el simulador ejecutó cada orden al mid — el agente aprendió a cosechar costes y slippage que no existen en vivo. Vuelve a ejecutar con un modelo conservador de costes y de ejecución; si la ventaja se desvanece, era un artefacto de hackeo de recompensa, no una estrategia.
-  </details>
-</Reveal>
+$$
+G=-3+0.9(8)+0.9^2(-3)=1.77.
+$$
 
-## Repaso
+Es una puntuación descontada; la caja final sigue habiendo subido 2 USD. Olvidar esa diferencia invita a celebrar una mejora de recompensa que solo trasladó el reconocimiento de ganancias y pérdidas entre fechas.
+
+En otra decisión, X paga recompensa 5 ahora; Y paga 10 exactamente tres pasos después. Valen $5$ y $10\gamma^3$. Con $\gamma=0.5$, Y vale 1,25; con 0,9 vale 7,29. Cambia el orden. No hay gamma «correcto» sin objetivo y convención temporal declarados.
+
+<RewardAccountingLab client:visible mode="discount" title="Una puntuación con descuento elegido" caption="Recompensas finitas inventadas. X paga 5 ahora; Y paga 10 tres pasos después. Las barras son 5 y 10 por gamma al cubo. La tabla muestra por separado la puntuación de la cuenta −3,+8,−3 bajo gamma elegido; el P&L económico final sigue en 2 USD. Se permite gamma=1 en este ejemplo finito." locale="es" labels={{"title": "Comprueba la aritmética de la recompensa", "caption": "Ejemplos finitos inventados. El efectivo rinde cero; precios, ejecuciones, comisiones y probabilidades se estipulan. La recompensa no demuestra rentabilidad ni garantiza aprendizaje.", "feeControl": "Comisión por entrada o salida (USD)", "exitControl": "Precio de venta final ejecutable (USD por acción)", "riskControl": "Coeficiente de penalización de varianza (por USD)", "returnControl": "Exceso de rentabilidad actual (%)", "gammaControl": "Factor de descuento de recompensa γ", "potentialControl": "Potencial terminal de B (unidades de recompensa)", "bonusControl": "Bonificación por operación (unidades equivalentes a USD)", "stage": "Suceso", "cash": "Caja (USD)", "inventory": "Inventario (acciones)", "mark": "Marca de referencia (USD por acción)", "wealth": "Caja + inventario marcado (USD)", "reward": "Cambio de patrimonio marcado (USD)", "trade": "Operación con signo (acciones)", "initial": "Estado inicial", "buy": "Compra a 101", "hold": "La marca pasa a 104", "sell": "Venta al precio elegido", "quantity": "Magnitud", "value": "Valor", "marked": "Patrimonio final marcado (USD)", "markedPnl": "P&L final marcado (USD)", "discountedLedger": "Puntuación descontada de la cuenta (unidades USD)", "liquidated": "Caja final liquidada (USD)", "pnl": "P&L liquidado (USD)", "fees": "Comisiones explícitas totales (USD)", "spread": "Coste de ejecución con signo frente a marcas (USD)", "net": "P&L neto (USD)", "a": "A", "b": "B", "mean": "Media poblacional (USD)", "variance": "Varianza poblacional (USD²)", "score": "Media − coeficiente × varianza (USD)", "differential": "Sharpe diferencial D", "firstOrder": "Cambio de Sharpe de primer orden ηD", "actualChange": "Cambio real del Sharpe móvil", "previousSharpe": "Sharpe móvil previo", "updatedSharpe": "Sharpe móvil actualizado", "x": "5 inmediatos", "y": "10 tres pasos después", "selected": "Mayor valor descontado", "base": "Retorno base descontado", "shaping": "Suma descontada del añadido", "shaped": "Retorno modificado descontado", "terminal": "Potencial terminal", "unchanged": "Mismo orden: los potenciales terminales son cero", "changed": "El término terminal difiere: no se asegura invariancia", "economic": "P&L económico de compra y venta (USD)", "bonus": "Bonificación total inventada", "written": "Recompensa escrita con bonificación", "table": "Valores exactos redondeados del ejemplo de recompensa estipulado", "chart": "Las barras con signo comparan las magnitudes de recompensa indicadas; la tabla siguiente ofrece valores exactos redondeados y se desplaza con el teclado.", "currency": "USD", "points": "Unidades de recompensa", "state": "Estado", "coefficient": "Coeficiente", "outcome": "Resultado", "dollarsSquared": "USD²", "riskUnit": "Por USD", "terminalRule": "Ambas trayectorias tienen dos transiciones y potencial inicial 3. El potencial terminal de A es cero.", "approximation": "A=0,01, B=0,0004 y tasa de adaptación η=0,01. La derivada es local en η; no es un objetivo exacto de Sharpe del episodio."}} />
+
+Si el modelo busca deliberadamente descuento financiero determinista a tasa $i$ por periodo compatible, $\gamma=1/(1+i)$ conecta las convenciones. En RL puede expresar una preferencia de la tarea o formar parte de un planteamiento de horizonte infinito. Cambiar la duración del paso sin revisar el descuento también cambia el peso de un suceso lejano: una preferencia temporal continua coherente puede usar $\gamma(\Delta t)=e^{-\rho\Delta t}$.
+
+### Cuándo elegir gamma
+
+Elígelo junto con horizonte, tratamiento terminal y unidades. Un gamma menor reduce el peso de un coste de salida posterior, pero no demuestra sobreoperación de la política entrenada. Uno mayor cambia el problema y, a menudo, la dificultad de estimarlo; no vuelve universalmente más sabia a la política ni más lento al aprendizaje.
+
+<FillBlank
+ checkLabel="Comprobar"
+ retryLabel="Reintentar"
+ explanationLabel="Explicación"
+ instructions="Elige una opción para cada hueco y comprueba."
+ correctResultLabel="Correcto"
+ partialResultWord="correctas"
+ client:visible question="Puntuación y dinero son magnitudes distintas." text="Con recompensas −3,+8,−3 y gamma 0,9, la puntuación es {{1,77|2|7,29}} y el P&L liquidado sigue en {{2|1,77|0}} USD." explanation="−3+7,2−2,43=1,77. Descontar la puntuación no reescribe las transacciones." />
+
+## 5. El potencial necesita una condición terminal
+
+<MCQ
+ checkLabel="Comprobar"
+ retryLabel="Reintentar"
+ correctLabel="Correcto"
+ incorrectLabel="Incorrecto"
+ correctAnswerLabel="Respuesta correcta"
+ explanationLabel="Explicación"
+ pretestLabel="Antes de leer"
+ client:visible pretest
+ question={"¿Escribir F=gamma×potencial siguiente−potencial actual garantiza invariancia al cortar en cualquier estado terminal?"}
+ options={[{"text": "Solo con el extremo adecuado independiente de política y definición de retorno coherente", "correct": true}, {"text": "Sí, sin importar potencial terminal ni momento de parada"}, {"text": "Solo si el potencial prevé beneficio de caja garantizado"}, {"text": "Sí, y garantiza aprender más rápido sin errores de simulación"}]}
+ explanation={"La suma finita es −Phi0+gamma^T PhiT. Importan convención terminal y mismo factor de descuento."}
+/>
+
+Un indicador de progreso puede orientar el aprendizaje sin convertirse en beneficio extra. Sea $\Phi_t(s_t)$ un potencial finito en unidades de recompensa. En una tarea finita, incluye el tiempo en el estado y añade
+
+$$
+F_t=\gamma\Phi_{t+1}(s_{t+1})-\Phi_t(s_t).
+$$
+
+Usa el **mismo gamma** en ese término y en el retorno. Al desarrollar la suma ponderada se cancelan los términos internos:
+
+$$
+\sum_{t=0}^{T-1}\gamma^tF_t=-\Phi_0(s_0)+\gamma^T\Phi_T(s_T).
+$$
+
+El retorno modificado es el base más ese término de los extremos. Para un mismo estado inicial, se conserva el orden de políticas si el resto no depende de la política. Fijar **todos los potenciales terminales a cero** es una convención cómoda incluso si cambia el momento de parada. Un potencial terminal común no nulo es constante a horizonte fijo; puede dejar de serlo si $T$ depende de la política y $\gamma<1$.
+
+Ambas trayectorias siguientes tienen dos transiciones, $\gamma=0.9$ y potencial inicial 3:
+
+<table tabIndex={0} aria-label="Cálculo terminal del potencial en dos trayectorias" className="block w-full max-w-full overflow-x-auto text-left text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600">
+  <thead><tr><th scope="col">Trayectoria</th><th scope="col">Recompensas base</th><th scope="col">Potencial intermedio</th><th scope="col">Potencial terminal</th><th scope="col">Base descontada</th><th scope="col">Suma del añadido</th><th scope="col">Puntuación modificada</th></tr></thead>
+  <tbody>
+    <tr><th scope="row">A</th><td>0, 10</td><td>4</td><td>0</td><td>9</td><td>−3</td><td>6</td></tr>
+    <tr><th scope="row">B</th><td>0, 9</td><td>1</td><td>0</td><td>8,1</td><td>−3</td><td>5,1</td></tr>
+  </tbody>
+</table>
+
+Para A, $F_0=0.9(4)-3=0.6$ y $F_1=0-4=-4$; la suma ponderada es $0.6+0.9(-4)=-3$. Para B es $(-2.1)+0.9(-1)=-3$. Los valores intermedios difieren, pero sigue ganando A.
+
+<RewardAccountingLab client:visible mode="shaping" title="Conserva el término terminal a la vista" caption="Dos trayectorias inventadas de dos transiciones, mismo gamma y potencial inicial 3. A tiene potencial intermedio 4 y final cero; B, intermedio 1 y final elegido. Las recompensas base son 0,10 y 0,9. Compara base descontada, añadido y puntuación modificada; subir el potencial terminal de B muestra un extremo dependiente de política, no progreso seguro." locale="es" labels={{"title": "Comprueba la aritmética de la recompensa", "caption": "Ejemplos finitos inventados. El efectivo rinde cero; precios, ejecuciones, comisiones y probabilidades se estipulan. La recompensa no demuestra rentabilidad ni garantiza aprendizaje.", "feeControl": "Comisión por entrada o salida (USD)", "exitControl": "Precio de venta final ejecutable (USD por acción)", "riskControl": "Coeficiente de penalización de varianza (por USD)", "returnControl": "Exceso de rentabilidad actual (%)", "gammaControl": "Factor de descuento de recompensa γ", "potentialControl": "Potencial terminal de B (unidades de recompensa)", "bonusControl": "Bonificación por operación (unidades equivalentes a USD)", "stage": "Suceso", "cash": "Caja (USD)", "inventory": "Inventario (acciones)", "mark": "Marca de referencia (USD por acción)", "wealth": "Caja + inventario marcado (USD)", "reward": "Cambio de patrimonio marcado (USD)", "trade": "Operación con signo (acciones)", "initial": "Estado inicial", "buy": "Compra a 101", "hold": "La marca pasa a 104", "sell": "Venta al precio elegido", "quantity": "Magnitud", "value": "Valor", "marked": "Patrimonio final marcado (USD)", "markedPnl": "P&L final marcado (USD)", "discountedLedger": "Puntuación descontada de la cuenta (unidades USD)", "liquidated": "Caja final liquidada (USD)", "pnl": "P&L liquidado (USD)", "fees": "Comisiones explícitas totales (USD)", "spread": "Coste de ejecución con signo frente a marcas (USD)", "net": "P&L neto (USD)", "a": "A", "b": "B", "mean": "Media poblacional (USD)", "variance": "Varianza poblacional (USD²)", "score": "Media − coeficiente × varianza (USD)", "differential": "Sharpe diferencial D", "firstOrder": "Cambio de Sharpe de primer orden ηD", "actualChange": "Cambio real del Sharpe móvil", "previousSharpe": "Sharpe móvil previo", "updatedSharpe": "Sharpe móvil actualizado", "x": "5 inmediatos", "y": "10 tres pasos después", "selected": "Mayor valor descontado", "base": "Retorno base descontado", "shaping": "Suma descontada del añadido", "shaped": "Retorno modificado descontado", "terminal": "Potencial terminal", "unchanged": "Mismo orden: los potenciales terminales son cero", "changed": "El término terminal difiere: no se asegura invariancia", "economic": "P&L económico de compra y venta (USD)", "bonus": "Bonificación total inventada", "written": "Recompensa escrita con bonificación", "table": "Valores exactos redondeados del ejemplo de recompensa estipulado", "chart": "Las barras con signo comparan las magnitudes de recompensa indicadas; la tabla siguiente ofrece valores exactos redondeados y se desplaza con el teclado.", "currency": "USD", "points": "Unidades de recompensa", "state": "Estado", "coefficient": "Coeficiente", "outcome": "Resultado", "dollarsSquared": "USD²", "riskUnit": "Por USD", "terminalRule": "Ambas trayectorias tienen dos transiciones y potencial inicial 3. El potencial terminal de A es cero.", "approximation": "A=0,01, B=0,0004 y tasa de adaptación η=0,01. La derivada es local en η; no es un objetivo exacto de Sharpe del episodio."}} />
+
+Asigna ahora incorrectamente potencial terminal 5 a B, conserva cero en A y corta el episodio. B recibe $0.9^2(5)=4.05$ más: su puntuación pasa a 9,15 y supera el 6 de A aunque su base era menor. Escribir la fórmula no arregló esta convención terminal.
+
+El [resultado de invariancia de Ng, Harada y Russell](https://people.eecs.berkeley.edu/~russell/papers/icml99-shaping.pdf) proporciona la construcción general con potenciales. En una tarea continua descontada, potencial acotado y $0\leq\gamma<1$ hacen desaparecer el extremo límite bajo las condiciones habituales que permiten definir el retorno. Una tarea continua sin descuento necesita otros supuestos; la prueba finita no es un teorema general para ella. Un añadido sin forma de potencial puede conservar por casualidad el orden de un problema concreto, pero carece de esta garantía general.
+
+### Cuándo usar esta guía
+
+Úsala para ofrecer información intermedia y comprueba la cancelación en episodios completos y truncados. Conservar el óptimo matemático no garantiza aprender más rápido con cualquier aproximador, convergencia, ejecuciones honestas ni inmunidad frente a otras trampas de recompensa.
+
+<ThinkReveal
+ eyebrow="Piensa primero"
+ buttonLabel="Mostrar respuesta"
+ hintLabel="Pista"
+ client:visible prompt="¿Por qué un potencial terminal común no nulo puede fallar con duración variable?" hint="Mira gamma elevado al momento de parada." text="Con gamma<1 y parada dependiente de política, gamma^T por un terminal común no nulo puede diferir. Potencial terminal cero elimina ese extremo para toda parada." />
+
+## 6. Audita el resultado económico junto a la recompensa
+
+<MCQ
+ checkLabel="Comprobar"
+ retryLabel="Reintentar"
+ correctLabel="Correcto"
+ incorrectLabel="Incorrecto"
+ correctAnswerLabel="Respuesta correcta"
+ explanationLabel="Explicación"
+ pretestLabel="Antes de leer"
+ client:visible pretest
+ question={"Compra y vende al punto medio 100 sin cambio de precio ni comisiones. ¿Qué P&L bruto hay?"}
+ options={[{"text": "Cero; una recompensa positiva necesita otro flujo o término especificado", "correct": true}, {"text": "Positivo porque hubo dos ejecuciones"}, {"text": "−100 porque el nominal comprado es pérdida"}, {"text": "Horquilla garantizada sin especificar ejecuciones bid/ask"}]}
+ explanation={"100−100=0. Un modelo de ejecución irreal puede sobrestimar rendimiento, pero este recorrido sin cambio no crea beneficio aritmético."}
+/>
+
+La cuenta de bonificaciones puede ir estupendamente mientras la caja se vacía. Considera una compra y venta de una acción con punto medio constante en 100. Si el simulador ejecuta ambas a 100, el beneficio bruto es **cero**, no positivo. Con comisión de 1 USD en cada pata, el P&L económico es −2. Añade una bonificación inventada de recompensa de 2 USD por operación: dos operaciones suman 4 y la recompensa escrita es $-2+4=+2$. No operar da cero. El objetivo modificado prefiere ahora esa rotación inútil.
+
+<RewardAccountingLab client:visible mode="audit" title="La bonificación puede premiar una operación perdedora" caption="Compra y venta inventadas de una acción a precio constante: ambas ejecuciones a 100 y comisión de 1 USD por pata. El neto económico es −2; suma dos veces la bonificación elegida por operación. Comprar y vender al mismo punto medio da beneficio bruto cero, no una ganancia gratis. Las barras comparan P&L económico y recompensa escrita; la bonificación no es ingreso de caja." locale="es" labels={{"title": "Comprueba la aritmética de la recompensa", "caption": "Ejemplos finitos inventados. El efectivo rinde cero; precios, ejecuciones, comisiones y probabilidades se estipulan. La recompensa no demuestra rentabilidad ni garantiza aprendizaje.", "feeControl": "Comisión por entrada o salida (USD)", "exitControl": "Precio de venta final ejecutable (USD por acción)", "riskControl": "Coeficiente de penalización de varianza (por USD)", "returnControl": "Exceso de rentabilidad actual (%)", "gammaControl": "Factor de descuento de recompensa γ", "potentialControl": "Potencial terminal de B (unidades de recompensa)", "bonusControl": "Bonificación por operación (unidades equivalentes a USD)", "stage": "Suceso", "cash": "Caja (USD)", "inventory": "Inventario (acciones)", "mark": "Marca de referencia (USD por acción)", "wealth": "Caja + inventario marcado (USD)", "reward": "Cambio de patrimonio marcado (USD)", "trade": "Operación con signo (acciones)", "initial": "Estado inicial", "buy": "Compra a 101", "hold": "La marca pasa a 104", "sell": "Venta al precio elegido", "quantity": "Magnitud", "value": "Valor", "marked": "Patrimonio final marcado (USD)", "markedPnl": "P&L final marcado (USD)", "discountedLedger": "Puntuación descontada de la cuenta (unidades USD)", "liquidated": "Caja final liquidada (USD)", "pnl": "P&L liquidado (USD)", "fees": "Comisiones explícitas totales (USD)", "spread": "Coste de ejecución con signo frente a marcas (USD)", "net": "P&L neto (USD)", "a": "A", "b": "B", "mean": "Media poblacional (USD)", "variance": "Varianza poblacional (USD²)", "score": "Media − coeficiente × varianza (USD)", "differential": "Sharpe diferencial D", "firstOrder": "Cambio de Sharpe de primer orden ηD", "actualChange": "Cambio real del Sharpe móvil", "previousSharpe": "Sharpe móvil previo", "updatedSharpe": "Sharpe móvil actualizado", "x": "5 inmediatos", "y": "10 tres pasos después", "selected": "Mayor valor descontado", "base": "Retorno base descontado", "shaping": "Suma descontada del añadido", "shaped": "Retorno modificado descontado", "terminal": "Potencial terminal", "unchanged": "Mismo orden: los potenciales terminales son cero", "changed": "El término terminal difiere: no se asegura invariancia", "economic": "P&L económico de compra y venta (USD)", "bonus": "Bonificación total inventada", "written": "Recompensa escrita con bonificación", "table": "Valores exactos redondeados del ejemplo de recompensa estipulado", "chart": "Las barras con signo comparan las magnitudes de recompensa indicadas; la tabla siguiente ofrece valores exactos redondeados y se desplaza con el teclado.", "currency": "USD", "points": "Unidades de recompensa", "state": "Estado", "coefficient": "Coeficiente", "outcome": "Resultado", "dollarsSquared": "USD²", "riskUnit": "Por USD", "terminalRule": "Ambas trayectorias tienen dos transiciones y potencial inicial 3. El potencial terminal de A es cero.", "approximation": "A=0,01, B=0,0004 y tasa de adaptación η=0,01. La derivada es local en η; no es un objetivo exacto de Sharpe del episodio."}} />
+
+Una devolución real por aportar liquidez debe entrar en caja con su base y fecha aplicables. Devolución de 0,20 USD en una ejecución seguida de movimiento adverso marcado de 0,70 USD da −0,50 antes de otros costes; la devolución sola no es beneficio. Las órdenes limitadas no tienen ejecución garantizada y más rotación puede aumentar selección adversa, en lugar de cobrar una horquilla gratis.
+
+Otra grieta es una marca manipulable: una operación pequeña favorable puede valorar toda una posición por encima de lo que se podría vender. Contrasta la marca con profundidad, liquidación conservadora y precios independientes. Una identidad de caja válida prueba coherencia de las transacciones supuestas; no demuestra que fueran ejecutables.
+
+### Cuándo pasar la auditoría
+
+Para políticas fijas, compara el retorno escrito con caja, inventario, financiación, comisiones y liquidación reconstruidos por separado. Comprueba compra y venta sin movimiento de precio, no operar, una posición perdedora abierta y una salida forzosa. Conserva información disponible en su fecha y acciones viables. Después contrasta otros regímenes de ejecución y costes fuera de muestra; ni un término de recompensa ni una prueba de estrés certifican alineación futura.
+
+<MCQ
+ checkLabel="Comprobar"
+ retryLabel="Reintentar"
+ correctLabel="Correcto"
+ incorrectLabel="Incorrecto"
+ correctAnswerLabel="Respuesta correcta"
+ explanationLabel="Explicación"
+ client:visible
+ question={"Una compra y venta pierde 2 y recibe dos bonificaciones inventadas de 2. ¿Qué debe informar la auditoría?"}
+ options={[{"text": "Economía −2, recompensa escrita +2; la bonificación cambió el objetivo", "correct": true}, {"text": "Economía +2 porque toda bonificación de recompensa es ingreso de caja"}, {"text": "Economía 0 porque las comisiones se cancelan"}, {"text": "Óptimo preservado porque todo bono intermedio es potencial"}]}
+ explanation={"−2+2×2=2 en la puntuación. El bono es un término de optimización inventado, no caja."}
+/>
+
+## Relaciona las decisiones
 
 <MindMap
-  client:visible
-  outlineLabel="Esquema"
-  root={{
-    label: "Diseño de la recompensa",
-    children: [
-      { label: "Un escalar por paso", children: [
-        { label: "PnL a precio de mercado vs realizado" },
-        { label: "Todo lo que te importa debe estar dentro" }
-      ]},
-      { label: "Ajustada al riesgo", children: [
-        { label: "Media menos λ por riesgo" },
-        { label: "Ratio de Sharpe diferencial" },
-        { label: "Penalización por drawdown" }
-      ]},
-      { label: "Pagar por lo que haces", children: [
-        { label: "Spread y comisión" },
-        { label: "Impacto y slippage" },
-        { label: "Penalización por rotación" }
-      ]},
-      { label: "Factor de descuento γ", children: [
-        { label: "Demasiado bajo, miope, ignora el coste de salida" },
-        { label: "Demasiado alto, lento, asignación de crédito ruidosa" }
-      ]},
-      { label: "Moldeado", children: [
-        { label: "Basado en potencial preserva el óptimo" },
-        { label: "Moldeado ingenuo mueve el objetivo" }
-      ]},
-      { label: "Hackeo de recompensa", children: [
-        { label: "Granjeo de volumen y rebajas" },
-        { label: "Marcar carteras ilíquidas" },
-        { label: "Explotar el modelo de ejecución" }
-      ]}
-    ]
-  }}
-/>
+ eyebrow="Visión de conjunto"
+ outlineLabel="Esquema en texto"
+ client:visible title="De la cuenta al objetivo" root={{"label": "Especificación de recompensa", "children": [{"label": "Cuenta económica", "children": [{"label": "Caja + inventario marcado"}, {"label": "Ejecuciones y comisiones una vez"}, {"label": "Propiedad terminal o liquidación"}]}, {"label": "Preferencia", "children": [{"label": "Media frente a criterio de riesgo"}, {"label": "Unidades y estado con momentos o máximo"}, {"label": "Restricción distinta de penalización finita"}]}, {"label": "Descuento", "children": [{"label": "Gamma 1 es válido en tarea finita"}, {"label": "Puntuación distinta de caja terminal"}, {"label": "Calendario y horizonte definen objetivo"}]}, {"label": "Potencial", "children": [{"label": "Mismo gamma y estado con tiempo"}, {"label": "Extremo −Phi 0 + gamma^T PhiT"}, {"label": "Terminal cero admite paradas variables"}]}, {"label": "Auditoría", "children": [{"label": "La bonificación no es caja"}, {"label": "Mismo punto medio da bruto cero"}, {"label": "Ejecuciones creíbles y cuenta independiente"}]}]}} />
 
 <Quiz
-  client:visible
-  title="Diseño de la recompensa — comprobación final"
-  questions={[
-    {
-      question: "Dos estrategias tienen idéntico PnL medio por paso, pero los retornos de la estrategia B oscilan 50× más violentamente. ¿Qué formulación de recompensa clasifica a B por debajo de A, y por qué?",
-      options: [
-        { text: "Una recompensa media–varianza o basada en Sharpe, porque penaliza la varianza que B añade sin media extra", correct: true },
-        { text: "El PnL bruto por paso, porque una varianza mayor baja la media", correct: false },
-        { text: "Ninguna — con medias iguales son idénticas bajo cualquier recompensa", correct: false },
-        { text: "Una penalización pura por rotación, porque la varianza equivale a la rotación", correct: false }
-      ],
-      explanation: "El PnL bruto las empata. Solo una recompensa consciente del riesgo (penalización por varianza o Sharpe diferencial) descuenta a B por el riesgo extra que toma sin ganar media extra."
-    },
-    {
-      question: "Un agente en tu simulador da la vuelta a toda su cartera en cada paso, capturando microvaivenes. La misma política sangra dinero en vivo. La causa de diseño de recompensa más probable es:",
-      options: [
-        { text: "La recompensa omite los costes de transacción (spread, comisión, impacto), así que la rotación es gratis en el simulador pero cara en la realidad", correct: true },
-        { text: "γ se fijó demasiado alto, haciendo al agente con visión de futuro", correct: false },
-        { text: "La penalización por drawdown era demasiado agresiva", correct: false },
-        { text: "El moldeado basado en potencial cambió la política óptima", correct: false }
-      ],
-      explanation: "La rotación gratis es la firma de una recompensa sin costes. El spread, la comisión y el impacto reales harían que la mayoría de esas idas y vueltas fueran netas negativas, así que añadirlos a la recompensa mata la sobreoperación."
-    },
-    {
-      question: "La acción X paga \$5 ahora; la acción Y paga \$0 ahora y \$10 tres pasos después. Con γ = 0.5 el agente prefiere X; con γ = 0.9 prefiere Y. ¿Qué demuestra esto?",
-      options: [
-        { text: "El factor de descuento cambia qué acción es óptima — γ codifica el horizonte de planificación del agente", correct: true },
-        { text: "La acción Y siempre es mejor y γ es irrelevante", correct: false },
-        { text: "La función de recompensa está rota porque la respuesta cambió", correct: false },
-        { text: "Una γ más alta siempre hace que el agente tome las recompensas inmediatas", correct: false }
-      ],
-      explanation: "El valor de Y es 10·γ³, que con γ=0.5 es 1.25 (pierde frente a los 5 de X) pero con γ=0.9 es 7.29 (gana a X). Mismas recompensas, distinta γ, distinta política óptima — γ es una decisión económica real sobre el horizonte."
-    },
-    {
-      question: "¿Por qué se considera el moldeado de recompensa basado en potencial, F = γΦ(s′) − Φ(s), la forma 'segura' de añadir guía intermedia?",
-      options: [
-        { text: "Sus recompensas de moldeado se telescopean a lo largo de cualquier trayectoria, así que deja demostrablemente sin cambios el conjunto de políticas óptimas", correct: true },
-        { text: "Hace la recompensa más escasa, lo cual siempre es mejor", correct: false },
-        { text: "Elimina la necesidad de un factor de descuento", correct: false },
-        { text: "Garantiza que el agente nunca pueda hackear ninguna recompensa", correct: false }
-      ],
-      explanation: "Como el moldeado es una diferencia de potenciales, los términos añadidos se cancelan a lo largo de una trayectoria y la política óptima se preserva — aceleras el aprendizaje sin redefinir en secreto el objetivo. (No obstante, no inmuniza contra cualquier otra forma de hackeo de recompensa.)"
-    }
-  ]}
-  checkLabel="Comprobar"
-  retryLabel="Inténtalo de nuevo"
-  correctLabel="¡Correcto!"
-  incorrectLabel="No exactamente."
-  correctAnswerLabel="Respuesta correcta"
-  explanationLabel="Explicación"
-  questionLabel="Pregunta"
-  ofLabel="de"
-  nextLabel="Siguiente"
-  seeResultsLabel="Ver resultados"
-  backLabel="Atrás"
-  scoreLabel="Tu puntuación"
-  restartLabel="Reiniciar"
-  completeTitleLabel="Cuestionario completado"
-  correctCountLabel="correctas"
-  gateLabel="Comprueba tu respuesta para continuar."
-/>
-
-Ahora conocéis la verdad más peligrosa del RL aplicado: el agente optimiza la recompensa que *escribisteis*, con literalidad quirúrgica, y vuestro trabajo entero es hacer que ese escalar escrito coincida con lo que de verdad queréis — ajustado al riesgo, consciente de los costes, con un horizonte sensato y libre de resquicios. Con una recompensa de la que os fiáis, la siguiente pregunta es *cómo* aprende el agente la política que la maximiza. En la **lección 3, "Métodos basados en valor frente a gradiente de política,"** dividimos las dos grandes familias de algoritmos de aprendizaje — estimar valores y actuar de forma codiciosa frente a empujar directamente la política — y vemos cuál encaja en un mercado ruidoso y no estacionario.
+ questionLabel="Pregunta"
+ ofLabel="de"
+ scoreLabel="Tu puntuación"
+ restartLabel="Reiniciar"
+ nextLabel="Siguiente"
+ backLabel="Atrás"
+ checkLabel="Comprobar"
+ retryLabel="Reintentar"
+ seeResultsLabel="Ver resultados"
+ correctCountLabel="correctas"
+ completeLabel="Completado"
+ completeTitleLabel="Cuestionario completado"
+ perfectMessage="Has acertado todas las preguntas."
+ goodMessage="Repasa las respuestas que has fallado."
+ keepPracticingMessage="Revisa las explicaciones y vuelve a intentarlo."
+ gateLabel="Comprueba tu respuesta para continuar."
+ correctLabel="Correcto"
+ incorrectLabel="Incorrecto"
+ correctAnswerLabel="Respuesta correcta"
+ explanationLabel="Explicación"
+ client:visible title="Revisa la puntuación antes de entrenar" questions={[
+  {
+    "question": "Caja inicial 1.000: compra 2 a 101, comisión 1; vende 2 a 103, comisión 1. ¿Caja final?",
+    "options": [
+      {
+        "text": "1.002, con ejecuciones reales y ambas comisiones",
+        "correct": true
+      },
+      {
+        "text": "1.008, ignorando concesiones y comisiones"
+      },
+      {
+        "text": "1.005, conservando marca en vez de liquidar"
+      },
+      {
+        "text": "796, tratando nominal comprado como pérdida final"
+      }
+    ],
+    "explanation": "Caja=1.000−202−1+206−1=1.002."
+  },
+  {
+    "question": "Se reconstruyó P&L neto con la caja de ejecuciones reales. ¿Qué hace restar otra vez la misma concesión de horquilla?",
+    "options": [
+      {
+        "text": "Cobra dos veces un coste ya incorporado en los precios",
+        "correct": true
+      },
+      {
+        "text": "Corrige automáticamente cualquier marca"
+      },
+      {
+        "text": "Convierte preferencia en restricción garantizada"
+      },
+      {
+        "text": "Iguala siempre patrimonio realizado y marcado antes de vender"
+      }
+    ],
+    "explanation": "El desglose puede cuadrar el neto; no debe volver a restar el mismo coste económico."
+  },
+  {
+    "question": "A tiene media 10 y varianza 1; B media 10 y varianza 400. Con lambda 0,02 por USD, ¿qué puntuaciones hay?",
+    "options": [
+      {
+        "text": "A 9,98 USD y B 2 USD",
+        "correct": true
+      },
+      {
+        "text": "A 9,98 USD y B 9,98 USD"
+      },
+      {
+        "text": "A 10 USD y B 400 USD"
+      },
+      {
+        "text": "A −10 USD y B −400 USD"
+      }
+    ],
+    "explanation": "10−.02×1=9,98 y 10−.02×400=2. Son puntuaciones de una preferencia especificada."
+  },
+  {
+    "question": "Una derivada D del Sharpe móvil se usa como recompensa. ¿Qué afirmación se justifica?",
+    "options": [
+      {
+        "text": "Ofrece señal local de momentos definidos, no equivalencia general exacta con Sharpe del episodio",
+        "correct": true
+      },
+      {
+        "text": "Su suma debe igualar cualquier Sharpe futuro"
+      },
+      {
+        "text": "Sigue definida con varianza estimada cero"
+      },
+      {
+        "text": "Elimina dependencia del estado respecto a momentos acumulados"
+      }
+    ],
+    "explanation": "D es derivada en adaptación cero. Cambios finitos, suma, inicialización y regularización necesitan tratamiento propio."
+  },
+  {
+    "question": "¿Qué dos afirmaciones sobre potencial finito son correctas?",
+    "options": [
+      {
+        "text": "Potenciales terminales cero eliminan el extremo con paradas distintas",
+        "correct": true
+      },
+      {
+        "text": "El añadido debe usar el mismo gamma que el retorno descontado",
+        "correct": true
+      },
+      {
+        "text": "Todo terminal común no nulo sirve con cualquier parada dependiente de política"
+      },
+      {
+        "text": "Conservar políticas óptimas garantiza ejecuciones honestas"
+      }
+    ],
+    "explanation": "El extremo es −Phi 0+gamma^T PhiT. Importan inicio, convención terminal y gamma; el teorema no valida el simulador.",
+    "allowMultiple": true
+  },
+  {
+    "question": "Con gamma 0,9, bases A 9 y B 8,1 reciben desplazamiento inicial −3. Solo B recibe potencial terminal 5 tras dos transiciones. ¿Qué ocurre?",
+    "options": [
+      {
+        "text": "A 6 y B 9,15; ese extremo cambia el orden",
+        "correct": true
+      },
+      {
+        "text": "Deben conservar el orden base con todo potencial terminal"
+      },
+      {
+        "text": "Ambas pasan a 6 porque toda contribución cancela a cero"
+      },
+      {
+        "text": "B pasa a 13,1 porque el potencial terminal no se descuenta"
+      }
+    ],
+    "explanation": "B=8,1−3+,81×5=9,15; A=9−3=6."
+  },
+  {
+    "question": "¿Qué auditoría distingue explotar la puntuación de ganar dinero?",
+    "options": [
+      {
+        "text": "Reconstruir caja, inventario, salida terminal viable y comisiones aparte del bono",
+        "correct": true
+      },
+      {
+        "text": "Aceptar recompensa positiva como prueba de caja liquidada positiva"
+      },
+      {
+        "text": "Tomar toda marca como ejecución garantizada de toda la posición"
+      },
+      {
+        "text": "Premiar más volumen hasta suavizar la curva de recompensa"
+      }
+    ],
+    "explanation": "Las cuentas económica y de optimización responden preguntas distintas. Hay que explicitar y contrastar sus supuestos."
+  }
+]} />
