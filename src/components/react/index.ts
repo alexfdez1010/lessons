@@ -1032,3 +1032,6 @@ export type { CdsLegInputs, CdsLegsLedgerProps, CdsMarkInputs, CdsMarkLedgerProp
 
 export { calculateCreditCashflows, calculateCreditRegimes, calculateCreditDependence, calculateCreditIntensity, CreditRiskLab } from '@/components/react/CreditRiskLab';
 export type { CreditCashInputs, CreditRiskLabels, CreditRiskLabProps } from '@/components/react/CreditRiskLab';
+
+export { hedgeCallModel, deltaHedgeInterval, hedgePolicyScore, DeltaHedgeLedger, HedgePolicyComparison } from '@/components/react/DeltaHedgeLedger';
+export type { CallModelInput, HedgeIntervalInput, DeltaLedgerLabels, DeltaHedgeLedgerProps, HedgePolicyLabels, HedgePolicyComparisonProps } from '@/components/react/DeltaHedgeLedger';

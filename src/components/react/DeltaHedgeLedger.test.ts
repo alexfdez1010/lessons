@@ -1,0 +1,23 @@
+import {describe,test,expect} from 'bun:test';
+import {renderToStaticMarkup} from 'react-dom/server';
+import {createElement} from 'react';
+import {hedgeCallModel,deltaHedgeInterval,hedgePolicyScore,DeltaHedgeLedger,HedgePolicyComparison} from '@/components/react/DeltaHedgeLedger';
+const initial={spot:100,strike:100,volatility:.2,years:.25,rate:.04};
+const calc=(endSpot=105,days=5,endVolatility=.2,feePerShare=0)=>deltaHedgeInterval({initial,endSpot,days,endVolatility,multiplier:100,feePerShare});
+describe('Financed local hedge',()=>{
+ test('Full repricing independently agrees with math.erf calculations',()=>{const a=hedgeCallModel(initial);expect(a.value).toBeCloseTo(4.485236409022086,9);expect(a.delta).toBeCloseTo(.55961769237,6);expect(a.gamma).toBeCloseTo(.0394479330908,10);expect(a.theta).toBeCloseTo(-9.9486479313,5);expect(a.vega).toBeCloseTo(19.7239665454,8);const z=calc();expect(z.exact).toBeCloseTo(-35.9556116912,8);expect(z.approx).toBeCloseTo(-38.5030363789,8);expect(z.residual).toBeCloseTo(2.5474246877,8);expect(z.trade).toBeCloseTo(18.1785370034,8);expect(z.cashAfter).toBeCloseTo(-7059.221073005,8);});
+ test('Signs, finite curvature, financing and separate fee',()=>{const zero=calc(100,0);expect(zero.exact).toBeCloseTo(0,10);expect(zero.shares-100*zero.initial.delta).toBe(0);expect(zero.cash0).toBeLessThan(0);const up=calc(101,0);expect(up.exact).toBeCloseTo(-1.95449449,2);expect(up.interest).toBe(0);const z=calc(105,5,.2,.02);expect(z.wealthAfter-z.wealthBefore).toBeCloseTo(-z.fee,9);expect(z.fee).toBeCloseTo(.36357074,5);expect(z.wealthAfter).toBeCloseTo(-36.3191824313,2);expect(z.interest).toBeLessThan(0);});
+ test('Conservation holds across spot, volatility and time changes',()=>{for(const s of [80,95,100,105,120])for(const days of [0,5,30])for(const v of [.1,.2,.5]){const z=calc(s,days,v,.02);expect(z.exact).toBeCloseTo(z.option+z.stock+z.interest,10);expect(z.wealthBefore).toBeCloseTo(z.exact,8);expect(z.wealthAfter).toBeCloseTo(z.exact-z.fee,8);expect(z.deltaAfter).toBe(0);expect(z.cashAfter-z.cashBefore).toBeCloseTo(-z.trade*s-z.fee,8);}});
+ test('Vega stress and large moves separate repricing from Taylor',()=>{const vol=calc(100,5,.25),gap=calc(120,5);expect(vol.stock).toBe(0);expect(vol.exact).toBeCloseTo(-85.0371812,2);expect(vol.vega).toBeCloseTo(-98.6198327,5);expect(gap.exact).toBeCloseTo(-538.8128964,2);expect(gap.residual).toBeGreaterThan(200);});
+ test('Policy optimum and boundary cases depend on chosen objective',()=>{function best(w:number,b:number){return Array.from({length:250},(_,i)=>({n:i+1,...hedgePolicyScore(i+1,1000,b,w)})).reduce((a,z)=>z.score<a.score?z:a).n;}expect(best(1,60)).toBe(17);expect(best(0,60)).toBe(1);expect(best(1,0)).toBe(250);expect(best(0,0)).toBe(1);expect(hedgePolicyScore(16,1000,60,1).score).toBe(490);expect(hedgePolicyScore(17,1000,60,1).score).toBeCloseTo(489.921962573,8);});
+ test('Author guards and locale-aware exact keyboard fallback',()=>{for(const f of [()=>hedgeCallModel({...initial,years:0}),()=>calc(0),()=>calc(105,100),()=>calc(105,5,.2,-1),()=>hedgePolicyScore(0,1000,60,1),()=>renderToStaticMarkup(createElement(DeltaHedgeLedger,{endSpot:121})),()=>renderToStaticMarkup(createElement(DeltaHedgeLedger,{days:1.5})),()=>renderToStaticMarkup(createElement(HedgePolicyComparison,{riskWeight:-1}))])expect(f).toThrow();const s=renderToStaticMarkup(createElement(DeltaHedgeLedger,{locale:'es-ES',labels:{title:'Cobertura local',table:'Cuentas con signo'}}));expect(s).toContain('aria-label="Cuentas con signo"');expect(s).toContain('tabindex="0"');expect(s).toContain('overflow-x-auto');expect(s).toContain('h-8');expect(s).toContain('7,6147');});
+});
+test('visible author control values match native steps without narrowing continuous financial helpers',()=>{
+ for(const props of [{endSpot:105.4},{endVolatility:.204},{mode:'rebalance',endVolatility:.204}])expect(()=>renderToStaticMarkup(createElement(DeltaHedgeLedger,props as any))).toThrow();
+ for(const props of [{riskWeight:.15},{costCoefficient:60.4}])expect(()=>renderToStaticMarkup(createElement(HedgePolicyComparison,props))).toThrow();
+ for(const endVolatility of [.1,.2,.25,.29,.5])expect(renderToStaticMarkup(createElement(DeltaHedgeLedger,{endVolatility}))).not.toContain('NaN');
+ for(const riskWeight of [0,.1,.3,1,2.9,3])expect(renderToStaticMarkup(createElement(HedgePolicyComparison,{riskWeight,costCoefficient:60}))).not.toContain('NaN');
+ expect(renderToStaticMarkup(createElement(DeltaHedgeLedger,{mode:'local',endVolatility:.204}))).not.toContain('NaN');
+ expect(Number.isFinite(calc(105.4,5,.204).exact)).toBe(true);
+ expect(hedgePolicyScore(17,1000,60.4,.15).score).toBeCloseTo(.15*1000/Math.sqrt(17)+60.4*Math.sqrt(17),12);
+});
