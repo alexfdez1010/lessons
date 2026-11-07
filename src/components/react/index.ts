@@ -993,3 +993,6 @@ export type { CloseoutInputs, CloseoutTimelineEvent, CloseoutTimelineProps, Clos
 
 export { calculateCdsQuote, CdsQuoteBridge, calculateCashCarry, CashCdsCarry, calculateCreditRecovery, CreditRecoveryBridge, calculateBasisExit, BasisExitApproximation } from '@/components/react/CashCreditBasis';
 export type { CdsQuoteInputs, CdsQuoteBridgeProps, CashCarryInputs, CashCdsCarryProps, CreditRecoveryInputs, CreditRecoveryBridgeProps, BasisExitInputs, BasisExitApproximationProps } from '@/components/react/CashCreditBasis';
+
+export { calculatePredictivePaths, PredictivePathRisk } from '@/components/react/PredictivePathRisk';
+export type { PredictivePathInputs, PredictivePathRiskProps } from '@/components/react/PredictivePathRisk';
