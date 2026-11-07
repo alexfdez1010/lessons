@@ -1074,3 +1074,6 @@ export type { EdgeInformationLabels, EdgeEstimationInformationProps, EdgeSensiti
 
 export { calculateFxParity, calculateUncoveredCarry, calculateFxExpectation, calculateLeveragedFxCarry, calculateFxLiquidityPath, FxParityCarryLab } from '@/components/react/FxParityCarryLab';
 export type { UncoveredCarryInputs, FxScenario, LeveragedFxCarryInputs, FxParityCarryView, FxParityCarryLabProps } from '@/components/react/FxParityCarryLab';
+
+export { calculateIndexedPayment, calculateLaggedReference, calculateRealIndexedPrice, calculateInflationBreakeven, calculateInflationCompensation, InflationLinkedBondLab } from '@/components/react/InflationLinkedBondLab';
+export type { RealIndexedPriceInputs, InflationBreakevenInputs, InflationLinkedLabels, InflationLinkedBondLabProps } from '@/components/react/InflationLinkedBondLab';

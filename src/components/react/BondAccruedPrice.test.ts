@@ -1,7 +1,7 @@
 import { describe,test,expect } from 'bun:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { BondAccruedPrice,calculateBondAccruedPrice } from './BondAccruedPrice';
+import { BondAccruedPrice,calculateBondAccruedPrice } from '@/components/react/BondAccruedPrice';
 const base={face:1000,couponRate:.06,frequency:2,cleanQuote:98.4,periodDays:181,elapsedDays:90,nextCouponEntitled:true};
 describe('Explicit regular coupon accrual and quote units',()=>{
  test('converts quote and actual/actual fraction without double-counting annual rate',()=>{const x=calculateBondAccruedPrice(base);expect(x.couponCash).toBe(30);expect(x.cleanCash).toBe(984);expect(x.accruedCash).toBeCloseTo(14.917127071823,10);expect(x.dirtyCash).toBeCloseTo(998.917127071823,10);expect(x.dirtyQuote).toBeCloseTo(99.8917127071823,10);expect(x.buyerNextCoupon).toBe(30)});
