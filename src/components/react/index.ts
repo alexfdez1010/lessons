@@ -1132,3 +1132,6 @@ export type { RetirementWithdrawalInputs, RetirementScenarioInputs, RetirementDr
 
 export { calculateLongevitySurvival, valueLifeContingentPayments, valueCertainRetirementPayments, compareLongevityPaymentTerms, expectedLongevityTermsValue, LongevityIncomeLab } from '@/components/react/LongevityIncomeLab';
 export type { LongevityOutcome, LongevityIncomeView, LongevityIncomeInputs, LongevityIncomeLabels, LongevityIncomeLabProps } from '@/components/react/LongevityIncomeLab';
+
+export { privateFundInputs, privateFundCashflows, privateCallLedger, privateFundIrr, privateBenchmark, privateWaterfall, privateFundCase, PrivateFundLab } from '@/components/react/PrivateFundLab';
+export type { PrivateFundMode, PrivateFundLabels, PrivateFundLabProps } from '@/components/react/PrivateFundLab';
