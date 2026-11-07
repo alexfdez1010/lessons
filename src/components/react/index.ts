@@ -1065,3 +1065,6 @@ export type { DatedCarryCash, CarryBandInputs, SettlementCarryInputs, CarryRepli
 
 export { calculateWeightedMoments, calculatePairedMoments, calculateTwoAssetRisk, calculateFiniteJointLoss, CorrelationRiskLab } from '@/components/react/CorrelationRiskLab';
 export type { PairedValue, WeightedPair, CorrelationRiskLabels, CorrelationRiskLabProps } from '@/components/react/CorrelationRiskLab';
+
+export { scorePairedPredictions, fitPairedOLS, evaluatePairedOLS, PairedRegressionLab } from '@/components/react/PairedRegressionLab';
+export type { PairedOLSFit, PairedRegressionLabels, PairedRegressionLabProps } from '@/components/react/PairedRegressionLab';
