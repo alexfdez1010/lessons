@@ -1041,3 +1041,6 @@ export type { ToyLossModel, ProbabilityMeasureLabels, ProbabilityMeasureComparis
 
 export { fitOneFactor, makeSyntheticExposures, exposureEstimateAt, evaluateExposureNext, exposureEvaluationMse, compareExposureSplit, RollingExposureLab } from '@/components/react/RollingExposureLab';
 export type { FactorObservation, OneFactorFit, SyntheticExposureInputs, RollingExposureView, RollingExposureLabels, RollingExposureLabProps } from '@/components/react/RollingExposureLab';
+
+export { makeCreditTransitionMatrix, creditMigrationPath, blendCreditTransitionMatrix, RatingTransitionLab, calculateMigrationBond, MigrationBondReturnLab, calculateCreditMeasure, CreditMeasureLab } from '@/components/react/CreditMigrationLab';
+export type { CreditTransitionMatrix, CreditStateDistribution, CreditMigrationPoint, RatingTransitionLabProps, MigrationBondInputs, MigrationBondState, MigrationBondReturnLabProps, CreditMeasureInputs, CreditMeasureLabProps } from '@/components/react/CreditMigrationLab';
