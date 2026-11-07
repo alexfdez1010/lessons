@@ -990,3 +990,6 @@ export type { ParetoTailInputs, ParetoTailMeanProps } from '@/components/react/P
 
 export { closeoutCashLedger, closeoutClock, CloseoutTimeline, CloseoutGapExplorer, CloseoutScenarioComparison } from '@/components/react/CloseoutGapLab';
 export type { CloseoutInputs, CloseoutTimelineEvent, CloseoutTimelineProps, CloseoutGapExplorerProps, CloseoutScenarioComparisonProps } from '@/components/react/CloseoutGapLab';
+
+export { calculateCdsQuote, CdsQuoteBridge, calculateCashCarry, CashCdsCarry, calculateCreditRecovery, CreditRecoveryBridge, calculateBasisExit, BasisExitApproximation } from '@/components/react/CashCreditBasis';
+export type { CdsQuoteInputs, CdsQuoteBridgeProps, CashCarryInputs, CashCdsCarryProps, CreditRecoveryInputs, CreditRecoveryBridgeProps, BasisExitInputs, BasisExitApproximationProps } from '@/components/react/CashCreditBasis';
