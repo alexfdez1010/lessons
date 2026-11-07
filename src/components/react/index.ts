@@ -1005,3 +1005,6 @@ export type { RealExchangeInputs, RealExchangeRateBasketProps } from '@/componen
 
 export { summarizeReturnPath, symmetricGrowthModel, VolatilityGrowthLab } from '@/components/react/VolatilityGrowthLab';
 export type { VolatilityGrowthLabProps } from '@/components/react/VolatilityGrowthLab';
+
+export { calculateDiscreteShortfall, TailMassAllocation } from '@/components/react/TailMassAllocation';
+export type { DiscreteTailAtom, TailMassAllocationProps } from '@/components/react/TailMassAllocation';
