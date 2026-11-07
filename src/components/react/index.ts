@@ -1044,3 +1044,6 @@ export type { FactorObservation, OneFactorFit, SyntheticExposureInputs, RollingE
 
 export { makeCreditTransitionMatrix, creditMigrationPath, blendCreditTransitionMatrix, RatingTransitionLab, calculateMigrationBond, MigrationBondReturnLab, calculateCreditMeasure, CreditMeasureLab } from '@/components/react/CreditMigrationLab';
 export type { CreditTransitionMatrix, CreditStateDistribution, CreditMigrationPoint, RatingTransitionLabProps, MigrationBondInputs, MigrationBondState, MigrationBondReturnLabProps, CreditMeasureInputs, CreditMeasureLabProps } from '@/components/react/CreditMigrationLab';
+
+export { calculateLinkedFactors, valueLinkedSchedule, calculateLinkedFlowPath, LinkedDiscountFactors } from '@/components/react/LinkedDiscountFactors';
+export type { LinkedDiscountLabels, LinkedDiscountFactorsProps } from '@/components/react/LinkedDiscountFactors';
