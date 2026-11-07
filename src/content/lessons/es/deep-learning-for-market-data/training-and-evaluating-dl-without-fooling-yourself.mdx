@@ -1,663 +1,537 @@
 ---
-title: "Entrenar y evaluar DL sin engañarte a ti mismo"
-description: "Regularización agresiva para una muestra efectiva diminuta, evaluación con purga y embargo aplicada a redes profundas, el Sharpe desinflado para una búsqueda de arquitecturas, y la conclusión sobria: los árboles con gradient boosting son la línea base a batir — y en finanzas tabulares de baja señal, suelen ganar."
+title: "Entrenar y evaluar redes profundas sin engañarse"
+description: "Evalúa el modelo con la información disponible en cada fecha: define la dependencia, congela cada etapa ajustada, considera la selección y distingue error predictivo de P&L neto de una política factible."
 topic: "es/deep-learning-for-market-data"
 order: 6
-minutes: 18
-updated: 2026-06-19
+minutes: 42
+updated: 2026-11-06
 ---
 
-import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, DeflatedSharpe, PurgedCvSplit, TsOverfitCurve, SignalDecay } from '@/components/react';
+import { Callout, MCQ, Quiz, ThinkReveal, FillBlank, MatchConcepts, MindMap, TemporalModelAudit } from '@/components/react';
 
-Ya podéis construir todo el zoológico. RNN y LSTM que arrastran estado a lo largo del
-tiempo, TCN con convoluciones dilatadas, atención y transformers que miran una ventana
-entera de una vez, embeddings que convierten 4.000 símbolos de cotización en vectores
-densos. Tenéis el *poder*. Esta lección va de la habilidad mucho más difícil: **no
-engañaros a vosotros mismos con él.**
+La red redujo el error de predicción. La política perdió dinero. Ambas afirmaciones pueden ser ciertas. Hay que examinar qué se predijo, qué información estaba disponible, cómo se eligió el modelo y cuánto costó operar esas predicciones.
 
-Esta es la edición de deep learning del credo que jurasteis en *Machine Learning para
-Alfa*. El sobreajuste es el enemigo. Un IC honesto vive en torno a 0,02–0,05. Purgas y
-embargas tu validación cruzada. Desinflas tu Sharpe por el número de pruebas. Bloqueas
-un conjunto de test, operas en simulado, monitorizas el IC en vivo y mantienes un
-interruptor de emergencia. Nada de eso se *deroga* porque hayas cambiado de ridge a un
-transformer. Se **amplifica**, porque una red profunda es una memorizadora de ruido
-infinitamente más ansiosa que cualquier modelo lineal que hayas entrenado antes.
+Las lecciones de arquitectura presentaron redes recurrentes, convoluciones temporales, atención y embeddings. Aquí evaluamos el **procedimiento completo**: versiones de datos, preprocesamiento, entrenamiento, elección de hiperparámetros y semillas, predicciones, posiciones y ejecución. Una familia de modelos, un regularizador o el nombre de una validación no vuelven honesto ese procedimiento por sí solos.
 
-La frase más útil de todo este curso: **una red neuronal es una máquina para encontrar
-estructura, y en los rendimientos financieros la mayor parte de la "estructura" es
-ruido.** Todo lo de abajo es control de daños alrededor de ese hecho.
+Las poblaciones, los registros de predicción y las comisiones de los ejemplos son inventados. Mostramos los supuestos de cada cuenta; no son hechos universales sobre los datos financieros.
 
-## Regularización para una muestra diminuta
+## 1. La información depende del estadístico y de la dependencia
 
 <MCQ
-  client:visible
-  pretest
-  question="Estás entrenando una LSTM sobre ~6.000 filas de rendimientos diarios, con una muestra efectiva mucho menor todavía. ¿Qué reflejo es el más defendible como punto de partida?"
-  options={[
-    { text: "Empieza con un modelo deliberadamente PEQUEÑO y regularización fuerte, y crece solo si una curva de validación purgada te lo permite", correct: true },
-    { text: "Empieza con un modelo grande para que 'tenga capacidad de aprender', y poda después" },
-    { text: "Apaga primero toda la regularización para ver el techo bruto del modelo" },
-    { text: "Añade capas hasta que la pérdida en muestra llegue a cero, ya que eso prueba que los datos son aprendibles" },
-  ]}
-  checkLabel="Comprobar"
-  retryLabel="Reintentar"
-  explanation="Con una muestra efectiva diminuta y SNR baja, la capacidad es riesgo, no oportunidad. Pequeño + regularizado es el valor por defecto honesto; solo creces cuando la evidencia fuera de muestra te obliga."
+ checkLabel="Comprobar"
+ retryLabel="Reintentar"
+ correctLabel="Correcto"
+ incorrectLabel="Incorrecto"
+ correctAnswerLabel="Respuesta correcta"
+ explanationLabel="Explicación"
+ pretestLabel="Antes de leer"
+ client:visible pretest
+ question={"Un panel pasa de un valor a veinte por fecha. ¿Debe multiplicar por 20 su información independiente?"}
+ options={[{"text": "No; deriva precisión para un estadístico y dependencia concretos", "correct": true}, {"text": "Sí, cada fila es un experimento independiente"}, {"text": "No; después del primero nunca se añade información"}, {"text": "Sí; muchos datos prueban trading estacionario"}]}
+ explanation={"Los choques comunes pueden permanecer al promediar ruido particular. Puede añadirse información; no se demuestra un multiplicador universal."}
 />
 
-Piensa en la regularización como **una correa para un perro demasiado entusiasta**. El
-perro (tu red) perseguirá feliz cada ardilla (cada meneo ruidoso de los rendimientos de
-entrenamiento). La correa no vuelve al perro más tonto — le impide salir corriendo hacia
-el tráfico. Matemáticamente, cada técnica de abajo hace el mismo trabajo: **cambia un
-poco de sesgo por una gran reducción de varianza**, y en un régimen de SNR baja, la
-varianza es lo que te mata fuera de muestra.
+Fotografiar el mismo acontecimiento desde veinte asientos da veinte vistas, no veinte acontecimientos independientes. Aun así, cada vista puede aportar información nueva. Para calcularla hay que decir qué se estima.
 
-**Definición.** La regularización es cualquier restricción, penalización o ruido añadido
-durante el entrenamiento que reduce la capacidad *efectiva* del modelo, bajando la
-varianza fuera de muestra a costa de un pequeño aumento de sesgo. La descomposición
-sesgo–varianza del error cuadrático esperado deja explícito el trato:
+Supón que estimamos una **media poblacional** con $D$ fechas independientes y $M$ valores por fecha. En cada fecha,
 
-$$\mathbb{E}\big[(y-\hat f)^2\big] = \underbrace{\big(\mathbb{E}[\hat f]-y\big)^2}_{\text{sesgo}^2} + \underbrace{\mathrm{Var}(\hat f)}_{\text{varianza}} + \sigma^2_{\text{irreducible}}$$
+$$
+Y_{di}=Z_d+\varepsilon_{di},\qquad \operatorname{Var}(Z_d)=\operatorname{Var}(\varepsilon_{di})=1.
+$$
 
-La caja de herramientas, y *por qué* cada una reduce la varianza:
+Todos los choques tienen media cero; las fechas son independientes; los choques particulares son independientes entre sí y de todos los choques de fecha. Dos valores del mismo día comparten $Z_d$. Cada observación individual tiene varianza $1+1=2$, en unidades de resultado al cuadrado.
 
-| Técnica | Qué hace | Por qué reduce la varianza |
-|---|---|---|
-| **Dropout** (`p≈0,2–0,5`) | Pone a cero unidades al azar en cada paso | Fuerza características redundantes y distribuidas; aproxima un gran ensemble |
-| **Decaimiento de pesos (L2)** | Añade $\lambda\lVert w\rVert_2^2$ a la pérdida | Empuja los pesos hacia 0, aplanando la función que puede representar |
-| **Parada temprana** | Detener cuando la pérdida de validación **purgada** deja de mejorar | Limita el número *efectivo* de parámetros ajustados |
-| **Aumento de datos** | Inyección de ruido, (block-)bootstrap, mixup | Sintetiza muestras plausibles para que la red no memorice filas exactas |
-| **Ensembles** | Promediar muchas semillas/modelos | La varianza de una media de $k$ modelos decorrelacionados cae hasta $1/k$ |
-| **Modelos pequeños** | Menos parámetros desde el principio | Menor capacidad = menor varianza, sin más |
+La media es $\bar Y=D^{-1}\sum_dZ_d+(DM)^{-1}\sum_{d,i}\varepsilon_{di}$, por lo que
 
-Fíjate en el detalle del **block-bootstrap**: las filas financieras están
-autocorrelacionadas, así que remuestreas *bloques* contiguos, no días individuales — de
-lo contrario destruyes la propia estructura serial que tu RNN existe para capturar.
+$$
+\operatorname{Var}(\bar Y)=\frac1D+\frac1{DM}.
+$$
 
-### Ejemplo resuelto — regularización en un predictor de rendimientos
+Con $D=100$ y $M=20$, las 2.000 filas dan varianza de la media $0.01+0.0005=0.0105$. Tratarlas incorrectamente como IID daría $2/2000=0.001$. Define un **tamaño IID equivalente para esta media** igualando su varianza a $2/N_{\rm eq}$:
 
-Entrenas una GRU para predecir rendimientos transversales del día siguiente e informas
-del *Sharpe anualizado* de la cartera long–short que implica.
+$$
+N_{\rm eq}=\frac2{0.0105}=190.476190\ldots.
+$$
 
-| Configuración | Sharpe en muestra | Sharpe fuera de muestra |
-|---|---|---|
-| GRU sin regularizar (grande, sin dropout) | 3,10 | 0,15 |
-| + dropout 0,3, decaimiento de pesos $\lambda=10^{-3}$ | 1,65 | 0,62 |
-| + parada temprana en val purgada, tamaño oculto menor, ensemble de 5 semillas | 1,05 | 0,78 |
+<div id="mean-information-example" className="scroll-mt-24" />
 
-Lee las columnas con honestidad. La regularización **destruyó** el Sharpe en muestra —de
-3,10 a 1,05, un recorte del 66%— y eso es exactamente lo que quieres. El hueco entre
-columnas es el impuesto del sobreajuste. El modelo sin regularizar pagó
-$3{,}10 - 0{,}15 = 2{,}95$ de pura fantasía; el modelo final pagó solo
-$1{,}05 - 0{,}78 = 0{,}27$. El número fuera de muestra, el único que paga el alquiler,
-**se cuadruplicó** de 0,15 a 0,78.
+<TemporalModelAudit client:visible mode="information" title="Más valores no eliminan el choque común de fecha" caption="Modelo inventado de media: 100 fechas independientes, un choque común de varianza uno por fecha y choques particulares independientes de varianza uno. La observación individual tiene varianza 2. N equivalente iguala la varianza de esta media a 2/N; no es una cuenta genérica para redes. Aumenta valores manteniendo fijas las fechas independientes." locale="es" labels={{"title": "Revisa la evaluación del modelo", "caption": "Ejemplos inventados con dependencia, fechas y políticas especificadas. Calcular bien un diagnóstico no demuestra rendimiento futuro ni habilidad causal.", "namesControl": "Valores por fecha independiente", "horizonControl": "Horizonte de etiqueta (días enteros)", "shrinkControl": "Factor de contracción del estimador α", "seedsControl": "Estimadores equiponderados K", "correlationControl": "Correlación del error por pares ρ", "trialsControl": "Candidatos nulos independientes N", "srControl": "Sharpe mensual observado", "trialSdControl": "Desviación típica del Sharpe mensual nulo", "feeControl": "Comisión inventada por pata sobre nominal fijo de entrada (puntos básicos)", "seControl": "Error estándar supuesto de cada IC de periodos disjuntos", "quantity": "Magnitud", "value": "Valor", "raw": "Filas nominales", "individual": "Varianza de una observación (unidades²)", "iid": "Varianza de la media suponiendo IID incorrectamente (unidades²)", "meanVariance": "Varianza de la media con dependencia de fecha estipulada (unidades²)", "equivalent": "N IID equivalente para esta media muestral", "limit": "Límite de N equivalente al aumentar valores", "anchor": "Anclaje de decisión t", "labelEnd": "Etiqueta disponible al cierre t+h", "status": "Función en el ajuste congelado", "kept": "Entrena: etiqueta conocida", "unavailable": "Excluye: etiqueta futura", "test": "Prueba reservada", "future": "Futuro; no entrena", "timeline": "Anclajes de decisión: ajuste congelado al cierre 12; decisiones de prueba 13–16 solo con ese modelo.", "bias": "Sesgo al cuadrado (unidades de resultado²)", "variance": "Varianza del estimador (unidades de resultado²)", "noise": "Varianza del ruido nuevo (unidades²)", "mse": "Error cuadrático esperado (unidades²)", "ensemble": "Varianza de la media / varianza individual", "independent": "Mismo K con errores independientes", "pass": "Al menos un nulo pasa (%)", "single": "Probabilidad individual de pasar bajo nulo (%)", "fixedThreshold": "Umbral PSR estipulado (Sharpe mensual)", "searchThreshold": "Referencia de búsqueda de dos candidatos (Sharpe mensual)", "psr": "Puntuación PSR de referencia normal", "dsr": "Puntuación DSR de referencia normal", "psrZ": "Estadístico estandarizado PSR", "dsrZ": "Estadístico estandarizado DSR", "step": "Periodo", "forecast": "Predicción previa registrada (puntos porcentuales)", "outcome": "Rentabilidad realizada (%)", "error": "Error de predicción al cuadrado (pp²)", "position": "Multiplicador de exposición con signo", "gross": "P&L bruto (USD)", "fees": "Comisiones totales (USD)", "net": "P&L neto (USD)", "zero": "P&L neto de no operar (USD)", "zeroMse": "ECM de predecir cero (pp²)", "forecastMse": "ECM de las predicciones registradas (pp²)", "ending": "Caja final tras todas las salidas (USD)", "initial": "Caja inicial (USD)", "notional": "Nominal fijo de entrada por periodo (USD)", "historical": "IC medio del periodo anterior", "live": "IC medio del periodo posterior", "difference": "IC posterior menos anterior", "diffSe": "Error estándar supuesto de la diferencia", "lower": "Extremo inferior aproximado del 95 %", "upper": "Extremo superior aproximado del 95 %", "statistic": "Diferencia / error estándar supuesto", "table": "Valores exactos redondeados del modelo declarado", "chart": "Las barras con signo comparan las magnitudes y unidades indicadas. La tabla siguiente da valores exactos redondeados y se desplaza con el teclado.", "searchNote": "Candidatos nulos estipulados independientes con probabilidad individual de pasar del 2,5 %. No es fórmula DSR ni estimación ajustada del número de experimentos independientes.", "sharpeNote": "Escala de Sharpe de rentabilidades mensuales netas; T=101, asimetría 0 y curtosis 3 supuestas. Umbral PSR 0,05 estipulado. DSR usa el máximo esperado de dos estimaciones nulas normales centradas independientes con la desviación elegida. Contar entrenamientos reales no demuestra estos supuestos.", "tradeNote": "Nominal fijo de entrada 10.000 USD; cada periodo abre y cierra por completo, también el último. La comisión se cobra sobre ese nominal de entrada en cada una de ocho patas. Caja inicial 20.000 USD, cortos factibles y efectivo al cero. Sin financiación ni otros costes.", "monitorNote": "Medias de IC de dos periodos disjuntos: 0,04 y 0,018, estimadas independientemente con igual error estándar estipulado. Se supone aproximación normal. El intervalo no diagnostica un mecanismo ni sustituye un procedimiento de vigilancia secuencial.", "scaleLabel": "Escala fija de esta vista"}} />
 
-<TsOverfitCurve
-  client:visible
-  title="El error en muestra sigue cayendo; el de fuera de muestra sube y vuelve a bajar"
-  caption="La U clásica: el error fuera de muestra toca fondo con una complejidad modesta, luego trepa cuando la capacidad memoriza ruido. La regularización desplaza el punto óptimo hacia la izquierda."
-/>
+Con un valor por fecha, $N_{\rm eq}=100$. Al aumentar $M$ tiende a 200, no a infinito: más valores promedian el ruido particular, pero no el choque común de fecha. Este límite pertenece al problema de estimación de media estipulado; no a todo modelo de panel ni a cualquier red neuronal.
 
-<Callout variant="warning" title="Un Sharpe en muestra de 3 es un síntoma, no un trofeo">
-Si una red profunda te entrega un Sharpe en muestra (o incluso de validación sin purgar)
-de 3 o más, tu primera suposición debería ser **fuga o memorización**, no genialidad. Las
-señales financieras honestas viven cerca de un IC de 0,02–0,05; una métrica de
-entrenamiento reluciente sobre una muestra diminuta y de SNR baja es el modelo recitando
-con orgullo el ruido que memorizó. Celebra un hueco *pequeño* entre dentro y fuera de
-muestra, nunca un número *grande* en muestra.
-</Callout>
+En otro problema, la media de una serie escalar estacionaria con correlación de tipo AR(1), $\rho^k$ por retardo, tiene la aproximación para $N$ grande $N_{\rm eq}\approx N(1-\rho)/(1+\rho)$. Con $N=5000$ y $\rho=0.97$ da unos 76,142. La correlación debe describir la serie pertinente para ese estadístico; un predictor persistente no impone automáticamente igual cuenta efectiva a sus errores de predicción. La aproximación también exige una covarianza estacionaria adecuada y muestra suficientemente larga.
 
-### Cuándo usarlo
+Objetivos solapados, choques comunes y dependencia temporal pueden interactuar. **No** dividas una cuenta AR(1) entre otro factor de solapamiento sin derivar la covarianza conjunta. La correlación negativa puede incluso mejorar la precisión de una media. Un cambio de distribución plantea otra pregunta: los datos antiguos pueden corresponder a otra población, algo que no se arregla en general descontando filas con un único escalar.
 
-Siempre regularizas en este dominio — la pregunta es solo *cuánto*. Escala la correa al
-tamaño efectivo de muestra, no al recuento de filas: las etiquetas multidía solapadas y
-la autocorrelación pueden encoger ~6.000 filas a unos pocos cientos de observaciones
-independientes, así que trata tu $n$ *efectivo* como diminuto y regulariza en
-consecuencia. Compromiso: demasiada y subajustas la (ya tenue) señal hasta el olvido; la
-curva de validación purgada es tu árbitro para saber dónde dejar de apretar.
+### Cuándo calcular información
 
-<MatchConcepts
-  client:visible
-  pairs={[
-    { term: "Dropout", definition: "Pone a cero unidades al azar durante el entrenamiento, imitando un gran ensemble y forzando características redundantes" },
-    { term: "Decaimiento de pesos (L2)", definition: "Penaliza los pesos grandes vía λ‖w‖², aplanando la función representable hacia cero" },
-    { term: "Parada temprana", definition: "Detiene el entrenamiento cuando la pérdida de validación purgada deja de mejorar, limitando los parámetros efectivos" },
-    { term: "Block bootstrap", definition: "Remuestrea tramos contiguos de filas para preservar la correlación serial, no destruirla" },
-    { term: "Ensemble de semillas", definition: "Promedia modelos decorrelacionados para que la varianza de la media caiga hacia 1/k" },
-  ]}
-  checkLabel="Comprobar"
-  retryLabel="Reintentar"
-  instructions="Une cada concepto con su definición."
-/>
-
-## Evaluación con purga y embargo para redes profundas
-
-<MCQ
-  client:visible
-  pretest
-  question="Comparado con la regresión ridge que purgaste y embargaste en ML para Alfa, ¿por qué la fuga suele ser PEOR para una red profunda con los mismos datos?"
-  options={[
-    { text: "Los pipelines de DL fugan por canales laterales extra — escaladores ajustados sobre el conjunto completo, estadísticas móviles de batch-norm, tablas de embeddings y minibatches barajados a través de la frontera train/test", correct: true },
-    { text: "Las redes profundas no se pueden validar de forma cruzada en absoluto, así que cualquier partición fuga por definición" },
-    { text: "La fuga es idéntica; solo cambió el modelo, no los datos" },
-    { text: "Las redes neuronales ignoran el orden temporal, así que la purga es innecesaria" },
-  ]}
-  checkLabel="Comprobar"
-  retryLabel="Reintentar"
-  explanation="La fuga por solapamiento de etiquetas que ya conocías sigue ahí, y DL añade encima canales de preprocesado/estadísticas/embedding/barajado. Más piezas móviles, más sitios por los que el futuro se cuela en el pasado."
-/>
-
-Repaso rápido de *Fugas y validación cruzada purgada*. Cuando las etiquetas abarcan
-varios días (un rendimiento a 5 días vista toca 5 días de características), una partición
-ingenua deja que las filas de entrenamiento cuya *ventana* de etiqueta solapa el periodo
-de test espíen el futuro.
-
-- **Purga.** Descarta las observaciones de entrenamiento cuya ventana de etiqueta solapa
-  el tramo de test.
-- **Embargo.** Descarta una banda adicional de filas de entrenamiento inmediatamente
-  *después* del tramo de test, porque la autocorrelación deja que la información se filtre
-  hacia delante a través de la costura.
-
-La analogía: purgar es **negarte a estudiar de un libro de texto que contiene las
-respuestas del examen**; el embargo es **además saltarte el capítulo impreso justo al
-lado de esas respuestas**, porque las parafrasea.
-
-<PurgedCvSplit
-  client:visible
-  title="Purga el solapamiento, embarga la banda posterior"
-  caption="Las etiquetas de entrenamiento que solapan la ventana de test se descartan (purga); se elimina un colchón adicional tras la ventana de test (embargo). El bloque de test se toca una sola vez."
-/>
-
-Aquí viene la parte que muerde *más fuerte* con deep learning. Un pipeline neuronal fuga
-por canales que un ridge simple nunca tuvo:
-
-1. **Escaladores / normalización ajustados sobre todo el conjunto de datos.** Calcula la
-   media y la desviación típica, o un rango min–max, sobre *todas* las filas y has
-   contrabandeado estadísticas del conjunto de test al entrenamiento. Ajusta las
-   transformaciones **solo** sobre el pliegue de entrenamiento, y luego aplícalas hacia
-   delante.
-2. **Estadísticas móviles de batch-norm.** BatchNorm acumula media/varianza móviles. Deja
-   que esas estadísticas vean minibatches futuros y el futuro se filtra al presente —
-   prefiere LayerNorm, o congela/reajusta las estadísticas por pliegue.
-3. **Tablas de embeddings (guiño a la Lección 5).** Un embedding de ticker o sector
-   aprendido usando el historial *entero* hornea la co-variación futura dentro de una
-   búsqueda "estática". Aprende los embeddings solo dentro de la ventana de entrenamiento.
-4. **Minibatches barajados a través de la frontera.** El reflejo de barajar para un SGD
-   IID es veneno aquí — barajar mezcla filas a ambos lados de la costura. Construye
-   minibatches que respeten el orden temporal y el hueco de purga.
-
-El protocolo correcto es el **reentrenamiento walk-forward**: entrena sobre $[t_0, t_1]$,
-purga + embargo, testea sobre $[t_1, t_2]$; luego haz rodar la ventana hacia delante,
-reajusta *todo* (escaladores, estadísticas de batch, embeddings, pesos) y testea sobre el
-siguiente bloque. Nunca reajustes con datos posteriores al bloque que estás puntuando.
-
-### Ejemplo resuelto — contar filas purgadas + embargadas
-
-Tienes 2.000 días de entrenamiento. Las etiquetas son rendimientos a 10 días vista, el
-bloque de test son los siguientes 250 días y fijas un embargo de 5 días.
-
-- **Purga:** cualquier fila de entrenamiento cuya ventana de etiqueta a 10 días alcance
-  el bloque de test debe irse. Eso son aproximadamente las últimas $10 - 1 = 9$ filas de
-  entrenamiento que rozan la costura.
-- **Embargo:** descarta 5 filas de material de entrenamiento que quedarían justo después
-  del bloque de test en una partición rodada.
-- **Filas de entrenamiento utilizables ≈** $2000 - 9 - 5 = 1986$.
-
-Perder 14 filas de 2.000 suena trivialmente barato — y lo es, que es exactamente por lo
-que saltárselo es inexcusable. Esas 14 filas son las *únicas* que cargan la fuga; consérvalas
-y tu Sharpe fuera de muestra reportado es silenciosamente ficticio.
-
-<Callout variant="warning" title="El escalador es el fugador silencioso">
-La fuga de DL más común en finanzas es la más aburrida: alguien llama a
-`scaler.fit(X_all)` una vez al principio del cuaderno, y luego parte. El modelo ahora
-conoce la media y la varianza del periodo de test antes de empezar a entrenar. Produce un
-backtest precioso y una señal en vivo inútil. Ajusta cada transformación —escaladores,
-PCA, embeddings, estadísticas de batch— **solo dentro del pliegue de entrenamiento**, y
-luego aplica hacia delante. Sin excepciones.
-</Callout>
-
-### Cuándo usarlo
-
-Siempre — no hay régimen en el que una evaluación sin purgar sea aceptable para etiquetas
-financieras solapadas. Compromiso: purga + embargo + walk-forward encoge cada pliegue de
-entrenamiento y multiplica el cómputo (reajustas por pliegue). Para redes profundas ese
-coste de reentrenamiento es real, pero es el precio de un número en el que puedes confiar.
-La alternativa barata es un backtest que te miente, y esa sale gratis hasta que deja de
-serlo.
-
-<Categorize
-  client:visible
-  question="Clasifica cada elemento según sea un canal de fuga específico de DL o parte del protocolo de evaluación correcto."
-  buckets={["Canal de fuga específico de DL", "Protocolo correcto"]}
-  items={[
-    { text: "Escalador ajustado sobre todo el conjunto de datos antes de partir", bucket: "Canal de fuga específico de DL" },
-    { text: "Estadísticas móviles de BatchNorm que abarcan minibatches futuros", bucket: "Canal de fuga específico de DL" },
-    { text: "Tabla de embeddings aprendida sobre todo el historial", bucket: "Canal de fuga específico de DL" },
-    { text: "Barajar minibatches a través de la costura train/test", bucket: "Canal de fuga específico de DL" },
-    { text: "Purgar filas de entrenamiento cuya ventana de etiqueta solapa el tramo de test", bucket: "Protocolo correcto" },
-    { text: "Embargar una banda de filas tras el bloque de test", bucket: "Protocolo correcto" },
-    { text: "Reajustar escaladores y embeddings dentro de cada pliegue walk-forward", bucket: "Protocolo correcto" },
-  ]}
-  checkLabel="Comprobar"
-  retryLabel="Reintentar"
-  instructions="Coloca cada elemento en su grupo."
-  explanation="Los cuatro primeros son canales laterales extra que un pipeline profundo añade encima de la fuga por solapamiento de etiquetas; los tres últimos son la disciplina que los cierra."
-/>
-
-## El Sharpe desinflado para una búsqueda de arquitecturas
-
-<MCQ
-  client:visible
-  pretest
-  question="Pruebas 200 configuraciones de arquitectura/hiperparámetros y te quedas con la mejor por Sharpe de validación. ¿Por qué el Sharpe destacado de la mejor está sistemáticamente inflado?"
-  options={[
-    { text: "Seleccionar el máximo sobre muchas pruebas infla al ganador incluso con una ventaja verdadera de cero; el máximo esperado bajo la hipótesis nula crece como √(2 ln N)", correct: true },
-    { text: "El Sharpe de validación siempre está sesgado a la baja, así que el máximo lo corrige" },
-    { text: "Solo importa la tasa de aprendizaje; las otras 199 pruebas no cuentan" },
-    { text: "El ratio de Sharpe no se ve afectado por cuántos modelos probaste" },
-  ]}
-  checkLabel="Comprobar"
-  retryLabel="Reintentar"
-  explanation="Sesgo de selección por máximo sobre pruebas: incluso con habilidad verdadera cero, el mejor de N Sharpes ruidosos deriva al alza aproximadamente como √(2 ln N) desviaciones típicas por prueba. Debes desinflar al ganador por ese listón."
-/>
-
-Recuerda la lección brutal de *Sobreajuste de backtest y el Sharpe desinflado*: **cada
-configuración que pruebas es una prueba**, y cuantos más boletos de lotería compras, más
-alto parece el *mejor* boleto aunque ninguno sea premiado. La analogía: dale a 200 monos
-una diana y el mejor mono parecerá un campeón — no porque sepa lanzar, sino porque tomaste
-el máximo sobre 200 lanzamientos ruidosos.
-
-**Definición.** Bajo la hipótesis nula de habilidad verdadera *cero*, con $N$ pruebas
-independientes cada una produciendo un Sharpe con desviación típica $\sigma$, el máximo
-muestral esperado del Sharpe es aproximadamente
-
-$$\mathbb{E}[\max \text{SR}] \approx \sigma\,\sqrt{2\ln N}.$$
-
-Este término $\sqrt{2\ln N}$ es el **listón de las pruebas múltiples**: un Sharpe debe
-superarlo antes de que se te permita creer que es real. El Sharpe *desinflado* pregunta si
-tu valor observado supera esta hipótesis-nula-del-mejor, no meramente la
-hipótesis-nula-de-uno.
-
-Ahora el giro de deep learning que debería quitarte el sueño. El espacio de
-hiperparámetros de DL es enorme — **anchura, profundidad, tasa de aprendizaje, tasa de
-dropout, decaimiento de pesos, longitud de secuencia, optimizador, calendario de
-calentamiento y semilla aleatoria**— y las semillas por sí solas pueden multiplicar por
-diez tu recuento de pruebas. Así que $N$ no crece poco a poco; *explota*.
-
-### Ejemplo resuelto — el listón para 200 configuraciones
-
-Prueba $N = 200$ configuraciones. El multiplicador del listón es
-
-$$\sqrt{2\ln 200} = \sqrt{2 \times 5{,}298} = \sqrt{10{,}597} \approx 3{,}25.$$
-
-Así que el mejor de 200 debe superar **≈ 3,25 desviaciones típicas por prueba** solo para
-igualar a la suerte aleatoria. Si el Sharpe de validación de cada configuración tiene
-desviación típica $\sigma = 0{,}4$ bajo la hipótesis nula, tu ganador necesita exceder
-$3{,}25 \times 0{,}4 = 1{,}30$ de Sharpe **antes de que tengas evidencia alguna de
-habilidad real** — y aun así solo has igualado la casualidad esperada, no la has batido.
-
-Compara el coste de la curiosidad:
-
-| Pruebas $N$ | Listón $\sqrt{2\ln N}$ | Sharpe mínimo para batir la suerte ($\sigma=0{,}4$) |
-|---|---|---|
-| 1 | 0,00 | 0,00 |
-| 10 | 2,15 | 0,86 |
-| 50 | 2,80 | 1,12 |
-| 200 | 3,25 | 1,30 |
-| 1.000 | 3,72 | 1,49 |
-
-<DeflatedSharpe
-  client:visible
-  title="Sharpe observado frente al listón de pruebas múltiples frente al valor desinflado"
-  caption="A medida que crecen las pruebas, el listón de la suerte (√(2 ln N)) sube. El Sharpe desinflado es lo que queda tras restar el mejor esperado bajo la hipótesis nula — a menudo muy por debajo del titular."
-/>
-
-La crueldad acumulativa: la flexibilidad de DL te golpea **dos veces**. Más
-hiperparámetros multiplican $N$ (subiendo el listón de selección), *y* cada modelo
-individual sobreajusta más fuerte que uno lineal (así que cada Sharpe por prueba es más
-ruidoso, es decir, $\sigma$ es mayor). Ambos términos de $\sigma\sqrt{2\ln N}$ van en la
-dirección equivocada a la vez.
-
-<Callout variant="warning" title="Tu barrido de semillas es un barrido de hiperparámetros">
-Una trampa sutil: la gente insiste en que "solo probó 8 arquitecturas", y luego admite
-que corrió cada una con 10 semillas aleatorias y se quedó con la mejor semilla también.
-Eso son $8 \times 10 = 80$ pruebas, no 8 — y el listón lo fija el número *total* de
-configuraciones sobre las que seleccionaste un máximo, incluidas semillas, tasas de
-aprendizaje y cada "déjame probar una cosa más". Registra cada ejecución. El $N$ honesto
-es casi siempre de 3 a 10 veces lo que recuerdas.
-</Callout>
-
-### Cuándo usarlo
-
-Desinfla siempre que hayas *seleccionado* un modelo comparando muchos — lo cual, con DL,
-es siempre. Compromiso: una desinflación agresiva puede rechazar un modelo genuinamente
-bueno que simplemente tuvo un sorteo de validación desafortunado, así que la cura son
-menos pruebas pre-registradas, no el perdón a posteriori. Decide tu familia de
-arquitecturas y tu presupuesto de búsqueda *antes* de espiar los resultados de validación,
-y cuenta cada ejecución con honestidad.
+Usa un modelo de dependencia o un método justificado de remuestreo o error para el estadístico que publicas. Separa por fechas y entidades pertinentes si el despliegue buscado lo exige. Más valores, ventanas, muestras aumentadas o semillas no aportan automáticamente evidencia de mercado independiente; una ratio entre parámetros y filas tampoco demuestra que el modelo deba fallar.
 
 <FillBlank
-  client:visible
-  question="Completa el razonamiento de pruebas múltiples para una búsqueda de arquitecturas."
-  text="Bajo la hipótesis nula de habilidad cero, el mejor esperado de N pruebas crece como {{√(2 ln N)|√(2N)|ln(2N)}} desviaciones típicas por prueba, así que para N = 200 el listón es de unos {{3,25|1,30|0,40}} — y DL infla esto porque su enorme espacio de hiperparámetros hace que {{N explote mientras cada modelo también sobreajusta más|el conjunto de datos sea mayor|el Sharpe sea más estable}}."
-  checkLabel="Comprobar"
-  retryLabel="Reintentar"
-  instructions="Elige la opción correcta para cada hueco y comprueba."
-  explanation="El listón √(2 ln N) para N=200 es ≈3,25; DL multiplica N (más hiperparámetros y semillas) Y eleva el ruido por prueba (más sobreajuste), así que ambos factores de σ√(2 ln N) empeoran juntos."
-/>
+ checkLabel="Comprobar"
+ retryLabel="Reintentar"
+ explanationLabel="Explicación"
+ instructions="Elige una opción para cada hueco y comprueba."
+ correctResultLabel="Correcto"
+ partialResultWord="correctas"
+ client:visible question="Iguala la varianza de esta media concreta." text="La varianza individual es {{2|0,0105|1}}. Varianza de media 0,0105 da N IID equivalente de unos {{190,476|2.000|20}}, no presupuesto universal para redes." explanation="Iguala 2/N=.0105. La covarianza de esa media determina el equivalente." />
 
-## ¿De verdad el deep learning bate al gradient boosting?
-
-<MCQ
-  client:visible
-  pretest
-  question="Sobre características financieras de baja señal y predominantemente tabulares (exposiciones a factores, ratios, rendimientos rezagados), ¿qué dice la evidencia empírica honesta?"
-  options={[
-    { text: "Los árboles con gradient boosting (XGBoost/LightGBM) suelen ganar — menos parámetros, categóricas nativas, robustos, rápidos de ajustar", correct: true },
-    { text: "Las redes profundas siempre dominan una vez añades suficientes capas" },
-    { text: "Es echarlo a cara o cruz, sin patrón sistemático" },
-    { text: "La regresión lineal bate a ambos en todos los escenarios" },
-  ]}
-  checkLabel="Comprobar"
-  retryLabel="Reintentar"
-  explanation="Sobre datos tabulares de SNR baja, los GBM son el ganador empírico consistente. DL se gana el sueldo en problemas estructurados, de SNR alta o de aprendizaje de representaciones — no en una hoja de cálculo de ratios de factores."
-/>
-
-Es hora de la incómoda cena familiar. Te pasaste todo este curso aprendiendo
-arquitecturas profundas, y el remate honesto es: **en finanzas tabulares de baja señal,
-los árboles con gradient boosting suelen batirlas.** Esto no es herejía; es el hallazgo
-repetido a lo largo de los benchmarks de ML tabular y de la mayoría de las mesas cuant.
-
-La analogía: un transformer es un **coche de Fórmula 1**, y los datos tabulares de
-factores son un **camino de grava de granja**. El F1 es genuinamente superior — en un
-circuito. Fuera del circuito, la camioneta (un árbol con gradient boosting) llega antes,
-más barato y sin romper un eje en el primer bache.
-
-**Definición.** El gradient boosting construye un ensemble *aditivo* de árboles de
-decisión poco profundos, cada uno ajustado al gradiente de la pérdida dejada por los
-árboles anteriores: $F_m(x) = F_{m-1}(x) + \eta\, h_m(x)$, donde $h_m$ apunta al gradiente
-residual y $\eta$ es la tasa de aprendizaje. Los árboles son invariantes a escala, manejan
-valores ausentes y categóricas de forma nativa, no necesitan normalización y se ajustan en
-minutos.
-
-| Dimensión | Árboles con gradient boosting | Deep learning |
-|---|---|---|
-| **Tamaño de datos necesario** | Funciona en conjuntos tabulares pequeños/medianos | Hambriento — quiere secciones transversales grandes o agrupadas |
-| **Ajuste a la relación señal-ruido** | Sobresale con SNR baja (poco profundo, regularizado) | Brilla con SNR alta; sobreajusta con SNR baja |
-| **Estructura explotada** | Ninguna asumida — tabular puro | Estructura de secuencia, espacial, de grafo, de atención |
-| **Categóricas / ausentes** | Nativo | Necesita embeddings / imputación |
-| **Interpretabilidad** | Alta (SHAP, importancia por ganancia) | Baja (caja negra, solo a posteriori) |
-| **Coste de ajuste** | Bajo — minutos, pocos mandos | Alto — espacio enorme, lento, sensible a la semilla |
-| **Riesgo de pruebas múltiples** | Moderado (espacio de búsqueda menor) | Severo (N explota) |
-| **Dónde gana** | Datos tabulares de factores de baja señal | Microestructura del LOB, paneles agrupados enormes, alt-data/texto |
-
-Entonces, ¿cuándo *sí* se gana el deep learning su salario? Tres casos honestos:
-
-1. **Datos estructurados de SNR alta — microestructura del LOB (guiño a la Lección 4).**
-   Las instantáneas del libro de órdenes tienen estructura espacial/secuencial y muchos
-   más eventos que las barras diarias; un TCN o un modelo de atención pueden leer la forma
-   del libro de una manera que los árboles no pueden.
-2. **Secciones transversales agrupadas muy grandes.** Cuando agrupas miles de nombres a lo
-   largo de décadas, el tamaño efectivo de muestra sube y un modelo profundo compartido
-   puede aprender estructura transversal que un ensemble de árboles por nombre se pierde.
-3. **Aprendizaje de representaciones para alt-data y texto (guiño a la Lección 5).**
-   Convertir informes, noticias o transcripciones en características, o aprender embeddings
-   de ticker/sector, es directamente el terreno de DL — *no hay* buena línea base tabular
-   para el texto en bruto.
-
-<Callout variant="warning" title="Haz del GBM la línea base obligatoria — sin excepciones">
-Antes de reportar un solo resultado de red profunda, debes batir una línea base de
-gradient boosting *ajustada* sobre las *mismas* particiones purgadas y embargadas. Si tu
-transformer no puede superar a un LightGBM que se entrenó en 90 segundos, no tienes un
-resultado de deep learning — tienes una forma cara de rendir por debajo de una línea base.
-"No corrimos la línea base" es el equivalente cuant a corregirte tú mismo los deberes.
-</Callout>
-
-### Cuándo usarlo
-
-Recurre a GBM por defecto en datos tabulares de factores; recurre a DL cuando los datos
-tengan *estructura* (secuencia/espacial/grafo), cuando la SNR y el tamaño de muestra sean
-genuinamente altos (microestructura, paneles enormes) o cuando la tarea sea aprendizaje de
-representaciones sobre entradas no estructuradas (texto, embeddings). Compromiso: DL te
-compra flexibilidad y poder de representación a costa de hambre de datos, gasto de ajuste,
-opacidad y una factura de pruebas múltiples mucho más desagradable — págala solo cuando la
-estructura del problema realmente lo recompense.
+## 2. Dibuja la frontera de información con fechas concretas
 
 <MCQ
-  client:visible
-  allowMultiple
-  question="Selecciona cada situación donde el deep learning es genuinamente una elección defendible frente a los árboles con gradient boosting."
-  options={[
-    { text: "Microestructura del libro de órdenes con rica estructura secuencial/espacial y eventos abundantes", correct: true },
-    { text: "Secciones transversales agrupadas muy grandes donde el tamaño efectivo de muestra es alto", correct: true },
-    { text: "Aprendizaje de representaciones sobre texto en bruto, informes o embeddings de ticker aprendidos", correct: true },
-    { text: "Unos pocos miles de filas de ratios de factores mensuales con IC cercano a 0,03" },
-    { text: "Un conjunto tabular pequeño donde lo que principalmente quieres es interpretabilidad SHAP" },
-  ]}
-  checkLabel="Comprobar"
-  retryLabel="Reintentar"
-  explanation="DL se justifica en datos estructurados de SNR alta (LOB), paneles agrupados grandes y aprendizaje de representaciones. Sobre datos tabulares de factores pequeños y de baja señal —y cuando importa la interpretabilidad— gana el gradient boosting."
+ checkLabel="Comprobar"
+ retryLabel="Reintentar"
+ correctLabel="Correcto"
+ incorrectLabel="Incorrecto"
+ correctAnswerLabel="Respuesta correcta"
+ explanationLabel="Explicación"
+ pretestLabel="Antes de leer"
+ client:visible pretest
+ question={"Al congelar al cierre 12, el anclaje 11 tiene etiqueta de dos días que termina en 14. ¿Puede entrar en el ajuste?"}
+ options={[{"text": "No; la etiqueta no estaba disponible al congelar", "correct": true}, {"text": "Sí; el anclaje precede a la primera prueba"}, {"text": "Sí; mezclar lotes vuelve inocuas las etiquetas futuras"}, {"text": "No; hay que quitar toda etiqueta histórica"}]}
+ explanation={"Fecha de variable y disponibilidad de etiqueta difieren. Aquí solo se permiten finales hasta cierre 12."}
 />
 
-## Una lista de comprobación de disciplina de despliegue
+Un calendario dibujado de memoria es un buen refugio para los errores de una posición. Define el **anclaje de decisión** $t$ como un registro de variables disponible al cierre de ese día. Su etiqueta es la rentabilidad de $(t,t+h]$, conocida íntegramente al cierre de $t+h$. Congela el ajuste al **cierre 12**, con anclajes candidatos de entrenamiento 1–12. La primera decisión reservada es la 13; el modelo congelado puntúa los anclajes 13–16.
+
+Con $h=2$, una etiqueta puede usarse para ajustar solo si $t+2\leq12$. Conserva 1–10 y excluye 11 y 12: sus etiquetas terminan en 13 y 14. Quedan **10 anclajes de entrenamiento**, no una resta genérica de «horizonte menos uno» aplicada sin convención temporal.
+
+<div id="as-of-availability-example" className="scroll-mt-24" />
+
+<TemporalModelAudit client:visible mode="timing" title="Conserva etiquetas conocidas al congelar el ajuste" caption="Convención inventada de cierre diario. Variables en t, etiqueta en (t,t+h], conocida al cierre t+h. Ajuste congelado al cierre 12 con candidatos 1–12. Las decisiones reservadas 13–16 usan ese ajuste. Los anclajes posteriores a 16 nunca fueron candidatos de entrenamiento. La tabla da anclaje y fin de etiqueta; no se resta embargo futuro de filas ausentes." locale="es" labels={{"title": "Revisa la evaluación del modelo", "caption": "Ejemplos inventados con dependencia, fechas y políticas especificadas. Calcular bien un diagnóstico no demuestra rendimiento futuro ni habilidad causal.", "namesControl": "Valores por fecha independiente", "horizonControl": "Horizonte de etiqueta (días enteros)", "shrinkControl": "Factor de contracción del estimador α", "seedsControl": "Estimadores equiponderados K", "correlationControl": "Correlación del error por pares ρ", "trialsControl": "Candidatos nulos independientes N", "srControl": "Sharpe mensual observado", "trialSdControl": "Desviación típica del Sharpe mensual nulo", "feeControl": "Comisión inventada por pata sobre nominal fijo de entrada (puntos básicos)", "seControl": "Error estándar supuesto de cada IC de periodos disjuntos", "quantity": "Magnitud", "value": "Valor", "raw": "Filas nominales", "individual": "Varianza de una observación (unidades²)", "iid": "Varianza de la media suponiendo IID incorrectamente (unidades²)", "meanVariance": "Varianza de la media con dependencia de fecha estipulada (unidades²)", "equivalent": "N IID equivalente para esta media muestral", "limit": "Límite de N equivalente al aumentar valores", "anchor": "Anclaje de decisión t", "labelEnd": "Etiqueta disponible al cierre t+h", "status": "Función en el ajuste congelado", "kept": "Entrena: etiqueta conocida", "unavailable": "Excluye: etiqueta futura", "test": "Prueba reservada", "future": "Futuro; no entrena", "timeline": "Anclajes de decisión: ajuste congelado al cierre 12; decisiones de prueba 13–16 solo con ese modelo.", "bias": "Sesgo al cuadrado (unidades de resultado²)", "variance": "Varianza del estimador (unidades de resultado²)", "noise": "Varianza del ruido nuevo (unidades²)", "mse": "Error cuadrático esperado (unidades²)", "ensemble": "Varianza de la media / varianza individual", "independent": "Mismo K con errores independientes", "pass": "Al menos un nulo pasa (%)", "single": "Probabilidad individual de pasar bajo nulo (%)", "fixedThreshold": "Umbral PSR estipulado (Sharpe mensual)", "searchThreshold": "Referencia de búsqueda de dos candidatos (Sharpe mensual)", "psr": "Puntuación PSR de referencia normal", "dsr": "Puntuación DSR de referencia normal", "psrZ": "Estadístico estandarizado PSR", "dsrZ": "Estadístico estandarizado DSR", "step": "Periodo", "forecast": "Predicción previa registrada (puntos porcentuales)", "outcome": "Rentabilidad realizada (%)", "error": "Error de predicción al cuadrado (pp²)", "position": "Multiplicador de exposición con signo", "gross": "P&L bruto (USD)", "fees": "Comisiones totales (USD)", "net": "P&L neto (USD)", "zero": "P&L neto de no operar (USD)", "zeroMse": "ECM de predecir cero (pp²)", "forecastMse": "ECM de las predicciones registradas (pp²)", "ending": "Caja final tras todas las salidas (USD)", "initial": "Caja inicial (USD)", "notional": "Nominal fijo de entrada por periodo (USD)", "historical": "IC medio del periodo anterior", "live": "IC medio del periodo posterior", "difference": "IC posterior menos anterior", "diffSe": "Error estándar supuesto de la diferencia", "lower": "Extremo inferior aproximado del 95 %", "upper": "Extremo superior aproximado del 95 %", "statistic": "Diferencia / error estándar supuesto", "table": "Valores exactos redondeados del modelo declarado", "chart": "Las barras con signo comparan las magnitudes y unidades indicadas. La tabla siguiente da valores exactos redondeados y se desplaza con el teclado.", "searchNote": "Candidatos nulos estipulados independientes con probabilidad individual de pasar del 2,5 %. No es fórmula DSR ni estimación ajustada del número de experimentos independientes.", "sharpeNote": "Escala de Sharpe de rentabilidades mensuales netas; T=101, asimetría 0 y curtosis 3 supuestas. Umbral PSR 0,05 estipulado. DSR usa el máximo esperado de dos estimaciones nulas normales centradas independientes con la desviación elegida. Contar entrenamientos reales no demuestra estos supuestos.", "tradeNote": "Nominal fijo de entrada 10.000 USD; cada periodo abre y cierra por completo, también el último. La comisión se cobra sobre ese nominal de entrada en cada una de ocho patas. Caja inicial 20.000 USD, cortos factibles y efectivo al cero. Sin financiación ni otros costes.", "monitorNote": "Medias de IC de dos periodos disjuntos: 0,04 y 0,018, estimadas independientemente con igual error estándar estipulado. Se supone aproximación normal. El intervalo no diagnostica un mecanismo ni sustituye un procedimiento de vigilancia secuencial.", "scaleLabel": "Escala fija de esta vista"}} />
+
+Este entrenamiento prospectivo no tiene filas candidatas después del bloque de prueba. Un **embargo** posterior, un margen que excluye filas futuras por lo demás elegibles en ciertos diseños de validación, no puede eliminar filas inexistentes en el entrenamiento. Si entrenas a ambos lados de un bloque de evaluación, especifica intervalos de etiquetas, disponibilidad de variables, dependencia entre entidades y dirección del margen. Purgar elimina el solapamiento prohibido; un embargo no demuestra que desaparezcan toda dependencia o cambio de distribución restantes.
+
+La congelación afecta a todo lo aprendido de los datos:
+
+<table tabIndex={0} aria-label="Etapas de ajuste y evaluación disponibles por fecha" className="block w-full max-w-full overflow-x-auto text-left text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600">
+  <thead><tr><th scope="col">Etapa</th><th scope="col">Operación permitida en este ajuste</th></tr></thead>
+  <tbody>
+    <tr><th scope="row">Escalado, imputación, selección y embeddings</th><td>Ajustar con información de entrenamiento permitida; aplicar la transformación congelada a las filas posteriores</td></tr>
+    <tr><th scope="row">Normalización por lotes</th><td>Estimar los estadísticos acumulados elegidos con entrenamiento permitido y usar el modo de inferencia previsto</td></tr>
+    <tr><th scope="row">Parada temprana e hiperparámetros</th><td>Elegir con validación interna; también son decisiones ajustadas</td></tr>
+    <tr><th scope="row">Estado recurrente y ventanas</th><td>Usar información disponible en cada decisión; definir reinicios y qué estado puede trasladarse</td></tr>
+    <tr><th scope="row">Evaluación final</th><td>Ejecutar el procedimiento prefijado sobre bloques posteriores intactos; no elegir ganador con sus resultados</td></tr>
+  </tbody>
+</table>
+
+El [preprocesamiento ajustado solo con entrenamiento](https://scikit-learn.org/stable/common_pitfalls.html) no es exclusivo de las redes profundas: un escalador también puede filtrar futuro en una regresión ridge. Mezclar **ventanas de entrenamiento ya válidas** no es por sí mismo filtración de futuro. El problema es cruzar la frontera con fechas, etiquetas, estadísticos ajustados o estado oculto prohibidos. Algunas tareas secuenciales con estado también necesitan lotes ordenados y reinicios explícitos.
+
+El [comportamiento documentado de BatchNorm](https://docs.pytorch.org/docs/2.15/generated/torch.nn.BatchNorm1d.html) depende de su configuración: desactivar los estadísticos acumulados puede hacer que la evaluación use el lote actual. LayerNorm no elimina la necesidad de comprobar qué posiciones temporales entran en cada normalización o atención.
+
+### Cuándo elegir este diseño
+
+Usa un experimento prospectivo con disponibilidad por fecha para la pregunta de despliegue planteada aquí. Algunos problemas autorregresivos estacionarios admiten otros diseños con sus condiciones; «todo K-fold temporal filtra futuro» es demasiado amplio. Para reajustes sucesivos, declara el calendario de antemano y ajusta solo con información disponible en cada nuevo cierre. Un periodo de prueba anterior puede convertirse después en historia permitida bajo ese calendario; no debe usarse para retocar retrospectivamente las decisiones anteriores publicadas.
+
+<ThinkReveal
+ eyebrow="Piensa primero"
+ buttonLabel="Mostrar respuesta"
+ hintLabel="Pista"
+ client:visible prompt="¿Por qué está mal restar un embargo posterior de estos doce candidatos pasados?" hint="Identifica qué filas posteriores estaban en el entrenamiento." text="Ninguna. Los candidatos son 1–12; con horizonte 2 quedan 1–10. El margen futuro de otro diseño no quita filas ausentes adicionales." />
+
+## 3. La regularización tiene un intercambio que contrastar
 
 <MCQ
-  client:visible
-  pretest
-  question="Tu red profunda superó una línea base GBM ajustada sobre particiones purgadas y embargadas y sobrevivió a la desinflación. ¿Cuál es el SIGUIENTE paso correcto antes de arriesgar capital?"
-  options={[
-    { text: "Opérala en simulado en vivo y monitoriza el IC realizado frente al backtest, con un interruptor de emergencia prefijado armado", correct: true },
-    { text: "Despliégala a tamaño completo de inmediato — el backtest fue suficientemente riguroso" },
-    { text: "Reajústala sobre el conjunto de test bloqueado para exprimir un poco más de Sharpe" },
-    { text: "Sáltate el operar en simulado; los datos en vivo son solo más backtest" },
-  ]}
-  checkLabel="Comprobar"
-  retryLabel="Reintentar"
-  explanation="Un backtest limpio se gana una prueba en simulado, no capital completo. Monitoriza el IC en vivo frente al backtest, mantén el interruptor armado y escala solo después de que la señal en vivo lo confirme. Reajustar sobre el test bloqueado lo destruye."
+ checkLabel="Comprobar"
+ retryLabel="Reintentar"
+ correctLabel="Correcto"
+ incorrectLabel="Incorrecto"
+ correctAnswerLabel="Respuesta correcta"
+ explanationLabel="Explicación"
+ pretestLabel="Antes de leer"
+ client:visible pretest
+ question={"Si una contracción baja la varianza del estimador, ¿debe caer su error cuadrático esperado?"}
+ options={[{"text": "No; también entran sesgo al cuadrado y ruido nuevo en la descomposición", "correct": true}, {"text": "Sí; varianza es todo el error en cualquier problema"}, {"text": "Sí; mayor contracción conserva siempre toda señal"}, {"text": "No; se prohíbe matemáticamente regularizar redes"}]}
+ explanation={"En la población inventada, error 5 con factor 1, 3 con 0,5 y 5 con 0. Contraer más no siempre ayuda."}
 />
 
-Haciendo eco de la lección de despliegue de *Machine Learning para Alfa*, ahora con
-sombrero de red profunda. La disciplina es idéntica porque el modo de fallo es idéntico:
-un modelo que deslumbró sobre el historial y decepciona sobre el mañana. Recorre la lista
-en orden, de arriba abajo, y no te saltes un peldaño porque estés emocionado.
+Bajar un mando puede reducir ruido y borrar señal. Considera la predicción en una entrada fija. La media condicional verdadera es $f=2$ unidades. El ruido de la observación futura es independiente del entrenamiento y tiene varianza 1. El estimador ajustado toma valores 0 o 4 con igual probabilidad entre muestras hipotéticas independientes de entrenamiento.
 
-1. **Línea base primero.** Un GBM ajustado (y un modelo lineal) sobre las mismas
-   particiones purgadas. La red profunda debe *batirlos*, no meramente *existir*.
-2. **Bloquea un conjunto de test que tocas una vez.** Un solo vistazo, para siempre. En el
-   momento en que lo reajustas, se convierte en otro pliegue de entrenamiento y deja de
-   ser evidencia — y el gigantesco espacio de búsqueda de DL hace esta tentación
-   abrumadora.
-3. **Opera en simulado.** Corre en vivo sin capital. Esto atrapa las fugas que un backtest
-   no puede: errores de temporización de datos, look-ahead en el cálculo de
-   características y la brecha entre las ejecuciones asumidas y las realizadas.
-4. **Monitoriza el IC en vivo frente al backtest.** Sigue el coeficiente de información y
-   el Sharpe realizados frente a las expectativas del backtest. Un IC en vivo muy por
-   debajo del backtest es tu aviso temprano de que la ventaja estaba parcial (o totalmente)
-   sobreajustada.
-5. **Prefija el interruptor de emergencia.** Decide *de antemano* el umbral de drawdown,
-   IC en vivo o slippage que tira del enchufe. Fijarlo después de que empiecen las pérdidas
-   es solo esperanza con pasos extra.
-6. **Reentrena walk-forward a medida que la señal decae.** Las ventajas se erosionan; la
-   no estacionariedad es la regla de la casa en los mercados. Reajusta sobre una ventana
-   rodante, pero equilibra la frecuencia de reentrenamiento con los costes de transacción
-   — cada reentrenamiento que voltea posiciones paga el diferencial.
+Multiplica ese estimador por un factor $a$. Su media es $2a$ y su varianza $4a^2$. En este modelo de error cuadrático,
 
-<SignalDecay
-  client:visible
-  title="El IC decae con el horizonte de mantenimiento — y operar más rápido cuesta más"
-  caption="El coeficiente de información de una señal se desvanece a medida que se estira el periodo de mantenimiento, mientras que operarla más rápido para capturar la ventaja fresca dispara los costes de transacción. El horizonte óptimo equilibra ambos."
+$$
+\mathbb E[(Y-\widehat f_a)^2]=\underbrace{4(a-1)^2}_{\text{sesgo al cuadrado}}+\underbrace{4a^2}_{\text{varianza del estimador}}+\underbrace{1}_{\text{ruido nuevo}}.
+$$
+
+<table tabIndex={0} aria-label="Sesgo cuadrado y varianza al contraer estimador" className="block w-full max-w-full overflow-x-auto text-left text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600">
+  <thead><tr><th scope="col">Factor</th><th scope="col">Sesgo al cuadrado</th><th scope="col">Varianza</th><th scope="col">Ruido</th><th scope="col">Error cuadrático esperado</th></tr></thead>
+  <tbody>
+    <tr><th scope="row">1</th><td>0</td><td>4</td><td>1</td><td>5</td></tr>
+    <tr><th scope="row">0,5</th><td>1</td><td>1</td><td>1</td><td>3</td></tr>
+    <tr><th scope="row">0</th><td>4</td><td>0</td><td>1</td><td>5</td></tr>
+  </tbody>
+</table>
+
+<div id="estimator-risk-example" className="scroll-mt-24" />
+
+<TemporalModelAudit client:visible mode="shrink" title="La contracción cambia sesgo y varianza" caption="Distribución inventada del estimador en una entrada fija: verdad 2, estimador original 0 o 4 equiprobables entre muestras y ruido futuro independiente de varianza 1. Multiplicar por alfa cambia sesgo y varianza. Las barras son componentes del error en unidades de resultado al cuadrado, no un efecto garantizado de regularizar un modelo de mercado." locale="es" labels={{"title": "Revisa la evaluación del modelo", "caption": "Ejemplos inventados con dependencia, fechas y políticas especificadas. Calcular bien un diagnóstico no demuestra rendimiento futuro ni habilidad causal.", "namesControl": "Valores por fecha independiente", "horizonControl": "Horizonte de etiqueta (días enteros)", "shrinkControl": "Factor de contracción del estimador α", "seedsControl": "Estimadores equiponderados K", "correlationControl": "Correlación del error por pares ρ", "trialsControl": "Candidatos nulos independientes N", "srControl": "Sharpe mensual observado", "trialSdControl": "Desviación típica del Sharpe mensual nulo", "feeControl": "Comisión inventada por pata sobre nominal fijo de entrada (puntos básicos)", "seControl": "Error estándar supuesto de cada IC de periodos disjuntos", "quantity": "Magnitud", "value": "Valor", "raw": "Filas nominales", "individual": "Varianza de una observación (unidades²)", "iid": "Varianza de la media suponiendo IID incorrectamente (unidades²)", "meanVariance": "Varianza de la media con dependencia de fecha estipulada (unidades²)", "equivalent": "N IID equivalente para esta media muestral", "limit": "Límite de N equivalente al aumentar valores", "anchor": "Anclaje de decisión t", "labelEnd": "Etiqueta disponible al cierre t+h", "status": "Función en el ajuste congelado", "kept": "Entrena: etiqueta conocida", "unavailable": "Excluye: etiqueta futura", "test": "Prueba reservada", "future": "Futuro; no entrena", "timeline": "Anclajes de decisión: ajuste congelado al cierre 12; decisiones de prueba 13–16 solo con ese modelo.", "bias": "Sesgo al cuadrado (unidades de resultado²)", "variance": "Varianza del estimador (unidades de resultado²)", "noise": "Varianza del ruido nuevo (unidades²)", "mse": "Error cuadrático esperado (unidades²)", "ensemble": "Varianza de la media / varianza individual", "independent": "Mismo K con errores independientes", "pass": "Al menos un nulo pasa (%)", "single": "Probabilidad individual de pasar bajo nulo (%)", "fixedThreshold": "Umbral PSR estipulado (Sharpe mensual)", "searchThreshold": "Referencia de búsqueda de dos candidatos (Sharpe mensual)", "psr": "Puntuación PSR de referencia normal", "dsr": "Puntuación DSR de referencia normal", "psrZ": "Estadístico estandarizado PSR", "dsrZ": "Estadístico estandarizado DSR", "step": "Periodo", "forecast": "Predicción previa registrada (puntos porcentuales)", "outcome": "Rentabilidad realizada (%)", "error": "Error de predicción al cuadrado (pp²)", "position": "Multiplicador de exposición con signo", "gross": "P&L bruto (USD)", "fees": "Comisiones totales (USD)", "net": "P&L neto (USD)", "zero": "P&L neto de no operar (USD)", "zeroMse": "ECM de predecir cero (pp²)", "forecastMse": "ECM de las predicciones registradas (pp²)", "ending": "Caja final tras todas las salidas (USD)", "initial": "Caja inicial (USD)", "notional": "Nominal fijo de entrada por periodo (USD)", "historical": "IC medio del periodo anterior", "live": "IC medio del periodo posterior", "difference": "IC posterior menos anterior", "diffSe": "Error estándar supuesto de la diferencia", "lower": "Extremo inferior aproximado del 95 %", "upper": "Extremo superior aproximado del 95 %", "statistic": "Diferencia / error estándar supuesto", "table": "Valores exactos redondeados del modelo declarado", "chart": "Las barras con signo comparan las magnitudes y unidades indicadas. La tabla siguiente da valores exactos redondeados y se desplaza con el teclado.", "searchNote": "Candidatos nulos estipulados independientes con probabilidad individual de pasar del 2,5 %. No es fórmula DSR ni estimación ajustada del número de experimentos independientes.", "sharpeNote": "Escala de Sharpe de rentabilidades mensuales netas; T=101, asimetría 0 y curtosis 3 supuestas. Umbral PSR 0,05 estipulado. DSR usa el máximo esperado de dos estimaciones nulas normales centradas independientes con la desviación elegida. Contar entrenamientos reales no demuestra estos supuestos.", "tradeNote": "Nominal fijo de entrada 10.000 USD; cada periodo abre y cierra por completo, también el último. La comisión se cobra sobre ese nominal de entrada en cada una de ocho patas. Caja inicial 20.000 USD, cortos factibles y efectivo al cero. Sin financiación ni otros costes.", "monitorNote": "Medias de IC de dos periodos disjuntos: 0,04 y 0,018, estimadas independientemente con igual error estándar estipulado. Se supone aproximación normal. El intervalo no diagnostica un mecanismo ni sustituye un procedimiento de vigilancia secuencial.", "scaleLabel": "Escala fija de esta vista"}} />
+
+La contracción parcial ayuda a **esta** población; llegar a cero pierde la mejora. Con $a=1.5$, el error es $1+9+1=11$. Hemos dado la distribución verdadera para comprobar la cuenta. En la práctica se desconoce, así que hay que elegir la intensidad con validación sin convertir la prueba final en otro conjunto de ajuste.
+
+Dropout, arquitecturas pequeñas, penalizaciones de pesos y parada temprana son herramientas diferentes; ninguna garantiza un pequeño aumento de sesgo y una gran caída de varianza. La parada temprana consume información de validación. [AdamW](https://docs.pytorch.org/docs/2.15/generated/torch.optim.AdamW.html) aplica decaimiento de pesos desacoplado; no equivale en general a sumar L2 a la pérdida de un optimizador adaptativo. El aumento de datos debe conservar un mecanismo financiero de etiquetas defendible: una trayectoria sintética plausible no es otra historia de mercado observada e independiente.
+
+### Un conjunto de modelos puede compartir casi todo el error
+
+Si $K$ errores de estimadores tienen igual varianza $\sigma_e^2$ y correlación por pares común $\rho$ bajo una covarianza válida, la media equiponderada tiene varianza
+
+$$
+\operatorname{Var}(\bar e)=\sigma_e^2\left[\rho+\frac{1-\rho}{K}\right].
+$$
+
+Con $K=5$ y $\rho=0.8$, es $0.84\sigma_e^2$, no el $0.2\sigma_e^2$ de errores independientes. Con $\rho=1$, promediar no reduce la varianza. La ecuación no dice por sí sola nada sobre sesgo, resultado neto de trading o disponibilidad de datos nuevos.
+
+<div id="ensemble-error-example" className="scroll-mt-24" />
+
+<TemporalModelAudit client:visible mode="ensemble" title="Las semillas correlacionadas comparten error" caption="Iguales varianzas de error y covarianza válida de correlación común. Los controles solo ofrecen correlación no negativa. Las ratios comparan varianza de la media equiponderada con un estimador; no miden sesgo ni crean observaciones independientes. Con errores independientes se obtiene 1/K; el error compartido permanece." locale="es" labels={{"title": "Revisa la evaluación del modelo", "caption": "Ejemplos inventados con dependencia, fechas y políticas especificadas. Calcular bien un diagnóstico no demuestra rendimiento futuro ni habilidad causal.", "namesControl": "Valores por fecha independiente", "horizonControl": "Horizonte de etiqueta (días enteros)", "shrinkControl": "Factor de contracción del estimador α", "seedsControl": "Estimadores equiponderados K", "correlationControl": "Correlación del error por pares ρ", "trialsControl": "Candidatos nulos independientes N", "srControl": "Sharpe mensual observado", "trialSdControl": "Desviación típica del Sharpe mensual nulo", "feeControl": "Comisión inventada por pata sobre nominal fijo de entrada (puntos básicos)", "seControl": "Error estándar supuesto de cada IC de periodos disjuntos", "quantity": "Magnitud", "value": "Valor", "raw": "Filas nominales", "individual": "Varianza de una observación (unidades²)", "iid": "Varianza de la media suponiendo IID incorrectamente (unidades²)", "meanVariance": "Varianza de la media con dependencia de fecha estipulada (unidades²)", "equivalent": "N IID equivalente para esta media muestral", "limit": "Límite de N equivalente al aumentar valores", "anchor": "Anclaje de decisión t", "labelEnd": "Etiqueta disponible al cierre t+h", "status": "Función en el ajuste congelado", "kept": "Entrena: etiqueta conocida", "unavailable": "Excluye: etiqueta futura", "test": "Prueba reservada", "future": "Futuro; no entrena", "timeline": "Anclajes de decisión: ajuste congelado al cierre 12; decisiones de prueba 13–16 solo con ese modelo.", "bias": "Sesgo al cuadrado (unidades de resultado²)", "variance": "Varianza del estimador (unidades de resultado²)", "noise": "Varianza del ruido nuevo (unidades²)", "mse": "Error cuadrático esperado (unidades²)", "ensemble": "Varianza de la media / varianza individual", "independent": "Mismo K con errores independientes", "pass": "Al menos un nulo pasa (%)", "single": "Probabilidad individual de pasar bajo nulo (%)", "fixedThreshold": "Umbral PSR estipulado (Sharpe mensual)", "searchThreshold": "Referencia de búsqueda de dos candidatos (Sharpe mensual)", "psr": "Puntuación PSR de referencia normal", "dsr": "Puntuación DSR de referencia normal", "psrZ": "Estadístico estandarizado PSR", "dsrZ": "Estadístico estandarizado DSR", "step": "Periodo", "forecast": "Predicción previa registrada (puntos porcentuales)", "outcome": "Rentabilidad realizada (%)", "error": "Error de predicción al cuadrado (pp²)", "position": "Multiplicador de exposición con signo", "gross": "P&L bruto (USD)", "fees": "Comisiones totales (USD)", "net": "P&L neto (USD)", "zero": "P&L neto de no operar (USD)", "zeroMse": "ECM de predecir cero (pp²)", "forecastMse": "ECM de las predicciones registradas (pp²)", "ending": "Caja final tras todas las salidas (USD)", "initial": "Caja inicial (USD)", "notional": "Nominal fijo de entrada por periodo (USD)", "historical": "IC medio del periodo anterior", "live": "IC medio del periodo posterior", "difference": "IC posterior menos anterior", "diffSe": "Error estándar supuesto de la diferencia", "lower": "Extremo inferior aproximado del 95 %", "upper": "Extremo superior aproximado del 95 %", "statistic": "Diferencia / error estándar supuesto", "table": "Valores exactos redondeados del modelo declarado", "chart": "Las barras con signo comparan las magnitudes y unidades indicadas. La tabla siguiente da valores exactos redondeados y se desplaza con el teclado.", "searchNote": "Candidatos nulos estipulados independientes con probabilidad individual de pasar del 2,5 %. No es fórmula DSR ni estimación ajustada del número de experimentos independientes.", "sharpeNote": "Escala de Sharpe de rentabilidades mensuales netas; T=101, asimetría 0 y curtosis 3 supuestas. Umbral PSR 0,05 estipulado. DSR usa el máximo esperado de dos estimaciones nulas normales centradas independientes con la desviación elegida. Contar entrenamientos reales no demuestra estos supuestos.", "tradeNote": "Nominal fijo de entrada 10.000 USD; cada periodo abre y cierra por completo, también el último. La comisión se cobra sobre ese nominal de entrada en cada una de ocho patas. Caja inicial 20.000 USD, cortos factibles y efectivo al cero. Sin financiación ni otros costes.", "monitorNote": "Medias de IC de dos periodos disjuntos: 0,04 y 0,018, estimadas independientemente con igual error estándar estipulado. Se supone aproximación normal. El intervalo no diagnostica un mecanismo ni sustituye un procedimiento de vigilancia secuencial.", "scaleLabel": "Escala fija de esta vista"}} />
+
+### Cuándo regularizar o combinar
+
+Compara variantes prefijadas con validación permitida y mide el objetivo buscado. Promediar semillas define un modelo; elegir la mejor añade selección. Un error de entrenamiento bajo no prueba filtración, y poca diferencia entre entrenamiento y prueba no demuestra utilidad: dos modelos malos pueden coincidir mucho.
+
+<MCQ
+ checkLabel="Comprobar"
+ retryLabel="Reintentar"
+ correctLabel="Correcto"
+ incorrectLabel="Incorrecto"
+ correctAnswerLabel="Respuesta correcta"
+ explanationLabel="Explicación"
+ client:visible
+ question={"Cinco errores equiponderados tienen correlación común 0,8 e igual varianza. ¿Qué fracción de varianza individual permanece?"}
+ options={[{"text": "0,84 bajo esta covarianza", "correct": true}, {"text": "0,20 porque toda semilla es independiente por definición"}, {"text": "0 porque promediar elimina cada error"}, {"text": "4 porque la varianza siempre se multiplica por modelos"}]}
+ explanation={"rho+(1−rho)/K=.8+.2/5=.84. Es varianza del error de estimadores, no P&L neto."}
 />
 
-### Ejemplo resuelto — ¿cuándo justifica el decaimiento un reentrenamiento?
+## 4. Cuenta la selección y llama bien al estadístico
 
-Tu IC en vivo era 0,040 en el despliegue. Tras ocho semanas de operar en simulado ha
-derivado a 0,018 —un decaimiento del 55%— mientras que el IC del backtest en el mismo
-tramo era 0,038. La brecha entre vivo y backtest ($0{,}018$ frente a $0{,}038$) es amplia
-y persistente, no un parpadeo de una semana. La respuesta disciplinada: la brecha *en sí*
-es un disparador del interruptor de emergencia; detén el escalado, investiga si hay fuga o
-cambio de régimen, y reentrena walk-forward solo si un reajuste fresco y purgado vuelve a
-superar el listón del Sharpe desinflado. Una señal que decae es normal; **un IC en vivo
-que es la mitad del backtest es una bandera roja de que el backtest era optimista.**
+<MCQ
+ checkLabel="Comprobar"
+ retryLabel="Reintentar"
+ correctLabel="Correcto"
+ incorrectLabel="Incorrecto"
+ correctAnswerLabel="Respuesta correcta"
+ explanationLabel="Explicación"
+ pretestLabel="Antes de leer"
+ client:visible pretest
+ question={"Veinte contrastes nulos independientes pasan con probabilidad0,025 cada uno. ¿Qué calcula 1−,975^20?"}
+ options={[{"text": "Probabilidad de que pase alguno bajo esa nulidad conjunta", "correct": true}, {"text": "Probabilidad de habilidad causal de la mejor arquitectura"}, {"text": "DSR al restar máximo esperado de Sharpe"}, {"text": "Probabilidad de rentabilidad futura positiva en mercado cambiante"}]}
+ explanation={"El suceso familiar complementa que fallen los veinte. Se estipula independencia; no la demuestra el registro."}
+/>
 
-<Callout variant="warning" title="El conjunto de test bloqueado está bloqueado — dilo otra vez">
-Con una muestra efectiva diminuta y un espacio de búsqueda de DL enorme, el error más caro
-es espiar el conjunto de test bloqueado "solo para comprobar" y luego empujar un
-hiperparámetro. Acabas de entrenar sobre él. No hay deshacer. Cada vistazo a los datos
-retenidos gasta una parte de su valor probatorio; gástalo una vez, al final del todo, y
-reporta lo que diga — aunque diga "no".
-</Callout>
+Supón $N$ **contrastes nulos independientes**, cada uno con probabilidad 0,025 de superar un umbral unilateral elegido. Son contrastes nulos inventados y bien calibrados; no una afirmación sobre los entrenamientos reales. La probabilidad de que pase alguno es
 
-### Cuándo usarlo
+$$
+P(\text{alguno pasa})=1-(1-0.025)^N.
+$$
 
-Esta lista de comprobación es obligatoria para *cualquier* modelo que vaya a capital,
-profundo o no — pero la disciplina se aprieta para DL porque el espacio de búsqueda y la
-capacidad de sobreajuste son mayores. Compromiso: operar en simulado y reentrenar
-walk-forward cuesta tiempo de calendario y cómputo, retrasando la puesta en vivo. Ese
-retraso es una característica: es la ventana en la que un modelo sobreajustado se revela
-inofensivamente, antes de poder perder dinero real.
+Con $N=20$ da $1-0.975^{20}=39.731232\%$; con 200, unos 99,367700 %. Son probabilidades familiares de falso positivo para este modelo independiente. Copiar un mismo contraste no multiplicaría así la posibilidad. Las arquitecturas correlacionadas requieren analizar dependencia; registrar 200 ejecuciones no demuestra que sean 200 contrastes independientes.
 
-<Reveal client:visible>
-<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
-<summary className="cursor-pointer font-medium">Tu red profunda bate la línea base GBM en el backtest pero su IC en vivo es la mitad del IC del backtest tras un mes de operar en simulado. ¿Cuál es el diagnóstico más probable y la respuesta disciplinada?</summary>
+<div id="search-null-example" className="scroll-mt-24" />
 
-**Respuesta.** El culpable más probable es sobreajuste residual o una fuga sutil que el
-backtest no atrapó — un escalador ajustado sobre datos completos, un embedding aprendido
-sobre todo el historial, estadísticas de batch que abarcan la costura, o sesgo de
-selección de una búsqueda sin desinflar. La respuesta disciplinada *no* es reajustar sobre
-los datos en vivo y *no* es "darle más tiempo" más allá de tu umbral prefijado. Es tratar
-la brecha entre vivo y backtest como una señal del interruptor de emergencia: detén el
-escalado, audita el pipeline en busca de fugas, recuenta tu verdadero presupuesto de
-pruebas $N$ y vuelve a desinflar, y reanuda solo si un reajuste fresco con purga + embargo
-supera el listón. A veces la conclusión honesta es que nunca hubo ventaja — entrega esa
-conclusión también.
+<TemporalModelAudit client:visible mode="search" title="Probabilidad de selección bajo nulos independientes" caption="Candidatos nulos independientes calibrados inventados. Cada uno tiene probabilidad unilateral individual 0,025 de pasar; se muestra 1−0,975^N. Es probabilidad familiar bajo ese modelo, no posibilidad de habilidad del seleccionado, máximo esperado ni DSR." locale="es" labels={{"title": "Revisa la evaluación del modelo", "caption": "Ejemplos inventados con dependencia, fechas y políticas especificadas. Calcular bien un diagnóstico no demuestra rendimiento futuro ni habilidad causal.", "namesControl": "Valores por fecha independiente", "horizonControl": "Horizonte de etiqueta (días enteros)", "shrinkControl": "Factor de contracción del estimador α", "seedsControl": "Estimadores equiponderados K", "correlationControl": "Correlación del error por pares ρ", "trialsControl": "Candidatos nulos independientes N", "srControl": "Sharpe mensual observado", "trialSdControl": "Desviación típica del Sharpe mensual nulo", "feeControl": "Comisión inventada por pata sobre nominal fijo de entrada (puntos básicos)", "seControl": "Error estándar supuesto de cada IC de periodos disjuntos", "quantity": "Magnitud", "value": "Valor", "raw": "Filas nominales", "individual": "Varianza de una observación (unidades²)", "iid": "Varianza de la media suponiendo IID incorrectamente (unidades²)", "meanVariance": "Varianza de la media con dependencia de fecha estipulada (unidades²)", "equivalent": "N IID equivalente para esta media muestral", "limit": "Límite de N equivalente al aumentar valores", "anchor": "Anclaje de decisión t", "labelEnd": "Etiqueta disponible al cierre t+h", "status": "Función en el ajuste congelado", "kept": "Entrena: etiqueta conocida", "unavailable": "Excluye: etiqueta futura", "test": "Prueba reservada", "future": "Futuro; no entrena", "timeline": "Anclajes de decisión: ajuste congelado al cierre 12; decisiones de prueba 13–16 solo con ese modelo.", "bias": "Sesgo al cuadrado (unidades de resultado²)", "variance": "Varianza del estimador (unidades de resultado²)", "noise": "Varianza del ruido nuevo (unidades²)", "mse": "Error cuadrático esperado (unidades²)", "ensemble": "Varianza de la media / varianza individual", "independent": "Mismo K con errores independientes", "pass": "Al menos un nulo pasa (%)", "single": "Probabilidad individual de pasar bajo nulo (%)", "fixedThreshold": "Umbral PSR estipulado (Sharpe mensual)", "searchThreshold": "Referencia de búsqueda de dos candidatos (Sharpe mensual)", "psr": "Puntuación PSR de referencia normal", "dsr": "Puntuación DSR de referencia normal", "psrZ": "Estadístico estandarizado PSR", "dsrZ": "Estadístico estandarizado DSR", "step": "Periodo", "forecast": "Predicción previa registrada (puntos porcentuales)", "outcome": "Rentabilidad realizada (%)", "error": "Error de predicción al cuadrado (pp²)", "position": "Multiplicador de exposición con signo", "gross": "P&L bruto (USD)", "fees": "Comisiones totales (USD)", "net": "P&L neto (USD)", "zero": "P&L neto de no operar (USD)", "zeroMse": "ECM de predecir cero (pp²)", "forecastMse": "ECM de las predicciones registradas (pp²)", "ending": "Caja final tras todas las salidas (USD)", "initial": "Caja inicial (USD)", "notional": "Nominal fijo de entrada por periodo (USD)", "historical": "IC medio del periodo anterior", "live": "IC medio del periodo posterior", "difference": "IC posterior menos anterior", "diffSe": "Error estándar supuesto de la diferencia", "lower": "Extremo inferior aproximado del 95 %", "upper": "Extremo superior aproximado del 95 %", "statistic": "Diferencia / error estándar supuesto", "table": "Valores exactos redondeados del modelo declarado", "chart": "Las barras con signo comparan las magnitudes y unidades indicadas. La tabla siguiente da valores exactos redondeados y se desplaza con el teclado.", "searchNote": "Candidatos nulos estipulados independientes con probabilidad individual de pasar del 2,5 %. No es fórmula DSR ni estimación ajustada del número de experimentos independientes.", "sharpeNote": "Escala de Sharpe de rentabilidades mensuales netas; T=101, asimetría 0 y curtosis 3 supuestas. Umbral PSR 0,05 estipulado. DSR usa el máximo esperado de dos estimaciones nulas normales centradas independientes con la desviación elegida. Contar entrenamientos reales no demuestra estos supuestos.", "tradeNote": "Nominal fijo de entrada 10.000 USD; cada periodo abre y cierra por completo, también el último. La comisión se cobra sobre ese nominal de entrada en cada una de ocho patas. Caja inicial 20.000 USD, cortos factibles y efectivo al cero. Sin financiación ni otros costes.", "monitorNote": "Medias de IC de dos periodos disjuntos: 0,04 y 0,018, estimadas independientemente con igual error estándar estipulado. Se supone aproximación normal. El intervalo no diagnostica un mecanismo ni sustituye un procedimiento de vigilancia secuencial.", "scaleLabel": "Escala fija de esta vista"}} />
 
-</details>
-</Reveal>
+Registra variables, arquitecturas, ventanas, costes, épocas de parada, semillas y reglas de trading cuando influyan en la selección. Una validación anidada separa ajustar y elegir de la evaluación final publicada. Consultar repetidamente esa prueba para elegir cambios la convierte en datos de selección; otra evaluación posterior intacta puede contrastar el procedimiento resultante. Purgar no deshace la selección de modelos.
 
-## Recapitulación
+### PSR, referencia de búsqueda y DSR
 
-Ya tienes el kit de autodefensa de deep learning: regulariza como si tu muestra efectiva
-fuera diminuta (lo es), evalúa con purga + embargo mientras tapas los canales de fuga
-extra de DL, desinfla al ganador de una búsqueda de arquitecturas desmesurada por su
-verdadero recuento de pruebas, haz del gradient boosting la línea base que debes batir, y
-despliega solo a través de un conjunto de test bloqueado, operar en simulado, monitorizar
-el IC en vivo y un interruptor de emergencia armado.
+El [artículo de Deflated Sharpe Ratio](https://www.davidhbailey.com/dhbpapers/deflated-sharpe.pdf) ajusta un cálculo de Sharpe probabilístico frente a una referencia de búsqueda especificada. **No** define DSR como Sharpe observado menos $\sigma\sqrt{2\ln N}$. Esa raíz solo describe el término asintótico principal de un máximo esperado bajo cierto modelo gaussiano independiente; un máximo esperado no es umbral de significación ni probabilidad.
+
+Con una aproximación normal adecuada, escribe el estadístico probabilístico frente a referencia $S_0$ como
+
+$$
+z=\frac{(\widehat S-S_0)\sqrt{T-1}}{\sqrt{1-\widehat\gamma_3\widehat S+(\widehat\gamma_4-1)\widehat S^2/4}},\qquad \mathrm{PSR}(S_0)\approx\Phi(z).
+$$
+
+$T$ cuenta **observaciones de rentabilidad**; $\widehat\gamma_3$ es asimetría, $\widehat\gamma_4$ curtosis ordinaria (3 en una normal) y $\Phi$ la función de distribución normal estándar. Sharpe y referencia usan igual frecuencia. Si $S_0$ es un máximo esperado ajustado por búsqueda bajo un modelo de ensayos defendido, el estadístico correspondiente se llama DSR. Dependencia temporal, no estacionariedad, estimación de momentos, selección adaptativa y dependencia entre ensayos exigen tratamiento aparte; la fórmula no los arregla automáticamente.
+
+Para otro registro mensual neto inventado, usa $\widehat S=0.10$, $T=101$, asimetría 0 y curtosis 3. Frente al umbral **estipulado** $S_0=0.05$, $z=0.5/\sqrt{1.005}\approx0.498755$ y PSR ronda 0,691024. Ese umbral solo no tiene procedencia de búsqueda; aún no es DSR.
+
+Añade ahora un modelo de búsqueda: exactamente **dos estimaciones nulas independientes de Sharpe mensual**, cada una normal con media cero y desviación $\sigma_{\rm trial}=0.10$. Para ese modelo normal de dos candidatos, el máximo esperado es exactamente $\sigma_{\rm trial}/\sqrt\pi=0.05641895835\ldots$. Se ve con $\max(A,B)=(A+B+|A-B|)/2$: la diferencia normal centrada tiene varianza $2\sigma_{\rm trial}^2$ y valor absoluto medio $2\sigma_{\rm trial}/\sqrt\pi$.
+
+Con esa referencia derivada, $z\approx0.434725$ y DSR ronda 0,668119 bajo la aproximación indicada. Coinciden las unidades mensuales de $\widehat S$, $\sigma_{\rm trial}$ y $S_0$. Hay dos candidatos y 101 rentabilidades. No intercambies esas cuentas.
+
+<div id="sharpe-reference-example" className="scroll-mt-24" />
+
+<TemporalModelAudit client:visible mode="sharpe" title="Umbral fijo y referencia de búsqueda derivada" caption="Registro inventado de Sharpe mensual neto y modelo de búsqueda estipulado aparte. 101 rentabilidades, asimetría 0 y curtosis 3. La referencia fija 0,05 da PSR. Dos estimaciones nulas normales centradas independientes con la desviación elegida tienen máximo esperado exacto sigma_trial/raíz(pi); usarlo da la aproximación DSR ilustrada. Contar ensayos no demuestra el modelo; DSR no controla error familiar ni es probabilidad de habilidad causal." locale="es" labels={{"title": "Revisa la evaluación del modelo", "caption": "Ejemplos inventados con dependencia, fechas y políticas especificadas. Calcular bien un diagnóstico no demuestra rendimiento futuro ni habilidad causal.", "namesControl": "Valores por fecha independiente", "horizonControl": "Horizonte de etiqueta (días enteros)", "shrinkControl": "Factor de contracción del estimador α", "seedsControl": "Estimadores equiponderados K", "correlationControl": "Correlación del error por pares ρ", "trialsControl": "Candidatos nulos independientes N", "srControl": "Sharpe mensual observado", "trialSdControl": "Desviación típica del Sharpe mensual nulo", "feeControl": "Comisión inventada por pata sobre nominal fijo de entrada (puntos básicos)", "seControl": "Error estándar supuesto de cada IC de periodos disjuntos", "quantity": "Magnitud", "value": "Valor", "raw": "Filas nominales", "individual": "Varianza de una observación (unidades²)", "iid": "Varianza de la media suponiendo IID incorrectamente (unidades²)", "meanVariance": "Varianza de la media con dependencia de fecha estipulada (unidades²)", "equivalent": "N IID equivalente para esta media muestral", "limit": "Límite de N equivalente al aumentar valores", "anchor": "Anclaje de decisión t", "labelEnd": "Etiqueta disponible al cierre t+h", "status": "Función en el ajuste congelado", "kept": "Entrena: etiqueta conocida", "unavailable": "Excluye: etiqueta futura", "test": "Prueba reservada", "future": "Futuro; no entrena", "timeline": "Anclajes de decisión: ajuste congelado al cierre 12; decisiones de prueba 13–16 solo con ese modelo.", "bias": "Sesgo al cuadrado (unidades de resultado²)", "variance": "Varianza del estimador (unidades de resultado²)", "noise": "Varianza del ruido nuevo (unidades²)", "mse": "Error cuadrático esperado (unidades²)", "ensemble": "Varianza de la media / varianza individual", "independent": "Mismo K con errores independientes", "pass": "Al menos un nulo pasa (%)", "single": "Probabilidad individual de pasar bajo nulo (%)", "fixedThreshold": "Umbral PSR estipulado (Sharpe mensual)", "searchThreshold": "Referencia de búsqueda de dos candidatos (Sharpe mensual)", "psr": "Puntuación PSR de referencia normal", "dsr": "Puntuación DSR de referencia normal", "psrZ": "Estadístico estandarizado PSR", "dsrZ": "Estadístico estandarizado DSR", "step": "Periodo", "forecast": "Predicción previa registrada (puntos porcentuales)", "outcome": "Rentabilidad realizada (%)", "error": "Error de predicción al cuadrado (pp²)", "position": "Multiplicador de exposición con signo", "gross": "P&L bruto (USD)", "fees": "Comisiones totales (USD)", "net": "P&L neto (USD)", "zero": "P&L neto de no operar (USD)", "zeroMse": "ECM de predecir cero (pp²)", "forecastMse": "ECM de las predicciones registradas (pp²)", "ending": "Caja final tras todas las salidas (USD)", "initial": "Caja inicial (USD)", "notional": "Nominal fijo de entrada por periodo (USD)", "historical": "IC medio del periodo anterior", "live": "IC medio del periodo posterior", "difference": "IC posterior menos anterior", "diffSe": "Error estándar supuesto de la diferencia", "lower": "Extremo inferior aproximado del 95 %", "upper": "Extremo superior aproximado del 95 %", "statistic": "Diferencia / error estándar supuesto", "table": "Valores exactos redondeados del modelo declarado", "chart": "Las barras con signo comparan las magnitudes y unidades indicadas. La tabla siguiente da valores exactos redondeados y se desplaza con el teclado.", "searchNote": "Candidatos nulos estipulados independientes con probabilidad individual de pasar del 2,5 %. No es fórmula DSR ni estimación ajustada del número de experimentos independientes.", "sharpeNote": "Escala de Sharpe de rentabilidades mensuales netas; T=101, asimetría 0 y curtosis 3 supuestas. Umbral PSR 0,05 estipulado. DSR usa el máximo esperado de dos estimaciones nulas normales centradas independientes con la desviación elegida. Contar entrenamientos reales no demuestra estos supuestos.", "tradeNote": "Nominal fijo de entrada 10.000 USD; cada periodo abre y cierra por completo, también el último. La comisión se cobra sobre ese nominal de entrada en cada una de ocho patas. Caja inicial 20.000 USD, cortos factibles y efectivo al cero. Sin financiación ni otros costes.", "monitorNote": "Medias de IC de dos periodos disjuntos: 0,04 y 0,018, estimadas independientemente con igual error estándar estipulado. Se supone aproximación normal. El intervalo no diagnostica un mecanismo ni sustituye un procedimiento de vigilancia secuencial.", "scaleLabel": "Escala fija de esta vista"}} />
+
+DSR frente a un máximo esperado **no controla el error familiar**; ninguna puntuación es probabilidad causal de habilidad ni probabilidad de beneficio futuro. El modelo normal independiente se proporciona para esta cuenta; entrenar dos redes con los mismos datos no lo identifica.
+
+### Cuándo ajustar por selección
+
+Hazlo cuando los resultados influyan en qué modelo o política publicas, con registro de búsqueda y un modelo defendible de dependencia e incertidumbre. Es preferible un presupuesto prefijado y evaluación nueva a una resta posterior presentada como certificado. No inventes un «número efectivo de ensayos» sin explicar cómo se estimó.
+
+<MCQ
+ checkLabel="Comprobar"
+ retryLabel="Reintentar"
+ correctLabel="Correcto"
+ incorrectLabel="Incorrecto"
+ correctAnswerLabel="Respuesta correcta"
+ explanationLabel="Explicación"
+ client:visible
+ question={"Elige dos requisitos del DSR ilustrado."}
+ options={[{"text": "Sharpe, dispersión de ensayos y referencia usan igual frecuencia de rentabilidad", "correct": true}, {"text": "Un modelo de búsqueda defendido vincula la referencia a selección y no a un umbral arbitrario", "correct": true}, {"text": "T=101 cuenta candidatos de arquitectura"}, {"text": "DSR con cualquier máximo esperado garantiza controlar error familiar"}]}
+ explanation={"Hay 101 rentabilidades y dos estimaciones nulas independientes. DSR no es probabilidad causal ni certificado de error familiar."}
+ allowMultiple={true}
+/>
+
+## 5. Pérdida predictiva y P&L neto responden preguntas distintas
+
+<MCQ
+ checkLabel="Comprobar"
+ retryLabel="Reintentar"
+ correctLabel="Correcto"
+ incorrectLabel="Incorrecto"
+ correctAnswerLabel="Respuesta correcta"
+ explanationLabel="Explicación"
+ pretestLabel="Antes de leer"
+ client:visible pretest
+ question={"Se observa un menor ECM predictivo. ¿Qué especificación falta para juzgar trading?"}
+ options={[{"text": "Política factible de posiciones y salida con caja, comisiones, financiación y riesgo", "correct": true}, {"text": "Solo nombre de familia y ajuste de entrenamiento"}, {"text": "Una regla que tome cada signo acertado como beneficio neto garantizado"}, {"text": "Nada; error al cuadrado y dólares son la misma métrica"}]}
+ explanation={"Predecir no elige posiciones ni paga ejecución. El objetivo económico necesita cuenta propia."}
+/>
+
+Supón estas cuatro predicciones registradas **antes** de sus rentabilidades, sin acceso a ellas. Predicciones y rentabilidades se expresan en puntos porcentuales al calcular error cuadrático.
+
+<table tabIndex={0} aria-label="Predicciones previas registradas y errores realizados" className="block w-full max-w-full overflow-x-auto text-left text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600">
+  <thead><tr><th scope="col">Periodo</th><th scope="col">Predicción registrada (pp)</th><th scope="col">Rentabilidad realizada (%)</th><th scope="col">Error cuadrático (pp²)</th></tr></thead>
+  <tbody>
+    <tr><th scope="row">1</th><td>+0,9</td><td>+1</td><td>0,01</td></tr>
+    <tr><th scope="row">2</th><td>−0,9</td><td>−1</td><td>0,01</td></tr>
+    <tr><th scope="row">3</th><td>+0,9</td><td>+1</td><td>0,01</td></tr>
+    <tr><th scope="row">4</th><td>−0,9</td><td>−1</td><td>0,01</td></tr>
+  </tbody>
+</table>
+
+El error cuadrático medio es 0,01 pp², frente a $[1^2+(-1)^2+1^2+(-1)^2]/4=1$ pp² de predecir cero. Es una gran mejora de pérdida **en estas cuatro observaciones inventadas**; no indica con qué frecuencia se repetiría ese registro.
+
+Una política fija toma el signo, abre 10.000 USD de exposición cada periodo y la **cierra por completo en cada periodo**. Empieza con 20.000 USD de caja, suficientes para las operaciones estipuladas; se permiten cortos, el efectivo rinde cero y no hay financiación, impuestos, horquilla ni impacto aparte de la comisión inventada explícita. Cada periodo gana bruto $10{,}000\times1\%=100$ USD: total 400.
+
+Cobra **100 puntos básicos por pata sobre el nominal fijo de entrada**, usando esa misma base declarada también al salir. Es una tarifa inventada deliberadamente costosa, no la de un mercado concreto. Cada pata cuesta $10{,}000\times0.01=100$ USD; cuatro compras y ventas tienen ocho patas y cuestan 800. El neto es $400-800=-400$ USD y quedan 19.600 de caja. La política de efectivo sin operar gana cero, sin comisiones. Mejorar el error predictivo perdió la comparación económica.
+
+<div id="forecast-pnl-example" className="scroll-mt-24" />
+
+<TemporalModelAudit client:visible mode="trading" title="Precisión predictiva y cuenta económica de la política" caption="Cuatro predicciones inventadas disponibles por supuesto antes de sus resultados. La política de signo abre y cierra nominal fijo de entrada 10.000 USD en cada periodo: ocho patas con comisión. La tarifa inventada usa el nominal original en cada pata, también al salir. Caja inicial 20.000 USD, cortos factibles, efectivo al cero y sin otros costes. No operar da P&L y comisiones cero. Menor error cuadrático no exige ganar el objetivo económico." locale="es" labels={{"title": "Revisa la evaluación del modelo", "caption": "Ejemplos inventados con dependencia, fechas y políticas especificadas. Calcular bien un diagnóstico no demuestra rendimiento futuro ni habilidad causal.", "namesControl": "Valores por fecha independiente", "horizonControl": "Horizonte de etiqueta (días enteros)", "shrinkControl": "Factor de contracción del estimador α", "seedsControl": "Estimadores equiponderados K", "correlationControl": "Correlación del error por pares ρ", "trialsControl": "Candidatos nulos independientes N", "srControl": "Sharpe mensual observado", "trialSdControl": "Desviación típica del Sharpe mensual nulo", "feeControl": "Comisión inventada por pata sobre nominal fijo de entrada (puntos básicos)", "seControl": "Error estándar supuesto de cada IC de periodos disjuntos", "quantity": "Magnitud", "value": "Valor", "raw": "Filas nominales", "individual": "Varianza de una observación (unidades²)", "iid": "Varianza de la media suponiendo IID incorrectamente (unidades²)", "meanVariance": "Varianza de la media con dependencia de fecha estipulada (unidades²)", "equivalent": "N IID equivalente para esta media muestral", "limit": "Límite de N equivalente al aumentar valores", "anchor": "Anclaje de decisión t", "labelEnd": "Etiqueta disponible al cierre t+h", "status": "Función en el ajuste congelado", "kept": "Entrena: etiqueta conocida", "unavailable": "Excluye: etiqueta futura", "test": "Prueba reservada", "future": "Futuro; no entrena", "timeline": "Anclajes de decisión: ajuste congelado al cierre 12; decisiones de prueba 13–16 solo con ese modelo.", "bias": "Sesgo al cuadrado (unidades de resultado²)", "variance": "Varianza del estimador (unidades de resultado²)", "noise": "Varianza del ruido nuevo (unidades²)", "mse": "Error cuadrático esperado (unidades²)", "ensemble": "Varianza de la media / varianza individual", "independent": "Mismo K con errores independientes", "pass": "Al menos un nulo pasa (%)", "single": "Probabilidad individual de pasar bajo nulo (%)", "fixedThreshold": "Umbral PSR estipulado (Sharpe mensual)", "searchThreshold": "Referencia de búsqueda de dos candidatos (Sharpe mensual)", "psr": "Puntuación PSR de referencia normal", "dsr": "Puntuación DSR de referencia normal", "psrZ": "Estadístico estandarizado PSR", "dsrZ": "Estadístico estandarizado DSR", "step": "Periodo", "forecast": "Predicción previa registrada (puntos porcentuales)", "outcome": "Rentabilidad realizada (%)", "error": "Error de predicción al cuadrado (pp²)", "position": "Multiplicador de exposición con signo", "gross": "P&L bruto (USD)", "fees": "Comisiones totales (USD)", "net": "P&L neto (USD)", "zero": "P&L neto de no operar (USD)", "zeroMse": "ECM de predecir cero (pp²)", "forecastMse": "ECM de las predicciones registradas (pp²)", "ending": "Caja final tras todas las salidas (USD)", "initial": "Caja inicial (USD)", "notional": "Nominal fijo de entrada por periodo (USD)", "historical": "IC medio del periodo anterior", "live": "IC medio del periodo posterior", "difference": "IC posterior menos anterior", "diffSe": "Error estándar supuesto de la diferencia", "lower": "Extremo inferior aproximado del 95 %", "upper": "Extremo superior aproximado del 95 %", "statistic": "Diferencia / error estándar supuesto", "table": "Valores exactos redondeados del modelo declarado", "chart": "Las barras con signo comparan las magnitudes y unidades indicadas. La tabla siguiente da valores exactos redondeados y se desplaza con el teclado.", "searchNote": "Candidatos nulos estipulados independientes con probabilidad individual de pasar del 2,5 %. No es fórmula DSR ni estimación ajustada del número de experimentos independientes.", "sharpeNote": "Escala de Sharpe de rentabilidades mensuales netas; T=101, asimetría 0 y curtosis 3 supuestas. Umbral PSR 0,05 estipulado. DSR usa el máximo esperado de dos estimaciones nulas normales centradas independientes con la desviación elegida. Contar entrenamientos reales no demuestra estos supuestos.", "tradeNote": "Nominal fijo de entrada 10.000 USD; cada periodo abre y cierra por completo, también el último. La comisión se cobra sobre ese nominal de entrada en cada una de ocho patas. Caja inicial 20.000 USD, cortos factibles y efectivo al cero. Sin financiación ni otros costes.", "monitorNote": "Medias de IC de dos periodos disjuntos: 0,04 y 0,018, estimadas independientemente con igual error estándar estipulado. Se supone aproximación normal. El intervalo no diagnostica un mecanismo ni sustituye un procedimiento de vigilancia secuencial.", "scaleLabel": "Escala fija de esta vista"}} />
+
+Sin comisiones, esta política gana 400; con 50 puntos básicos por pata, las comisiones suman $8\times50=400$ USD y el neto es cero. Es sensibilidad aritmética de las operaciones especificadas; no prueba que ejecuciones o predicciones reales sobrevivan a otro régimen de costes. Un umbral, límite de apalancamiento o regla de mantenimiento definiría otro experimento y también debe elegirse sin consultar la prueba final.
+
+### Cuándo comparar familias de modelos
+
+Para una afirmación predictiva, compara igual objetivo y datos disponibles por fecha con la misma métrica. Para una de trading, define posiciones, universo, caja y financiación, costes, capacidad, restricciones y cierre. Incluye no operar y modelos simples o lineales pertinentes; después, árboles y redes justificados con recursos de ajuste declarados. Informa incertidumbre de **diferencias emparejadas** en periodos comunes; cada fila no es una victoria independiente nueva.
+
+El [benchmark tabular de 2022](https://papers.nips.cc/paper_files/paper/2022/hash/0378c7692da36807bdec87ab043cdadc-Abstract.html) encontró buen rendimiento de árboles en sus tareas; el [estudio de 2023](https://proceedings.nips.cc/paper_files/paper/2023/file/f06d5ebd4ff40b40dd97e30cee632123-Paper-Datasets_and_Benchmarks.pdf) vio que ajuste y propiedades de los datos importan a menudo tanto como la familia. Son resultados de esos benchmarks, no una clasificación financiera universal. La estructura secuencial o textual motiva probar una arquitectura, no declararla vencedora. Un modelo sencillo con variables textuales dispersas también es referencia legítima si responde a la misma tarea.
+
+<FillBlank
+ checkLabel="Comprobar"
+ retryLabel="Reintentar"
+ explanationLabel="Explicación"
+ instructions="Elige una opción para cada hueco y comprueba."
+ correctResultLabel="Correcto"
+ partialResultWord="correctas"
+ client:visible question="El registro predice bien pero operar cuesta." text="Cuatro beneficios brutos de 100 USD suman {{400|800|100}} USD. Ocho comisiones de 100 USD dejan {{−400|400|0}} USD netos." explanation="400−8×100=−400. Cada periodo abre y cierra; la base por pata es el nominal fijo de entrada." />
+
+## 6. Vigila un procedimiento congelado sin inventar un diagnóstico
+
+<MCQ
+ checkLabel="Comprobar"
+ retryLabel="Reintentar"
+ correctLabel="Correcto"
+ incorrectLabel="Incorrecto"
+ correctAnswerLabel="Respuesta correcta"
+ explanationLabel="Explicación"
+ pretestLabel="Antes de leer"
+ client:visible pretest
+ question={"El IC medio en vivo está bajo el histórico. ¿Identifica sobreajuste?"}
+ options={[{"text": "No; incertidumbre, implementación, costes y cambio de distribución requieren investigación aparte", "correct": true}, {"text": "Sí; toda estimación menor prueba filtración"}, {"text": "Sí; un modelo auditado debe mantener IC realizado para siempre"}, {"text": "No; prueba iguales distribuciones históricas y actuales"}]}
+ explanation={"La diferencia puede alertar sin identificar causa. Importan dependencia y procedimiento de vigilancia."}
+/>
+
+Una caída en vivo puede señalar un problema sin identificar su causa. En otro ejemplo, un periodo histórico estima el coeficiente de información medio (IC, correlación transversal especificada entre predicción y rentabilidad) en 0,040 y otro posterior disjunto en 0,018. Supón error estándar 0,015 para cada media, independencia entre las dos estimaciones y aproximación normal adecuada. Damos esas incertidumbres; no se infieren de los valores puntuales.
+
+La diferencia es $0.018-0.040=-0.022$, con error estándar supuesto $\sqrt{0.015^2+0.015^2}=0.0212132$. Su intervalo aproximado del 95 % es
+
+$$
+-0.022\pm1.96(0.0212132)=[-0.0635779,\ 0.0195779].
+$$
+
+<div id="monitoring-uncertainty-example" className="scroll-mt-24" />
+
+<TemporalModelAudit client:visible mode="monitor" title="Diferencia en vivo con incertidumbre supuesta" caption="Medias inventadas de IC de periodos disjuntos: 0,040 y 0,018. El error estándar elegido se aplica a cada estimación; se suponen independencia y aproximación normal. Las barras muestran diferencia y extremos. Compartir fechas u otra dependencia exigiría covarianza; el intervalo solo no identifica causa ni regla secuencial." locale="es" labels={{"title": "Revisa la evaluación del modelo", "caption": "Ejemplos inventados con dependencia, fechas y políticas especificadas. Calcular bien un diagnóstico no demuestra rendimiento futuro ni habilidad causal.", "namesControl": "Valores por fecha independiente", "horizonControl": "Horizonte de etiqueta (días enteros)", "shrinkControl": "Factor de contracción del estimador α", "seedsControl": "Estimadores equiponderados K", "correlationControl": "Correlación del error por pares ρ", "trialsControl": "Candidatos nulos independientes N", "srControl": "Sharpe mensual observado", "trialSdControl": "Desviación típica del Sharpe mensual nulo", "feeControl": "Comisión inventada por pata sobre nominal fijo de entrada (puntos básicos)", "seControl": "Error estándar supuesto de cada IC de periodos disjuntos", "quantity": "Magnitud", "value": "Valor", "raw": "Filas nominales", "individual": "Varianza de una observación (unidades²)", "iid": "Varianza de la media suponiendo IID incorrectamente (unidades²)", "meanVariance": "Varianza de la media con dependencia de fecha estipulada (unidades²)", "equivalent": "N IID equivalente para esta media muestral", "limit": "Límite de N equivalente al aumentar valores", "anchor": "Anclaje de decisión t", "labelEnd": "Etiqueta disponible al cierre t+h", "status": "Función en el ajuste congelado", "kept": "Entrena: etiqueta conocida", "unavailable": "Excluye: etiqueta futura", "test": "Prueba reservada", "future": "Futuro; no entrena", "timeline": "Anclajes de decisión: ajuste congelado al cierre 12; decisiones de prueba 13–16 solo con ese modelo.", "bias": "Sesgo al cuadrado (unidades de resultado²)", "variance": "Varianza del estimador (unidades de resultado²)", "noise": "Varianza del ruido nuevo (unidades²)", "mse": "Error cuadrático esperado (unidades²)", "ensemble": "Varianza de la media / varianza individual", "independent": "Mismo K con errores independientes", "pass": "Al menos un nulo pasa (%)", "single": "Probabilidad individual de pasar bajo nulo (%)", "fixedThreshold": "Umbral PSR estipulado (Sharpe mensual)", "searchThreshold": "Referencia de búsqueda de dos candidatos (Sharpe mensual)", "psr": "Puntuación PSR de referencia normal", "dsr": "Puntuación DSR de referencia normal", "psrZ": "Estadístico estandarizado PSR", "dsrZ": "Estadístico estandarizado DSR", "step": "Periodo", "forecast": "Predicción previa registrada (puntos porcentuales)", "outcome": "Rentabilidad realizada (%)", "error": "Error de predicción al cuadrado (pp²)", "position": "Multiplicador de exposición con signo", "gross": "P&L bruto (USD)", "fees": "Comisiones totales (USD)", "net": "P&L neto (USD)", "zero": "P&L neto de no operar (USD)", "zeroMse": "ECM de predecir cero (pp²)", "forecastMse": "ECM de las predicciones registradas (pp²)", "ending": "Caja final tras todas las salidas (USD)", "initial": "Caja inicial (USD)", "notional": "Nominal fijo de entrada por periodo (USD)", "historical": "IC medio del periodo anterior", "live": "IC medio del periodo posterior", "difference": "IC posterior menos anterior", "diffSe": "Error estándar supuesto de la diferencia", "lower": "Extremo inferior aproximado del 95 %", "upper": "Extremo superior aproximado del 95 %", "statistic": "Diferencia / error estándar supuesto", "table": "Valores exactos redondeados del modelo declarado", "chart": "Las barras con signo comparan las magnitudes y unidades indicadas. La tabla siguiente da valores exactos redondeados y se desplaza con el teclado.", "searchNote": "Candidatos nulos estipulados independientes con probabilidad individual de pasar del 2,5 %. No es fórmula DSR ni estimación ajustada del número de experimentos independientes.", "sharpeNote": "Escala de Sharpe de rentabilidades mensuales netas; T=101, asimetría 0 y curtosis 3 supuestas. Umbral PSR 0,05 estipulado. DSR usa el máximo esperado de dos estimaciones nulas normales centradas independientes con la desviación elegida. Contar entrenamientos reales no demuestra estos supuestos.", "tradeNote": "Nominal fijo de entrada 10.000 USD; cada periodo abre y cierra por completo, también el último. La comisión se cobra sobre ese nominal de entrada en cada una de ocho patas. Caja inicial 20.000 USD, cortos factibles y efectivo al cero. Sin financiación ni otros costes.", "monitorNote": "Medias de IC de dos periodos disjuntos: 0,04 y 0,018, estimadas independientemente con igual error estándar estipulado. Se supone aproximación normal. El intervalo no diagnostica un mecanismo ni sustituye un procedimiento de vigilancia secuencial.", "scaleLabel": "Escala fija de esta vista"}} />
+
+El intervalo incluye cero bajo estos supuestos. No establece igualdad ni descarta perjuicio económico; tampoco diagnostica filtración, sobreajuste o cambio del mecanismo de mercado. Si las estimaciones comparten fechas, valores o modelos ajustados, su covarianza entra en la incertidumbre de la diferencia. El IC real puede necesitar métodos que consideren dependencia; mirar muchas fechas repetidamente añade selección secuencial.
+
+Una evaluación prospectiva especifica calendario de entrenamiento y reajuste, elecciones de validación interna y ventana final antes de inspeccionar resultados. Una pérdida reservada puede deberse a azar, costes, implementación o cambio de distribución aun tras una auditoría cuidadosa. Superar una puntuación tampoco demuestra un mecanismo estable.
+
+### Cuándo investigar o cambiar
+
+Usa límites operativos y de riesgo prefijados, controles de calidad de datos y respuesta documentada. Operar en papel puede mostrar fallos temporales y de implementación, pero las órdenes simuladas no demuestran ejecuciones reales en cola, impacto ni financiación disponible. Un nivel de IC o una caída elegidos no son umbrales universales de desconexión. Si cambias modelo o límites según los resultados, evalúa el procedimiento revisado con información nueva; no llames intactos a los datos usados para elegirlo.
+
+<ThinkReveal
+ eyebrow="Piensa primero"
+ buttonLabel="Mostrar respuesta"
+ hintLabel="Pista"
+ client:visible prompt="¿Qué no demuestra superar una prueba de trading en papel?" hint="Distingue implementación de una orden real en una cola." text="Permite revisar tiempos y procesamiento, pero las órdenes simuladas no prueban ejecuciones factibles, impacto, financiación ni rentabilidad futura. Esos supuestos siguen necesitando evidencia." />
+
+## Relaciona el experimento
 
 <MindMap
-  client:visible
-  title="Entrenar y evaluar DL sin engañarte a ti mismo"
-  caption="Cinco disciplinas que convierten las arquitecturas profundas de tiros al pie en bisturíes."
-  root={{
-    label: "DL honesto en finanzas",
-    children: [
-      {
-        label: "Regulariza para una muestra diminuta",
-        children: [
-          { label: "Dropout, L2, parada temprana en val purgada" },
-          { label: "Ruido/block-bootstrap/mixup, ensembles" },
-          { label: "Simplemente usa modelos pequeños" },
-        ],
-      },
-      {
-        label: "Evaluación con purga + embargo",
-        children: [
-          { label: "Purga el solapamiento de etiquetas; embarga la banda posterior" },
-          { label: "Fugas extra de DL: escaladores, estadísticas de batch, embeddings, barajado" },
-          { label: "Reentrenamiento walk-forward" },
-        ],
-      },
-      {
-        label: "Desinfla la búsqueda de arquitecturas",
-        children: [
-          { label: "Cada configuración + semilla es una prueba" },
-          { label: "Listón ≈ σ·√(2 ln N)" },
-          { label: "DL infla N y el sobreajuste por prueba a la vez" },
-        ],
-      },
-      {
-        label: "Bate la línea base GBM",
-        children: [
-          { label: "Los árboles suelen ganar en datos tabulares de baja señal" },
-          { label: "DL gana en LOB, paneles enormes, texto/embeddings" },
-        ],
-      },
-      {
-        label: "Disciplina de despliegue",
-        children: [
-          { label: "Bloquea el test, opera en simulado, monitoriza el IC en vivo" },
-          { label: "Prefija el interruptor; reentrena a medida que la señal decae" },
-        ],
-      },
-    ],
-  }}
-/>
+ eyebrow="Visión de conjunto"
+ outlineLabel="Esquema en texto"
+ client:visible title="El experimento incluye las elecciones" root={{"label": "Un procedimiento evaluado", "children": [{"label": "Información", "children": [{"label": "Estadístico y covarianza definidos"}, {"label": "Varianza individual define N de media"}, {"label": "Dependencia distinta de cambio de distribución"}]}, {"label": "Frontera temporal", "children": [{"label": "Fecha de variable y etiqueta disponible"}, {"label": "Congela cada etapa aprendida"}, {"label": "No restes dos veces filas ausentes"}]}, {"label": "Regularización", "children": [{"label": "Sesgo varianza y ruido futuro"}, {"label": "Errores entre semillas correlacionados"}, {"label": "Elegir validación también selecciona"}]}, {"label": "Búsqueda", "children": [{"label": "Cuenta bruta distinta de ensayos independientes"}, {"label": "Umbral PSR frente a DSR por búsqueda"}, {"label": "DSR no es error familiar ni habilidad causal"}]}, {"label": "Economía", "children": [{"label": "Unidades de pérdida predictiva"}, {"label": "Posiciones salida comisiones y caja"}, {"label": "Referencias pertinentes y comparación emparejada"}]}, {"label": "Vigilancia", "children": [{"label": "Incertidumbre con dependencia"}, {"label": "Una caída no identifica su causa"}, {"label": "Orden simulada no prueba ejecución"}]}]}} />
 
 <Quiz
-  client:visible
-  title="No te engañes — la comprobación final"
-  questionLabel="Pregunta"
-  ofLabel="de"
-  scoreLabel="Tu puntuación"
-  restartLabel="Reiniciar"
-  nextLabel="Siguiente pregunta"
-  backLabel="Atrás"
-  checkLabel="Comprobar"
-  retryLabel="Reintentar"
-  seeResultsLabel="Ver resultados"
-  correctLabel="Correcto"
-  incorrectLabel="Incorrecto"
-  correctAnswerLabel="Respuesta correcta"
-  explanationLabel="Explicación"
-  gateLabel="Comprueba tu respuesta para continuar."
-  questions={[
-    {
-      question: "Tras añadir dropout, decaimiento de pesos y un ensemble de semillas, el Sharpe en muestra de tu GRU cae de 3,1 a 1,05 mientras el de fuera de muestra sube de 0,15 a 0,78. ¿Cómo deberías leerlo?",
-      options: [
-        { text: "La regularización funcionó — recortó el impuesto del sobreajuste, y el único número que paga el alquiler (fuera de muestra) se cuadruplicó", correct: true },
-        { text: "La regularización rompió el modelo — el colapso del Sharpe en muestra es malo" },
-        { text: "El modelo original sin regularizar era mejor porque su Sharpe en muestra era más alto" },
-        { text: "Los ratios de Sharpe no son fiables, así que la comparación carece de sentido" },
-      ],
-      explanation: "Un número en muestra que encoge junto a un número fuera de muestra que sube es exactamente el objetivo: cambiaste ruido memorizado por un hueco menor y más honesto.",
-    },
-    {
-      question: "¿Cuál es un canal de fuga ESPECÍFICO de DL que una regresión ridge simple sobre las mismas particiones purgadas no tendría?",
-      options: [
-        { text: "Una tabla de embeddings aprendida sobre todo el historial antes de partir", correct: true },
-        { text: "Descartar filas de entrenamiento cuya ventana de etiqueta solapa el tramo de test" },
-        { text: "Reportar un ratio de Sharpe anualizado" },
-        { text: "Usar un embargo de 5 días tras el bloque de test" },
-      ],
-      explanation: "Los embeddings (más los escaladores sobre datos completos, las estadísticas de batch-norm y el barajado a través de la costura) son canales de fuga extra que los pipelines profundos añaden encima de la fuga por solapamiento de etiquetas; la purga y el embargo son la cura, no la fuga.",
-    },
-    {
-      question: "Buscaste 200 configuraciones (contando semillas). Con una desviación típica del Sharpe por prueba de 0,4 bajo la hipótesis nula, ¿aproximadamente qué debe exceder el ganador solo para igualar a la suerte?",
-      options: [
-        { text: "Alrededor de 1,30, ya que √(2 ln 200) ≈ 3,25 y 3,25 × 0,4 ≈ 1,30", correct: true },
-        { text: "Alrededor de 0,40, la desviación típica por prueba, independientemente de N" },
-        { text: "Alrededor de 3,25, el multiplicador bruto del listón, sin escalar por la desviación típica" },
-        { text: "Cero — el número de pruebas no afecta al listón" },
-      ],
-      explanation: "El listón es σ·√(2 ln N) = 0,4 × 3,25 ≈ 1,30. Batir a la suerte significa superar el mejor esperado de N bajo la hipótesis nula, no solo un Sharpe positivo.",
-    },
-    {
-      question: "Sobre unos pocos miles de filas de ratios de factores mensuales con IC cercano a 0,03, ¿qué modelo es el valor por defecto defendible y por qué?",
-      options: [
-        { text: "Árboles con gradient boosting — menos parámetros, categóricas nativas, robustos en datos tabulares de baja señal, y rápidos de ajustar", correct: true },
-        { text: "Un transformer profundo, porque la atención siempre extrae más señal" },
-        { text: "El que tenga el Sharpe en muestra más alto" },
-        { text: "Un MLP sin regularizar, para darle máxima capacidad" },
-      ],
-      explanation: "En finanzas tabulares de baja señal, los GBM suelen ganar y son la línea base obligatoria. DL se gana el sueldo en datos estructurados de SNR alta, paneles agrupados enormes y aprendizaje de representaciones sobre texto.",
-    },
-    {
-      question: "Tu modelo batió la línea base GBM y sobrevivió a la desinflación, pero el IC en vivo tras un mes de operar en simulado es la mitad del IC del backtest. ¿Cuál es el movimiento disciplinado?",
-      options: [
-        { text: "Tratar la brecha como una señal del interruptor de emergencia: detener el escalado, auditar en busca de fugas, recontar N y volver a desinflar, y reanudar solo si un reajuste fresco purgado supera el listón", correct: true },
-        { text: "Reajustar los hiperparámetros sobre el conjunto de test bloqueado para recuperar la ventaja perdida" },
-        { text: "Desplegar a tamaño completo; los datos en vivo son solo más backtest" },
-        { text: "Ignorarlo — una brecha del 50% entre vivo y backtest es ruido normal" },
-      ],
-      explanation: "Una brecha persistente entre vivo y backtest señala sobreajuste o fuga. La disciplina es parar, investigar y revalidar con honestidad — nunca reajustar sobre el conjunto de test bloqueado, lo que lo destruye.",
-    },
-  ]}
-/>
+ questionLabel="Pregunta"
+ ofLabel="de"
+ scoreLabel="Tu puntuación"
+ restartLabel="Reiniciar"
+ nextLabel="Siguiente"
+ backLabel="Atrás"
+ checkLabel="Comprobar"
+ retryLabel="Reintentar"
+ seeResultsLabel="Ver resultados"
+ correctCountLabel="correctas"
+ completeLabel="Completado"
+ completeTitleLabel="Cuestionario completado"
+ perfectMessage="Has acertado todas las preguntas."
+ goodMessage="Repasa las respuestas que has fallado."
+ keepPracticingMessage="Revisa las explicaciones y vuelve a intentarlo."
+ gateLabel="Comprueba tu respuesta para continuar."
+ correctLabel="Correcto"
+ incorrectLabel="Incorrecto"
+ correctAnswerLabel="Respuesta correcta"
+ explanationLabel="Explicación"
+ client:visible title="Revisa la afirmación y su evidencia" questions={[
+  {
+    "question": "En el modelo de fecha, ¿por qué la varianza de media es 0,0105 y no 0,001?",
+    "options": [
+      {
+        "text": "Permanece el choque común de fecha; varianza individual 2 no justifica filas IID",
+        "correct": true
+      },
+      {
+        "text": "La red tiene exactamente 190 parámetros"
+      },
+      {
+        "text": "Cada observación tiene varianza 0,0105 con toda unidad"
+      },
+      {
+        "text": "Veinte valores vuelven independientes los choques de fecha"
+      }
+    ],
+    "explanation": "Var(media)=1/100+1/(100×20). Igualar a 2/N da unos 190,476 para este estimador."
+  },
+  {
+    "question": "Candidatos 1–12, etiquetas(t,t+2] y ajuste al cierre 12: ¿cuáles entrenan?",
+    "options": [
+      {
+        "text": "1–10, porque sus etiquetas terminan hasta 12",
+        "correct": true
+      },
+      {
+        "text": "1–11, restando horizonte menos uno sin disponibilidad"
+      },
+      {
+        "text": "1–12 porque todas las variables son históricas"
+      },
+      {
+        "text": "1–8 al restar embargo de filas futuras ausentes"
+      }
+    ],
+    "explanation": "Disponibilidad t+2≤12. Un margen futuro no resta filas que nunca entraron."
+  },
+  {
+    "question": "El riesgo inventado es 4(a −1)²+4a²+1. ¿Qué valores da a 1,a 0,5,a 0?",
+    "options": [
+      {
+        "text": "5,3,5; contracción parcial ayuda a esa población",
+        "correct": true
+      },
+      {
+        "text": "5,1,0; toda contracción elimina ruido irreducible"
+      },
+      {
+        "text": "4,2,0; contraer siempre conserva sesgo cero"
+      },
+      {
+        "text": "5,3,1; predecir cero iguala media verdadera2"
+      }
+    ],
+    "explanation": "Con.5, sesgo cuadrado 1,varianza 1 y ruido 1. Con0, sesgo cuadrado4."
+  },
+  {
+    "question": "Cinco estimadores tienen igual varianza y correlación común 0,8. ¿Qué se justifica?",
+    "options": [
+      {
+        "text": "La media conserva 84 % de varianza individual bajo ese modelo",
+        "correct": true
+      },
+      {
+        "text": "Cinco semillas aportan cinco historias nuevas independientes"
+      },
+      {
+        "text": "La media tiene 20 % de varianza con toda correlación"
+      },
+      {
+        "text": "Toda combinación mejora necesariamente beneficio neto"
+      }
+    ],
+    "explanation": "rho+(1−rho)/K=.84. Covarianza, sesgo y decisiones económicas son preguntas distintas."
+  },
+  {
+    "question": "Elige dos distinciones correctas sobre selección.",
+    "options": [
+      {
+        "text": "1−,975^20 es un suceso familiar bajo los nulos independientes estipulados",
+        "correct": true
+      },
+      {
+        "text": "Hay que derivar referencia de un modelo de ensayos para llamar DSR al PSR ilustrado",
+        "correct": true
+      },
+      {
+        "text": "Restar sigma raíz(2lnN) a Sharpe es el propio DSR"
+      },
+      {
+        "text": "T del estadístico Sharpe cuenta arquitecturas candidatas"
+      }
+    ],
+    "explanation": "Longitud de rentabilidades, dependencia de candidatos, máximo esperado y significación calibrada son magnitudes distintas.",
+    "allowMultiple": true
+  },
+  {
+    "question": "El registro da ECM 0,01 pp²,bruto 400 USD y ocho comisiones de 100 USD. ¿Qué compara trading?",
+    "options": [
+      {
+        "text": "Neto −400 USD frente a efectivo 0 pese al menor error",
+        "correct": true
+      },
+      {
+        "text": "Neto 400 USD porque acertar dirección elimina costes"
+      },
+      {
+        "text": "Efectivo debe pagar 800 USD aun sin operaciones"
+      },
+      {
+        "text": "Cuatro observaciones prueban ventaja bruta estable futura"
+      }
+    ],
+    "explanation": "Se cobran ocho patas con la base de nominal declarada. La precisión no paga esas comisiones."
+  },
+  {
+    "question": "IC histórico/actual 0,04/0,018 tienen errores estándar supuestos independientes 0,015. ¿Qué establece el intervalo de diferencia?",
+    "options": [
+      {
+        "text": "Incertidumbre bajo el modelo; no identifica por qué cambió el resultado",
+        "correct": true
+      },
+      {
+        "text": "Diferencia negativa prueba filtración aunque el intervalo incluya cero"
+      },
+      {
+        "text": "Incluir cero prueba mecanismos de mercado idénticos"
+      },
+      {
+        "text": "Da umbral secuencial universal para toda estrategia"
+      }
+    ],
+    "explanation": "El error supuesto es raíz2×.015. Covarianza y vigilancia repetida exigen tratamiento aparte."
+  }
+]} />

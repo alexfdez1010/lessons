@@ -1107,3 +1107,6 @@ export type { RewardLabMode, RewardAccountingLabels, RewardAccountingLabProps } 
 
 export { calculateFuturesSettlementLedger, calculatePhysicalDeliveryBudget, calculateCashSettlementReference, calculateExpiryBasis, calculateFuturesRollBudget, classifyExpiryCalendar, SettlementDeliveryLab } from '@/components/react/SettlementDeliveryLab';
 export type { FuturesSettlementInputs, ExpiryCalendarInputs, SettlementDeliveryView, SettlementDeliveryLabels, SettlementDeliveryLabProps } from '@/components/react/SettlementDeliveryLab';
+
+export { clusteredMeanInformation, asOfTrainingRows, shrinkageRisk, seedEnsembleVariance, nullSearchProbability, normalReferenceSharpe, twoTrialSearchBenchmark, predictionTradingLedger, monitoringDifference, TemporalModelAudit } from '@/components/react/TemporalModelAudit';
+export type { ModelAuditMode, ModelAuditLabels, TemporalModelAuditProps } from '@/components/react/TemporalModelAudit';

@@ -1,13 +1,13 @@
 ---
 title: "Why Deep Learning Struggles in Finance"
-description: "Deep learning conquered images and language, then markets humbled it — the effective-sample-size catastrophe, why a plain MLP both over- and under-fits low-signal returns, and why 'bigger model' is the wrong reflex in a low-SNR, non-stationary world."
+description: "Dependence, representation, limited-signal estimation and model selection: why data availability and the evaluation procedure matter before increasing neural-network capacity."
 topic: "en/deep-learning-for-market-data"
 order: 1
 minutes: 15
-updated: 2026-06-19
+updated: 2026-11-06
 ---
 
-import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, TsOverfitCurve, ReturnDistribution, TsStationarityChart } from '@/components/react';
+import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, TemporalModelAudit } from '@/components/react';
 
 Deep learning has a highlight reel that would make any technology blush. It crushed
 ImageNet, learned to transcribe speech better than tired humans, and now writes
@@ -17,110 +17,43 @@ firehose of expressive power at the stock market and retire by Thursday.
 Then the firehose meets the market, and the market — politely, expensively — hands
 it back its lunch money.
 
-Here's the punchline up front: **deep learning's troubles in finance are not new
-problems. They are the exact lessons from *Machine Learning for Alpha* turned up to
-eleven, handed to a model class with millions of parameters and a world-class talent
-for memorizing noise.** Everything you learned — overfitting is the enemy, an honest
-information coefficient (IC) lives around 0.02–0.05, out-of-sample R² of 0.01–0.05 is
-a *good day*, you must purge and embargo your cross-validation, you must deflate your
-Sharpe for the number of trials — all of it still holds. It just bites harder, because
-a neural net is a far more enthusiastic noise-memorizer than a ridge regression.
+Deep models inherit the estimation and selection problems from Machine Learning for Alpha. Signal strength, IC and out-of-sample error depend on the target, horizon, costs and evaluation population. Neither a fixed “honest IC range” nor a generic effective sample count can certify a result. More expressive models still need as-of data and a defensible selection procedure.
 
 This lesson is the "why it's hard" foundation for the whole course. Once you respect
 the difficulty, the later tools (RNNs, TCNs, attention, embeddings) become *scalpels*
 instead of *footguns*.
 
-## The effective-sample-size catastrophe
+## Information for a specified mean
 
-<MCQ
-  client:visible
-  pretest
-  question="ImageNet has ~14 million labeled images. Twenty years of daily equity returns is ~5,000 rows. Which statement best captures the real gap for training a model?"
-  options={[
-    { text: "The gap is far worse than 14M vs 5,000, because financial rows are autocorrelated, overlapping, and non-stationary — the effectively independent count is far smaller", correct: true },
-    { text: "The gap is exactly 14M vs 5,000 — rows are rows" },
-    { text: "There is no real gap; 5,000 rows is plenty for any model" },
-    { text: "Finance actually has more usable data because markets trade every second" },
-  ]}
-  explanation="Raw row count flatters financial data. Autocorrelation, overlapping labels, and regime shifts mean the effectively independent sample size is dramatically smaller than the raw N."
+<MCQ client:visible pretest
+ question={"Does a persistent input feature identify the effective sample size of every prediction error?"}
+ options={[{"text": "No; specify the statistic and relevant covariance", "correct": true}, {"text": "Yes; one lag correlation fixes all learning uncertainty"}, {"text": "Yes; also divide mechanically by every overlap horizon"}, {"text": "No; correlation never changes mean precision"}]}
+ explanation={"The sample-mean formula has an estimator and process scope; covariance effects cannot be multiplied without a joint model."}
 />
 
-**Analogy.** Counting raw data rows in finance is like counting frames in a slow-motion
-video and calling each one an independent photo. Sure, there are 5,000 frames — but
-consecutive frames are nearly identical. The *information* is in the changes, and there
-are far fewer real changes than frames.
+The number of rows is not a universal count of independent information. Define the statistic and its covariance structure first. For the mean of a stationary scalar series with variance $\gamma_0$ and lag covariances $\gamma_k$,
 
-**Definition.** The **effective sample size** is the number of *effectively independent*
-observations your data contains, after accounting for correlation between rows. For a
-series with lag-1 autocorrelation $\rho$, a common rough adjustment is
+$$
+\operatorname{Var}(\bar Y)=\frac{\gamma_0}{N}\left[1+2\sum_{k=1}^{N-1}\left(1-\frac{k}{N}\right)\frac{\gamma_k}{\gamma_0}\right].
+$$
 
-$$ N_{\text{eff}} \approx N \cdot \frac{1 - \rho}{1 + \rho}. $$
+When its variance is positive, an IID-equivalent count **for this mean** is $N_{\rm eq}=\gamma_0/\operatorname{Var}(\bar Y)$. With an appropriate AR(1)-style correlation sequence $\gamma_k/\gamma_0=\rho^k$, its large-$N$ approximation is $N(1-\rho)/(1+\rho)$. For an invented $N=5000$, $\rho=0.97$ series, it gives $5000(0.03/1.97)\approx76.142$. It does not say that every financial return or prediction-error series has this correlation, or assign a universal neural-network training budget.
 
-That formula assumes a simple AR(1)-style decay; the deeper point is universal:
-**correlated rows each carry less than one row's worth of new information.**
+Do not divide that result again by a 20-day overlap factor without deriving the joint covariance. Target overlap and feature persistence need not be independent effects, and persistence of a feature is not automatically persistence of estimation errors. Negative correlation can improve a mean’s precision. A changed distribution is a separate question about which population the old observations describe.
 
-Three multipliers shrink financial $N_{\text{eff}}$ at once:
+Pooling names can also add information without making every row independent. In this invented example, $Y_{di}=Z_d+\varepsilon_{di}$ has independent dates, one common date shock of variance 1, independent name shocks of variance 1, and hence individual variance 2. For 100 dates×20 names, $\operatorname{Var}(\bar Y)=1/100+1/2000=0.0105$, giving mean-equivalent $N=2/0.0105\approx190.476$, rather than 2000.
 
-1. **Autocorrelation.** Returns have structure (recall volatility clustering and
-   autocorrelation from *Time-Series Finance*). Today's regime looks a lot like
-   yesterday's.
-2. **Overlapping labels.** Predict the *next 20-day* return and consecutive samples
-   share 19 of 20 days. Lopez de Prado's whole purged/embargoed CV machinery exists
-   precisely because these labels overlap — they are not independent draws.
-3. **Non-stationarity.** The 2010 market and the 2022 market are not samples from the
-   same distribution. Old rows describe a *different* game (this is the
-   stationarity problem from *Time-Series Finance*, now a sample-size problem).
+<TemporalModelAudit client:visible mode="information" title="More names do not remove a common date shock" caption="Invented sample-mean model: 100 independent dates, one shared unit-variance shock per date and independent unit-variance name shocks. Individual observation variance is 2. The equivalent N matches variance of this mean to 2/N; it is not a generic neural-network sample count. Increase names while the number of independent dates stays fixed." />
 
-**Worked example.** Take 20 years ≈ 5,000 daily rows. Suppose the relevant signal has
-lag-1 autocorrelation $\rho = 0.97$ (high, but realistic for slow regime variables).
-Then
+The parameter count is a different arithmetic fact. A one-hidden-layer MLP with 30 inputs, 64 hidden units and one output has $30\times64+64+64\times1+1=2049$ weights and biases. Dividing 2049 by the AR(1) mean-equivalent 76.142 gives about 26.91; that ratio alone neither proves failure nor chooses an optimal capacity. The relevant predictive uncertainty depends on the estimator, target, dependence and selection procedure.
 
-$$ N_{\text{eff}} \approx 5000 \cdot \frac{1 - 0.97}{1 + 0.97} = 5000 \cdot \frac{0.03}{1.97} \approx 5000 \cdot 0.0152 \approx 76. $$
 
-Seventy-six. Now layer overlapping 20-day labels on top — divide again by roughly the
-overlap factor — and you are flirting with *tens* of independent observations. Compare
-that to even a *small* MLP: one hidden layer of 64 units on 30 inputs already has
-$30 \times 64 + 64 = 1984$ weights, plus $64 \times 1 + 1 = 65$ in the output layer —
-about 2,049 parameters.
+### When to use this distinction
 
-| Quantity | Value |
-|---|---|
-| Raw rows (20y daily) | ~5,000 |
-| $N_{\text{eff}}$ after $\rho = 0.97$ | ~76 |
-| $N_{\text{eff}}$ after 20-day label overlap | tens |
-| Params in a *tiny* 64-unit MLP | ~2,049 |
-| Params : effective observations | ~30 : 1 (or worse) |
+Estimate uncertainty for the statistic you will publish using a justified dependence model or resampling method. More windows, names or synthetic samples do not automatically create independent market histories. Check the as-of availability, evaluation design and target distribution before inferring what a larger model can learn. The final lesson works through these calculations and their evaluation consequences.
 
-ImageNet runs the ratio the *other* way: ~14M near-i.i.d. examples against model
-parameters, so each weight is disciplined by many independent examples. In finance you
-hand a 2,000-parameter model a few dozen real observations and ask it to be humble. It
-will not be humble.
+<FillBlank client:visible question="Match the information calculation." text="The AR(1) approximation describes {{a specified sample mean|every network task}}. Extra overlap needs {{a joint covariance derivation|an automatic second divisor}}." explanation="A persistent input and its forecast errors need not have the same covariance structure." />
 
-<TsStationarityChart client:visible caption="Price level (drifting, non-stationary) vs returns (noisy, near-stationary). The thing you can model has far less stable structure than the row count suggests — and old rows describe a different regime." />
-
-<Callout variant="warning" title="The headline-N trap">
-The single most expensive mistake here is quoting the raw row count to justify a
-big model: "I have 30 years of minute bars — that's millions of rows!" Minute bars are
-*ferociously* autocorrelated and overlapping. Your effective sample size for a daily-or-slower
-signal might be in the dozens. Sizing a network to your raw N instead of your effective
-N is how you build a confident, well-trained, completely useless model.
-</Callout>
-
-### When to use it
-
-Compute (or at least estimate) effective sample size *before* choosing model capacity —
-it is the budget your parameter count must respect. If $N_{\text{eff}}$ is in the tens,
-your "model" should probably be a linear rule with a handful of coefficients, not a net.
-Deep learning earns its keep when you can *raise* $N_{\text{eff}}$ — pooling thousands
-of names, or working on a high-frequency subproblem with genuinely many independent
-events (more on both later).
-
-<FillBlank
-  client:visible
-  question="Fill in the core idea of effective sample size."
-  text="Because financial rows are autocorrelated and overlapping, the number of {{effectively independent|raw labeled|total available}} observations is far smaller than the raw row count."
-  explanation="Effective sample size discounts correlated rows. Raw and total counts ignore the correlation entirely, which is the whole trap."
-/>
 
 ## Why a plain MLP both over- AND under-fits
 
@@ -156,11 +89,14 @@ no net win.
 **Worked example.** Suppose the *true* edge produces an in-sample monthly IC of 0.04.
 Watch what three capacity settings do to a held-out (out-of-sample) Sharpe:
 
-| MLP capacity | In-sample Sharpe | Out-of-sample Sharpe | What happened |
-|---|---|---|---|
-| Tiny + heavy L2 | 0.35 | 0.30 | Underfit — bias crushed the faint signal too |
-| "Just right" (in theory) | 1.40 | 0.45 | Best OOS, still mediocre, knife-edge to find |
-| Wide + lightly regularized | 3.10 | -0.20 | Overfit — memorized noise, negative live |
+<table tabIndex={0} aria-label="Hypothetical MLP capacity and observed validation outcomes" className="block w-full max-w-full overflow-x-auto text-left text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600">
+  <thead><tr><th scope="col">MLP capacity</th><th scope="col">In-sample Sharpe</th><th scope="col">Out-of-sample Sharpe</th><th scope="col">What happened</th></tr></thead>
+  <tbody>
+    <tr><th scope="row">Tiny + heavy L2</th><td>0.35</td><td>0.30</td><td>Underfit — bias crushed the faint signal too</td></tr>
+    <tr><th scope="row">"Just right" (in theory)</th><td>1.40</td><td>0.45</td><td>Best OOS, still mediocre, knife-edge to find</td></tr>
+    <tr><th scope="row">Wide + lightly regularized</th><td>3.10</td><td>-0.20</td><td>Overfit — memorized noise, negative live</td></tr>
+  </tbody>
+</table>
 
 Notice the cruelty: the in-sample Sharpe rises smoothly and seductively from 0.35 to
 3.10, while the *real* (out-of-sample) number peaks weakly and then goes **negative**.
@@ -168,7 +104,7 @@ The "just right" column technically exists, but in a regime that's drifting unde
 feet, last quarter's sweet spot is this quarter's overfit. You are aiming at a target
 that moves while you pull the trigger.
 
-<TsOverfitCurve client:visible caption="In-sample error keeps falling with complexity; out-of-sample error bottoms out early and then climbs. In low-SNR finance that out-of-sample valley is shallow and easy to overshoot." />
+The [worked estimator-risk example](/deep-learning-for-market-data/training-and-evaluating-dl-without-fooling-yourself#estimator-risk-example) separates squared bias, estimator variance and independent future noise. Its chosen population gives errors 5,3,5 at shrink factors 1,0.5,0; that is a specified illustration, not a universal capacity law.
 
 <Callout variant="warning" title="More capacity is not more edge">
 The reflex "my Sharpe is low, let me add layers/width" is exactly backwards. In a
@@ -235,16 +171,19 @@ $0.05\,x$ term. A linear fit recovers a slope near 0.05 — modest, honest, roug
 A wide MLP can drive training error to nearly zero by threading a wiggly curve through
 all 60 points. Decompose what each "learned":
 
-| Model | Training R² | Fraction of fit that is real signal | Out-of-sample behavior |
-|---|---|---|---|
-| Linear (1 slope) | ~0.03 | almost all of its (tiny) fit | reproduces the modest edge |
-| Wide MLP | ~0.98 | ~3% (the rest is fitted noise) | falls apart; the wiggles don't recur |
+<table tabIndex={0} aria-label="Hypothetical linear and MLP fit comparison" className="block w-full max-w-full overflow-x-auto text-left text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600">
+  <thead><tr><th scope="col">Model</th><th scope="col">Training R²</th><th scope="col">Fraction of fit that is real signal</th><th scope="col">Out-of-sample behavior</th></tr></thead>
+  <tbody>
+    <tr><th scope="row">Linear (1 slope)</th><td>~0.03</td><td>almost all of its (tiny) fit</td><td>reproduces the modest edge</td></tr>
+    <tr><th scope="row">Wide MLP</th><td>~0.98</td><td>~3% (the rest is fitted noise)</td><td>falls apart; the wiggles don't recur</td></tr>
+  </tbody>
+</table>
 
 The MLP's 0.98 training R² is *mostly a portrait of this particular noise sample*.
 Next month's noise is a different sample, the wiggles don't line up, and the gorgeous
 fit evaporates. Expressive power converted noise into false confidence.
 
-<ReturnDistribution client:visible caption="Returns are fat-tailed and noise-dominated. A universal approximator will happily fit the one-off tail events as if they were rules — that's memorized noise, not signal." />
+To inspect estimation noise, use the [explicit bias–variance population](/deep-learning-for-market-data/training-and-evaluating-dl-without-fooling-yourself#estimator-risk-example), whose distribution and error arithmetic are supplied. A generic bell-curve drawing would not identify financial tail shape or show which fitted variation is recoverable signal.
 
 <Callout variant="warning" title="Expressiveness ≠ usefulness">
 In high-SNR domains (vision, speech) more expressive power usually helps because there's
@@ -265,8 +204,7 @@ the bar. "Could a simpler model do this?" should precede every architecture deci
 <summary className="cursor-pointer font-medium">If an MLP can approximate any function, why doesn't it find the true return function?</summary>
 
 **Answer.** Because the theorem promises *representational capacity*, not *recoverability
-from a finite, noisy sample*. With effective sample size in the tens and noise drowning
-the signal 20-to-1, there are countless wiggly functions that fit the training data
+from a finite, noisy sample*. In the stated hypothetical prediction setting with limited information and the assumed noise, there are countless wiggly functions that fit the training data
 better than the true (nearly flat) one — and the optimizer happily picks one of those.
 The true function is *representable*; it is just not *identifiable* from this data. More
 capacity widens the set of noise-fitting impostors it can choose from.
@@ -274,74 +212,31 @@ capacity widens the set of noise-fitting impostors it can choose from.
 </details>
 </Reveal>
 
-## The parameter–trial tax
+## Search changes the reported estimator
 
-<MCQ
-  client:visible
-  pretest
-  question="You try 200 architectures (varying width, depth, learning rate) and report the best backtest Sharpe. From a multiple-testing view, what have you done?"
-  options={[
-    { text: "Run 200 trials — so the best Sharpe is inflated by selection and must be deflated for the number tried", correct: true },
-    { text: "Found the one true architecture, no adjustment needed" },
-    { text: "Reduced overfitting by exploring more options" },
-    { text: "Nothing relevant to multiple testing; that only applies to feature selection" },
-  ]}
-  explanation="Every architecture you evaluate and select among is a trial. The maximum of many noisy Sharpes is biased upward — exactly the deflated-Sharpe problem from ML for Alpha."
+<MCQ client:visible pretest
+ question={"Two hundred logged runs establish two hundred independent null tests?"}
+ options={[{"text": "No; selection must be logged and the joint trial model defended", "correct": true}, {"text": "Yes; different file names prove statistical independence"}, {"text": "Yes; purging all candidates removes every search effect"}, {"text": "No; selecting a winner never uses information"}]}
+ explanation={"A duplicate test and an independent test contribute differently to the null maximum."}
 />
 
-**Analogy.** Buying 200 lottery tickets and then bragging about the winning one as if
-it proved your *system*. The win was selection from many draws, not skill. Architecture
-search is buying lottery tickets with your backtest as the draw.
+Choosing the best architecture, stopping epoch or seed uses information. A procedure that trains 200 candidates and reports the winner is a different estimator from a single prespecified fit. Log all choices that influence selection, but do not equate the raw run count with independent experiments.
 
-**Definition.** Recall **deflated Sharpe** from *Machine Learning for Alpha*: when you
-select the best of $N$ independent trials, the expected maximum Sharpe under the null
-(no real skill) grows with
+A precise toy calculation makes the distinction visible. Suppose 20 independent calibrated null tests each have a 0.025 chance of passing a one-sided threshold. The probability that at least one passes is $1-0.975^{20}\approx0.397312$. With 200 it is about 0.993677. Copying the same test 200 times would leave its pass probability 0.025. The independent model is stipulated; correlated neural runs need their own dependence analysis.
 
-$$ \mathbb{E}[\max \text{SR}] \approx \sigma_{\text{SR}} \cdot \sqrt{2 \ln N}, $$
+<TemporalModelAudit client:visible mode="search" title="Selection probability under a stipulated independent null" caption="Invented calibrated independent null candidates. Each has individual one-sided pass probability 0.025; the chart shows 1−0.975^N. The number is a family probability under that model, not the chance a selected model has skill, an expected maximum or a DSR value." />
 
-where $\sigma_{\text{SR}}$ is the standard deviation of a single trial's Sharpe estimate.
-**Every architecture, width, depth, learning rate, and seed you evaluate is another $N$.**
-Deep learning's enormous configuration space makes $N$ explode — and you must subtract
-this selection bias before believing any number.
+The **Deflated Sharpe Ratio (DSR)** is not observed Sharpe minus $\sigma\sqrt{2\ln N}$. That root expression is a leading asymptotic description of a Gaussian expected maximum, not a significance cutoff. The [primary DSR paper](https://www.davidhbailey.com/dhbpapers/deflated-sharpe.pdf) evaluates a probabilistic-Sharpe statistic against a search-adjusted expected-maximum benchmark, with sample length and higher return moments under its assumptions.
 
-**Worked example.** Suppose a single backtest's Sharpe has estimation noise
-$\sigma_{\text{SR}} = 0.5$. Watch the null-expected "best" Sharpe climb purely from
-trying more nets:
+For an independently specified monthly return record with 101 observations, Sharpe 0.10, skewness 0 and kurtosis 3, a stipulated benchmark 0.05 gives PSR about 0.691024 under a normal-reference approximation. It is only PSR until the benchmark is linked to search. In a separate explicit search model with two independent null Normal monthly-Sharpe estimates of mean 0 and standard deviation 0.10, the expected maximum is exactly $0.10/\sqrt\pi\approx0.05641896$. Using that benchmark gives the illustrated DSR about 0.668119. The final lesson derives both calculations and their units.
 
-| Architectures tried, $N$ | $\sqrt{2 \ln N}$ | Expected best Sharpe under the null |
-|---|---|---|
-| 1 | 0.00 | 0.00 |
-| 10 | 2.15 | $0.5 \times 2.15 \approx 1.07$ |
-| 100 | 3.03 | $0.5 \times 3.03 \approx 1.52$ |
-| 1,000 | 3.72 | $0.5 \times 3.72 \approx 1.86$ |
+These scores do not identify causal skill, guarantee future profit or automatically control familywise error. Real candidate dependence, serial return dependence, nonstationarity and estimated moments remain relevant. A raw trial log cannot identify those assumptions.
 
-Do the arithmetic for $N = 100$: $2 \ln 100 = 2 \times 4.605 = 9.21$, and
-$\sqrt{9.21} \approx 3.03$, so the expected best Sharpe from *pure luck* is about
-$0.5 \times 3.03 \approx 1.52$. If your grid search over 100 nets returns a Sharpe of
-1.5, you have found exactly what randomness predicts — *zero evidence of skill.* Your
-deflated Sharpe is essentially nil.
+### When to account for the search
 
-<Callout variant="warning" title="Architecture search launders overfitting">
-Each net you discard is invisible in the final write-up but very real in the statistics.
-A pristine purged/embargoed CV on the *winning* architecture does nothing to undo the
-selection bias from the 199 you threw away. Log every configuration you try, count them
-as trials, and deflate. The honest Sharpe is almost always far below the one in the
-victory-lap slide.
-</Callout>
+Predeclare an evaluation and tuning budget. Use inner validation for selection and a genuinely untouched later evaluation of the resulting procedure. Purging label overlap does not undo choosing a winner from many validation results. If the final data influence another revision, they have become selection data; evaluate that revision on new information.
 
-### When to use it
-
-Budget your trials *before* you start, log every configuration, and report a Sharpe
-deflated for the full count — not the per-fold count of the survivor. Prefer a small,
-pre-registered set of architectures over a sprawling search. If you must search, hold
-out a final, never-touched test period that no configuration ever saw, and judge there.
-
-<FillBlank
-  client:visible
-  question="Connect architecture search to multiple testing."
-  text="The expected best Sharpe under the null grows with {{the square root of 2 ln N|the log of the data size|the number of features only}}, where N counts every architecture tried."
-  explanation="Deflated Sharpe scales the per-trial Sharpe noise by √(2 ln N). N counts every configuration evaluated, not just features."
-/>
+<FillBlank client:visible question="Name the statistic precisely." text="Sharpe minus σ√(2lnN) is {{not the DSR statistic|a probability of skill}}. A search-adjusted reference enters {{a specified probabilistic-Sharpe calculation|the cash account as earned money}}." explanation="A threshold, expected maximum, normal-reference score and family error probability are distinct." />
 
 ## When deep learning CAN help
 
@@ -356,7 +251,7 @@ out a final, never-touched test period that no configuration ever saw, and judge
     { text: "Representation learning on alt-data: text, images, audio", correct: true },
     { text: "Predicting tomorrow's single-stock return from 50 daily price rows with a giant net" },
   ]}
-  explanation="DL shines where you can raise effective sample size or SNR: fast microstructure (many independent events), pooled cross-sections (breadth), and rich unstructured alt-data. A giant net on a few daily rows of one name is the classic trap."
+  explanation="DL shines where you can raise effective sample size or SNR: microstructure structure and pooled cross-sections whose dependence must be evaluated, and rich unstructured alt-data. A giant net on a few daily rows of one name is the classic trap."
 />
 
 After four sections of bad news, here's the turn: deep learning is not useless in
@@ -368,44 +263,32 @@ The problem was never the car; it was driving it through stop-and-go. Find the t
 
 **The three legitimate tracks:**
 
-| Where DL helps | Why the math flips in your favor | Course tools |
-|---|---|---|
-| **High-SNR microstructure** (limit-order-book dynamics, short-horizon volatility) | Many genuinely independent events per day → large $N_{\text{eff}}$; signal is stronger at short horizons | TCNs, attention over order-book states |
-| **Pooled cross-section** (one model across thousands of names) | Breadth: thousands of names sharing parameters multiply *effective* observations and stabilize estimates | Shared embeddings, panel models |
-| **Representation learning on alt-data** (news text, satellite images, earnings-call audio) | The hard part is *encoding* unstructured data — exactly what DL is best at; SNR can be higher than price-only | Embeddings, transformers, CNNs |
+<table tabIndex={0} aria-label="Tasks motivating a model-family comparison" className="block w-full max-w-full overflow-x-auto text-left text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600">
+  <thead><tr><th scope="col">Where DL helps</th><th scope="col">Why the math flips in your favor</th><th scope="col">Course tools</th></tr></thead>
+  <tbody>
+    <tr><th scope="row">**High-SNR microstructure** (limit-order-book dynamics, short-horizon volatility)</th><td>Many events and sequence structure; test dependence, available signal and net execution outcomes</td><td>TCNs, attention over order-book states</td></tr>
+    <tr><th scope="row">**Pooled cross-section** (one model across thousands of names)</th><td>Shared parameters may use cross-sectional information; common shocks can limit the gain</td><td>Shared embeddings, panel models</td></tr>
+    <tr><th scope="row">**Representation learning on alt-data** (news text, satellite images, earnings-call audio)</th><td>The hard part is *encoding* unstructured data — exactly what DL is best at; SNR can be higher than price-only</td><td>Embeddings, transformers, CNNs</td></tr>
+  </tbody>
+</table>
 
-**Worked example — breadth via pooling.** The fundamental law of active management says
-information ratio scales as $\text{IR} \approx \text{IC} \cdot \sqrt{\text{breadth}}$.
-One model on one name with daily IC 0.03 and ~50 effectively independent bets:
-$0.03 \times \sqrt{50} \approx 0.21$ — flimsy. Pool the *same* model across 3,000 names,
-each contributing roughly independent bets, and breadth balloons. Even holding IC at a
-modest 0.03, $0.03 \times \sqrt{3000} \approx 1.64$. Same per-bet skill, vastly more
-breadth — *that's* the lever deep learning can actually pull, because one shared model
-now learns from 3,000 cross-sectional examples per day instead of one time step.
+**Worked example — assumed independent breadth.** Under the simplifying fundamental-law approximation $\mathrm{IR}\approx\mathrm{IC}\sqrt B$, assume the same IC 0.03, the same annual horizon and either 50 or 3,000 effective independent bets. The arithmetic gives $0.03\sqrt{50}\approx0.21$ and $0.03\sqrt{3000}\approx1.64$. These are two assumed breadth scenarios, not counts inferred from ticker symbols, a demonstration of extra neural training observations or forecasts of realised IR. Common shocks, trading constraints and implementation costs can change the interpretation. Sharing model parameters may use cross-sectional structure, but does not establish the independent-bet assumption.
 
-<Callout variant="tip" title="The reframing">
-The fixes for deep learning in finance are almost all about *raising effective sample
-size or SNR* — pool across names for breadth, drop to microstructure horizons for
-independent events, or move to alt-data where encoding is the bottleneck. Architecture
-cleverness matters far less than putting the model somewhere the statistics aren't
-hopeless. The rest of this course is a tour of those somewheres.
+<Callout variant="tip" title="Investigate the information, then the architecture">
+Pooling, microstructure or alternative data may supply relevant structure or information. Check their dependence, availability and economic objective rather than assuming the number of events or names is independent breadth. Architecture choice then becomes a comparison on the stated task.
 </Callout>
 
 ### When to use it
 
-Reach for deep learning when at least one of three boxes is checked: (1) the subproblem
-is high-SNR with many independent events, (2) you can pool a wide cross-section to buy
-breadth, or (3) the real challenge is *representing* unstructured alt-data. If none are
-checked — you're predicting one slow series from a few hundred autocorrelated rows —
-close the laptop and write down a linear rule.
+Sequence, cross-sectional or unstructured-data tasks can motivate testing a deep architecture. Compare it with relevant simpler models under the same as-of evaluation and tuning accounting. More names or a faster event clock alone do not prove greater effective information for the target statistic.
 
 <MatchConcepts
   client:visible
   pairs={[
-    { term: "Effective sample size", definition: "Number of effectively independent observations after discounting correlated, overlapping rows" },
+    { term: "Effective sample size", definition: "IID-equivalent count for a specified estimator under an explicit dependence model" },
     { term: "Universal approximation", definition: "A net can fit any function — including all your noise, with no generalization promise" },
-    { term: "Parameter–trial tax", definition: "Each architecture tried is a trial; the best Sharpe inflates by √(2 ln N) under the null" },
-    { term: "Pooled cross-section", definition: "Sharing one model across thousands of names to multiply breadth and effective observations" },
+    { term: "Parameter–trial tax", definition: "Selection changes the reported estimator; trial dependence and the chosen statistic matter" },
+    { term: "Pooled cross-section", definition: "Sharing parameters across names; information gained depends on common shocks and task" },
     { term: "Low SNR squeeze", definition: "Flexibility overfits noise; heavy regularization underfits the faint signal — no comfortable operating point" },
   ]}
 />
@@ -413,25 +296,23 @@ close the laptop and write down a linear rule.
 ## Recap
 
 You arrived expecting markets to fall to the same firehose that flattened ImageNet.
-Instead you learned *why* the firehose mostly sprays the floor: tiny effective sample
-sizes, a signal-to-noise ratio that punishes both flexibility and rigidity, an
+Instead you learned *why* the firehose mostly sprays the floor: statistic-specific information and dependence, a signal-to-noise ratio that punishes both flexibility and rigidity, an
 approximation theorem that mostly empowers noise-fitting, and a configuration space so
 large that architecture search quietly launders overfitting into a victory-lap Sharpe.
-And you learned where the F1 car finds its track — high-SNR microstructure, pooled
-cross-sections, and alt-data representation.
+And you learned where the F1 car finds its track — microstructure, pooled cross-sections and alternative-data representation, subject to the task and evidence.
 
 <MindMap
   client:visible
   title="Why deep learning struggles in finance"
-  caption="Build the map: the four headwinds, then the three places DL still wins."
+  caption="Build the map: the four headwinds, then the three settings motivating a test of DL."
   root={{
     label: 'DL in finance',
     children: [
-      { label: 'Effective-sample-size catastrophe', children: [
-        { label: 'Autocorrelation' },
-        { label: 'Overlapping labels' },
-        { label: 'Non-stationarity (regimes)' },
-        { label: 'N_eff in tens, not thousands' },
+      { label: 'Information for a specified estimator', children: [
+        { label: 'Statistic-specific covariance' },
+        { label: 'Joint covariance for overlapping labels' },
+        { label: 'Distribution change is a separate issue' },
+        { label: 'Mean-equivalent N is not a universal model budget' },
       ]},
       { label: 'Over- AND under-fit squeeze', children: [
         { label: 'High capacity → fits noise' },
@@ -444,10 +325,10 @@ cross-sections, and alt-data representation.
         { label: 'Representable ≠ identifiable' },
       ]},
       { label: 'Parameter–trial tax', children: [
-        { label: 'Each net = one trial' },
-        { label: 'Deflate by √(2 ln N)' },
+        { label: 'Log all choices; defend trial dependence' },
+        { label: 'DSR uses a search benchmark and return uncertainty' },
       ]},
-      { label: 'Where DL wins', children: [
+      { label: 'Tasks motivating a DL comparison', children: [
         { label: 'High-SNR microstructure' },
         { label: 'Pooled cross-section (breadth)' },
         { label: 'Alt-data representation' },
@@ -460,55 +341,100 @@ cross-sections, and alt-data representation.
   client:visible
   title="Mixed check: did the market humble you back?"
   questions={[
-    {
-      question: "A quant brags about 30 years of minute bars as justification for a large network. What is the core flaw?",
-      options: [
-        { text: "Raw row count ignores autocorrelation and overlap; effective sample size may be in the dozens", correct: true },
-        { text: "Minute bars are too recent to be useful" },
-        { text: "Thirty years is simply not enough calendar time" },
-        { text: "Large networks always train faster, so it's fine" },
-      ],
-      explanation: "Minute bars are heavily autocorrelated and overlapping. Sizing capacity to raw N instead of N_eff builds a confident, useless model.",
-    },
-    {
-      question: "Across capacity settings, in-sample Sharpe climbs from 0.35 to 3.10 while out-of-sample peaks at 0.45 then goes negative. What does this show?",
-      options: [
-        { text: "The low-SNR over/under-fit squeeze — added capacity buys in-sample fit and out-of-sample collapse", correct: true },
-        { text: "A clean bias–variance sweet spot that's easy to hold" },
-        { text: "Proof the strategy has a strong, stable edge" },
-        { text: "The model is underfitting at every setting" },
-      ],
-      explanation: "The seductive in-sample rise alongside an OOS peak-then-crash is the signature of overfitting noise in a low-SNR regime that also drifts under you.",
-    },
-    {
-      question: "You searched 100 architectures (single-trial Sharpe noise ≈ 0.5) and the best scored 1.5. What's the honest read?",
-      options: [
-        { text: "About what pure luck predicts: √(2 ln 100) ≈ 3.03, so expected best ≈ 1.52 under the null — essentially no evidence of skill", correct: true },
-        { text: "A robust 1.5 Sharpe strategy ready to trade" },
-        { text: "Selection bias only matters for feature search, not architectures" },
-        { text: "The purged CV on the winner already removed all selection bias" },
-      ],
-      explanation: "Deflated Sharpe scales by √(2 ln N) over all trials. 0.5 × 3.03 ≈ 1.52, so 1.5 is the null expectation — deflated Sharpe ≈ 0.",
-    },
-    {
-      question: "Which deployment best raises effective observations for a deep model?",
-      options: [
-        { text: "Pooling one model across thousands of names to multiply cross-sectional breadth", correct: true },
-        { text: "Adding more hidden layers to a single-name daily predictor" },
-        { text: "Extending one stock's history from 20 to 40 years" },
-        { text: "Lowering the learning rate on a single-series model" },
-      ],
-      explanation: "IR ≈ IC·√breadth. Pooling across 3,000 names buys breadth and effective observations; deeper nets on one slow series just buy overfitting.",
-    },
-    {
-      question: "Why is universal approximation a liability rather than an asset in low-SNR return data?",
-      options: [
-        { text: "Unlimited expressiveness mostly fits noise; the true function is representable but not identifiable from a tiny, noisy sample", correct: true },
-        { text: "The theorem is mathematically false for time series" },
-        { text: "It guarantees a profitable fit if the network is wide enough" },
-        { text: "It only applies to images, never to tabular finance data" },
-      ],
-      explanation: "Capacity to fit any function, aimed at 95–99% noise, mostly produces an exquisite fit to randomness. Representable ≠ recoverable from finite noisy data.",
-    },
-  ]}
+  {
+    "question": "Does a large minute-bar row count establish enough independent information for any model?",
+    "options": [
+      {
+        "text": "No; define the statistic, dependence and intended evaluation population",
+        "correct": true
+      },
+      {
+        "text": "Yes; row count is identical to independent information"
+      },
+      {
+        "text": "No; all minute-return series have exactly76 effective rows"
+      },
+      {
+        "text": "Yes; a large count proves stable net profit"
+      }
+    ],
+    "explanation": "A sample-mean equivalent count and a neural learning task are distinct objects."
+  },
+  {
+    "question": "Across capacity settings, in-sample Sharpe climbs from 0.35 to 3.10 while out-of-sample peaks at 0.45 then goes negative. What does this show?",
+    "options": [
+      {
+        "text": "The low-SNR over/under-fit squeeze — added capacity buys in-sample fit and out-of-sample collapse",
+        "correct": true
+      },
+      {
+        "text": "A clean bias–variance sweet spot that's easy to hold"
+      },
+      {
+        "text": "Proof the strategy has a strong, stable edge"
+      },
+      {
+        "text": "The model is underfitting at every setting"
+      }
+    ],
+    "explanation": "The seductive in-sample rise alongside an OOS peak-then-crash is the signature of overfitting noise in a low-SNR regime that also drifts under you."
+  },
+  {
+    "question": "What does a raw architecture count fail to identify?",
+    "options": [
+      {
+        "text": "The joint null dependence and a calibrated search-adjusted significance statistic",
+        "correct": true
+      },
+      {
+        "text": "The number of rows stored in a file can never be known"
+      },
+      {
+        "text": "Whether a selected model used any training data at all"
+      },
+      {
+        "text": "The units of a fixed recorded currency amount"
+      }
+    ],
+    "explanation": "Counting runs is necessary bookkeeping, not proof of independence or a DSR calculation. An expected maximum and a significance threshold differ."
+  },
+  {
+    "question": "Pooling names may add useful information. Which qualification is necessary?",
+    "options": [
+      {
+        "text": "Common shocks and the target statistic determine the gain; ticker count alone does not establish independent breadth",
+        "correct": true
+      },
+      {
+        "text": "Every additional name is a guaranteed independent annual bet"
+      },
+      {
+        "text": "A larger panel removes all distribution change and selection"
+      },
+      {
+        "text": "Depth alone creates independent observations without new market data"
+      }
+    ],
+    "explanation": "The supplied date-shock example gives about190.476 mean-equivalent observations from 2,000 rows. Pooling can help without multiplying information one-for-one."
+  },
+  {
+    "question": "Why is universal approximation a liability rather than an asset in low-SNR return data?",
+    "options": [
+      {
+        "text": "Unlimited expressiveness mostly fits noise; the true function is representable but not identifiable from a tiny, noisy sample",
+        "correct": true
+      },
+      {
+        "text": "The theorem is mathematically false for time series"
+      },
+      {
+        "text": "It guarantees a profitable fit if the network is wide enough"
+      },
+      {
+        "text": "It only applies to images, never to tabular finance data"
+      }
+    ],
+    "explanation": "Capacity to fit any function, aimed at 95–99% noise, mostly produces an exquisite fit to randomness. Representable ≠ recoverable from finite noisy data."
+  }
+]}
 />

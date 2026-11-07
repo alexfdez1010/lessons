@@ -1,605 +1,429 @@
 ---
-title: "Training & Evaluating DL Without Fooling Yourself"
-description: "Aggressive regularization for a tiny effective sample, purged and embargoed evaluation applied to deep nets, the deflated Sharpe for an architecture search, and the sober bottom line: gradient-boosted trees are the baseline to beat — and on low-signal tabular finance, they usually win."
+title: "Training and Evaluating DL Without Fooling Yourself"
+description: "Evaluate a deep model as an as-of experiment: define dependent information, freeze every fitted stage, account for model selection, and distinguish predictive loss from a feasible policy’s net P&L."
 topic: "en/deep-learning-for-market-data"
 order: 6
-minutes: 18
-updated: 2026-06-19
+minutes: 42
+updated: 2026-11-06
 ---
 
-import { Callout, MCQ, Quiz, Reveal, FillBlank, MatchConcepts, Categorize, MindMap, DeflatedSharpe, PurgedCvSplit, TsOverfitCurve, SignalDecay } from '@/components/react';
+import { Callout, MCQ, Quiz, ThinkReveal, FillBlank, MatchConcepts, MindMap, TemporalModelAudit } from '@/components/react';
 
-You can now build the whole zoo. RNNs and LSTMs that carry state across time, TCNs
-with dilated convolutions, attention and transformers that look across an entire
-window at once, embeddings that turn 4,000 ticker symbols into dense vectors. You
-have the *power*. This lesson is about the much harder skill: **not fooling
-yourself with it.**
+The network reduced forecast error. The trading policy lost money. Both statements can be correct. We need to examine what was predicted, which information was available, how the model was selected and what trading those predictions actually cost.
 
-This is the deep-learning edition of the creed you swore in *Machine Learning for
-Alpha*. Overfitting is the enemy. An honest IC lives around 0.02–0.05. You purge and
-embargo your cross-validation. You deflate your Sharpe for the number of trials. You
-lock a test set, paper-trade, monitor live IC, and keep a kill-switch. None of that
-gets *repealed* because you switched from ridge to a transformer. It gets
-**amplified**, because a deep net is a vastly more eager noise-memorizer than any
-linear model you've trained before.
+The architecture lessons gave us recurrent networks, temporal convolutions, attention and embeddings. This lesson evaluates the **whole procedure**: data versions, preprocessing, training, hyperparameter and seed selection, forecasts, positions and execution. A particular model family, regulariser or cross-validation name does not make that procedure honest by itself.
 
-The single most useful sentence in this entire course: **a neural network is a
-machine for finding structure, and in financial returns most of the "structure" is
-noise.** Everything below is damage control around that fact.
+Every numerical population, forecast record and trading fee below is invented. We show the assumptions needed for each calculation rather than treating them as facts about all financial datasets.
 
-## Regularization for a tiny sample
+## 1. Information depends on the statistic and the dependence
 
-<MCQ
-  client:visible
-  pretest
-  question="You're training an LSTM on ~6,000 daily return rows with an effective sample far smaller still. Which reflex is most defensible as a starting point?"
-  options={[
-    { text: "Start with a deliberately SMALL model and heavy regularization, then only grow if a purged validation curve says you may", correct: true },
-    { text: "Start with a large model so it 'has the capacity to learn', then prune later" },
-    { text: "Turn off all regularization first to see the model's raw ceiling" },
-    { text: "Add layers until in-sample loss hits zero, since that proves the data is learnable" },
-  ]}
-  explanation="With a tiny effective sample and low SNR, capacity is risk, not opportunity. Small + regularized is the honest default; you grow only when held-out evidence forces you to."
+<MCQ client:visible pretest
+ question={"A panel grows from one name to twenty per date. Must its independent information grow 20-fold?"}
+ options={[{"text": "No; derive precision for a specified statistic and dependence model", "correct": true}, {"text": "Yes, because every row is a separate independent experiment"}, {"text": "No; names beyond the first can never add any information"}, {"text": "Yes; a large dataset proves stationary trading performance"}]}
+ explanation={"Shared date shocks can remain as idiosyncratic noise averages away. More information is possible; a universal row multiplier is not established."}
 />
 
-Think of regularization as a **leash on an over-eager dog**. The dog (your network)
-will happily chase every squirrel (every noisy wiggle in the training returns). The
-leash doesn't make the dog dumber — it stops it from running into traffic.
-Mathematically, every technique below does the same job: it **trades a little bias
-for a large reduction in variance**, and in a low-SNR regime, variance is what kills
-you out of sample.
+Photographing the same event from twenty seats gives twenty views, not twenty independent events. But some information in each view can still be new. A useful information calculation must specify which quantity we estimate.
 
-**Definition.** Regularization is any constraint, penalty, or noise added during
-training that shrinks the model's *effective* capacity, lowering out-of-sample
-variance at the cost of a small bias increase. The bias–variance decomposition of
-expected squared error makes the deal explicit:
+Suppose we estimate a **population mean** from $D$ independent dates and $M$ names per date. At each date,
 
-$$\mathbb{E}\big[(y-\hat f)^2\big] = \underbrace{\big(\mathbb{E}[\hat f]-y\big)^2}_{\text{bias}^2} + \underbrace{\mathrm{Var}(\hat f)}_{\text{variance}} + \sigma^2_{\text{irreducible}}$$
+$$
+Y_{di}=Z_d+\varepsilon_{di},\qquad \operatorname{Var}(Z_d)=\operatorname{Var}(\varepsilon_{di})=1.
+$$
 
-The toolbox, and *why* each one shrinks variance:
+All shocks are centred; different dates are independent; idiosyncratic shocks are independent of one another and of every date shock. Two names on the same date share $Z_d$. Each individual observation therefore has variance $1+1=2$ in outcome units squared.
 
-| Technique | What it does | Why it shrinks variance |
-|---|---|---|
-| **Dropout** (`p≈0.2–0.5`) | Randomly zeroes units each step | Forces redundant, distributed features; approximates a large ensemble |
-| **Weight decay (L2)** | Adds $\lambda\lVert w\rVert_2^2$ to the loss | Pulls weights toward 0, flattening the function it can represent |
-| **Early stopping** | Halt when **purged** validation loss stops improving | Caps the *effective* number of fitted parameters |
-| **Data augmentation** | Noise injection, (block-)bootstrap, mixup | Synthesizes plausible samples so the net can't memorize exact rows |
-| **Ensembling** | Average many seeds/models | Variance of a mean of $k$ decorrelated models falls by up to $1/k$ |
-| **Small models** | Fewer params from the start | Lower capacity = lower variance, full stop |
+The average is $\bar Y=D^{-1}\sum_dZ_d+(DM)^{-1}\sum_{d,i}\varepsilon_{di}$, so
 
-Note the **block-bootstrap** detail: financial rows are autocorrelated, so you
-resample contiguous *blocks*, not individual days — otherwise you destroy the very
-serial structure your RNN exists to capture.
+$$
+\operatorname{Var}(\bar Y)=\frac1D+\frac1{DM}.
+$$
 
-### Worked example — regularization on a return predictor
+For $D=100$ and $M=20$, 2,000 rows give mean variance $0.01+0.0005=0.0105$. Incorrect IID treatment would give $2/2000=0.001$. Define an **IID-equivalent sample size for this mean** by matching variance to $2/N_{\rm eq}$:
 
-You train a GRU to predict next-day cross-sectional returns and report the
-*annualized Sharpe* of the long–short portfolio it implies.
+$$
+N_{\rm eq}=\frac2{0.0105}=190.476190\ldots.
+$$
 
-| Setup | In-sample Sharpe | Out-of-sample Sharpe |
-|---|---|---|
-| Unregularized GRU (big, no dropout) | 3.10 | 0.15 |
-| + dropout 0.3, weight decay $\lambda=10^{-3}$ | 1.65 | 0.62 |
-| + early stop on purged val, smaller hidden size, 5-seed ensemble | 1.05 | 0.78 |
+<div id="mean-information-example" className="scroll-mt-24" />
 
-Read the columns honestly. Regularization **destroyed** in-sample Sharpe — from 3.10
-to 1.05, a 66% haircut — and that is exactly what you want. The gap between columns
-is the overfitting tax. The unregularized model paid $3.10 - 0.15 = 2.95$ of pure
-fantasy; the final model paid only $1.05 - 0.78 = 0.27$. The out-of-sample number,
-the only one that pays rent, **quadrupled** from 0.15 to 0.78.
+<TemporalModelAudit client:visible mode="information" title="More names do not remove a common date shock" caption="Invented sample-mean model: 100 independent dates, one shared unit-variance shock per date and independent unit-variance name shocks. Individual observation variance is 2. The equivalent N matches variance of this mean to 2/N; it is not a generic neural-network sample count. Increase names while the number of independent dates stays fixed." />
 
-<TsOverfitCurve
-  client:visible
-  title="In-sample keeps falling; out-of-sample turns up and back down"
-  caption="The classic U: model error out-of-sample bottoms at modest complexity, then climbs as capacity memorizes noise. Regularization shifts the sweet spot left."
+At one name per date, $N_{\rm eq}=100$. As $M$ grows, it tends to 200, not infinity: extra names average away the idiosyncratic noise, but not the common date shock. This limit belongs to this stipulated mean-estimation problem, not to every panel model or neural network.
+
+For a different problem, the mean of a stationary scalar AR(1)-like series with lag correlation $\rho^k$ has the large-$N$ approximation $N_{\rm eq}\approx N(1-\rho)/(1+\rho)$. At $N=5000$, $\rho=0.97$, it is about 76.142. The correlation must describe the relevant statistic’s series; a persistent feature does not automatically impose the same effective count on prediction errors. The approximation also requires an appropriate stationary covariance structure and a long enough sample.
+
+Overlapping targets, common shocks and serial dependence can interact. Do **not** divide an AR(1) count by a second overlap factor without deriving the joint covariance. Negative correlation can even improve precision of a mean. A distribution change raises another question: old data may target a different population, which cannot generally be repaired by one universal row-count discount.
+
+### When to use an information calculation
+
+Use a dependence model or a justified resampling/error method for the statistic you report. Split by relevant dates and entities when the intended deployment requires it. More names, windows, augmented samples or random seeds do not automatically supply independent market evidence; nor does a parameter-to-rows ratio prove a model must fail.
+
+<FillBlank client:visible question="Match the variance of this particular mean." text="Individual variance is {{2|0.0105|1}}. Mean variance 0.0105 gives IID-equivalent N of about {{190.476|2,000|20}}, not a universal network budget." explanation="Set2/N=.0105. The covariance of the specified sample mean determines the equivalent count." />
+
+## 2. Draw the information boundary in actual dates
+
+<MCQ client:visible pretest
+ question={"At freeze close 12, a candidate anchor 11 has a two-day forward label ending at 14. Can that label enter the frozen fit?"}
+ options={[{"text": "No; it was not available at the freeze date", "correct": true}, {"text": "Yes; the anchor itself is before the first test decision"}, {"text": "Yes; shuffling the minibatch makes future labels harmless"}, {"text": "No; all historic labels must be removed regardless of availability"}]}
+ explanation={"Feature time and label availability differ. This design permits labels ending by close 12 only."}
 />
 
-<Callout variant="warning" title="In-sample Sharpe of 3 is a symptom, not a trophy">
-If a deep net hands you an in-sample (or even un-purged validation) Sharpe of 3+,
-your first assumption should be **leakage or memorization**, not genius. Honest
-finance signals live near IC 0.02–0.05; a glittering training metric on a tiny,
-low-SNR sample is the model proudly reciting the noise it memorized. Celebrate a
-*small* in-sample/out-of-sample gap, never a *large* in-sample number.
-</Callout>
+A calendar drawn from memory is where off-by-one errors go to retire. Define a **decision anchor** $t$ as a feature record available at that day’s close. Its label is the return over $(t,t+h]$, fully available at close $t+h$. Freeze the fit at **close 12**, using candidate training anchors 1–12. The first held-out decision is at anchor 13; the frozen model scores anchors 13–16.
 
-### When to use it
+With $h=2$, a label is available for fitting only if $t+2\leq12$. Keep anchors 1–10. Exclude 11 and 12: their labels end at 13 and 14. There are **10 usable training anchors**, not a generic “horizon minus one” subtraction applied without a timing convention.
 
-You always regularize in this domain — the question is only *how hard*. Scale the
-leash to the effective sample size, not the row count: overlapping multi-day labels
-and autocorrelation can shrink ~6,000 rows to a few hundred independent observations,
-so treat your *effective* $n$ as tiny and regularize accordingly. Trade-off: too much
-and you underfit the (already faint) signal into oblivion; the purged validation
-curve is your referee for where to stop tightening.
+<div id="as-of-availability-example" className="scroll-mt-24" />
 
-<MatchConcepts
-  client:visible
-  pairs={[
-    { term: "Dropout", definition: "Randomly zeroes units during training, mimicking a large ensemble and forcing redundant features" },
-    { term: "Weight decay (L2)", definition: "Penalizes large weights via λ‖w‖², flattening the representable function toward zero" },
-    { term: "Early stopping", definition: "Halts training when purged validation loss stops improving, capping effective parameters" },
-    { term: "Block bootstrap", definition: "Resamples contiguous spans of rows so serial correlation is preserved, not destroyed" },
-    { term: "Seed ensembling", definition: "Averages decorrelated models so the variance of the mean falls toward 1/k" },
-  ]}
+<TemporalModelAudit client:visible mode="timing" title="Keep labels known at the frozen fit" caption="Invented close-of-day convention. Features at t, label over (t,t+h], fully known at close t+h. Fit frozen at close 12 from candidate anchors 1–12. Held-out decisions 13–16 use that frozen fit. Anchors after 16 were never training candidates. The exact table shows both anchor and label end; a future-side embargo cannot be subtracted from absent rows." />
+
+This prospective training set has no candidate rows after the test block. A post-test **embargo**, a buffer excluding otherwise eligible future-side training rows in some cross-validation designs, cannot remove rows that were never present. In a design that trains on both sides of an evaluation block, specify label intervals, feature availability, entity dependence and buffer direction explicitly. Purging removes forbidden overlap; an embargo is not proof that every remaining dependence or distribution shift vanished.
+
+The freeze applies to everything learned from data:
+
+<table tabIndex={0} aria-label="As-of fitting and evaluation stages" className="block w-full max-w-full overflow-x-auto text-left text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600">
+  <thead><tr><th scope="col">Stage</th><th scope="col">Permitted operation at this fit</th></tr></thead>
+  <tbody>
+    <tr><th scope="row">Scaling, imputation, feature selection, embeddings</th><td>Fit using allowed training information; apply the frozen transform to later rows</td></tr>
+    <tr><th scope="row">Batch normalisation</th><td>Estimate the chosen running statistics from permitted training data and use the intended inference mode</td></tr>
+    <tr><th scope="row">Early stopping and hyperparameters</th><td>Choose with an inner validation procedure; they are fitted choices too</td></tr>
+    <tr><th scope="row">Recurrent state and windows</th><td>Use only information available to each decision; define when state resets and what can carry forward</td></tr>
+    <tr><th scope="row">Final evaluation</th><td>Run the predeclared procedure on untouched later blocks; do not select the winner from the final results</td></tr>
+  </tbody>
+</table>
+
+[Train-only preprocessing](https://scikit-learn.org/stable/common_pitfalls.html) is not unique to deep learning. Scalers can leak in ridge regression too. Shuffling **already valid training windows** is not itself future leakage; the problem is mixing forbidden dates, labels, fitted statistics or hidden state across the boundary. Some stateful sequence tasks additionally require ordered batches and explicit resets.
+
+[BatchNorm’s documented behaviour](https://docs.pytorch.org/docs/2.15/generated/torch.nn.BatchNorm1d.html) also depends on its configuration: disabling running statistics can make evaluation use the current batch. LayerNorm does not remove the need to check which time positions enter each normalisation or attention operation.
+
+### When to choose this evaluation design
+
+Use an as-of prospective experiment to answer the deployment question posed here. Some stationary autoregressive problems permit other cross-validation designs under stated conditions; “all time-series K-fold leaks” is too broad. For rolling refits, declare the schedule in advance and refit only from information available at each new freeze date. Data from a previous test period may later become permitted historical training data under that schedule; it must not be used to retroactively tune the reported earlier decisions.
+
+<ThinkReveal client:visible prompt="Why is subtracting a post-test embargo from these twelve past candidates wrong?" hint="Identify which future-side rows were in the training set." text="None were. The fit contains only candidate anchors 1–12; with horizon 2 it keeps 1–10. A future-side buffer in another design cannot remove additional absent rows." />
+
+## 3. Regularisation is a trade-off to test
+
+<MCQ client:visible pretest
+ question={"If a shrink factor reduces estimator variance, must its expected predictive squared error fall?"}
+ options={[{"text": "No; squared bias and new-outcome noise also enter the stated decomposition", "correct": true}, {"text": "Yes; variance is the entire prediction error in every problem"}, {"text": "Yes; stronger shrinkage always preserves every true signal"}, {"text": "No; regularisation is mathematically forbidden for networks"}]}
+ explanation={"In the toy population, error is 5 at factor 1, 3 at 0.5 and 5 at 0. Extra shrinkage need not help."}
 />
 
-## Purged & embargoed evaluation for deep nets
+A smaller dial setting can reduce noise and also erase signal. Consider prediction at one fixed input. The true conditional mean is $f=2$ outcome units. Future observation noise is independent of training and has variance 1. Our fitted estimator takes values 0 or 4 with equal probability across hypothetical independent training samples.
 
-<MCQ
-  client:visible
-  pretest
-  question="Compared to the ridge regression you purged and embargoed in ML for Alpha, why is leakage typically WORSE for a deep net on the same data?"
-  options={[
-    { text: "DL pipelines leak through extra side channels — scalers fit on the full set, batch-norm running stats, embedding tables, and minibatches shuffled across the train/test boundary", correct: true },
-    { text: "Deep nets cannot be cross-validated at all, so any split leaks by definition" },
-    { text: "Leakage is identical; only the model changed, not the data" },
-    { text: "Neural nets ignore time order, so purging is unnecessary" },
-  ]}
-  explanation="The label-overlap leakage you already knew is still there, and DL adds preprocessing/stats/embedding/shuffle channels on top. More moving parts, more places for the future to leak into the past."
+Multiply that estimator by a shrink factor $a$. Its mean is $2a$ and its variance is $4a^2$. Under this specified squared-error setup,
+
+$$
+\mathbb E[(Y-\widehat f_a)^2]=\underbrace{4(a-1)^2}_{\text{squared bias}}+\underbrace{4a^2}_{\text{estimator variance}}+\underbrace{1}_{\text{new noise}}.
+$$
+
+<table tabIndex={0} aria-label="Squared bias and variance under estimator shrinkage" className="block w-full max-w-full overflow-x-auto text-left text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600">
+  <thead><tr><th scope="col">Shrink factor</th><th scope="col">Squared bias</th><th scope="col">Variance</th><th scope="col">Noise</th><th scope="col">Expected squared error</th></tr></thead>
+  <tbody>
+    <tr><th scope="row">1</th><td>0</td><td>4</td><td>1</td><td>5</td></tr>
+    <tr><th scope="row">0.5</th><td>1</td><td>1</td><td>1</td><td>3</td></tr>
+    <tr><th scope="row">0</th><td>4</td><td>0</td><td>1</td><td>5</td></tr>
+  </tbody>
+</table>
+
+<div id="estimator-risk-example" className="scroll-mt-24" />
+
+<TemporalModelAudit client:visible mode="shrink" title="Shrinkage trades bias against estimator variance" caption="Invented fixed-input estimator distribution: truth 2, original estimator 0 or 4 with equal probability across training samples, independent future noise variance 1. Multiplying the estimator by alpha changes both bias and variance. Bars are squared-error components in outcome units squared, not a guaranteed effect of a regulariser on a market model." />
+
+Partial shrinkage helps **this** population; shrinking all the way to zero loses the gain. At $a=1.5$, error is $1+9+1=11$. We supplied the true distribution to verify the arithmetic. In practice that distribution is unknown, so validation must select the amount without turning the final test into another tuning set.
+
+Dropout, small architectures, weight penalties and early stopping are different tools; none universally yields a small bias increase and a large variance reduction. Early stopping consumes validation information. [AdamW](https://docs.pytorch.org/docs/2.15/generated/torch.optim.AdamW.html) applies decoupled weight decay; it is not generally identical to adding an L2 penalty to an adaptive optimiser’s loss. Augmentation must preserve a defensible financial label mechanism: a plausible-looking synthetic path is not another independent observed market history.
+
+### An ensemble may share most of its error
+
+If $K$ estimator errors have equal variance $\sigma_e^2$ and common pairwise correlation $\rho$ under a valid covariance structure, the equal-weight mean has variance
+
+$$
+\operatorname{Var}(\bar e)=\sigma_e^2\left[\rho+\frac{1-\rho}{K}\right].
+$$
+
+For $K=5$, $\rho=0.8$, this is $0.84\sigma_e^2$, not the $0.2\sigma_e^2$ obtained with independent errors. At $\rho=1$, averaging adds no variance benefit. The equation says nothing by itself about bias, net trading returns or new data availability.
+
+<div id="ensemble-error-example" className="scroll-mt-24" />
+
+<TemporalModelAudit client:visible mode="ensemble" title="Correlated seeds share error" caption="Equal estimator-error variances and a valid common-correlation covariance model. Controls show nonnegative correlations only. Ratios compare variance of the equal-weight mean with one estimator; they do not measure bias or create new independent observations. Independent errors give 1/K, while shared error remains." />
+
+### When to regularise or ensemble
+
+Compare predeclared model variants on permitted validation data and measure the objective you care about. Averaging seeds is a specified model; picking the best seed is an additional selection step. A low training error is not proof of leakage, and a small training/test gap is not proof of useful prediction: two poor models can agree very closely.
+
+<MCQ client:visible
+ question={"Five equally weighted errors have common correlation 0.8 and equal variance. What fraction of one-model variance remains?"}
+ options={[{"text": "0.84 under this covariance model", "correct": true}, {"text": "0.20 because all five seeds are independent by definition"}, {"text": "0 because averaging removes every error component"}, {"text": "4 because variance is always multiplied by model count"}]}
+ explanation={"rho+(1−rho)/K=.8+.2/5=.84. The equation concerns estimator-error variance, not net P&L."}
 />
 
-Quick recap from *Leakage and Purged Cross-Validation*. When labels span multiple
-days (a 5-day forward return touches 5 days of features), a naive split lets training
-rows whose label *window* overlaps the test period peek at the future.
+## 4. Count selection, then name the statistic correctly
 
-- **Purge.** Drop training observations whose label window overlaps the test span.
-- **Embargo.** Drop an extra band of training rows immediately *after* the test span,
-  because autocorrelation lets information bleed forward across the seam.
-
-The analogy: purging is **refusing to study from a textbook that contains the exam
-answers**; the embargo is **also skipping the chapter printed right next to those
-answers**, because it paraphrases them.
-
-<PurgedCvSplit
-  client:visible
-  title="Purge the overlap, embargo the band after"
-  caption="Training labels overlapping the test window are dropped (purge); an additional buffer after the test window is removed (embargo). The test block is touched once."
+<MCQ client:visible pretest
+ question={"Twenty independent calibrated null tests each pass with probability 0.025. Which probability is being computed by 1−.975^20?"}
+ options={[{"text": "The chance at least one passes under that joint null model", "correct": true}, {"text": "The chance the best architecture has causal skill"}, {"text": "The DSR obtained by subtracting expected maximum Sharpe"}, {"text": "The chance of positive future returns in a changing market"}]}
+ explanation={"The family event is the complement of all twenty failures. Independence is stipulated, not established by a run log."}
 />
 
-Here's the part that bites *harder* with deep learning. A neural pipeline leaks
-through channels a plain ridge never had:
+Suppose each of $N$ **independent null tests** has probability 0.025 of passing a chosen one-sided threshold. These are invented, correctly calibrated null tests, not a claim about actual architecture runs. The probability that at least one passes is
 
-1. **Scalers / normalization fit on the full dataset.** Compute mean and standard
-   deviation, or a min–max range, over *all* rows and you've smuggled test-set
-   statistics into training. Fit transforms on the train fold **only**, then apply
-   them forward.
-2. **Batch-norm running statistics.** BatchNorm accumulates running mean/variance.
-   Let those stats see future minibatches and the future leaks into the present —
-   prefer LayerNorm, or freeze/refit stats per fold.
-3. **Embedding tables (callback to Lesson 5).** A ticker or sector embedding learned
-   using the *entire* history bakes future co-movement into a "static" lookup. Learn
-   embeddings inside the training window only.
-4. **Shuffled minibatches across the boundary.** The reflex to shuffle for IID SGD is
-   poison here — shuffling mixes rows on both sides of the seam. Build minibatches
-   that respect time order and the purge gap.
+$$
+P(\text{any pass})=1-(1-0.025)^N.
+$$
 
-The correct protocol is **walk-forward retraining**: train on $[t_0, t_1]$, purge +
-embargo, test on $[t_1, t_2]$; then roll the window forward, refit *everything*
-(scalers, batch stats, embeddings, weights), and test on the next block. Never refit
-on data later than the block you're scoring.
+At $N=20$, it is $1-0.975^{20}=39.731232\%$; at 200, about 99.367700%. These are family-level false-positive probabilities for this independent model. Identical copied tests would not multiply the chance this way. Correlated architecture runs require a dependence-aware analysis; logging 200 runs does not establish 200 independent tests.
 
-### Worked example — counting purged + embargoed rows
+<div id="search-null-example" className="scroll-mt-24" />
 
-You hold 2,000 training days. Labels are 10-day forward returns, the test block is the
-next 250 days, and you set a 5-day embargo.
+<TemporalModelAudit client:visible mode="search" title="Selection probability under a stipulated independent null" caption="Invented calibrated independent null candidates. Each has individual one-sided pass probability 0.025; the chart shows 1−0.975^N. The number is a family probability under that model, not the chance a selected model has skill, an expected maximum or a DSR value." />
 
-- **Purge:** any training row whose 10-day label window reaches into the test block
-  must go. That's roughly the last $10 - 1 = 9$ training rows abutting the seam.
-- **Embargo:** drop 5 rows of training material that would sit immediately after the
-  test block in a rolled split.
-- **Usable training rows ≈** $2000 - 9 - 5 = 1986$.
+Log choices of features, architectures, windows, costs, stopping epochs, seeds and trading rules when their results influence selection. A nested validation process separates fitting and choosing from the final reported evaluation. Repeatedly consulting the final set to pick changes makes it selection data; an untouched later evaluation can test the resulting procedure. Purging does not undo model selection.
 
-Losing 14 rows out of 2,000 sounds trivially cheap — and it is, which is exactly why
-skipping it is inexcusable. Those 14 rows are the *only* ones carrying the leak; keep
-them and your reported out-of-sample Sharpe is quietly fictional.
+### PSR, a search benchmark and DSR
 
-<Callout variant="warning" title="The scaler is the silent leaker">
-The most common DL leak in finance is the most boring: someone calls
-`scaler.fit(X_all)` once at the top of the notebook, then splits. The model now knows
-the test period's mean and variance before training begins. It produces a beautiful
-backtest and a worthless live signal. Fit every transform — scalers, PCA, embeddings,
-batch stats — **inside the training fold only**, then apply forward. No exceptions.
-</Callout>
+The [Deflated Sharpe Ratio paper](https://www.davidhbailey.com/dhbpapers/deflated-sharpe.pdf) adjusts a probabilistic-Sharpe calculation for a specified search benchmark. It does **not** define DSR as observed Sharpe minus $\sigma\sqrt{2\ln N}$. That square-root expression is only a leading asymptotic description of an expected maximum under a particular independent Gaussian model; an expected maximum is neither a significance cutoff nor a probability.
 
-### When to use it
+In a suitable normal approximation, write the probabilistic Sharpe statistic against benchmark $S_0$ as
 
-Always — there is no regime where un-purged evaluation is acceptable for overlapping
-financial labels. Trade-off: purging + embargo + walk-forward shrinks each training
-fold and multiplies compute (you refit per fold). For deep nets that retraining cost
-is real, but it is the price of a number you can trust. The cheaper alternative is a
-backtest that lies to you, and that one's free until it isn't.
+$$
+z=\frac{(\widehat S-S_0)\sqrt{T-1}}{\sqrt{1-\widehat\gamma_3\widehat S+(\widehat\gamma_4-1)\widehat S^2/4}},\qquad \mathrm{PSR}(S_0)\approx\Phi(z).
+$$
 
-<Categorize
-  client:visible
-  question="Sort each item by whether it is an additional DL-specific leakage channel or part of the correct evaluation protocol."
-  buckets={["DL-specific leak channel", "Correct protocol"]}
-  items={[
-    { text: "Scaler fit on the full dataset before splitting", bucket: "DL-specific leak channel" },
-    { text: "BatchNorm running stats spanning future minibatches", bucket: "DL-specific leak channel" },
-    { text: "Embedding table learned over the entire history", bucket: "DL-specific leak channel" },
-    { text: "Shuffling minibatches across the train/test seam", bucket: "DL-specific leak channel" },
-    { text: "Purge training rows whose label window overlaps the test span", bucket: "Correct protocol" },
-    { text: "Embargo a band of rows after the test block", bucket: "Correct protocol" },
-    { text: "Refit scalers and embeddings inside each walk-forward fold", bucket: "Correct protocol" },
-  ]}
-  explanation="The first four are extra side channels a deep pipeline adds on top of the label-overlap leak; the last three are the discipline that closes them."
+Here $T$ counts **return observations**, $\widehat\gamma_3$ is skewness, $\widehat\gamma_4$ is ordinary kurtosis (3 for a normal distribution), and $\Phi$ is the standard normal CDF. Sharpe and the benchmark use the same return frequency. If $S_0$ is a search-adjusted expected-maximum benchmark under the defended trial model, the corresponding statistic is called DSR. Serial dependence, nonstationarity, moment estimation, adaptive selection and trial dependence need separate treatment; the formula does not fix them automatically.
+
+For a separate invented monthly net-return record, take $\widehat S=0.10$, $T=101$, skewness 0 and kurtosis 3. Against a **stipulated** threshold $S_0=0.05$, $z=0.5/\sqrt{1.005}\approx0.498755$ and PSR is about 0.691024. This threshold alone has no search provenance, so this calculation is not yet DSR.
+
+Now supply a search model: there are exactly **two independent null monthly-Sharpe estimates**, each normally distributed with mean zero and standard deviation $\sigma_{\rm trial}=0.10$. For this two-candidate normal model, the expected maximum is exactly $\sigma_{\rm trial}/\sqrt\pi=0.05641895835\ldots$. One way to see the identity is $\max(A,B)=(A+B+|A-B|)/2$; the centred normal difference has variance $2\sigma_{\rm trial}^2$ and mean absolute value $2\sigma_{\rm trial}/\sqrt\pi$.
+
+Using that derived benchmark gives $z\approx0.434725$ and DSR about 0.668119 under the stated approximation. The monthly units match in $\widehat S$, $\sigma_{\rm trial}$ and $S_0$. The number of candidates is two; the number of returns is 101. Do not swap them.
+
+<div id="sharpe-reference-example" className="scroll-mt-24" />
+
+<TemporalModelAudit client:visible mode="sharpe" title="A fixed threshold and a derived search benchmark" caption="Invented monthly net-return Sharpe record and a separate stipulated search model. 101 return observations, skewness 0, kurtosis 3. A fixed 0.05 benchmark gives PSR. Two independent centred Normal trial Sharpe estimates with selected standard deviation have exact expected maximum sigma_trial/sqrt(pi); using that benchmark gives the illustrated DSR approximation. The model is not established from a raw trial count; DSR is not familywise error control or a probability of causal skill." />
+
+DSR versus an expected maximum is **not familywise error control**, and neither score is a causal probability of skill or the probability of earning future profit. The independent normal trial model is supplied for this calculation, not identified by the fact that two networks were trained on the same market data.
+
+### When to use a selection adjustment
+
+Use it when results influence which model or policy is reported, with a search log and a defensible dependence/uncertainty model. Prefer a predeclared budget and fresh evaluation over a post-hoc subtraction presented as a certificate. Do not manufacture a numerical “effective trial count” without explaining how it was estimated.
+
+<MCQ client:visible
+ question={"Select two requirements for the illustrated DSR calculation."}
+ options={[{"text": "The Sharpe, trial dispersion and search benchmark use the same return-frequency scale", "correct": true}, {"text": "A defended trial model links the benchmark to search rather than an arbitrary threshold", "correct": true}, {"text": "T=101 counts the number of architecture candidates"}, {"text": "DSR at any expected-maximum benchmark guarantees familywise error control"}]}
+ explanation={"The example has 101 return observations and two independent null candidate estimates. DSR is not a causal probability or a family-error certificate."}
+ allowMultiple={true}
 />
 
-## The deflated Sharpe for an architecture search
+## 5. Forecast loss and net trading P&L answer different questions
 
-<MCQ
-  client:visible
-  pretest
-  question="You try 200 architecture/hyperparameter configurations and keep the best by validation Sharpe. Why is the best one's headline Sharpe systematically inflated?"
-  options={[
-    { text: "Selecting the max over many trials inflates the winner even under a true-zero edge; the expected max under the null grows like √(2 ln N)", correct: true },
-    { text: "Validation Sharpe is always biased low, so the max corrects it" },
-    { text: "Only the learning rate matters; the other 199 trials don't count" },
-    { text: "The Sharpe ratio is unaffected by how many models you tried" },
-  ]}
-  explanation="Max-over-trials selection bias: even with zero true skill, the best of N noisy Sharpes drifts upward roughly as √(2 ln N) per-trial standard deviations. You must deflate the winner by that hurdle."
+<MCQ client:visible pretest
+ question={"A lower forecast MSE is observed. What extra specification is needed to judge a trading claim?"}
+ options={[{"text": "A feasible position and exit policy with its cash, fees, funding and risk assumptions", "correct": true}, {"text": "Only the model-family name and in-sample fit"}, {"text": "A rule that treats every correct sign as a guaranteed net profit"}, {"text": "Nothing; squared forecast error and dollars are the same metric"}]}
+ explanation={"A forecast does not set positions or pay execution costs. The economic objective needs its own ledger."}
 />
 
-Recall the brutal lesson from *Backtest Overfitting and the Deflated Sharpe*: **every
-configuration you try is a trial**, and the more lottery tickets you buy, the higher
-the *best* ticket looks even if none of them are winners. The analogy: hand 200
-monkeys a dartboard and the best monkey will look like a champion — not because it
-can throw, but because you took the max over 200 noisy throws.
+Suppose these four forecasts were recorded **before** their respective returns, with no access to those outcomes. Forecasts and returns are percentage-point numbers for calculating squared error.
 
-**Definition.** Under the null of *zero* true skill, with $N$ independent trials each
-producing a Sharpe with standard deviation $\sigma$, the expected maximum sampled
-Sharpe is approximately
+<table tabIndex={0} aria-label="Recorded forecasts and realised errors" className="block w-full max-w-full overflow-x-auto text-left text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600">
+  <thead><tr><th scope="col">Period</th><th scope="col">Recorded forecast (pp)</th><th scope="col">Realised return (%)</th><th scope="col">Squared error (pp²)</th></tr></thead>
+  <tbody>
+    <tr><th scope="row">1</th><td>+0.9</td><td>+1</td><td>0.01</td></tr>
+    <tr><th scope="row">2</th><td>−0.9</td><td>−1</td><td>0.01</td></tr>
+    <tr><th scope="row">3</th><td>+0.9</td><td>+1</td><td>0.01</td></tr>
+    <tr><th scope="row">4</th><td>−0.9</td><td>−1</td><td>0.01</td></tr>
+  </tbody>
+</table>
 
-$$\mathbb{E}[\max \text{SR}] \approx \sigma\,\sqrt{2\ln N}.$$
+Mean squared error is 0.01 pp², versus $[1^2+(-1)^2+1^2+(-1)^2]/4=1$ pp² for a zero forecast. That is a large predictive-loss improvement **on these four invented observations**; it says nothing about how often this record would recur.
 
-This $\sqrt{2\ln N}$ term is the **multiple-testing hurdle**: a Sharpe must clear it
-before you're allowed to believe it's real. The *deflated* Sharpe asks whether your
-observed value beats this null-of-the-best, not merely the null-of-one.
+A fixed policy takes the forecast’s sign, opens USD 10,000 of exposure each period and **fully closes it each period**. It starts with cash USD 20,000, sufficient for the stipulated trades; shorts are feasible, cash earns zero and there is no funding cost, tax, spread or impact beyond the explicit invented fee. Each period’s gross P&L is $10{,}000\times1\%=100$ USD, so gross total is 400.
 
-Now the deep-learning twist that should keep you up at night. DL's hyperparameter
-space is enormous — **width, depth, learning rate, dropout rate, weight decay,
-sequence length, optimizer, warm-up schedule, and random seed** — and seeds alone can
-multiply your trial count tenfold. So $N$ doesn't creep; it *explodes*.
+Charge **100 basis points per leg on the fixed entry notional**, including that same declared base on the exit leg. This is an intentionally costly invented fee schedule, not a claim about a venue. Each leg costs $10{,}000\times0.01=100$ USD; four round trips have eight legs and cost 800. Net P&L is $400-800=-400$ USD; ending cash is 19,600. The no-trade cash policy earns zero with no fees. A better MSE therefore lost the economic comparison.
 
-### Worked example — the hurdle for 200 configs
+<div id="forecast-pnl-example" className="scroll-mt-24" />
 
-Try $N = 200$ configurations. The hurdle multiplier is
+<TemporalModelAudit client:visible mode="trading" title="Forecast accuracy and the cash policy ledger" caption="Four invented forecasts stipulated available before outcomes. Sign policy opens and closes fixed USD 10,000 entry notional in every period, so there are eight charged legs. The invented fee on each leg uses the original entry notional, including exit. Start with USD 20,000, feasible shorts, zero-return cash and no other costs. The no-trade policy has zero P&L and no fees. A lower squared-error record need not win the economic objective." />
 
-$$\sqrt{2\ln 200} = \sqrt{2 \times 5.298} = \sqrt{10.597} \approx 3.25.$$
+At zero fees this policy makes 400; at 50 basis points per leg, total fees are $8\times50=400$ USD and net is zero. This sensitivity is arithmetic for the specified trades, not evidence that a real policy’s fills or forecasts survive a cost regime change. A policy threshold, leverage limit or holding rule would define a different trading experiment and must also be selected without final-test leakage.
 
-So the best of 200 must clear **≈ 3.25 per-trial standard deviations** just to match
-random luck. If each config's validation Sharpe has standard deviation $\sigma = 0.4$
-under the null, your winner needs to exceed $3.25 \times 0.4 = 1.30$ Sharpe **before
-you have any evidence of real skill at all** — and even then you've only matched the
-expected fluke, not beaten it.
+### When to compare model families
 
-Compare the cost of curiosity:
+For a prediction claim, compare the same target and as-of data using the same metric. For a trading claim, specify position rules, universe, cash/funding, costs, capacity, constraints and terminal treatment. Include no-trade and relevant simple or linear baselines, then justified tree and deep alternatives with disclosed tuning resources. Report uncertainty of **paired differences** on shared evaluation periods rather than treating every row as a new independent win.
 
-| Trials $N$ | $\sqrt{2\ln N}$ hurdle | Min Sharpe to beat luck ($\sigma=0.4$) |
-|---|---|---|
-| 1 | 0.00 | 0.00 |
-| 10 | 2.15 | 0.86 |
-| 50 | 2.80 | 1.12 |
-| 200 | 3.25 | 1.30 |
-| 1,000 | 3.72 | 1.49 |
+The [2022 tabular benchmark](https://papers.nips.cc/paper_files/paper/2022/hash/0378c7692da36807bdec87ab043cdadc-Abstract.html) found strong tree performance on its selected tasks; the [2023 study](https://proceedings.nips.cc/paper_files/paper/2023/file/f06d5ebd4ff40b40dd97e30cee632123-Paper-Datasets_and_Benchmarks.pdf) found that tuning and dataset properties often matter as much as the model-family distinction. Those are benchmark-specific results, not a universal finance ranking. Sequence or text structure motivates testing an architecture, not declaring it the winner. Sparse text features with a simple fitted model are also legitimate baselines when they answer the same task.
 
-<DeflatedSharpe
-  client:visible
-  title="Observed Sharpe vs the multiple-testing hurdle vs the deflated value"
-  caption="As trials grow, the luck hurdle (√(2 ln N)) rises. The deflated Sharpe is what's left after subtracting the expected best-under-the-null — often far below the headline."
+<FillBlank client:visible question="The forecast record is accurate but trading is costly." text="Four 100 USD gross profits give {{400|800|100}} USD. Eight 100 USD fees leave net {{−400|400|0}} USD." explanation="400−8×100=−400. Every period opens and fully closes; the fee base is the fixed entry notional on each leg." />
+
+## 6. Monitor a frozen procedure without inventing a diagnosis
+
+<MCQ client:visible pretest
+ question={"Mean live IC is below historical IC. Does that identify overfitting?"}
+ options={[{"text": "No; sampling uncertainty, implementation, costs and distribution change require separate investigation", "correct": true}, {"text": "Yes; any lower point estimate proves leakage"}, {"text": "Yes; any audited model must keep the same realised IC forever"}, {"text": "No; it proves historical and live distributions are equal"}]}
+ explanation={"A difference can flag an issue without identifying its cause. Dependence and the monitoring procedure matter."}
 />
 
-The compounding cruelty: DL's flexibility hits you **twice**. More
-hyperparameters multiply $N$ (raising the selection hurdle), *and* each individual
-model overfits harder than a linear one (so each per-trial Sharpe is noisier, i.e.,
-$\sigma$ is larger). Both terms in $\sigma\sqrt{2\ln N}$ go the wrong way at once.
+A live drop can flag a problem without identifying its cause. As a separate illustration, suppose a historical period estimates mean information coefficient (IC, a specified cross-sectional prediction/return correlation) at 0.040 and a later, disjoint period at 0.018. Assume each mean’s standard error is 0.015, the two estimates are independent and a normal approximation is suitable. These uncertainties are supplied for the example, not inferred from the point estimates.
 
-<Callout variant="warning" title="Your seed sweep is a hyperparameter sweep">
-A subtle trap: people insist they "only tried 8 architectures," then admit they ran
-each across 10 random seeds and kept the best seed too. That's $8 \times 10 = 80$
-trials, not 8 — and the hurdle is set by the *total* number of configurations you
-selected a maximum over, including seeds, learning rates, and every "let me just try
-one more thing." Log every run. The honest $N$ is almost always 3–10× what you
-remember.
-</Callout>
+The difference is $0.018-0.040=-0.022$, with assumed standard error $\sqrt{0.015^2+0.015^2}=0.0212132$. Its approximate 95% interval is
 
-### When to use it
+$$
+-0.022\pm1.96(0.0212132)=[-0.0635779,\ 0.0195779].
+$$
 
-Deflate whenever you've *selected* a model by comparing many — which, with DL, is
-always. Trade-off: aggressive deflation can reject a genuinely-good model that simply
-got an unlucky validation draw, so the cure is fewer, pre-registered trials, not
-post-hoc forgiveness. Decide your architecture family and search budget *before* you
-peek at validation results, and count every run honestly.
+<div id="monitoring-uncertainty-example" className="scroll-mt-24" />
 
-<FillBlank
-  client:visible
-  question="Complete the multiple-testing reasoning for an architecture search."
-  text="Under the null of zero skill, the expected best of N trials grows like {{√(2 ln N)|√(2N)|ln(2N)}} per-trial standard deviations, so for N = 200 the hurdle is about {{3.25|1.30|0.40}} — and DL inflates this because its huge hyperparameter space makes {{N explode while each model also overfits harder|the data set larger|the Sharpe more stable}}."
-  explanation="The √(2 ln N) hurdle for N=200 is ≈3.25; DL multiplies N (more hyperparameters and seeds) AND raises per-trial noise (more overfitting), so both factors of σ√(2 ln N) worsen together."
-/>
+<TemporalModelAudit client:visible mode="monitor" title="A live difference with assumed uncertainty" caption="Invented disjoint-period mean IC estimates 0.040 and 0.018. The selected standard error applies to each estimate; independence and a normal approximation are assumed. Bars show the difference and interval endpoints. Shared dates or other dependence would require covariance in the error calculation; the interval alone does not identify a cause or a sequential decision rule." />
 
-## Does deep learning actually beat gradient boosting?
+That interval includes zero under these assumptions. It does not establish equality, rule out economic harm or diagnose leakage, overfitting or a changed market mechanism. If estimates share dates, names or fitted models, the covariance belongs in the difference’s uncertainty. Real IC series may require dependence-aware methods; repeatedly checking many dates adds a sequential-selection problem.
 
-<MCQ
-  client:visible
-  pretest
-  question="On low-signal, predominantly tabular financial features (factor exposures, ratios, lagged returns), what does the honest empirical evidence say?"
-  options={[
-    { text: "Gradient-boosted trees (XGBoost/LightGBM) usually win — fewer params, native categoricals, robust, fast to tune", correct: true },
-    { text: "Deep nets always dominate once you add enough layers" },
-    { text: "It's a coin flip with no systematic pattern" },
-    { text: "Linear regression beats both in every setting" },
-  ]}
-  explanation="On low-SNR tabular data, GBMs are the consistent empirical winner. DL earns its keep on structured, high-SNR, or representation-learning problems — not on a spreadsheet of factor ratios."
-/>
+A prospective evaluation specifies a training and refit schedule, inner validation choices and a final evaluation window before inspecting its outcomes. A held-out loss can be due to chance, costs, implementation or distribution change even after a careful audit. Conversely, a passing score does not prove a stable mechanism.
 
-Time for the uncomfortable family dinner. You spent this whole course learning deep
-architectures, and the honest punchline is: **on low-signal tabular finance,
-gradient-boosted trees usually beat them.** This isn't heresy; it's the repeated
-finding across tabular-ML benchmarks and most quant desks.
+### When to investigate or change a model
 
-The analogy: a transformer is a **Formula 1 car**, and tabular factor data is a
-**gravel farm road**. The F1 car is genuinely superior — on a track. Off the track,
-the pickup truck (a gradient-boosted tree) gets there faster, cheaper, and without
-breaking an axle on the first pothole.
+Use predeclared operational and risk limits, data-quality checks and a documented response. Paper trading can expose timing and pipeline failures, but simulated orders do not demonstrate actual queue fills, market impact or funding availability. A chosen IC level or decline is not a universal kill threshold. If outcomes lead you to revise the model or limits, evaluate that revised procedure on new information; do not relabel the data used to choose it as untouched validation.
 
-**Definition.** Gradient boosting builds an *additive* ensemble of shallow decision
-trees, each fit to the gradient of the loss left by the previous trees:
-$F_m(x) = F_{m-1}(x) + \eta\, h_m(x)$, where $h_m$ targets the residual gradient and
-$\eta$ is the learning rate. Trees are scale-invariant, handle missing values and
-categoricals natively, need no normalization, and tune in minutes.
+<ThinkReveal client:visible prompt="What does a paper-trading pass fail to demonstrate?" hint="Distinguish pipeline operation from an actual order in a queue." text="It can test timing and data processing, but simulated orders do not establish achievable fills, impact, financing or future profitability. Those assumptions still need evidence." />
 
-| Dimension | Gradient-boosted trees | Deep learning |
-|---|---|---|
-| **Data size needed** | Works on small/medium tabular sets | Hungry — wants large or pooled cross-sections |
-| **Signal-to-noise fit** | Excels at low SNR (shallow, regularized) | Shines at high SNR; overfits low SNR |
-| **Structure exploited** | None assumed — pure tabular | Sequence, spatial, graph, attention structure |
-| **Categoricals / missing** | Native | Needs embeddings / imputation |
-| **Interpretability** | High (SHAP, gain importance) | Low (black box, post-hoc only) |
-| **Tuning cost** | Low — minutes, few knobs | High — huge space, slow, seed-sensitive |
-| **Multiple-testing risk** | Moderate (smaller search space) | Severe (N explodes) |
-| **Where it wins** | Low-signal tabular factor data | LOB microstructure, huge pooled panels, alt-data/text |
+## Connect the experiment
 
-So when *does* deep learning earn its salary? Three honest cases:
+<MindMap client:visible title="The experiment includes the choices" root={{"label": "An evaluated procedure", "children": [{"label": "Information", "children": [{"label": "Specify statistic and covariance"}, {"label": "Individual variance defines mean-equivalent N"}, {"label": "Dependence and distribution shift differ"}]}, {"label": "Time boundary", "children": [{"label": "Feature time and label availability"}, {"label": "Freeze every learned stage"}, {"label": "No future rows to subtract twice"}]}, {"label": "Regularisation", "children": [{"label": "Bias variance and future noise"}, {"label": "Seed errors may remain correlated"}, {"label": "Validation choices are selection"}]}, {"label": "Search", "children": [{"label": "Raw count differs from independent trials"}, {"label": "PSR threshold versus search-adjusted DSR"}, {"label": "DSR is not family error control or skill probability"}]}, {"label": "Economics", "children": [{"label": "Predictive loss has its own units"}, {"label": "Position exit fee and cash ledger"}, {"label": "Compare relevant baselines and paired outcomes"}]}, {"label": "Monitoring", "children": [{"label": "Dependence-aware uncertainty"}, {"label": "A gap does not identify its cause"}, {"label": "Paper fills do not establish execution"}]}]}} />
 
-1. **Structured, high-SNR data — LOB microstructure (callback to Lesson 4).** Order-book
-   snapshots have spatial/sequential structure and far more events than daily bars; a
-   TCN or attention model can read the shape of the book in a way trees can't.
-2. **Very large pooled cross-sections.** When you pool thousands of names across
-   decades, effective sample size climbs and a shared deep model can learn
-   cross-sectional structure a per-name tree ensemble misses.
-3. **Representation learning for alt-data and text (callback to Lesson 5).** Turning
-   filings, news, or transcripts into features, or learning ticker/sector embeddings,
-   is squarely DL's home turf — there *is* no good tabular baseline for raw text.
-
-<Callout variant="warning" title="Make GBM the mandatory baseline — no exceptions">
-Before you report a single deep-net result, you must beat a *tuned* gradient-boosting
-baseline on the *same* purged, embargoed splits. If your transformer can't clear a
-LightGBM that trained in 90 seconds, you don't have a deep-learning result — you have
-an expensive way of underperforming a baseline. "We didn't run the baseline" is the
-quant equivalent of marking your own homework.
-</Callout>
-
-### When to use it
-
-Reach for GBM by default on tabular factor data; reach for DL when the data has
-*structure* (sequence/spatial/graph), when SNR and sample size are genuinely high
-(microstructure, huge panels), or when the task is representation learning over
-unstructured inputs (text, embeddings). Trade-off: DL buys you flexibility and
-representation power at the cost of data hunger, tuning expense, opacity, and a far
-nastier multiple-testing bill — pay it only when the structure of the problem
-actually rewards it.
-
-<MCQ
-  client:visible
-  allowMultiple
-  question="Select every situation where deep learning is genuinely a defensible choice over gradient-boosted trees."
-  options={[
-    { text: "Limit-order-book microstructure with rich sequential/spatial structure and abundant events", correct: true },
-    { text: "Very large pooled cross-sections where effective sample size is high", correct: true },
-    { text: "Representation learning over raw text, filings, or learned ticker embeddings", correct: true },
-    { text: "A few thousand rows of monthly factor ratios with IC near 0.03" },
-    { text: "A small tabular dataset where you mainly want SHAP interpretability" },
-  ]}
-  explanation="DL is justified on structured high-SNR data (LOB), large pooled panels, and representation learning. On small low-signal tabular factor data — and when interpretability matters — gradient boosting wins."
-/>
-
-## A deployment discipline checklist
-
-<MCQ
-  client:visible
-  pretest
-  question="Your deep net cleared a tuned GBM baseline on purged, embargoed splits and survived deflation. What's the correct NEXT step before risking capital?"
-  options={[
-    { text: "Paper-trade it live and monitor realized IC against the backtest, with a pre-set kill-switch armed", correct: true },
-    { text: "Deploy at full size immediately — the backtest was rigorous enough" },
-    { text: "Re-tune on the locked test set to squeeze out a bit more Sharpe" },
-    { text: "Skip paper trading; live data is just more backtest" },
-  ]}
-  explanation="A clean backtest earns a paper-trading trial, not full capital. Monitor live IC vs backtest, keep the kill-switch armed, and size up only after the live signal confirms. Re-tuning on the locked test set destroys it."
-/>
-
-Echoing the deployment lesson from *Machine Learning for Alpha*, now wearing a
-deep-net hat. The discipline is identical because the failure mode is identical: a
-model that dazzled on history and disappoints on tomorrow. Run the checklist in order,
-top to bottom, and don't skip a rung because you're excited.
-
-1. **Baseline first.** A tuned GBM (and a linear model) on the same purged splits. The
-   deep net must *beat* them, not merely *exist*.
-2. **Lock a test set you touch once.** One look, ever. The moment you re-tune on it,
-   it becomes another training fold and stops being evidence — and DL's giant search
-   space makes this temptation overwhelming.
-3. **Paper-trade.** Run live with no capital. This catches the leaks a backtest can't:
-   data-timing bugs, look-ahead in feature computation, and the gap between assumed and
-   realized fills.
-4. **Monitor live IC vs backtest.** Track realized information coefficient and Sharpe
-   against backtest expectations. A live IC running well below backtest is your early
-   warning that the edge was partly (or wholly) overfit.
-5. **Pre-set the kill-switch.** Decide *in advance* the drawdown, live-IC, or
-   slippage threshold that pulls the plug. Setting it after losses start is just hope
-   with extra steps.
-6. **Retrain walk-forward as signal decays.** Edges erode; non-stationarity is the
-   house rule of markets. Refit on a rolling window, but balance retrain frequency
-   against transaction costs — every retrain that flips positions pays the spread.
-
-<SignalDecay
-  client:visible
-  title="IC decays with holding horizon — and trading faster costs more"
-  caption="A signal's information coefficient fades as the holding period stretches, while trading it faster to capture the fresh edge ramps up transaction costs. The optimal horizon balances the two."
-/>
-
-### Worked example — when does decay justify a retrain?
-
-Your live IC was 0.040 at deployment. After eight weeks of paper trading it has
-drifted to 0.018 — a 55% decay — while backtest IC over the same span was 0.038. The
-live-vs-backtest gap ($0.018$ vs $0.038$) is wide and persistent, not a one-week blip.
-The disciplined response: the gap *itself* is a kill-switch trigger; halt scaling,
-investigate for leakage or regime change, and only retrain walk-forward if a fresh,
-purged refit clears the deflated-Sharpe hurdle again. Decaying signal is normal;
-**a live IC that's half the backtest is a red flag that the backtest was optimistic.**
-
-<Callout variant="warning" title="The locked test set is locked — say it again">
-With a tiny effective sample and a huge DL search space, the single most expensive
-mistake is peeking at the locked test set "just to check" and then nudging a
-hyperparameter. You have now trained on it. There is no undo. Every glance at held-out
-data spends a piece of its evidentiary value; spend it once, at the very end, and
-report whatever it says — even if it says "no."
-</Callout>
-
-### When to use it
-
-This checklist is mandatory for *any* model going to capital, deep or not — but the
-discipline tightens for DL because the search space and overfitting capacity are
-larger. Trade-off: paper trading and walk-forward retraining cost calendar time and
-compute, delaying go-live. That delay is a feature: it's the window in which an overfit
-model reveals itself harmlessly, before it can lose real money.
-
-<Reveal client:visible>
-<details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
-<summary className="cursor-pointer font-medium">Your deep net beats the GBM baseline in the backtest but its live IC is half the backtest IC after a month of paper trading. What's the most likely diagnosis and the disciplined response?</summary>
-
-**Answer.** The most likely culprit is residual overfitting or a subtle leak the
-backtest didn't catch — a scaler fit on full data, an embedding learned over the whole
-history, batch stats spanning the seam, or selection bias from an undeflated search.
-The disciplined response is *not* to re-tune on live data and *not* to "give it more
-time" past your pre-set threshold. It's to treat the live-vs-backtest gap as a
-kill-switch signal: halt scaling, audit the pipeline for leakage, recount your true
-trial budget $N$ and re-deflate, and resume only if a fresh purged + embargoed refit
-clears the hurdle. Sometimes the honest conclusion is that there was never an edge —
-ship that conclusion too.
-
-</details>
-</Reveal>
-
-## Recap
-
-You now have the deep-learning self-defense kit: regularize as if your effective
-sample is tiny (it is), evaluate with purge + embargo while plugging the extra DL leak
-channels, deflate the winner of a sprawling architecture search by its true trial
-count, make gradient boosting the baseline you must beat, and ship only through a
-locked test set, paper trading, live-IC monitoring, and an armed kill-switch.
-
-<MindMap
-  client:visible
-  title="Training & evaluating DL without fooling yourself"
-  caption="Five disciplines that turn deep architectures from footguns into scalpels."
-  root={{
-    label: "Honest DL in finance",
-    children: [
+<Quiz client:visible title="Audit the claim and its evidence" questions={[
+  {
+    "question": "In the supplied date-shock model, why is mean variance 0.0105 rather than 0.001?",
+    "options": [
       {
-        label: "Regularize for a tiny sample",
-        children: [
-          { label: "Dropout, L2, early stop on purged val" },
-          { label: "Noise/block-bootstrap/mixup, ensembling" },
-          { label: "Just use small models" },
-        ],
+        "text": "One shared date shock remains in each date average; individual variance 2 is not enough to justify IID rows",
+        "correct": true
       },
       {
-        label: "Purged + embargoed evaluation",
-        children: [
-          { label: "Purge label overlap; embargo the band after" },
-          { label: "Extra DL leaks: scalers, batch stats, embeddings, shuffling" },
-          { label: "Walk-forward retraining" },
-        ],
+        "text": "The neural network has exactly190 parameters"
       },
       {
-        label: "Deflate the architecture search",
-        children: [
-          { label: "Every config + seed is a trial" },
-          { label: "Hurdle ≈ σ·√(2 ln N)" },
-          { label: "DL inflates N and per-trial overfit at once" },
-        ],
+        "text": "Every observation has variance 0.0105 regardless of units"
       },
       {
-        label: "Beat the GBM baseline",
-        children: [
-          { label: "Trees usually win on low-signal tabular data" },
-          { label: "DL wins on LOB, huge panels, text/embeddings" },
-        ],
-      },
-      {
-        label: "Deployment discipline",
-        children: [
-          { label: "Lock test set, paper-trade, monitor live IC" },
-          { label: "Pre-set kill-switch; retrain as signal decays" },
-        ],
-      },
+        "text": "Twenty names make all date shocks independent"
+      }
     ],
-  }}
-/>
-
-<Quiz
-  client:visible
-  title="Don't fool yourself — the capstone check"
-  questions={[
-    {
-      question: "After adding dropout, weight decay, and a seed ensemble, your GRU's in-sample Sharpe drops from 3.1 to 1.05 while out-of-sample rises from 0.15 to 0.78. How should you read this?",
-      options: [
-        { text: "Regularization worked — it cut the overfitting tax, and the only number that pays rent (out-of-sample) quadrupled", correct: true },
-        { text: "Regularization broke the model — the in-sample Sharpe collapsing is bad" },
-        { text: "The original unregularized model was better because its in-sample Sharpe was higher" },
-        { text: "Sharpe ratios are unreliable, so the comparison is meaningless" },
-      ],
-      explanation: "A shrinking in-sample number alongside a rising out-of-sample number is exactly the goal: you traded memorized noise for a smaller, more honest gap.",
-    },
-    {
-      question: "Which is a DL-SPECIFIC leakage channel that a plain ridge regression on the same purged splits wouldn't have?",
-      options: [
-        { text: "An embedding table learned over the entire history before splitting", correct: true },
-        { text: "Dropping training rows whose label window overlaps the test span" },
-        { text: "Reporting an annualized Sharpe ratio" },
-        { text: "Using a 5-day embargo after the test block" },
-      ],
-      explanation: "Embeddings (plus full-data scalers, batch-norm stats, and cross-seam shuffling) are extra leak channels deep pipelines add on top of the label-overlap leak; purge and embargo are the cure, not the leak.",
-    },
-    {
-      question: "You searched 200 configs (counting seeds). With per-trial Sharpe SD of 0.4 under the null, roughly what must the winner exceed just to match luck?",
-      options: [
-        { text: "About 1.30, since √(2 ln 200) ≈ 3.25 and 3.25 × 0.4 ≈ 1.30", correct: true },
-        { text: "About 0.40, the per-trial SD, regardless of N" },
-        { text: "About 3.25, the raw hurdle multiplier, with no scaling by SD" },
-        { text: "Zero — the number of trials doesn't affect the hurdle" },
-      ],
-      explanation: "The hurdle is σ·√(2 ln N) = 0.4 × 3.25 ≈ 1.30. Beating luck means clearing the expected best-of-N under the null, not just a positive Sharpe.",
-    },
-    {
-      question: "On a few thousand rows of monthly factor ratios with IC near 0.03, which model is the defensible default and why?",
-      options: [
-        { text: "Gradient-boosted trees — fewer params, native categoricals, robust on low-signal tabular data, and fast to tune", correct: true },
-        { text: "A deep transformer, because attention always extracts more signal" },
-        { text: "Whichever has the higher in-sample Sharpe" },
-        { text: "An unregularized MLP, to give it maximum capacity" },
-      ],
-      explanation: "On low-signal tabular finance, GBMs usually win and are the mandatory baseline. DL earns its keep on structured high-SNR data, huge pooled panels, and representation learning over text.",
-    },
-    {
-      question: "Your model beat the GBM baseline and survived deflation, but live IC after a month of paper trading is half the backtest IC. What's the disciplined move?",
-      options: [
-        { text: "Treat the gap as a kill-switch signal: halt scaling, audit for leakage, recount N and re-deflate, and resume only if a fresh purged refit clears the hurdle", correct: true },
-        { text: "Re-tune hyperparameters on the locked test set to recover the lost edge" },
-        { text: "Deploy at full size; live data is just more backtest" },
-        { text: "Ignore it — a 50% live-vs-backtest gap is normal noise" },
-      ],
-      explanation: "A persistent live-vs-backtest gap signals overfitting or leakage. The discipline is to stop, investigate, and re-validate honestly — never to re-tune on the locked test set, which destroys it.",
-    },
-  ]}
-/>
+    "explanation": "Var(mean)=1/100+1/(100×20). Matching to2/N gives about 190.476 for this estimator."
+  },
+  {
+    "question": "Candidate anchors 1–12, labels(t,t+2], frozen at close 12: which are eligible for training?",
+    "options": [
+      {
+        "text": "1–10, because their labels end by 12",
+        "correct": true
+      },
+      {
+        "text": "1–11, using horizon minus one without the availability rule"
+      },
+      {
+        "text": "1–12, because all features are historical"
+      },
+      {
+        "text": "1–8, subtracting a post-test embargo from absent future rows"
+      }
+    ],
+    "explanation": "Availability is t+2≤12. A future-side buffer cannot subtract rows never in this training set."
+  },
+  {
+    "question": "The toy squared-error risk is4(a −1)²+4a²+1. Which values at a 1,a 0.5,a 0 follow?",
+    "options": [
+      {
+        "text": "5,3,5; partial shrinkage helps this specified population",
+        "correct": true
+      },
+      {
+        "text": "5,1,0; all shrinkage removes irreducible noise"
+      },
+      {
+        "text": "4,2,0; bias must stay zero under shrinkage"
+      },
+      {
+        "text": "5,3,1; the zero predictor equals the true mean 2"
+      }
+    ],
+    "explanation": "At.5 the squared bias and estimator variance are1 each, plus noise 1. At0 squared bias is4."
+  },
+  {
+    "question": "Five estimators have equal error variance and common correlation 0.8. Which claim is justified?",
+    "options": [
+      {
+        "text": "Their mean retains84 % of one-estimator error variance under this model",
+        "correct": true
+      },
+      {
+        "text": "Five random seeds supply five independent new market histories"
+      },
+      {
+        "text": "The mean has 20 % of variance regardless of correlation"
+      },
+      {
+        "text": "Any ensemble necessarily increases net trading profit"
+      }
+    ],
+    "explanation": "rho+(1−rho)/K=.84. Error covariance, bias and trading decisions are separate questions."
+  },
+  {
+    "question": "Select two correct distinctions about model selection.",
+    "options": [
+      {
+        "text": "The probability1−.975^20 is a family event under the stipulated independent null tests",
+        "correct": true
+      },
+      {
+        "text": "A search benchmark must be derived from a trial model before the illustrated PSR calculation is called DSR",
+        "correct": true
+      },
+      {
+        "text": "Subtracting sigma sqrt(2lnN) from Sharpe is the DSR statistic itself"
+      },
+      {
+        "text": "T in the Sharpe reference statistic counts candidate architectures"
+      }
+    ],
+    "explanation": "Return sample length, candidate dependence, expected maximum and calibrated significance are different objects.",
+    "allowMultiple": true
+  },
+  {
+    "question": "The accurate forecast record has MSE 0.01 pp², gross400 USD and eight fees 100 USD each. What does a trading comparison say?",
+    "options": [
+      {
+        "text": "Net−400 USD versus cash0, despite the lower forecast error",
+        "correct": true
+      },
+      {
+        "text": "Net400 USD because accurate direction eliminates costs"
+      },
+      {
+        "text": "Cash baseline must be assigned the same800 USD fees despite no trades"
+      },
+      {
+        "text": "A four-observation record proves a stable future gross edge"
+      }
+    ],
+    "explanation": "All eight legs are charged on the stated entry-notional base. Forecast accuracy does not pay those fees."
+  },
+  {
+    "question": "Historical/live meanIC0.04/0.018 have independent assumedSE0.015 each. What does the interval for their difference establish?",
+    "options": [
+      {
+        "text": "It describes uncertainty under the model; it does not identify why performance changed",
+        "correct": true
+      },
+      {
+        "text": "A negative point difference proves leakage even though the interval includes zero"
+      },
+      {
+        "text": "An interval containing zero proves the two market mechanisms are identical"
+      },
+      {
+        "text": "It supplies a universal sequential kill threshold for every strategy"
+      }
+    ],
+    "explanation": "The assumed differenceSE is sqrt2×.015. Covariance and repeated monitoring require separate treatment."
+  }
+]} />
