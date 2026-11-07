@@ -1092,3 +1092,6 @@ export type { AttributionSector, AllocationConvention, AttributionConvention, Fl
 
 export { gbmExactStep, gbmMoments, gbmCoupledSteps, simulateGbmPaths, gbmMeasureComparison, gbmCalibration, gbmDriftStandardError, GbmEngineLab } from '@/components/react/GbmEngineLab';
 export type { GbmInputs, GbmEngineLabels, GbmEngineLabProps } from '@/components/react/GbmEngineLab';
+
+export { calculatePutCallPayoffs, calculatePutCallParity, calculateIdealParityBudget, calculateDividendParity, calculateExecutablePutCallBudget, inferPutCallFunding, calculateEuropeanBox, calculateAmericanParityBounds, PutCallFundingLab } from '@/components/react/PutCallFundingLab';
+export type { ParityBudgetDirection, IdealParityBudgetInputs, KnownParityDividend, ExecutablePutCallInputs, ImpliedFundingStatus, EuropeanBoxDirection, EuropeanBoxInputs, PutCallFundingView, PutCallFundingLabels, PutCallFundingLabProps } from '@/components/react/PutCallFundingLab';
