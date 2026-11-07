@@ -1083,3 +1083,6 @@ export type { BarrierMonitoring, BarrierPathNode, MonitoringPathLabels, BarrierM
 
 export { europeanImpliedPriceBounds, solveEuropeanImpliedVolatility, traceEuropeanImpliedSearch, europeanImpliedQuoteRange, evaluateThreeStrikeSmile, compareImpliedAndRealizedVariance, ImpliedVolatilityLab } from '@/components/react/ImpliedVolatilityLab';
 export type { EuropeanOptionSide, ImpliedVolatilityModel, ImpliedVolatilityStatus, ImpliedVolatilityResult, ImpliedSearchRow, ImpliedSearchStop, ImpliedVolatilityView, ImpliedVolatilityLabProps } from '@/components/react/ImpliedVolatilityLab';
+
+export { squareRootImpact, cumulativeImpactCost, impactSegmentCost, signedExecutionCost, illustrativeImpactDecay, rateImpactCost, impactCapacity, ImpactCostLab } from '@/components/react/ImpactCostLab';
+export type { ImpactCostMode, ImpactCostLabels, ImpactCostLabProps } from '@/components/react/ImpactCostLab';
