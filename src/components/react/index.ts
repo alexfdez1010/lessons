@@ -1086,3 +1086,6 @@ export type { EuropeanOptionSide, ImpliedVolatilityModel, ImpliedVolatilityStatu
 
 export { squareRootImpact, cumulativeImpactCost, impactSegmentCost, signedExecutionCost, illustrativeImpactDecay, rateImpactCost, impactCapacity, ImpactCostLab } from '@/components/react/ImpactCostLab';
 export type { ImpactCostMode, ImpactCostLabels, ImpactCostLabProps } from '@/components/react/ImpactCostLab';
+
+export { brinsonEffects, twoSectorAttribution, cashAndFeeAttribution, brinsonFlowAccount, linkedBrinsonAttribution, BrinsonAttributionLab } from '@/components/react/BrinsonAttributionLab';
+export type { AttributionSector, AllocationConvention, AttributionConvention, FlowAllocation, LinkIdentity, BrinsonLabMode, BrinsonLabLabels, BrinsonAttributionLabProps } from '@/components/react/BrinsonAttributionLab';
