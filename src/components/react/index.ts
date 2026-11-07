@@ -984,3 +984,6 @@ export type { CalendarSpreadInputs, CalendarSpreadLedgerProps, CalendarMarginPat
 
 export { calculateQueueFill, QueueFillAllocation, calculateLimitOrderDecision, LimitOrderScenarioBook } from '@/components/react/LimitOrderDecision';
 export type { QueueFillInputs, QueueFillAllocationProps, LimitOrderDecisionInputs, LimitOrderScenarioBookProps } from '@/components/react/LimitOrderDecision';
+
+export { calculateParetoTail, ParetoTailMean } from '@/components/react/ParetoTailMean';
+export type { ParetoTailInputs, ParetoTailMeanProps } from '@/components/react/ParetoTailMean';
