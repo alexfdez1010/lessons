@@ -85,8 +85,11 @@ export function PresentValueDecay({
   const maxV = futureValue;
   const minV = 0;
 
-  const x = (year: number) => padX + (year / span) * (W - padX * 2);
-  const y = (v: number) => padY + (1 - (v - minV) / (maxV - minV)) * (H - padY * 2);
+  // Quantise render coordinates only so server and browser math-library rounding
+  // cannot produce different SVG attributes. Financial values retain precision.
+  const coordinate = (value: number) => Number(value.toFixed(3));
+  const x = (year: number) => coordinate(padX + (year / span) * (W - padX * 2));
+  const y = (v: number) => coordinate(padY + (1 - (v - minV) / (maxV - minV)) * (H - padY * 2));
 
   const pvAt = (year: number) => futureValue / Math.pow(1 + rateState, year);
   const presentValue = pvAt(yearsState);
@@ -182,7 +185,7 @@ export function PresentValueDecay({
             step={1}
             value={ratePct}
             onChange={(e) => setRateState(Number(e.target.value) / 100)}
-            className="mt-2 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
+            className="mt-2 h-8 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
           />
         </div>
         <div>
@@ -201,7 +204,7 @@ export function PresentValueDecay({
             step={1}
             value={yearsState}
             onChange={(e) => setYearsState(Number(e.target.value))}
-            className="mt-2 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
+            className="mt-2 h-8 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
           />
         </div>
       </div>

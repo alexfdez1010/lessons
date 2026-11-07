@@ -975,3 +975,6 @@ export type { PredictionPositionInputs, PredictionPositionRiskProps, JointBinary
 
 export { meanErrorBudget, efficiencyMoments, simulateEfficiency, MonteCarloEfficiency } from '@/components/react/MonteCarloEfficiency';
 export type { EfficiencyToy, EfficiencyInputs, EfficiencySummary, MonteCarloEfficiencyProps } from '@/components/react/MonteCarloEfficiency';
+
+export { calculateEnterpriseEquity, EnterpriseEquityBridge, calculateSubsidiaryOwnership, SubsidiaryOwnershipBridge, calculateOptionExercise, OptionExerciseBridge } from '@/components/react/EnterpriseEquityBridge';
+export type { EnterpriseEquityInputs, EquityBridgeField, EnterpriseEquityBridgeProps, SubsidiaryOwnershipInputs, SubsidiaryOwnershipBridgeProps, OptionExerciseInputs, OptionExerciseBridgeProps } from '@/components/react/EnterpriseEquityBridge';
