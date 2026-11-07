@@ -1017,3 +1017,6 @@ export type { LeveragedJumpBudgetProps } from '@/components/react/LeveragedJumpB
 
 export { calculateInputSensitivity, calculateMeanInformation, rankExampleRows, calculateSampleInformation, calculateFrozenHoldout, EstimationSensitivityLab } from '@/components/react/EstimationSensitivityLab';
 export type { SensitivityInputs, EstimationSensitivityLabels, EstimationSensitivityLabProps } from '@/components/react/EstimationSensitivityLab';
+
+export { concentratedAmounts, calculateConcentratedPosition, ConcentratedInventoryExplorer, calculateRangeDeposit, RangeDepositBudget, calculateRangeFeePath, RangeFeePathLedger, calculateRangeRecenter, RangeRecenterComparison } from '@/components/react/ConcentratedRangeRisk';
+export type { ConcentratedPositionInputs, ConcentratedInventoryExplorerProps, RangeDepositInputs, RangeDepositBudgetProps, RangeFeePathInputs, RangeFeePathLedgerProps, RangeRecenterInputs, RangeRecenterComparisonProps } from '@/components/react/ConcentratedRangeRisk';
