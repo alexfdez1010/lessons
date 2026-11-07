@@ -1080,3 +1080,6 @@ export type { RealIndexedPriceInputs, InflationBreakevenInputs, InflationLinkedL
 
 export { BARRIER_PATHS, validateBarrierPath, downBarrierEvent, barrierCashLedger, gbmDownBridgeProbability, terminalUpOutCall, gapExitLedger, BarrierMonitoringPaths, BarrierParityCashLedger, BarrierTerminalBoundary, BarrierGapExecution, BarrierBridgeProbability } from '@/components/react/BarrierMonitoringLab';
 export type { BarrierMonitoring, BarrierPathNode, MonitoringPathLabels, BarrierMonitoringPathsProps, ParityCashLabels, BarrierParityCashLedgerProps, TerminalBoundaryLabels, BarrierTerminalBoundaryProps, GapExecutionLabels, BarrierGapExecutionProps, BridgeProbabilityLabels, BarrierBridgeProbabilityProps } from '@/components/react/BarrierMonitoringLab';
+
+export { europeanImpliedPriceBounds, solveEuropeanImpliedVolatility, traceEuropeanImpliedSearch, europeanImpliedQuoteRange, evaluateThreeStrikeSmile, compareImpliedAndRealizedVariance, ImpliedVolatilityLab } from '@/components/react/ImpliedVolatilityLab';
+export type { EuropeanOptionSide, ImpliedVolatilityModel, ImpliedVolatilityStatus, ImpliedVolatilityResult, ImpliedSearchRow, ImpliedSearchStop, ImpliedVolatilityView, ImpliedVolatilityLabProps } from '@/components/react/ImpliedVolatilityLab';
