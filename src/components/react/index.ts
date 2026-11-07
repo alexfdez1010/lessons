@@ -1122,3 +1122,13 @@ export type { InsuranceRiskMode, InsuranceRiskLabels, InsuranceRiskLabProps } fr
 
 export { capitalWaterfall, safeRecapitalisation, riskyCapitalReturns, financingSources, cashOpportunity, financingReplica, noTaxCapitalCost, currentInterestShield, datedCapitalShields, adjustedCapitalValue, matchedPerpetualWacc, discreteCapitalTradeoff, constrainedCorporateFunding, issuePriceTransfer, capitalTargetAdjustment, incentivePayoffs, assertCorporateNativeInputs, CorporateCapitalLab } from '@/components/react/CorporateCapitalLab';
 export type { CorporateCapitalLabels, CorporateCapitalInputs, CorporateCapitalView } from '@/components/react/CorporateCapitalLab';
+
+
+export { calculateLifetimeSpending, calculateLifetimeBalance, calculateLifetimeLiquidity, calculateDefinedPaymentRight, calculateContributionAccount, calculateIndexedIncome, calculateAccountClaimConversion, LifetimePlanLab } from '@/components/react/LifetimePlanLab';
+export type { LifetimePlanView, LifetimePlanInputs, LifetimePlanLabels, LifetimePlanLabProps } from '@/components/react/LifetimePlanLab';
+
+export { calculateRetirementWithdrawalPath, calculateRetirementPercentagePolicy, fulfillRetirementNetWithdrawal, calculateRetirementRealFeeFactor, calculateRetirementScenario, valueRetirementDatedCash, RetirementDrawdownLab } from '@/components/react/RetirementDrawdownLab';
+export type { RetirementWithdrawalInputs, RetirementScenarioInputs, RetirementDrawdownView, RetirementDrawdownInputs, RetirementDrawdownLabels, RetirementDrawdownLabProps } from '@/components/react/RetirementDrawdownLab';
+
+export { calculateLongevitySurvival, valueLifeContingentPayments, valueCertainRetirementPayments, compareLongevityPaymentTerms, expectedLongevityTermsValue, LongevityIncomeLab } from '@/components/react/LongevityIncomeLab';
+export type { LongevityOutcome, LongevityIncomeView, LongevityIncomeInputs, LongevityIncomeLabels, LongevityIncomeLabProps } from '@/components/react/LongevityIncomeLab';
