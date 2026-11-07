@@ -999,3 +999,6 @@ export type { PredictivePathInputs, PredictivePathRiskProps } from '@/components
 
 export { absorbingChainMatrices, absorbingChainDistribution, AbsorbingReserveChain, AbsorbingMatrixWorkbench } from '@/components/react/AbsorbingChainLab';
 export type { Matrix2, AbsorptionStep, AbsorbingReserveChainProps, AbsorbingMatrixWorkbenchProps } from '@/components/react/AbsorbingChainLab';
+
+export { calculateRealExchange, RealExchangeRateBasket } from '@/components/react/RealExchangeRateBasket';
+export type { RealExchangeInputs, RealExchangeRateBasketProps } from '@/components/react/RealExchangeRateBasket';
