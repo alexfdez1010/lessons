@@ -1104,3 +1104,6 @@ export type { CashFlowMatchingLabels, CashFlowMatchingLabProps } from '@/compone
 
 export { tradeRewardLedger, penalisedReward, differentialSharpe, discountedRewards, shapedRewards, churnReward, RewardAccountingLab } from '@/components/react/RewardAccountingLab';
 export type { RewardLabMode, RewardAccountingLabels, RewardAccountingLabProps } from '@/components/react/RewardAccountingLab';
+
+export { calculateFuturesSettlementLedger, calculatePhysicalDeliveryBudget, calculateCashSettlementReference, calculateExpiryBasis, calculateFuturesRollBudget, classifyExpiryCalendar, SettlementDeliveryLab } from '@/components/react/SettlementDeliveryLab';
+export type { FuturesSettlementInputs, ExpiryCalendarInputs, SettlementDeliveryView, SettlementDeliveryLabels, SettlementDeliveryLabProps } from '@/components/react/SettlementDeliveryLab';
