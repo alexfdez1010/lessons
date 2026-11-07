@@ -981,3 +981,6 @@ export type { EnterpriseEquityInputs, EquityBridgeField, EnterpriseEquityBridgeP
 
 export { calendarSpreadProfit, CalendarSpreadLedger, spreadMarginStress, CalendarMarginPath, localCalendarResidual, CalendarBasisBridge, FuturesRollAccounting, CommodityReturnAttribution } from '@/components/react/CalendarSpreadLab';
 export type { CalendarSpreadInputs, CalendarSpreadLedgerProps, CalendarMarginPathProps, CalendarBasisBridgeProps, FuturesRollAccountingProps, CommodityReturnAttributionProps } from '@/components/react/CalendarSpreadLab';
+
+export { calculateQueueFill, QueueFillAllocation, calculateLimitOrderDecision, LimitOrderScenarioBook } from '@/components/react/LimitOrderDecision';
+export type { QueueFillInputs, QueueFillAllocationProps, LimitOrderDecisionInputs, LimitOrderScenarioBookProps } from '@/components/react/LimitOrderDecision';
