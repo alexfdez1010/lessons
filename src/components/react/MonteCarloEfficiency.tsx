@@ -1,0 +1,104 @@
+import { useId, useState } from 'react';
+import { cx } from '@/components/react/cx';
+export type EfficiencyToy = 'exp' | 'symmetric';
+export function meanErrorBudget(sd: number, count: number, fixedBias: number) {
+  if (!Number.isFinite(sd) || sd < 0 || sd > 1e9 || !Number.isSafeInteger(count) || count < 2 || count > 1e9 || !Number.isFinite(fixedBias) || Math.abs(fixedBias) > 1e9) throw new Error('MonteCarloEfficiency: provide a finite nonnegative standard deviation, integer count from 2 to 1e9 and finite fixed bias.');
+  const variance = sd * sd / count, standardError = Math.sqrt(variance), rmse = Math.hypot(standardError, fixedBias);
+  return { variance, standardError, bias: fixedBias, mse: variance + fixedBias * fixedBias, rmse };
+}
+export function efficiencyMoments(toy: EfficiencyToy) {
+  if (!['exp','symmetric'].includes(toy)) throw new Error('MonteCarloEfficiency: toy must be exp or symmetric.');
+  const mean = toy === 'exp' ? Math.E - 1 : 1 / 12;
+  const variance = toy === 'exp' ? Math.expm1(2) / 2 - mean * mean : 1 / 180;
+  const mirrorCovariance = toy === 'exp' ? Math.E - mean * mean : variance;
+  const controlCovariance = toy === 'exp' ? (3 - Math.E) / 2 : 0;
+  const optimalBeta = 12 * controlCovariance;
+  const optimalControlVariance = variance - 12 * controlCovariance * controlCovariance;
+  return { mean, variance, mirrorCovariance, pairCorrelation: mirrorCovariance / variance, controlCovariance, optimalBeta, optimalControlVariance };
+}
+export interface EfficiencyInputs { toy: EfficiencyToy; evaluations: number; beta: number; controlMean: number; seed: number }
+export interface EfficiencySummary { mean: number; sampleVariance: number; standardError: number; groups: number; evaluations: number; lower: number; upper: number; theoreticalSE: number; bias: number }
+function summarize(values: readonly number[], evaluations: number, theoreticalSE: number, bias: number): EfficiencySummary {
+  let mean = 0, sumSquares = 0;
+  values.forEach((value,j) => { const delta = value - mean; mean += delta / (j + 1); sumSquares += delta * (value - mean); });
+  const sampleVariance = sumSquares / (values.length - 1), standardError = Math.sqrt(Math.max(0,sampleVariance) / values.length);
+  return { mean, sampleVariance, standardError, groups: values.length, evaluations, lower: mean - 1.96 * standardError, upper: mean + 1.96 * standardError, theoreticalSE, bias };
+}
+/** Equal payoff-evaluation budget: N IID values versus N/2 independent mirrored
+ * pair means. The control U is already an input and has negligible extra cost in
+ * this toy. Methods share draws for a paired comparison; method estimates are
+ * not independent of each other. Replicates use reproducible separate seeds. */
+export function simulateEfficiency(i: EfficiencyInputs) {
+  const moments = efficiencyMoments(i.toy);
+  if (!Number.isInteger(i.evaluations) || i.evaluations < 50 || i.evaluations > 10000 || i.evaluations % 2 !== 0 || !Number.isFinite(i.beta) || Math.abs(i.beta) > 5 || !Number.isFinite(i.controlMean) || i.controlMean < 0 || i.controlMean > 1 || !Number.isInteger(i.seed) || i.seed < 0 || i.seed > 0xffffffff) throw new Error('MonteCarloEfficiency: use an even evaluation budget from 50 to 10000, beta within five, control mean from zero to one and a uint32 seed.');
+  let state = i.seed >>> 0;
+  const uniform = () => { state = (state + 0x6D2B79F5) >>> 0; let value = state; value = Math.imul(value ^ (value >>> 15),value | 1); value ^= value + Math.imul(value ^ (value >>> 7),value | 61); return ((value ^ (value >>> 14)) >>> 0) / 4294967296; };
+  const payoff = (u: number) => i.toy === 'exp' ? Math.exp(u) : (u - .5) ** 2;
+  const plain: number[] = [], paired: number[] = [], controlled: number[] = [];
+  for (let j = 0; j < i.evaluations; j++) { const u = uniform(), y = payoff(u); plain.push(y); controlled.push(y - i.beta * (u - i.controlMean)); if (j < i.evaluations / 2) paired.push((y + payoff(1 - u)) / 2); }
+  const controlVariance = moments.optimalControlVariance + (i.beta - moments.optimalBeta) ** 2 / 12;
+  const bias = i.beta * (i.controlMean - .5);
+  return { moments, plain: summarize(plain,i.evaluations,Math.sqrt(moments.variance / i.evaluations),0), antithetic: summarize(paired,i.evaluations,Math.sqrt((moments.variance + moments.mirrorCovariance) / i.evaluations),0), control: summarize(controlled,i.evaluations,Math.sqrt(controlVariance / i.evaluations),bias), antitheticVarianceRatio: (moments.variance + moments.mirrorCovariance) / moments.variance, controlVarianceRatio: controlVariance / moments.variance };
+}
+export interface MonteCarloEfficiencyProps {
+  mode?: 'precision' | 'antithetic' | 'control'; toy?: EfficiencyToy; evaluations?: number; beta?: number; controlMean?: number; seed?: number;
+  perDrawSD?: number; fixedBias?: number; locale?: string; title?: string; budgetLabel?: string; biasLabel?: string; sdMessage?: string;
+  toyLabel?: string; toyLabels?: readonly [string,string]; betaLabel?: string; controlMeanLabel?: string; optimalLabel?: string; runLabel?: string;
+  plainLabel?: string; antitheticLabel?: string; controlLabel?: string; targetLabel?: string; groupsLabel?: string; meanLabel?: string; seLabel?: string; theoreticalLabel?: string; intervalLabel?: string; ratioLabel?: string;
+  methodLabel?: string; tableLabel?: string; precisionTableLabel?: string; rmseLabel?: string; absoluteBiasLabel?: string; countLabel?: string;
+  comparisonMessage?: string; pairMessage?: string; precisionMessage?: string; controlMessage?: string; chartLabel?: string; precisionChartLabel?: string; caption?: string; className?: string;
+}
+export function MonteCarloEfficiency({
+  mode = 'antithetic', toy = 'exp', evaluations = 1000, beta, controlMean = .5, seed = 90210, perDrawSD = 100, fixedBias = 3, locale = 'en-GB',
+  title = 'Compare estimator precision at an explicit evaluation budget', budgetLabel = 'Payoff evaluations per estimator', biasLabel = 'Fixed bias in outcome units', sdMessage = 'Independent sample-mean illustration; per-draw standard deviation {sd}. RMSE combines sampling variance and a specified fixed bias, not a fitted market-model error.',
+  toyLabel = 'Payoff function of a uniform input', toyLabels = ['Monotone: exponential of U','Symmetric: squared distance of U from one-half'], betaLabel = 'Fixed control coefficient', controlMeanLabel = 'Assumed mean of U; its actual mean is 0.5', optimalLabel = 'Use the population-optimal coefficient', runLabel = 'Draw another reproducible set of replicates',
+  plainLabel = 'Independent sample mean', antitheticLabel = 'Mean of mirrored pairs', controlLabel = 'Fixed-coefficient control mean', targetLabel = 'Exact original target mean', groupsLabel = 'Independent groups', meanLabel = 'First replicate estimate', seLabel = 'Sampling standard error', theoreticalLabel = 'Population sampling SE', intervalLabel = 'Approximate normal interval for the configured estimator mean', ratioLabel = 'Sampling variance relative to independent mean',
+  methodLabel = 'Estimator', tableLabel = 'Equal-budget estimator statistics; scroll horizontally if needed', precisionTableLabel = 'Sample size, sampling standard error, fixed bias and RMSE; scroll horizontally if needed', rmseLabel = 'RMSE to the specified benchmark', absoluteBiasLabel = 'Absolute fixed bias', countLabel = 'Sample count',
+  comparisonMessage = 'Both methods use the same number of payoff evaluations. Each dot is one of twenty repeated estimates minus the original exact mean; zero is marked by the horizontal line. Shared draws couple the two methods, so the method estimates are not independent.',
+  pairMessage = 'Mirrored pairs have half as many independent groups as IID single evaluations; the table reports both counts separately.',
+  precisionMessage = 'The solid curve is sampling SE; the dashed curve is RMSE including the specified fixed bias. The horizontal line is the absolute bias floor. More IID draws narrow sampling uncertainty while this fixed bias remains.',
+  controlMessage = 'The control is U, whose exact mean is one-half in this toy. The coefficient is fixed, not fitted on the production draws. Changing the assumed control mean shifts the estimator target by beta times the mean error; its sampling interval does not remove that bias. Extra control and pilot costs must be counted in other applications.',
+  chartLabel = 'Twenty repeated estimates for each equal-budget estimator, shown as errors relative to the original exact mean. Signed errors fluctuate; no individual run is guaranteed to be closer.', precisionChartLabel = 'Sampling standard error falls with the square root of count. RMSE includes the fixed bias and approaches its absolute size as count increases.',
+  caption = 'The estimator examples use bounded toy integrands; the error curve uses a supplied standard deviation and fixed bias. Approximate mean intervals require an adequate independent-group CLT; these formulas are not quantile intervals or guarantees about financial model validity.', className,
+}: MonteCarloEfficiencyProps) {
+  if (!['precision','antithetic','control'].includes(mode)) throw new Error('MonteCarloEfficiency: mode must be precision, antithetic or control.');
+  const initialMoments = efficiencyMoments(toy), initialBeta = beta ?? initialMoments.optimalBeta;
+  if (!Number.isInteger(evaluations) || evaluations < 50 || evaluations % 2 !== 0 || evaluations > (mode === 'precision' ? 1000000 : 10000) || !Number.isFinite(fixedBias) || fixedBias < 0 || fixedBias > 10) throw new Error('MonteCarloEfficiency: use an even budget within the mode limits and a fixed bias from zero to ten.');
+  meanErrorBudget(perDrawSD,evaluations,fixedBias);
+  simulateEfficiency({toy,evaluations:Math.min(evaluations,10000),beta:initialBeta,controlMean,seed});
+  if (toyLabels.length !== 2 || toyLabels.some(s=>!s.trim())) throw new Error('MonteCarloEfficiency: provide two nonempty payoff labels.');
+  for (const [key,value] of Object.entries({title,budgetLabel,biasLabel,sdMessage,toyLabel,betaLabel,controlMeanLabel,optimalLabel,runLabel,plainLabel,antitheticLabel,controlLabel,targetLabel,groupsLabel,meanLabel,seLabel,theoreticalLabel,intervalLabel,ratioLabel,methodLabel,tableLabel,precisionTableLabel,rmseLabel,absoluteBiasLabel,countLabel,comparisonMessage,pairMessage,precisionMessage,controlMessage,chartLabel,precisionChartLabel,caption})) if (!value.trim()) throw new Error(`MonteCarloEfficiency: ${key} must be nonempty.`);
+  new Intl.NumberFormat(locale);
+  const id=useId(), [kind,setKind]=useState(toy), [count,setCount]=useState(evaluations), [coefficient,setCoefficient]=useState(initialBeta), [assumedMean,setAssumedMean]=useState(controlMean), [bias,setBias]=useState(fixedBias), [replicateSeed,setReplicateSeed]=useState(seed);
+  const number=new Intl.NumberFormat(locale,{maximumFractionDigits:6}), integer=new Intl.NumberFormat(locale,{maximumFractionDigits:0}), percent=new Intl.NumberFormat(locale,{style:'percent',maximumFractionDigits:3}), fmt=(x:number)=>number.format(Math.abs(x)<1e-12?0:x);
+  const axisNumber = new Intl.NumberFormat(locale,{maximumSignificantDigits:3});
+  const axisCount = new Intl.NumberFormat(locale,{notation:'scientific',maximumFractionDigits:0});
+  const moments=efficiencyMoments(kind), error=meanErrorBudget(perDrawSD,count,bias);
+  const batches=mode==='precision'?[]:Array.from({length:20},(_,j)=>simulateEfficiency({toy:kind,evaluations:count,beta:coefficient,controlMean:assumedMean,seed:(replicateSeed+Math.imul(j,0x9E3779B9))>>>0}));
+  const first=batches[0], secondKey=mode==='control'?'control':'antithetic', methodNames=[plainLabel,mode==='control'?controlLabel:antitheticLabel];
+  const sampleCounts=[...new Set([50,100,1000,10000,100000,1000000,count])].sort((a,b)=>a-b), maxError=Math.max(.001,...batches.flatMap(b=>[Math.abs(b.plain.mean-moments.mean),Math.abs(b[secondKey].mean-moments.mean)]),first?3*first.plain.theoreticalSE:0,first?3*first[secondKey].theoreticalSE+Math.abs(first[secondKey].bias):0);
+  const coordinate=(value:number)=>Number(value.toFixed(3));
+  const cy=(value:number)=>coordinate(135-value/maxError*95);
+  const x=(n:number)=>coordinate(160+(Math.log(n)-Math.log(50))/(Math.log(1000000)-Math.log(50))*370), upper=Math.max(.001,meanErrorBudget(perDrawSD,50,bias).rmse), py=(v:number)=>coordinate(215-v/upper*180);
+  const curve=(which:'standardError'|'rmse')=>Array.from({length:80},(_,j)=>{const n=Math.round(50*(1000000/50)**(j/79));return `${j?'L':'M'} ${x(n)} ${py(meanErrorBudget(perDrawSD,n,bias)[which])}`;}).join(' ');
+  const focus='block w-full max-w-full overflow-x-auto text-left text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600';
+  return <figure className={cx('not-prose my-8 rounded-card bg-surface-sunken p-4 text-ink-800 sm:p-6',className)} aria-labelledby={`${id}-title`}>
+    <figcaption id={`${id}-title`} className="font-display text-lg font-semibold text-ink-900">{title}</figcaption>
+    <p className="mt-3 text-sm leading-relaxed">{mode==='precision'?sdMessage.replace('{sd}',fmt(perDrawSD)):comparisonMessage+(mode==='antithetic'?' '+pairMessage:'')}</p>
+    <div className="mt-5 grid gap-4 sm:grid-cols-2"><label htmlFor={`${id}-count`} className="min-w-0 text-sm font-medium">{mode==='precision'?countLabel:budgetLabel}: <output className="font-mono">{integer.format(count)}</output><input id={`${id}-count`} type="range" min={Math.log10(50)} max={mode==='precision'?6:4} step="any" value={Math.log10(count)} onChange={e=>setCount(Math.max(50,2*Math.round(10**Number(e.target.value)/2)))} className="mt-2 h-8 w-full accent-brand-600 focus-visible:outline-2 focus-visible:outline-brand-600"/></label>
+      {mode==='precision'?<label htmlFor={`${id}-bias`} className="min-w-0 text-sm font-medium">{biasLabel}: <output className="font-mono">{fmt(bias)}</output><input id={`${id}-bias`} type="range" min={0} max={10} step="any" value={bias} onChange={e=>setBias(Number(e.target.value))} className="mt-2 h-8 w-full accent-accent-600 focus-visible:outline-2 focus-visible:outline-brand-600"/></label>:<div className="min-w-0"><label htmlFor={`${id}-toy`} className="text-sm font-medium">{toyLabel}</label><select id={`${id}-toy`} value={kind} onChange={e=>{const next=e.target.value as EfficiencyToy;setKind(next);setCoefficient(efficiencyMoments(next).optimalBeta);setAssumedMean(.5);}} className="mt-2 block w-full rounded-lg border border-ink-300 bg-surface p-2 text-sm focus-visible:outline-2 focus-visible:outline-brand-600"><option value="exp">{toyLabels[0]}</option><option value="symmetric">{toyLabels[1]}</option></select></div>}
+      {mode==='control'&&<><label htmlFor={`${id}-beta`} className="min-w-0 text-sm font-medium">{betaLabel}: <output className="font-mono">{fmt(coefficient)}</output><input id={`${id}-beta`} type="range" min={-5} max={5} step="any" value={coefficient} onChange={e=>setCoefficient(Number(e.target.value))} className="mt-2 h-8 w-full accent-brand-600 focus-visible:outline-2 focus-visible:outline-brand-600"/></label><label htmlFor={`${id}-control-mean`} className="min-w-0 text-sm font-medium">{controlMeanLabel}: <output className="font-mono">{fmt(assumedMean)}</output><input id={`${id}-control-mean`} type="range" min={0} max={1} step="any" value={assumedMean} onChange={e=>setAssumedMean(Number(e.target.value))} className="mt-2 h-8 w-full accent-accent-600 focus-visible:outline-2 focus-visible:outline-brand-600"/></label></>}
+    </div>
+    {mode==='precision'?<>
+      <p className="mt-4 text-sm leading-relaxed">{precisionMessage}</p><dl className="mt-5 grid gap-3 sm:grid-cols-2" aria-live="polite" aria-atomic="true">{[[seLabel,fmt(error.standardError)],[rmseLabel,fmt(error.rmse)]].map(([label,value])=><div key={label} className="rounded-lg bg-surface p-3"><dt className="text-sm">{label}</dt><dd className="mt-2 font-mono font-semibold">{value}</dd></div>)}</dl>
+      <svg viewBox="0 0 640 265" role="img" aria-label={precisionChartLabel} className="mt-5 w-full"><path d={curve('standardError')} fill="none" stroke="var(--color-brand-600)" strokeWidth={3}/><path d={curve('rmse')} fill="none" stroke="var(--color-accent-600)" strokeWidth={2} strokeDasharray="7 5"/><line x1={160} x2={530} y1={py(Math.abs(bias))} y2={py(Math.abs(bias))} stroke="var(--color-ink-500)"/><circle cx={x(count)} cy={py(error.rmse)} r={5} fill="var(--color-accent-700)"/>{[100,10000,1000000].map(n=><text key={n} x={x(n)} y={250} textAnchor={n===100?'start':n===1000000?'end':'middle'} className="text-[35px] sm:text-[15px]" fill="var(--color-ink-700)">{axisCount.format(n)}</text>)}</svg><p className="mt-1 text-center text-sm">{countLabel} · log₁₀</p><div className="mt-2 flex flex-wrap gap-4 text-sm">{[seLabel,rmseLabel,absoluteBiasLabel].map((label,j)=><span key={j} className="inline-flex items-center gap-2"><span aria-hidden="true" className={cx('w-5 border-t-2',j===0?'border-brand-600':j===1?'border-dashed border-accent-600':'border-ink-500')}/>{label}</span>)}</div>
+      <div className="mt-5"><table tabIndex={0} aria-label={precisionTableLabel} className={focus}><caption className="sr-only">{precisionTableLabel}</caption><thead><tr>{[countLabel,seLabel,absoluteBiasLabel,rmseLabel].map(label=><th key={label} scope="col" className="p-2">{label}</th>)}</tr></thead><tbody>{sampleCounts.map(n=>{const r=meanErrorBudget(perDrawSD,n,bias);return <tr key={n} className="border-t border-ink-200"><th scope="row" className="p-2 font-mono font-medium">{integer.format(n)}</th><td className="p-2 font-mono">{fmt(r.standardError)}</td><td className="p-2 font-mono">{fmt(Math.abs(r.bias))}</td><td className="p-2 font-mono">{fmt(r.rmse)}</td></tr>;})}</tbody></table></div>
+    </>:<>
+      {mode==='control'&&<p className="mt-4 text-sm leading-relaxed">{controlMessage}</p>}<p className="mt-5 font-mono text-sm" aria-live="polite" aria-atomic="true">{targetLabel}: {fmt(moments.mean)}. {ratioLabel}: {percent.format(mode==='control'?first!.controlVarianceRatio:first!.antitheticVarianceRatio)}</p>
+      <svg viewBox="0 0 640 270" role="img" aria-label={chartLabel} className="mt-4 w-full"><line x1={195} x2={550} y1={135} y2={135} stroke="var(--color-ink-500)"/><text x={180} y={145} textAnchor="end" className="text-[35px] sm:text-[15px]" fill="var(--color-ink-700)">0</text><text x={180} y={45} textAnchor="end" className="text-[35px] sm:text-[15px]" fill="var(--color-ink-700)">{axisNumber.format(maxError)}</text><text x={180} y={235} textAnchor="end" className="text-[35px] sm:text-[15px]" fill="var(--color-ink-700)">{axisNumber.format(-maxError)}</text>{batches.flatMap((batch,j)=>[batch.plain,batch[secondKey]].map((r,k)=><circle key={`${j}-${k}`} cx={275+k*185+((j%5)-2)*12} cy={cy(r.mean-moments.mean)} r={4} fill={k?'var(--color-brand-600)':'var(--color-ink-500)'} opacity={.8}/>))}<text x={275} y={255} textAnchor="middle" className="text-[35px] sm:text-[15px]" fill="var(--color-ink-700)">A</text><text x={460} y={255} textAnchor="middle" className="text-[35px] sm:text-[15px]" fill="var(--color-ink-700)">B</text></svg><div className="mt-2 flex flex-wrap gap-4 text-xs">{methodNames.map((label,j)=><span key={j} className="inline-flex items-center gap-2"><span aria-hidden="true" className={cx('h-3 w-3 rounded-full',j?'bg-brand-600':'bg-ink-500')}/>{j?'B':'A'} · {label}</span>)}</div>
+      <div className="mt-5 flex flex-wrap gap-3"><button type="button" onClick={()=>setReplicateSeed(s=>(s+1)>>>0)} className="min-h-8 rounded-lg border border-ink-300 bg-surface px-3 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-brand-600">{runLabel}</button>{mode==='control'&&<button type="button" onClick={()=>setCoefficient(moments.optimalBeta)} className="min-h-8 rounded-lg border border-ink-300 bg-surface px-3 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-brand-600">{optimalLabel}</button>}</div>
+      <div className="mt-5"><table tabIndex={0} aria-label={tableLabel} className={focus}><caption className="sr-only">{tableLabel}</caption><thead><tr>{[methodLabel,budgetLabel,groupsLabel,meanLabel,seLabel,theoreticalLabel,intervalLabel].map(label=><th key={label} scope="col" className="p-2">{label}</th>)}</tr></thead><tbody>{[first!.plain,first![secondKey]].map((r,j)=><tr key={j} className="border-t border-ink-200"><th scope="row" className="p-2 font-medium">{methodNames[j]}</th><td className="p-2 font-mono">{integer.format(r.evaluations)}</td><td className="p-2 font-mono">{integer.format(r.groups)}</td><td className="p-2 font-mono">{fmt(r.mean)}</td><td className="p-2 font-mono">{fmt(r.standardError)}</td><td className="p-2 font-mono">{fmt(r.theoreticalSE)}</td><td className="p-2 font-mono">[{fmt(r.lower)}; {fmt(r.upper)}]</td></tr>)}</tbody></table></div>
+    </>}
+    <p className="mt-4 text-xs leading-relaxed text-ink-600">{caption}</p>
+  </figure>;
+}

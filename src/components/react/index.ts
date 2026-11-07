@@ -972,3 +972,6 @@ export type { RegimeAverageConvergenceProps, ConstantHazardSurvivalProps, Ensemb
 
 export { calculatePredictionPosition, PredictionPositionRisk, calculateJointBinaryBook, JointBinaryBook } from '@/components/react/PredictionPositionRisk';
 export type { PredictionPositionInputs, PredictionPositionRiskProps, JointBinaryInputs, JointBinaryBookProps } from '@/components/react/PredictionPositionRisk';
+
+export { meanErrorBudget, efficiencyMoments, simulateEfficiency, MonteCarloEfficiency } from '@/components/react/MonteCarloEfficiency';
+export type { EfficiencyToy, EfficiencyInputs, EfficiencySummary, MonteCarloEfficiencyProps } from '@/components/react/MonteCarloEfficiency';

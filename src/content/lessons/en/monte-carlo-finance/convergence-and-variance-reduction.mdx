@@ -1,318 +1,602 @@
 ---
 title: "Convergence and Variance Reduction"
-description: "How accurate is a simulation, and how to make it accurate for less: the brutal one-over-root-M error rule, confidence intervals on a simulated number, antithetic and control variates, and the pitfalls that no number of paths can fix."
+description: "Measure sampling error under explicit assumptions, compare antithetic and control estimators at equal evaluation cost, and separate intervals from discretization and model error."
 topic: "en/monte-carlo-finance"
 order: 6
-minutes: 9
-updated: 2026-06-05
+minutes: 32
+updated: 2026-11-06
 ---
 
-import { Callout, MCQ, Quiz, Reveal, FillBlank, Categorize, MatchConcepts, MindMap, VarianceReductionChart, MonteCarloConverge } from '@/components/react';
+import { Callout, MCQ, Quiz, FillBlank, Categorize, MatchConcepts, MindMap, MonteCarloEfficiency } from '@/components/react';
 
-Run your simulation. Get a number. Run it again — get a *different* number. Welcome to the central anxiety of Monte Carlo: every answer is a random variable wearing the costume of a fact. The whole of this lesson is two questions. First, **how wrong is my estimate** — and how do I put an honest error bar on it instead of pretending the last three digits mean something? Second, **how do I make it less wrong for the same compute** — by being clever about the randomness instead of just hurling more paths at it? And then the humbling coda: the one kind of wrongness that *no* number of paths will ever fix.
+Two simulation runs report 4.7321 and 4.7188. Their difference is evidence of sampling variability, not an interval guaranteed to contain the answer. To judge precision, identify the estimator, its independent sampling units and its cost. Then ask what it is converging to.
+
+We start with a **mean of independent, identically distributed outputs** from one fixed model. Later, mirrored pairs, weighted samples and randomized low-discrepancy designs change the relevant sampling units. A path may contain dependent time steps; the assumption here concerns independent **whole-path outputs**, not independence of every date within a path.
+
+## Standard error measures sampling noise in a specified mean
 
 <MCQ
   client:visible
-  pretest
-  question="You price an exotic option by Monte Carlo and get $4.7321. You rerun with a fresh random seed and get $4.7188. What does the gap between the two runs tell you?"
+  question={"A sample mean uses independent path outputs with finite variance. Quadrupling the path count while keeping their distribution fixed does what to its population standard error?"}
   options={[
-    { text: 'The estimate carries sampling noise, so the digits past the noise floor are meaningless — it needs an error bar, not more decimals', correct: true },
-    { text: 'One of the two runs has a bug; a correct simulation gives the same number every time' },
-    { text: 'The true price is exactly the average of the two runs, 4.7255' },
-    { text: 'The option is worth somewhere between 4.7188 and 4.7321 with certainty' },
-  ]}
-  explanation="A Monte Carlo estimate is a random variable. Two seeds give two draws from the same sampling distribution, so they differ. The wobble between them is the standard error talking — the precise-looking trailing digits are below the noise floor. The fix is to report the estimate with a confidence interval, not to trust the decimals."
+  {
+    "text": "Halves it",
+    "correct": true
+  },
+  {
+    "text": "Cuts it to one quarter",
+    "correct": false
+  },
+  {
+    "text": "Leaves it unchanged",
+    "correct": false
+  }
+]}
+  explanation={"The standard deviation of an IID sample mean is the per-output standard deviation divided by the square root of the independent count."}
+  pretest
 />
 
-## A Monte Carlo answer is a random variable
+Let $Y_i$ be a discounted payoff or other per-path output, with mean $\mu$, finite variance $\sigma_Y^2$, and independent identical draws. The estimator and its sampling variance are
 
-**Analogy.** A single simulation run is one poll, not the election. Ask 1,000 random voters and you get a percentage; ask a *different* 1,000 and you get a slightly different one. Neither is "the truth" — the truth is what you'd get from infinitely many voters, and each poll is a noisy snapshot of it. Your simulation is exactly this: each run is a fresh poll of the model's universe, and the number it spits out jitters around the value you actually want.
+$$\hat\mu_M=\frac1M\sum_{i=1}^M Y_i,\qquad\operatorname{Var}(\hat\mu_M)=\frac{\sigma_Y^2}{M}$$
 
-**Definition.** When you estimate a mean by Monte Carlo, you compute the average of $M$ per-path quantities (per-path payoffs, P&Ls, whatever). That average $\hat\mu$ is itself random, and its spread is the **standard error**:
+When $\sigma_Y$ is unknown, estimate the **standard error (SE)** using the sample standard deviation of the same outputs:
 
-$$\mathrm{SE} = \frac{s}{\sqrt{M}}$$
+$$s_Y^2=\frac{1}{M-1}\sum_i(Y_i-\hat\mu_M)^2,\qquad\widehat{\mathrm{SE}}=\frac{s_Y}{\sqrt M}$$
 
-where $s$ is the sample standard deviation of the per-path quantity (how scattered the individual path values are) and $M$ is the number of paths. Two things drive your error: how *wild* the per-path values are ($s$), and how *many* of them you average ($M$). You can't always shrink $s$ — that's the model's volatility — but you can always crank $M$. The catch is in how slowly that helps.
+Standard deviation describes individual outputs; standard error describes their **mean estimator**. If $s_Y=100$ outcome units and $M=10{,}000$, estimated SE is $100/100=1$. To reach half that SE at the same variance requires four times the count:
 
-**Worked feel.** Say your per-path option payoffs have a sample standard deviation $s = 100$ and you run $M = 10{,}000$ paths. Then $\mathrm{SE} = 100/\sqrt{10{,}000} = 100/100 = 1.0$. So your estimated price carries a noise of about $1.0 around the true model price. Report "the price is 4.73" without that $\pm 1.0$ context and you're bluffing.
+| Independent outputs | Estimated SE at unchanged per-output SD 100 |
+|---:|---:|
+| 10,000 | 1 |
+| 40,000 | 0.5 |
+| 160,000 | 0.25 |
+| 1,000,000 | 0.1 |
 
-**Pitfall.** People read the trailing digits of a Monte Carlo output as precision. They are not — past the standard error, every digit is pure random seed. A bare simulated number is a confidence trick on yourself.
+This is a scale law for **sampling standard deviation**, not a promise that each new run’s realized absolute error decreases monotonically. A tenfold smaller SE requires roughly one hundred times the evaluations if cost per output and variance stay fixed.
 
-## The brutal rule: error shrinks like one over root M
+### When to use it
 
-**Analogy.** Imagine accuracy costs money and you're buying it by the bushel — except the price per unit of accuracy keeps climbing. The first decimal point is cheap. The second costs a hundred times more. The third? Don't ask. Monte Carlo accuracy is the worst kind of bulk discount: it runs *backwards*.
-
-**Definition.** Because $\mathrm{SE} = s/\sqrt{M}$, the error shrinks like $1/\sqrt{M}$. The square root is the villain. To cut the error by a factor $k$, you must multiply the paths by $k^2$. So:
-
-- To **halve** the error, you must **quadruple** the paths ($k=2 \Rightarrow 4\times$).
-- To get **one more decimal digit** of precision (10× tighter), you need **100×** the paths.
-
-<MonteCarloConverge
-  client:visible
-  title="The running estimate, squeezed toward the truth one over root M at a time"
-  trueLabel="True value"
-  estimateLabel="Estimate"
-  samplesLabel="Samples"
-  runLabel="Run again"
-  caption="Each new sample nudges the running estimate, but the wobble dies off only as one over the square root of the count. Early on it lurches; later it crawls. That diminishing return is the brutal rule made visible — hit Run again to watch a fresh random path converge."
-/>
-
-**Worked example — show the arithmetic.** Start at $M = 10{,}000$ paths with a standard error of $1.0M.
-
-| Target SE (millions) | Factor tighter (k) | Paths needed (k² × M) |
-|---|---|---|
-| 1.0 | 1× | 10,000 |
-| 0.5 | 2× | 4 × 10,000 = 40,000 |
-| 0.25 | 4× | 16 × 10,000 = 160,000 |
-| 0.1 | 10× | 100 × 10,000 = 1,000,000 |
-
-Going from a 1.0M error bar to a 0.1M error bar — one decimal place — costs you **100×** the compute, from ten thousand paths to a cool million. The first 90% of accuracy is nearly free; the last 10% is where the cloud bill is born.
-
-**Pitfall.** Engineers used to "double the cores, double the throughput" think doubling paths roughly doubles accuracy. It does not — doubling $M$ cuts the error only by $1/\sqrt{2}\approx 0.71$, a measly 29%. Linear thinking about a square-root law is how you burn a quarter's compute budget chasing a digit that didn't matter.
+Use this formula for the relevant independent mean outputs. With dependent draws, covariance terms enter the variance of the mean; counting correlated values as independent exaggerates information. With infinite output variance, the usual finite-variance SE and normal central-limit argument do not apply. The IID law of large numbers can require only a finite absolute mean, so consistency and the root-count SE claim are separate conditions. [Statlect derives the mean-estimation setup and its asymptotic error conditions](https://www.statlect.com/asymptotic-theory/Monte-Carlo-method).
 
 <FillBlank
   client:visible
-  question="Fill in the brutal rule."
-  text="Monte Carlo error shrinks like {{1/√M|1/M|1/M²}}. To halve the error you must {{quadruple|double|halve}} the paths, and to gain one more decimal digit of precision you need about {{100×|10×|2×}} the paths."
-  explanation="Error ∝ 1/√M, so cutting it by a factor k costs k² times the paths. Halving (k=2) needs 4×; a 10× tighter estimate (one more digit, k=10) needs 100×. The square root makes precision brutally expensive."
+  question={"Identify the quantity and independent count."}
+  text={"The standard deviation of individual payoffs measures {{path-to-path dispersion|uncertainty of the mean alone|model correctness}}. For an IID finite-variance mean, doubling the count multiplies population SE by {{one divided by the square root of two|one half|two}}."}
+  explanation={"The population variance of the mean is individual-output variance divided by the independent count. Its square root is standard error."}
 />
 
-## Always report the error bar: confidence intervals
+## A confidence interval is conditional on the estimator and model
 
-**Analogy.** A weather app that says "73 degrees" is hiding something a good one shows: "73, give or take 4." The give-or-take is the honest part. A Monte Carlo number without its interval is the dishonest weather app — confident to the decimal, silent about the slop.
+For an adequately large independent sample with an appropriate finite-variance central limit approximation, an approximate 95% interval for the model mean is
 
-**Definition.** Because $\hat\mu$ is (for large $M$, by the Central Limit Theorem) approximately normal around the true value, a **95% confidence interval** is
+$$\hat\mu_M\pm1.96\frac{s_Y}{\sqrt M}$$
 
-$$\hat\mu \pm 1.96\,\mathrm{SE}$$
+A simulated mean of EUR 12 million with SE EUR 0.5 million gives
 
-The $1.96$ is the normal-distribution multiplier that brackets the middle 95% of a bell curve. Interpreted carefully: if you reran the whole simulation many times, about 95% of the intervals you built this way would straddle the true model value. It is *not* a 95% chance the truth sits in this one interval — it's a statement about the procedure — but for practical reporting, $\pm 1.96\,\mathrm{SE}$ is your honest error bar.
+$$12\pm1.96(0.5)=12\pm0.98$$
 
-**Worked example.** Suppose your simulation returns an estimate $\hat\mu = 25.0$ (in millions of dollars) with a standard error $\mathrm{SE} = 1.0$ (millions). The 95% confidence interval is $\hat\mu \pm 1.96\,\mathrm{SE}$:
+or **[EUR 11.02 million, EUR 12.98 million]**. In repeated uses of a well-calibrated procedure, approximately 95% of such intervals cover the fixed model mean. This is not a guarantee for a particular interval or a 95% range of individual future payoffs. A Student-t interval is exact for normal independent observations; otherwise its small-sample use also needs justification.
 
-$$25.0 \pm 1.96 \times 1.0 = 25.0 \pm 1.96$$
+### A zero estimated SE can be misleading
 
-so the CI runs from about **$23.04M to $26.96M**. That's the right way to state the result: "25.0M, 95% CI [23.0M, 27.0M]" — not a naked "$25.0M" that pretends to a precision the $\pm 1.96$ slop flatly denies.
+Suppose a simulated event is rare and no event appears in 1,000 independent paths. The Bernoulli observations are all zero, so the sample SD and the plug-in normal interval are zero. That does not prove the event probability is zero. If its model probability were 0.001, the chance of no events would be
 
-<Callout variant="info" title="Report the interval, not just the point">
-A Monte Carlo deliverable is two numbers, not one: the estimate **and** its standard error (or the CI built from it). If a quant hands you a VaR, a price, or an expected shortfall with no error bar, the first question is always "how many paths, and what's the SE?" A point estimate alone is a guess dressed as a measurement.
-</Callout>
+$$(1-0.001)^{1000}\approx0.367695$$
+
+about **36.77%**. The example diagnoses a poor normal approximation for this rare-event sample, not the probability of a real financial loss.
+
+| Quantity estimated | Is payoff SD divided by root count its automatic SE? |
+|---|---|
+| Mean of IID finite-variance path outputs | Yes, as a sample estimate under those assumptions |
+| Mean of independent antithetic pair averages | Use SD of pair averages and number of pairs |
+| VaR, a loss quantile | No; the quantile estimator needs its own uncertainty analysis |
+| One deterministic Sobol sequence’s average | No IID point-based SE justification |
+
+### When to use it
+
+Choose and validate an interval for the actual statistic and sampling design. Predetermine a reporting budget, or use a sequential procedure with its own coverage justification; repeatedly stopping when an ordinary interval looks narrow does not automatically preserve its nominal coverage. A small sampling interval says little about whether the financial model, parameters or numerical approximation are adequate.
 
 <MCQ
   client:visible
-  question="A simulation reports an expected portfolio loss of $12.0M with a standard error of $0.5M over its path count. What is the approximate 95% confidence interval?"
+  question={"An IID finite-variance mean estimate is 8.40 with SE 0.20 and a justified normal approximation. Which report matches it?"}
   options={[
-    { text: 'About 11.0M to 13.0M, since 1.96 × 0.5M ≈ 0.98M', correct: true },
-    { text: 'Exactly 12.0M — a simulation with enough paths has no interval' },
-    { text: 'About 11.5M to 12.5M, using ± one standard error' },
-    { text: 'About 6.0M to 18.0M, using ± half the estimate' },
-  ]}
-  explanation="A 95% CI is estimate ± 1.96·SE = 12.0M ± 1.96 × 0.5M = 12.0M ± 0.98M, roughly 11.0M to 13.0M. Using ± one SE gives only about a 68% interval, and the estimate is never exact for finite M."
+  {
+    "text": "Estimate 8.40; approximate 95% mean interval [8.008, 8.792]",
+    "correct": true
+  },
+  {
+    "text": "Estimate exactly 8.40; all uncertainty has disappeared",
+    "correct": false
+  },
+  {
+    "text": "A 95% range for every individual future payoff [8.20, 8.60]",
+    "correct": false
+  }
+]}
+  explanation={"The half-width is 1.96 × 0.20 = 0.392. It describes the model mean’s sampling uncertainty, not the distribution of individual payoffs."}
 />
 
-## Variance reduction: same accuracy, fewer paths
+## Antithetic pairs help only when the paired payoffs offset
 
-The brute-force lever is $M$ — and we just saw how punishing that lever is. The clever lever is $s^2$, the **variance** of the per-path quantity. If you can cut the variance in half without touching $M$, you get the same accuracy as doubling the paths — for free. That's the entire game of **variance reduction**: attack the numerator $s$, not the denominator $\sqrt{M}$.
+For $U$ uniform on $[0,1]$, both $U$ and $1-U$ have the same marginal distribution. Let $Y=f(U)$, $Y'=f(1-U)$, with common variance $v$ and payoff correlation $\rho$. One independent pair produces
 
-**Definition.** **Variance reduction** is any technique that re-engineers the estimator so its per-path values are less scattered (smaller $s$), yielding a smaller $\mathrm{SE}$ for the same path count. Two workhorses dominate.
+$$A=\frac{Y+Y'}2,\qquad E[A]=E[Y],\qquad\operatorname{Var}(A)=\frac{v(1+\rho)}2$$
 
-### Antithetic variates
+To compare **equal payoff-evaluation cost**, allocate $N=2m$ evaluations either to $N$ IID payoffs or to $m$ independent pair averages:
 
-**Analogy.** Hire two scouts to estimate a mountain's height, but send one up the sunny side and one up the shady side — their personal biases (one always overshoots in good weather, one undershoots in bad) partly cancel when you average their reports. Antithetic variates pairs each random draw with its mirror image so their errors lean opposite ways.
+$$\operatorname{Var}(\hat\mu_{\mathrm{IID}})=\frac vN,\qquad\operatorname{Var}(\hat\mu_{\mathrm{anti}})=\frac{v(1+\rho)}N$$
 
-**How it works.** For each uniform random draw $u$, also use its mirror $1-u$ (or, for normal shocks, flip $Z \to -Z$). You now simulate the path *and* its reflection, then average the pair. Because the two are **negatively correlated**, the variance of their average is lower than two independent draws would give. The effect is strongest when the payoff is **monotonic** in the draw — a big up-shock that overshoots is matched by a big down-shock that undershoots, and the average lands closer to the truth. In well-behaved cases this roughly **halves the variance for free** — like buying $2M$ paths' worth of accuracy at the price of $M$ paths.
+Negative payoff correlation helps, zero gives no equal-cost variance gain, and positive correlation hurts. Mirroring inputs does not guarantee the required sign after a nonlinear payoff. [MIT presents the independent pair average and its variance conditions](https://ocw.mit.edu/courses/15-450-analytics-of-finance-fall-2010/4fa033082ff5ee58722a67fe81f0dce7_MIT15_450F10_lec03.pdf).
 
-<VarianceReductionChart
+### A monotone example with checkable moments
+
+For $f(U)=e^U$, the target is $\mu=e-1\approx1.71828183$. Direct integration gives
+
+$$v=\frac{e^2-1}{2}-(e-1)^2\approx0.24203561$$
+
+Since $e^Ue^{1-U}=e$,
+
+$$\operatorname{Cov}(Y,Y')=e-(e-1)^2\approx-0.23421061$$
+
+Thus the equal-cost variance ratio is $(v+\operatorname{Cov})/v\approx0.03232993$, not a universal one-half. At **1,000 evaluations**, IID population SE is about **0.01555749**; 500 independent mirrored pairs have SE about **0.00279732**. Calculate the sample SE from **500 pair averages**, not by pretending the 1,000 paired payoffs are independent.
+
+<MonteCarloEfficiency
   client:visible
-  title="Naive versus antithetic: same target, far less wobble"
-  naiveLabel="Naive Monte Carlo"
-  reducedLabel="With antithetic variates"
-  trueLabel="True value"
-  samplesLabel="Samples"
-  errorLabel="Error"
-  runLabel="Run again"
-  caption="Both curves chase the same true value, but the antithetic estimator's mirrored pairs cancel most of the noise — it locks onto the line while the naive average is still wandering. Same path count, smaller error. Hit Run again for a fresh seed."
+  mode={"antithetic"}
 />
 
-### Control variates
+### A symmetric payoff makes the same trick worse
 
-**Analogy.** You're guessing a stranger's weight, and standing next to them is a friend whose weight you know *exactly*. Compare the stranger to your friend, note how much your eyeball estimate of the *friend* was off, and correct the stranger's estimate by that same known error. If the two are similar builds, the correction is gold.
+Change to $f(U)=(U-1/2)^2$. Then $f(1-U)=f(U)$: the second evaluation duplicates the first payoff. Its mean is $1/12$ and variance is $1/180$. With 1,000 total evaluations,
 
-**How it works.** Suppose you want the price of a path-dependent **exotic** option you can only simulate, and a related **vanilla** option you can price *exactly* with Black–Scholes. Simulate **both** in the same scenarios. You can see how far the *simulated vanilla* drifted from its known true price — that's the random error this particular set of draws happened to inject. Subtract a scaled version of that known error from your exotic estimate. When the control (vanilla) is **highly correlated** with the target (exotic), this cancels a huge chunk of the shared noise and can cut variance **dramatically** — far more than antithetic's modest halving.
+$$\operatorname{Var}(\hat\mu_{\mathrm{IID}})=\frac{1}{180000},\qquad\operatorname{Var}(\hat\mu_{\mathrm{anti}})=\frac{1}{90000}$$
 
-### And a few that can beat the root-M wall
+The antithetic estimator has **twice the variance** and $\sqrt2$ times the SE at this cost. Switch the visual to the symmetric payoff to see repeated estimates spread out. A particular run can still land closer by luck; the variance statement concerns repeated runs.
 
-Three more, name-dropped: **stratified sampling** forces draws to cover the distribution evenly instead of clumping by luck; **importance sampling** over-samples the rare-but-important tail (where the payoff lives) and reweights to stay unbiased; and **quasi-Monte Carlo** swaps pseudo-random draws for **low-discrepancy sequences** (Sobol, Halton) that fill space more uniformly and can converge *faster* than $1/\sqrt{M}$ — sometimes closer to $1/M$. They're more delicate to deploy, but in the right hands they break the brutal rule outright.
+### When to use it
 
-<MatchConcepts
+Test the covariance of the actual paired outputs and compare error against computational cost. A reflected financial path needs the same model law, including any transformed shocks. Random-number reuse may save some setup cost, but two payoff evaluations are not automatically free. Keep pair averages as the independent units for error estimation.
+
+<MCQ
   client:visible
-  question="Match each variance-reduction idea to its core mechanism."
-  pairs={[
-    { term: 'Antithetic variates', definition: 'Pair each draw with its mirror so their errors partly cancel' },
-    { term: 'Control variates', definition: 'Correct the estimate using a related quantity whose true value you know exactly' },
-    { term: 'Importance sampling', definition: 'Over-sample the rare but important region and reweight to stay unbiased' },
-    { term: 'Stratified sampling', definition: 'Force the draws to cover the distribution evenly instead of clumping' },
-    { term: 'Quasi-Monte Carlo', definition: 'Use low-discrepancy sequences that fill space and can beat the 1/√M rate' },
-  ]}
-  explanation="Antithetic pairs mirrored draws; control variates lean on a known-value correlated quantity; importance sampling reweights tail-focused draws; stratification spreads draws evenly; quasi-Monte Carlo replaces random draws with low-discrepancy sequences and can converge faster than 1/√M."
+  question={"A symmetric payoff is identical under U and 1−U. At an equal budget of 1,000 payoff evaluations, what is the effect of using 500 mirrored pairs?"}
+  options={[
+  {
+    "text": "Twice the mean-estimator variance of 1,000 IID payoffs",
+    "correct": true
+  },
+  {
+    "text": "Half the variance because the inputs are reflected",
+    "correct": false
+  },
+  {
+    "text": "The same independent sample count of 1,000 pairs",
+    "correct": false
+  }
+]}
+  explanation={"Each pair contributes one distinct payoff observation, repeated twice. There are 500 independent groups rather than 1,000."}
 />
+
+## A control variate needs a correct known mean and a coefficient
+
+A control uses a related random output $X$ whose expectation $m_X$ is known **under the same model and probability measure**. With a coefficient $\beta$ fixed independently of production draws,
+
+$$\hat\mu_{\mathrm{cv}}=\bar Y-\beta(\bar X-m_X)$$
+
+It remains unbiased for $E[Y]$ when the known mean is correct. For IID pairs with finite second moments and $\operatorname{Var}(X)>0$,
+
+$$\operatorname{Var}(Y-\beta X)=v_Y+\beta^2v_X-2\beta\operatorname{Cov}(Y,X)$$
+
+$$\beta^*=\frac{\operatorname{Cov}(Y,X)}{v_X},\qquad v_{\mathrm{cv}}^*=v_Y(1-\rho_{YX}^2)$$
+
+The sign of $\beta$ matters: a negatively correlated control can help with a negative coefficient. High correlation alone does not validate an arbitrary coefficient. A zero-variance control contains no stochastic error to remove.
+
+### Correct and incorrect controls for the same exponential target
+
+Use $Y=e^U$, $X=U$, $m_X=1/2$, $v_X=1/12$. Integration gives $\operatorname{Cov}(e^U,U)=(3-e)/2\approx0.14085909$, so
+
+$$\beta^*=6(3-e)\approx1.69030903$$
+
+$$v_{\mathrm{cv}}^*\approx0.00394022,\qquad\mathrm{SE}_{N=1000}\approx0.00198500$$
+
+The control U is already available as an input in this toy, so its extra evaluation cost is negligible here. That cost advantage is not universal for a second option payoff or an estimated control price.
+
+<MonteCarloEfficiency
+  client:visible
+  mode={"control"}
+  title={"Change the coefficient or the assumed known mean"}
+/>
+
+A coefficient of 4 gives per-output variance about **0.44849625**, worse than the original 0.24203561. Using the optimal coefficient but a wrong assumed control mean of 0.6 creates bias
+
+$$\beta^*(0.6-0.5)\approx0.16903090$$
+
+without changing the sampling variance. The estimator now centres near **1.88731273**, rather than the target 1.71828183; a narrow sampling interval does not repair it.
+
+### When to use it
+
+Verify the control expectation under the production model, measure and discounting convention. A fixed pilot estimate of $\beta$ from an independent training sample preserves conditional unbiasedness when $m_X$ is exact, but the pilot costs compute and the coefficient may be inefficient. Fitting it on the production sample can introduce finite-sample bias and changes the inference problem. [MIT gives the fixed-control formula and an independent two-stage pilot approach](https://ocw.mit.edu/courses/15-450-analytics-of-finance-fall-2010/4fa033082ff5ee58722a67fe81f0dce7_MIT15_450F10_lec03.pdf). Compare total cost and validated estimator variance, not just payoff correlation.
+
+<FillBlank
+  client:visible
+  question={"Check the control before trusting its interval."}
+  text={"The known control expectation must belong to {{the same model and measure|any historical dataset|a convenient unrelated pricing formula}}. A fixed but poor coefficient can {{increase variance|guarantee zero variance|fix a wrong control mean}}."}
+  explanation={"The correction is unbiased only when the control mean is correct under the simulated law. The coefficient determines whether covariance offsets enough of its added variance."}
+/>
+
+## Stratification uses known stratum weights
+
+**Stratified sampling** divides the input distribution into regions with known probabilities and samples within each. For strata $h$ with probabilities $p_h$,
+
+$$\hat\mu=\sum_h p_h\bar Y_h$$
+
+For $U\sim\mathrm{Uniform}(0,1)$ and $Y=U$, take one independent sample in each half. Each within-half variance is $(1/2)^2/12=1/48$. The equally weighted estimator has variance
+
+$$\left(\frac12\right)^2\frac1{48}+\left(\frac12\right)^2\frac1{48}=\frac1{96}$$
+
+Two IID draws have mean variance $(1/12)/2=1/24$. This particular stratified design cuts variance to one quarter at the same two evaluations.
+
+| Region | Probability weight | One illustrated draw | Weighted contribution |
+|---|---:|---:|---:|
+| Lower half | 0.5 | 0.1 | 0.05 |
+| Upper half | 0.5 | 0.8 | 0.40 |
+| Sum | 1 | | Estimate 0.45 |
+
+### When to use it
+
+Use known probability weights and feasible conditional sampling. Unequal-probability strata must not be averaged equally merely because they receive the same sample count. The allocation of samples across strata affects variance and cost; a useful partition depends on where the target output varies.
+
+<MCQ
+  client:visible
+  question={"Two strata have probabilities 0.2 and 0.8. Their estimated conditional means are 1 and 3. What is the stratified mean estimate?"}
+  options={[
+  {
+    "text": "2.6",
+    "correct": true
+  },
+  {
+    "text": "2.0",
+    "correct": false
+  },
+  {
+    "text": "3.2",
+    "correct": false
+  }
+]}
+  explanation={"Use the probability weights: 0.2 × 1 + 0.8 × 3 = 2.6. Equal averaging would silently change the target distribution."}
+/>
+
+## Importance sampling changes the law and reweights the output
+
+**Importance sampling** draws from a proposal density $q$ instead of the target density $p$, then corrects the output:
+
+$$E_p[f(X)]=E_q\!\left[f(X)\frac{p(X)}{q(X)}\right]$$
+
+The proposal must cover every region where $f(x)p(x)$ contributes, the likelihood ratio must be computable, and finite-variance SE needs a finite second moment of the **weighted output**. A poor proposal can increase variance or make it infinite. [Owen derives these support and moment conditions](https://artowen.su.domains/mc/Ch-var-is.pdf).
+
+As an invented arithmetic check, an event has target probability 0.01 but proposal probability 0.5. The weighted indicator is 0.02 on an event and zero otherwise:
+
+| Under the proposal | Proposal probability | Indicator × likelihood ratio |
+|---|---:|---:|
+| Event | 0.5 | 1 × (0.01 / 0.5) = 0.02 |
+| No event | 0.5 | 0 |
+
+Its expectation is $0.5(0.02)=0.01$, and variance $0.5(0.02)^2-0.01^2=0.0001$, versus 0.0099 for the target Bernoulli indicator. Here the probabilities are supplied to check the weights; in a useful integration problem the event integral is unknown even though pointwise density ratios can be evaluated. Counting proposal events without weights would estimate 0.5 instead of 0.01.
+
+### When to use it
+
+Choose a proposal for the output being estimated and inspect weight tails and repeated-run stability. Oversampling a tail is not enough: the correction defines the target, and unstable weighted outputs invalidate an ordinary finite-variance interval. Importance sampling generally changes the variance constant; it does not automatically replace root-count convergence with a faster rate.
 
 <Categorize
   client:visible
-  question="Sort each move by whether it shrinks the variance (s²) or just cranks the path count (M)."
-  buckets={['Variance reduction (cut s²)', 'Brute force (raise M)']}
+  question={"Audit an importance-sampling claim."}
+  buckets={[
+  "Required for the stated ordinary weighted-mean calculation",
+  "Not guaranteed by oversampling the tail"
+]}
   items={[
-    { text: 'Pair each draw with its sign-flipped mirror', bucket: 'Variance reduction (cut s²)' },
-    { text: 'Subtract a correlated known-value control’s simulated error', bucket: 'Variance reduction (cut s²)' },
-    { text: 'Swap pseudo-random draws for a Sobol sequence', bucket: 'Variance reduction (cut s²)' },
-    { text: 'Go from 50,000 to 200,000 paths and call it a day', bucket: 'Brute force (raise M)' },
-    { text: 'Rent four times the cores and run four times the scenarios', bucket: 'Brute force (raise M)' },
-  ]}
-  explanation="Antithetic, control variates, and quasi-Monte Carlo all reduce the per-path scatter (s² or the effective convergence rate), buying accuracy for free. Adding paths or cores just raises M and pays the full 1/√M tax."
+  {
+    "text": "Proposal covers every contributing target region",
+    "bucket": "Required for the stated ordinary weighted-mean calculation"
+  },
+  {
+    "text": "Correct computable likelihood-ratio weights",
+    "bucket": "Required for the stated ordinary weighted-mean calculation"
+  },
+  {
+    "text": "Smaller or even finite weighted-output variance",
+    "bucket": "Not guaranteed by oversampling the tail"
+  },
+  {
+    "text": "A faster-than-root-count convergence rate",
+    "bucket": "Not guaranteed by oversampling the tail"
+  }
+]}
+  explanation={"Support and correct weights establish the expectation identity under integrability. Variance and efficiency require additional checks."}
 />
 
-## The wrongness no path count fixes
+## Randomized QMC measures uncertainty across randomizations
 
-Here is the keystone caution of the entire topic, and the one that separates a quant from a button-pusher.
+**Quasi-Monte Carlo (QMC)** uses structured low-discrepancy points rather than IID points. Suitable integrands and dimensions can permit better rates, but the benefit is conditional; discontinuity, effective dimension and construction choices matter. Sobol constructions also have sample-size rules, commonly powers of two. [SciPy describes these conditions and the distinction between deterministic and randomized QMC](https://docs.scipy.org/doc/scipy/reference/stats.qmc.html).
 
-**Convergence is to the answer of your *model*, not of *reality*.** Every result so far — the standard error, the confidence interval, the variance tricks — describes how fast your estimate homes in on what *the model* would say with infinite paths. It says **nothing** about whether the model is right.
+A single deterministic sequence does not provide an IID sampling distribution by treating its points as independent. With **randomized QMC**, create independent scrambles, compute one mean $Z_r$ per scramble, and estimate uncertainty across those means:
 
-**Definition.** Monte Carlo error has two components. **Variance** is the random wobble between runs — that's what $M$ and variance reduction attack. **Bias** is the gap between your model's true value and *reality's* true value — and **more paths never touch it.** As $M \to \infty$, your estimate converges to the model's number with a vanishing CI wrapped tightly around it. If that model's number is wrong, you've simply rendered a wrong answer in glorious high resolution.
+$$\bar Z=\frac1R\sum_r Z_r,\qquad\widehat{\mathrm{SE}}(\bar Z)=\frac{s_Z}{\sqrt R}$$
 
-**Worked feel.** You price tail risk assuming returns are normal (thin tails), but the real returns are fat-tailed. Run a million paths and your CI shrinks to a hairline around, say, a $10M VaR. It *looks* authoritative — tight interval, lots of paths, beautiful histogram. But reality's fat tails mean the true risk is $18M. No number of paths closes that $8M gap, because the gap is **bias** baked into the normal assumption, not **variance** you can average away. You have manufactured precision about a falsehood.
+For 16 independent scrambles, each with 1,024 evaluations, total cost is **16,384 evaluations**. Suppose their mean is 1.718 and their between-scramble SD is 0.008. SE is $0.008/4=0.002$. If an approximately normal replicate-mean analysis is justified, a t-based interval with 15 degrees of freedom uses about 2.131:
 
-The usual culprits that bias survives any path count:
+$$1.718\pm2.131(0.002)=[1.713738,1.722262]$$
 
-- **Wrong $\sigma$** — too low a volatility, and every tail you simulate is too tame.
-- **Thin tails where reality is fat** — normal where the data screams Student-t.
-- **Stale correlations** — a covariance matrix from calm times that collapses to "everything falls together" in a crisis.
-- **I.i.d. where there's clustering** — assuming independent days when volatility actually arrives in storms (calm, calm, *chaos chaos chaos*).
+| Measurement | Relevant count |
+|---|---:|
+| Total function evaluations | 16,384 |
+| Independent randomized block estimates | 16 |
+| Count in the between-block SE denominator | Square root of 16 |
 
-<Callout variant="warning" title="More paths reduce variance, never bias">
-This is the line to tattoo somewhere visible. Variance reduction and a bigger M only tighten the interval around **your model's** answer. If the model is wrong — wrong σ, thin tails, stale correlations, i.i.d. where reality clusters — a billion paths just gives you a *confidently precise wrong number*. The shrinking CI is not a sign you're approaching truth; it's a sign you're approaching your assumption. Stress-test the **inputs**, not only the output, and never let a tight error bar launder a bad model into something that looks rigorous.
-</Callout>
+### When to use it
+
+Assess randomization and interval quality at the **replicate** level and respect the construction’s point counts. [SciPy’s QMC integration documentation uses independent scrambled estimates and a t-based interval across them](https://docs.scipy.org/doc/scipy/reference/generated/scipy.integrate.qmc_quad.html). QMC does not simply shrink the ordinary IID per-point sample variance; it changes the joint sampling design. A finite-size comparison should include both total cost and the resulting estimator error.
+
+<MatchConcepts
+  client:visible
+  question={"Match the design to its uncertainty unit."}
+  pairs={[
+  {
+    "term": "Ordinary IID mean",
+    "definition": "Independent per-path output"
+  },
+  {
+    "term": "Antithetic mean",
+    "definition": "Independent pair average"
+  },
+  {
+    "term": "Randomized QMC average",
+    "definition": "Independent randomized block estimate"
+  },
+  {
+    "term": "Fixed-grid numerical approximation",
+    "definition": "Grid refinement and discretization analysis, not more independent paths alone"
+  }
+]}
+/>
+
+## More paths do not remove a fixed discretization or model error
+
+There are several targets to distinguish: a numerical approximation’s mean, the intended mathematical model’s mean, and a financially appropriate model or benchmark. For a fixed comparison target $\theta$, finite mean squared error obeys
+
+$$E[(\hat\mu-\theta)^2]=\operatorname{Var}(\hat\mu)+(E[\hat\mu]-\theta)^2$$
+
+If per-output SD is 100, $M=10{,}000$ gives SE 1. With a **hypothetical fixed bias of 3**, RMSE is $\sqrt{1+9}=\sqrt{10}\approx3.1623$. At one million samples, SE falls to 0.1 but RMSE is $\sqrt{0.01+9}\approx3.0017$. A financial model’s real discrepancy is generally unknown; the visual’s bias is supplied for this illustration, not estimated by the simulation.
+
+<MonteCarloEfficiency
+  client:visible
+  mode={"precision"}
+  evaluations={10000}
+  title={"Sampling precision can improve while a fixed error remains"}
+/>
+
+### A time-step error has a different lever
+
+Consider an invented GBM with $dS=0.10S\,dt+0.20S\,dW$, $S_0=100$, over one year. Its exact terminal **mean level**, not log-growth rate, is $100e^{0.10}\approx110.51709181$. With $L$ equal Euler–Maruyama steps and independent zero-mean shocks, the numerical terminal mean is
+
+$$E[S_1^{\mathrm{Euler}}]=100\left(1+\frac{0.10}{L}\right)^L$$
+
+| Euler steps per path | Numerical terminal mean | Difference from the exact GBM mean |
+|---:|---:|---:|
+| 1 | 110.000000 | −0.517092 |
+| 2 | 110.250000 | −0.267092 |
+| 4 | 110.381289 | −0.135803 |
+| 12 | 110.471307 | −0.045785 |
+
+More independent paths at **one fixed step** estimate 110 more precisely; refining the step changes the numerical target. GBM has an exact step available, so this Euler example diagnoses discretization rather than recommending it. [Higham distinguishes numerical SDE approximation and weak convergence](https://epubs.siam.org/doi/10.1137/S0036144500378302).
+
+### When to use it
+
+Budget separately for sampling error, discretization, parameter uncertainty and model adequacy. In the ideal IID mean problem, finite sampling does not itself bias the sample mean; other estimators, such as sample quantiles or fitted-control procedures, can have finite-sample bias that changes with sample size. Therefore “more paths never reduce any bias” is too broad. The precise claim is that more paths **with the model, estimator target and discretization held fixed do not correct a fixed target discrepancy**. Refinement, validated estimators and alternative models address different errors.
 
 <MCQ
   client:visible
-  question="A risk model assumes normal returns. The real returns are fat-tailed. You increase from 100,000 to 10 million paths. What happens to the error in your VaR estimate?"
+  question={"One Euler step has a numerical mean of 110 while the exact chosen model has mean 110.5171. What does increasing independent path count at that same step do?"}
   options={[
-    { text: 'The variance (random wobble) shrinks toward zero, but the bias from the wrong tail assumption is untouched — the number is precisely wrong', correct: true },
-    { text: 'Both the variance and the bias shrink, so the estimate converges to the true risk' },
-    { text: 'Nothing changes, because Monte Carlo error does not depend on the path count' },
-    { text: 'The bias shrinks but the variance grows, so accuracy is unchanged' },
-  ]}
-  explanation="More paths attack only variance. The CI tightens around the model's answer, but the gap between the normal model and fat-tailed reality is bias, which no path count removes. You end with a precise number that is systematically wrong."
+  {
+    "text": "Reduces sampling uncertainty around 110 while leaving this time-step discrepancy",
+    "correct": true
+  },
+  {
+    "text": "Automatically moves the numerical mean to 110.5171",
+    "correct": false
+  },
+  {
+    "text": "Proves the chosen financial model matches reality",
+    "correct": false
+  }
+]}
+  explanation={"Path count and time-step refinement are different levers. Even eliminating this numerical discrepancy would not establish financial model adequacy."}
 />
 
-<Reveal client:visible>
-  <details className="rounded-card border border-ink-100 bg-surface px-4 py-3">
-    <summary className="cursor-pointer font-medium">If variance reduction gives accuracy for free, why not always use it?</summary>
+## Rebuild the error report
 
-    Because "free" hides real costs. Antithetic variates only help when the payoff is roughly monotonic in the draws — for a payoff that's symmetric or wiggly, the mirrored pair can be *positively* correlated and the trick backfires, *raising* variance. Control variates demand a genuinely correlated quantity whose true value you actually know in closed form; find a bad control and you add noise instead of removing it, and a poorly chosen scaling coefficient can hurt. Quasi-Monte Carlo's slick convergence degrades in very high dimensions and needs care with how you map the sequence to your paths. Each technique is a sharp tool with a wrong end. The discipline is to check that the trick *fits the problem* — and to measure the realized standard error before and after, so you know it actually helped rather than assuming it did. And none of them, ever, touch bias.
-  </details>
-</Reveal>
-
-## Putting it together
-
-A Monte Carlo answer is a random variable, so it ships with two numbers: the estimate **and** its standard error $\mathrm{SE} = s/\sqrt{M}$. That square root is brutal — halving the error quadruples the paths, one more decimal costs 100×. Always wrap the result in a confidence interval, $\hat\mu \pm 1.96\,\mathrm{SE}$, because a bare number bluffs a precision it hasn't earned. When brute force gets too expensive, attack the variance instead of the path count: **antithetic variates** mirror your draws to cancel noise, **control variates** borrow a known answer to correct your estimate, and **stratified/importance/quasi-Monte Carlo** go further, sometimes beating the $1/\sqrt{M}$ wall entirely. And then the line you never forget: **more paths reduce variance, never bias.** Tighten the interval all you like — if the model is wrong, you've only sharpened the resolution on a lie.
+Name the target and estimator, count independent groups and evaluations separately, and report a validated uncertainty measure. Compare variance-reduction methods at equal total cost and check their conditions. Then test what sampling cannot diagnose: numerical refinement, calibration uncertainty and the financial assumptions themselves.
 
 <MindMap
   client:visible
-  title="Convergence and variance reduction — the whole toolkit"
-  caption="Quantify the error, shrink it cheaply, and never confuse a tight interval with a true answer."
+  title={"A simulation error report with its assumptions attached"}
+  caption={"Precision, efficiency and model adequacy require different evidence."}
   root={{
-    label: 'Convergence and variance reduction',
-    children: [
-      {
-        label: 'Quantify the error',
-        children: [
-          { label: 'Each run is a random variable' },
-          { label: 'SE = s / √M' },
-          { label: 'Report a 95% CI: estimate ± 1.96·SE' },
-        ],
-      },
-      {
-        label: 'The brutal rule',
-        children: [
-          { label: 'Error shrinks like 1/√M' },
-          { label: 'Halve the error → quadruple the paths' },
-          { label: 'One more digit → 100× the paths' },
-        ],
-      },
-      {
-        label: 'Variance reduction',
-        children: [
-          { label: 'Antithetic variates: mirror the draws' },
-          { label: 'Control variates: correct via a known value' },
-          { label: 'Stratified, importance, quasi-MC can beat 1/√M' },
-        ],
-      },
-      {
-        label: 'What paths never fix',
-        children: [
-          { label: 'More paths reduce variance, never bias' },
-          { label: 'Wrong σ, thin tails, stale correlations, false i.i.d.' },
-          { label: 'Tight CI around a bad model = precise lie' },
-        ],
-      },
-    ],
-  }}
+  "label": "Monte Carlo error",
+  "children": [
+    {
+      "label": "Mean sampling",
+      "children": [
+        {
+          "label": "IID finite variance for root-count SE"
+        },
+        {
+          "label": "Intervals are approximate and model-conditional"
+        }
+      ]
+    },
+    {
+      "label": "Equal-cost estimators",
+      "children": [
+        {
+          "label": "Antithetic payoff correlation can help or hurt"
+        },
+        {
+          "label": "Controls need correct mean and coefficient"
+        }
+      ]
+    },
+    {
+      "label": "Other designs",
+      "children": [
+        {
+          "label": "Strata need probability weights"
+        },
+        {
+          "label": "Importance weights need support and moments"
+        },
+        {
+          "label": "RQMC uncertainty uses independent randomizations"
+        }
+      ]
+    },
+    {
+      "label": "Beyond sampling",
+      "children": [
+        {
+          "label": "Fixed discretization requires refinement"
+        },
+        {
+          "label": "Model and parameter assumptions need separate checks"
+        }
+      ]
+    }
+  ]
+}}
 />
-
 <Quiz
   client:visible
-  title="Recap: convergence and variance reduction"
+  title={"Choose the estimator, count and error measure"}
   questions={[
-    {
-      question: 'A simulation of per-path payoffs has sample standard deviation s = 200 over M = 40,000 paths. What is the standard error of the mean estimate?',
-      options: [
-        { text: '1.0 — since 200 / √40,000 = 200 / 200', correct: true },
-        { text: '200 — the standard error equals the sample standard deviation' },
-        { text: '0.005 — divide s by M directly, not by its square root' },
-        { text: '40,000 — the standard error grows with the path count' },
-      ],
-      explanation: 'SE = s/√M = 200/√40,000 = 200/200 = 1.0. The standard error divides s by the square root of M, not by M, and shrinks (not grows) with more paths.',
-    },
-    {
-      question: 'Your estimate has a standard error of $2.0M at 30,000 paths. Roughly how many paths bring the standard error down to $0.5M?',
-      options: [
-        { text: '480,000 paths — a 4× tighter error needs 16× the paths', correct: true },
-        { text: '120,000 paths — 4× tighter needs 4× the paths' },
-        { text: '60,000 paths — doubling the paths is enough' },
-        { text: '7,500 paths — fewer paths give a smaller error' },
-      ],
-      explanation: 'Going from 2.0M to 0.5M is a factor k = 4 tighter, which costs k² = 16× the paths: 30,000 × 16 = 480,000. The 1/√M rule means accuracy scales with the square root of effort.',
-    },
-    {
-      question: 'A quant reports a simulated price of 8.40 with a standard error of 0.20. What is the right way to communicate this result?',
-      options: [
-        { text: 'As 8.40 with a 95% CI of about 8.01 to 8.79 (8.40 ± 1.96 × 0.20)', correct: true },
-        { text: 'As exactly 8.40 — the standard error is internal and need not be shown' },
-        { text: 'As 8.40 ± 0.20, which is already the 95% interval' },
-        { text: 'As anything between 0 and 8.40, since simulations are uncertain' },
-      ],
-      explanation: 'A 95% CI is estimate ± 1.96·SE = 8.40 ± 0.392, about 8.01 to 8.79. A bare point estimate hides the noise, and ± one SE is only a 68% interval, not 95%.',
-    },
-    {
-      question: 'Why do antithetic variates reduce the variance of a Monte Carlo estimate?',
-      options: [
-        { text: 'Each draw is paired with its mirror, and the negative correlation between the pair makes their errors partly cancel in the average', correct: true },
-        { text: 'They double the number of paths, so the 1/√M rule does the work' },
-        { text: 'They remove the bias from a wrong distribution assumption' },
-        { text: 'They replace random draws with the single most likely scenario' },
-      ],
-      explanation: 'Pairing a draw with its mirror (u with 1−u, or Z with −Z) creates negative correlation, so the variance of the pair’s average is lower than for two independent draws — especially for monotonic payoffs. It does not fix bias, and it is a variance trick, not just more paths.',
-    },
-    {
-      question: 'A model assumes constant correlations estimated in a calm period; in a crisis everything crashes together. You run ten million paths with antithetic variates. What is true of the result?',
-      options: [
-        { text: 'The interval is tight, but the stale-correlation bias is untouched, so the precise number understates the true crisis risk', correct: true },
-        { text: 'The extra paths and variance reduction together remove the correlation bias' },
-        { text: 'The result is now exactly correct because ten million paths is effectively infinite' },
-        { text: 'Antithetic variates specifically correct stale correlations' },
-      ],
-      explanation: 'Paths and variance reduction shrink only variance. Stale correlations are a model bias — the gap between the model and reality — which no path count or antithetic pairing can close. You get a tight, confident, and wrong number.',
-    },
-  ]}
+  {
+    "question": "An IID finite-variance output has SD 200 and 40,000 independent draws. What is the mean SE?",
+    "options": [
+      {
+        "text": "1",
+        "correct": true
+      },
+      {
+        "text": "200",
+        "correct": false
+      },
+      {
+        "text": "0.005",
+        "correct": false
+      }
+    ],
+    "explanation": "Divide 200 by the square root of 40,000, which is 200."
+  },
+  {
+    "question": "Two thousand antithetic payoff evaluations form one thousand independent pairs. Which SE calculation uses the right sampling unit?",
+    "options": [
+      {
+        "text": "SD of pair averages divided by root 1,000",
+        "correct": true
+      },
+      {
+        "text": "SD of all paired payoffs divided by root 2,000 as if independent",
+        "correct": false
+      },
+      {
+        "text": "The absolute difference from one other seed",
+        "correct": false
+      }
+    ],
+    "explanation": "Dependence within each pair is deliberate. Independent pair means are the observations for ordinary mean inference."
+  },
+  {
+    "question": "Which two choices can damage an otherwise valid control estimator?",
+    "options": [
+      {
+        "text": "A poorly chosen fixed coefficient can increase variance",
+        "correct": true
+      },
+      {
+        "text": "An incorrect assumed control mean can shift the estimator target",
+        "correct": true
+      },
+      {
+        "text": "A negative control correlation always forbids variance reduction",
+        "correct": false
+      },
+      {
+        "text": "An independent pilot coefficient always eliminates all production variance",
+        "correct": false
+      }
+    ],
+    "explanation": "The variance is quadratic in the coefficient, and the bias equals beta times the error in the control mean. A negative coefficient can use negative correlation.",
+    "allowMultiple": true
+  },
+  {
+    "question": "A rare-event sample has no hits and a zero plug-in SD. What follows?",
+    "options": [
+      {
+        "text": "The usual normal interval may be poorly calibrated; zero SD does not establish zero event probability",
+        "correct": true
+      },
+      {
+        "text": "The event is impossible under every possible parameter value",
+        "correct": false
+      },
+      {
+        "text": "A fixed zero interval must have exact 95% coverage",
+        "correct": false
+      }
+    ],
+    "explanation": "Unseen rare events can leave a misleading zero sample variance. Use an inference method appropriate to the event-count design."
+  },
+  {
+    "question": "Sixteen independent scrambled blocks each use 1,024 QMC points. Between-block SD is 0.008. What is the SE of their average?",
+    "options": [
+      {
+        "text": "0.002",
+        "correct": true
+      },
+      {
+        "text": "0.0000625",
+        "correct": false
+      },
+      {
+        "text": "0.008",
+        "correct": false
+      }
+    ],
+    "explanation": "The independent units are the 16 block means, so divide 0.008 by four. Total point count is a cost, not the independent-block denominator."
+  },
+  {
+    "question": "Which conclusions need separate evidence beyond a narrow mean sampling interval?",
+    "options": [
+      {
+        "text": "The time grid adequately approximates the intended model",
+        "correct": true
+      },
+      {
+        "text": "The financial model and parameters suit the application",
+        "correct": true
+      },
+      {
+        "text": "The interval quantifies every individual future payoff",
+        "correct": false
+      },
+      {
+        "text": "Every reflected payoff pair has negative correlation",
+        "correct": false
+      }
+    ],
+    "explanation": "Sampling precision, numerical accuracy and financial model adequacy are distinct questions. Nor does a mean interval establish a payoff range or antithetic covariance.",
+    "allowMultiple": true
+  }
+]}
 />
-
-That closes the Monte Carlo toolkit. You can now generate the future from a model, simulate portfolios and price options on top of it, *and* — the part most practitioners skip — say honestly how accurate the answer is, buy that accuracy cheaply, and recognise the precise-looking lies that no amount of compute can save. The only thing left is to prove it: the **graded final exam** awaits, one locked question at a time. Bring your error bars.
