@@ -1119,3 +1119,6 @@ export type { ReserveBook, ReserveEntity, ReserveBooks, ReserveOperation, Reserv
 
 export { policyClaim, poolMoments, insuranceInputs, insuranceCase, InsuranceRiskLab } from '@/components/react/InsuranceRiskLab';
 export type { InsuranceRiskMode, InsuranceRiskLabels, InsuranceRiskLabProps } from '@/components/react/InsuranceRiskLab';
+
+export { capitalWaterfall, safeRecapitalisation, riskyCapitalReturns, financingSources, cashOpportunity, financingReplica, noTaxCapitalCost, currentInterestShield, datedCapitalShields, adjustedCapitalValue, matchedPerpetualWacc, discreteCapitalTradeoff, constrainedCorporateFunding, issuePriceTransfer, capitalTargetAdjustment, incentivePayoffs, assertCorporateNativeInputs, CorporateCapitalLab } from '@/components/react/CorporateCapitalLab';
+export type { CorporateCapitalLabels, CorporateCapitalInputs, CorporateCapitalView } from '@/components/react/CorporateCapitalLab';
