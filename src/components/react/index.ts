@@ -1098,3 +1098,6 @@ export type { ParityBudgetDirection, IdealParityBudgetInputs, KnownParityDividen
 
 export { proxyPolicyPopulation, abnormalReturn, routingActionPopulation, selectedIndependentPopulation, approximateAlphaInterval, PredictionAndActionLab } from '@/components/react/PredictionAndActionLab';
 export type { CausalLabMode, ProxyPolicy, CausalLabLabels, PredictionAndActionLabProps } from '@/components/react/PredictionAndActionLab';
+
+export { matchingHoldings, bondReceipts, fundingLedger, durationPayment, rollingLadder, matchingStress, CashFlowMatchingLab } from '@/components/react/CashFlowMatchingLab';
+export type { CashFlowMatchingLabels, CashFlowMatchingLabProps } from '@/components/react/CashFlowMatchingLab';
