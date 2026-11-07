@@ -1110,3 +1110,6 @@ export type { FuturesSettlementInputs, ExpiryCalendarInputs, SettlementDeliveryV
 
 export { clusteredMeanInformation, asOfTrainingRows, shrinkageRisk, seedEnsembleVariance, nullSearchProbability, normalReferenceSharpe, twoTrialSearchBenchmark, predictionTradingLedger, monitoringDifference, TemporalModelAudit } from '@/components/react/TemporalModelAudit';
 export type { ModelAuditMode, ModelAuditLabels, TemporalModelAuditProps } from '@/components/react/TemporalModelAudit';
+
+export { qaeCanonicalBound, qaeMedianFailure, qaePayoffEncoding, qaeAtomRisk, qaeResourceBudget, QaeEstimationBudget } from '@/components/react/QaeEstimationBudget';
+export type { QaeBudgetLabels, QaeBudgetMode, QaeEstimationBudgetProps } from '@/components/react/QaeEstimationBudget';
