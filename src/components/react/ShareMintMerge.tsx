@@ -415,7 +415,7 @@ export function ShareMintMerge({
           step={1}
           value={yes}
           onChange={(e) => setYes(Number(e.target.value))}
-          className="mt-2 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
+          className="mt-2 h-8 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
         />
       </div>
 

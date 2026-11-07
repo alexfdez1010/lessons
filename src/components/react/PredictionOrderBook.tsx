@@ -51,11 +51,6 @@ export interface PredictionOrderBookProps {
   className?: string;
 }
 
-const prefersReducedMotion = (): boolean =>
-  typeof window !== 'undefined' &&
-  typeof window.matchMedia === 'function' &&
-  window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
 const usd = new Intl.NumberFormat('en-US', {
   style: 'currency',
   currency: 'USD',
@@ -158,7 +153,6 @@ export function PredictionOrderBook({
   className,
 }: PredictionOrderBookProps) {
   const id = useId();
-  const reduceMotion = prefersReducedMotion();
 
   // Ascending asks (best/lowest first) — the order in which a buy consumes them.
   const asksAsc = [...asks].sort((a, b) => a.price - b.price);
@@ -190,7 +184,8 @@ export function PredictionOrderBook({
     ...bidsDesc.map((l) => l.size),
   );
 
-  const transition = reduceMotion ? undefined : 'width 240ms ease, background-color 200ms ease';
+  // Presentation only: stable CSS serialization; motion preference is handled by CSS.
+  const barPercent = (amount: number) => Number(Math.min(100, amount / maxLevelSize * 100).toFixed(3));
 
   const ariaLabel = fill.partial
     ? `${title}. Best ask ${cents(bestAsk)}, best bid ${cents(bestBid)}, spread ${cents(
@@ -216,7 +211,7 @@ export function PredictionOrderBook({
     consumedShares: number,
   ) => {
     const isAsk = side === 'ask';
-    const widthPct = Math.min(100, (level.size / maxLevelSize) * 100);
+    const widthPct = barPercent(level.size);
     const eaten = consumedShares > 0;
     const fullyEaten = consumedShares >= level.size - 1e-6;
     return (
@@ -231,19 +226,18 @@ export function PredictionOrderBook({
         <span
           aria-hidden="true"
           className={cx(
-            'absolute inset-y-0 left-0 rounded-pill',
+            'absolute inset-y-0 left-0 rounded-pill motion-safe:transition-[width,background-color] motion-safe:duration-[240ms,200ms] motion-safe:ease-[ease] motion-reduce:transition-none',
             isAsk ? 'bg-accent-100' : 'bg-brand-100',
           )}
-          style={{ width: `${widthPct}%`, transition }}
+          style={{ width: `${widthPct}%` }}
         />
         {/* Consumed overlay — how much of this level the order ate. */}
         {eaten && (
           <span
             aria-hidden="true"
-            className="absolute inset-y-0 left-0 rounded-pill bg-brand-300/60"
+            className="absolute inset-y-0 left-0 rounded-pill bg-brand-300/60 motion-safe:transition-[width,background-color] motion-safe:duration-[240ms,200ms] motion-safe:ease-[ease] motion-reduce:transition-none"
             style={{
-              width: `${Math.min(100, (consumedShares / maxLevelSize) * 100)}%`,
-              transition,
+              width: `${barPercent(consumedShares)}%`,
             }}
           />
         )}
@@ -352,7 +346,7 @@ export function PredictionOrderBook({
           step={10}
           value={size}
           onChange={(e) => setSize(Number(e.target.value))}
-          className="mt-2 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
+          className="mt-2 h-8 w-full accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
         />
       </div>
 

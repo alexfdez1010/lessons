@@ -969,3 +969,6 @@ export type { Three, KeyRateCashFlow, KeyRateInputs, KeyRateCurveHedgeProps } fr
 
 export { regimePath, RegimeAverageConvergence, constantHazardProbabilities, ConstantHazardSurvival, equalErrorEnsembleVariance, EnsembleErrorVariance } from '@/components/react/ErgodicityComparisons';
 export type { RegimeAverageConvergenceProps, ConstantHazardSurvivalProps, EnsembleErrorVarianceProps } from '@/components/react/ErgodicityComparisons';
+
+export { calculatePredictionPosition, PredictionPositionRisk, calculateJointBinaryBook, JointBinaryBook } from '@/components/react/PredictionPositionRisk';
+export type { PredictionPositionInputs, PredictionPositionRiskProps, JointBinaryInputs, JointBinaryBookProps } from '@/components/react/PredictionPositionRisk';
