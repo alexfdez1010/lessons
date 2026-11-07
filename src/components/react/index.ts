@@ -1002,3 +1002,6 @@ export type { Matrix2, AbsorptionStep, AbsorbingReserveChainProps, AbsorbingMatr
 
 export { calculateRealExchange, RealExchangeRateBasket } from '@/components/react/RealExchangeRateBasket';
 export type { RealExchangeInputs, RealExchangeRateBasketProps } from '@/components/react/RealExchangeRateBasket';
+
+export { summarizeReturnPath, symmetricGrowthModel, VolatilityGrowthLab } from '@/components/react/VolatilityGrowthLab';
+export type { VolatilityGrowthLabProps } from '@/components/react/VolatilityGrowthLab';
