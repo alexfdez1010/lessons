@@ -1029,3 +1029,6 @@ export type { TwoStatePriceInputs, StatePriceLabels, StatePriceView, StatePriceE
 
 export { calculateCdsLegs, CdsLegsLedger, calculateCdsMark, CdsMarkLedger, calculateHazardCurve, bootstrapHazardCurve, HazardCurveLedger } from '@/components/react/CdsPricingLedger';
 export type { CdsLegInputs, CdsLegsLedgerProps, CdsMarkInputs, CdsMarkLedgerProps, HazardCurveInputs, HazardCurveLedgerProps } from '@/components/react/CdsPricingLedger';
+
+export { calculateCreditCashflows, calculateCreditRegimes, calculateCreditDependence, calculateCreditIntensity, CreditRiskLab } from '@/components/react/CreditRiskLab';
+export type { CreditCashInputs, CreditRiskLabels, CreditRiskLabProps } from '@/components/react/CreditRiskLab';
