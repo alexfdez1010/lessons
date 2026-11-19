@@ -55,6 +55,7 @@ const defaults = {
   caption: 'Invented example. Daily volume 1,000,000 shares, arrival price 100 USD and daily return volatility 2%. For scale, slicing and capacity, the separately stipulated fill-impact path is I(q)=0.02 sqrt(q/V), so average impact is two thirds of completion impact. That path is not implied by an empirical endpoint fit. No spread, fees, drift or credit effects unless explicitly included. No predicted execution or guaranteed profitability.'
 };
 export type ImpactCostLabels = typeof defaults;
+export { defaults as impactCostDefaultLabels };
 export interface ImpactCostLabProps { mode?: ImpactCostMode; orderPercent?: number; locale?: string; labels?: Partial<ImpactCostLabels>; }
 const rangeClass = 'block h-8 w-full accent-brand-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600';
 const selectClass = 'mt-2 block w-full rounded-lg border border-ink-200 bg-surface px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600';

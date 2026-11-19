@@ -1,8 +1,8 @@
 import { expect, test } from 'bun:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { readFileSync } from 'node:fs';
-import { ImpactCostLab, squareRootImpact, cumulativeImpactCost, impactSegmentCost, signedExecutionCost, illustrativeImpactDecay, rateImpactCost, impactCapacity } from '@/components/react/ImpactCostLab';
+import lesson from '@/content/lessons/es/algorithmic-trading-and-execution/market-impact-and-the-square-root-law.mdx' with { type: 'text' };
+import { ImpactCostLab, impactCostDefaultLabels, squareRootImpact, cumulativeImpactCost, impactSegmentCost, signedExecutionCost, illustrativeImpactDecay, rateImpactCost, impactCapacity } from '@/components/react/ImpactCostLab';
 test('keeps signed return, average fill and currency amounts distinct for buys and sells',()=>{
  const buy=signedExecutionCost('buy',100,100.4,100.6,100000), sell=signedExecutionCost('sell',100,99.6,99.4,100000);
  for(const z of [buy,sell]){expect(z.averageReturn).toBeCloseTo(.004,12);expect(z.completionReturn).toBeCloseTo(.006,12);expect(z.cash).toBeCloseTo(40000,7);}
@@ -35,6 +35,9 @@ test('capacity and monetary optimum differ; all test quantities respect the chos
 test('author guards reject malformed domains and all seven modes expose localised real scroll tables',()=>{
  for(const props of [{mode:'wrong'},{orderPercent:0},{orderPercent:30.25},{mode:'scale',orderPercent:1.25},{mode:'horizon',orderPercent:21},{labels:{caption:''}}])expect(()=>renderToStaticMarkup(createElement(ImpactCostLab,props as any))).toThrow();
  for(const fn of [()=>squareRootImpact(-1),()=>squareRootImpact(100,0),()=>signedExecutionCost('buy',0,100,100,10),()=>illustrativeImpactDecay(-1,20,30),()=>rateImpactCost(100,0),()=>impactCapacity(30,-1),()=>impactSegmentCost(5,4)])expect(fn).toThrow();
- const labels=JSON.parse(readFileSync('/tmp/lessons-run100/088/es-labels.json','utf8')),en=JSON.parse(readFileSync('/tmp/lessons-run100/088/en-labels.json','utf8'));expect(Object.keys(labels).sort()).toEqual(Object.keys(en).sort());
+ const match = lesson.match(/<ImpactCostLab\b[^>]*?\blabels=\{(\{[\s\S]*?\})\}/);
+ if (!match) throw new Error('Missing ImpactCostLab labels in the Spanish lesson');
+ const labels = JSON.parse(match[1]);
+ expect(Object.keys(labels).sort()).toEqual(Object.keys(impactCostDefaultLabels).sort());
  for(const mode of ['measurement','scale','horizon','decay','slicing','rate','capacity']as const){const html=renderToStaticMarkup(createElement(ImpactCostLab,{mode,locale:'es-ES',labels}));expect(html).toContain('tabindex="0"');expect(html).toContain('block w-full max-w-full overflow-x-auto');expect(html).toContain(labels.table);expect(html).not.toContain('NaN');expect(html).not.toContain('Infinity');expect(html).not.toMatch(/<svg[^>]*>[\s\S]*?<text /);}
 });

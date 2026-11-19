@@ -1,8 +1,8 @@
 import {expect,test} from 'bun:test';
 import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
-import {readFileSync} from 'node:fs';
-import {PredictionAndActionLab,proxyPolicyPopulation,abnormalReturn,routingActionPopulation,selectedIndependentPopulation,approximateAlphaInterval} from '@/components/react/PredictionAndActionLab';
+import lesson from '@/content/lessons/es/causal-inference-for-alpha-and-execution/correlation-is-not-alpha.mdx' with { type: 'text' };
+import {PredictionAndActionLab,predictionAndActionDefaultLabels,proxyPolicyPopulation,abnormalReturn,routingActionPopulation,selectedIndependentPopulation,approximateAlphaInterval} from '@/components/react/PredictionAndActionLab';
 test('enumerated noisy population separates correlation, slope and realised policy risk',()=>{
  const z=proxyPolicyPopulation(2,10);expect(z.rows).toHaveLength(8);expect(z.rows.reduce((s,r)=>s+r.mass,0)).toBeCloseTo(1,14);
  const meanX=z.rows.reduce((s,r)=>s+r.mass*r.original,0),meanY=z.rows.reduce((s,r)=>s+r.mass*r.outcome,0),vx=z.rows.reduce((s,r)=>s+r.mass*(r.original-meanX)**2,0),vy=z.rows.reduce((s,r)=>s+r.mass*(r.outcome-meanY)**2,0),cov=z.rows.reduce((s,r)=>s+r.mass*(r.original-meanX)*(r.outcome-meanY),0);
@@ -33,7 +33,10 @@ test('future-dependent common-effect selection induces association from independ
 test('visible author controls reject invalid steps and all localised modes expose actual focusable tables',()=>{
  for(const props of [{mode:'bad'},{mode:'proxy',coefficientPercent:1},{mode:'proxy',regimePercent:55},{mode:'action',selectionPercent:85},{mode:'selection',conditioned:'yes'},{labels:{caption:''}}])expect(()=>renderToStaticMarkup(createElement(PredictionAndActionLab,props as any))).toThrow();
  for(const f of [()=>proxyPolicyPopulation(20,10),()=>proxyPolicyPopulation(2,-1),()=>proxyPolicyPopulation(2,10,'observed',1.1),()=>routingActionPopulation(1.1,5),()=>routingActionPopulation(.8,11),()=>approximateAlphaInterval(.2,0),()=>abnormalReturn(1,1e308,0,1e308)])expect(f).toThrow();
- const es=JSON.parse(readFileSync('/tmp/lessons-run100/091/es-labels.json','utf8')),en=JSON.parse(readFileSync('/tmp/lessons-run100/091/en-labels.json','utf8'));expect(Object.keys(es).sort()).toEqual(Object.keys(en).sort());
+ const match = lesson.match(/<PredictionAndActionLab\b[^>]*?\blabels=\{(\{[\s\S]*?\})\}/);
+ if (!match) throw new Error('Missing PredictionAndActionLab labels in the Spanish lesson');
+ const es = JSON.parse(match[1]);
+ expect(Object.keys(es).sort()).toEqual(Object.keys(predictionAndActionDefaultLabels).sort());
  for(const mode of ['proxy','alpha','estimate','action','selection']as const){const html=renderToStaticMarkup(createElement(PredictionAndActionLab,{mode,locale:'es-ES',labels:es}));expect(html).toContain('tabindex="0"');expect(html).toContain('block w-full max-w-full overflow-x-auto');expect(html).toContain(es.table);expect(html).not.toContain('NaN');expect(html).not.toContain('Infinity');expect(html).not.toContain('<text ');expect(html).not.toContain('>-0</td>');}
  const missing=renderToStaticMarkup(createElement(PredictionAndActionLab,{mode:'action',selectionPercent:100,labels:es,locale:'es-ES'}));expect(missing).toContain(es.missing);
 });

@@ -53,6 +53,7 @@ const defaults={
  caption:'Invented model. The stated structural equations and potential outcomes are supplied for teaching, not inferred from observational data. Population means exclude sampling error. Prediction, model-relative performance and the causal effect of a specified action are separate quantities. No guaranteed trading return or causal identification in a real market is implied.'
 };
 export type CausalLabLabels=typeof defaults;
+export { defaults as predictionAndActionDefaultLabels };
 export interface PredictionAndActionLabProps {mode?:CausalLabMode;coefficientPercent?:number;regimePercent?:number;selectionPercent?:number;conditioned?:boolean;locale?:string;labels?:Partial<CausalLabLabels>;}
 const rangeClass='block h-8 w-full accent-brand-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600';
 const selectClass='mt-2 block w-full rounded-lg border border-ink-200 bg-surface px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600';
