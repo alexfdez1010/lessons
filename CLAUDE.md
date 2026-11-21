@@ -230,10 +230,10 @@ to ask "want me to commit?" or hand the commands back to the user. No exceptions
 2. Run **`bun run pre-commit`** (then `git add public/og`).
 3. **Commit**.
 4. **Push**.
-5. **Deploy** with `bun run deploy:assets` and verify the production domain.
+5. **Verify deployment** in Cloudflare Workers Builds and check the production domain.
 
-Cloudflare deployment uses authenticated Wrangler and `wrangler.jsonc`; there
-are no GitHub Actions deployment workflows. The production domain is
+Cloudflare Workers Builds runs `bun run build` and `bun run deploy:assets`
+on pushes to `main` in `alexfdez1010/lessons`. The production domain is
 `finance-lessons.alejandrofernandezcamello.me`.
 
 Treat "the change is done" as the trigger to run steps 2–5 on your own. The only
